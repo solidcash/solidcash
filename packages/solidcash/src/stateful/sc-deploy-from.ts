@@ -82,6 +82,7 @@ import { callRecordDigest } from './call-record.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { registeredValueAddressLockingBytecode, registerDeployment } from './deployment-registry.js';
 import { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';
+import { assertSpendableContract } from './spendable-code.js';
 import {
   bytesToSlotValue,
   decodeEntryCommitment,
@@ -751,6 +752,9 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   const childContracts = creation !== undefined
     ? creation.children.map((child) => child.contract as unknown as ReturnType<typeof legacyChild>)
     : fundingUtxos.map(legacyChild);
+  // Each child's whole redeem script, the lock its creation mints the master at, before anything is broadcast. A
+  // child's preps, when it is created through its deployer, are built and not yet sent.
+  for (const child of childContracts) assertSpendableContract(child);
   // Publish created children so an off-chain CREATE2 prediction can resolve the exact address this transaction
   // will produce (the address commits to the funding coin's category, so it is not a pure function of salt). A child
   // created through its deployer is published once its creation is sent.

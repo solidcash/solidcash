@@ -285,6 +285,38 @@ export class TransactionFeePerByteTooHighError extends Error {
   }
 }
 
+/** Which limit makes a lock unspendable: the push of its redeem script, the script as one stack item, a P2S script. */
+export type UnspendableContractLimit = 'unlocking bytecode' | 'stack item' | 'locking bytecode';
+
+/**
+ * A deployment refused before it broadcast anything: no input could ever spend the lock it would put coins at, because
+ * the contract's code is over a per-input limit of the network its provider enforces.
+ */
+export class UnspendableContractError extends Error {
+  constructor(
+    public readonly contractName: string,
+    /** The bytes of the code the lock commits to. */
+    public readonly codeBytes: number,
+    /** The fewest bytes a spend needs under `limitKind`: the redeem script's push, or the code itself. */
+    public readonly requiredBytes: number,
+    /** The network's limit, from its provider's `consensusLimits` or BCH's 10,000 bytes when it publishes none. */
+    public readonly limit: number,
+    public readonly limitKind: UnspendableContractLimit,
+  ) {
+    const reason = limitKind === 'unlocking bytecode'
+      ? `a spend pushes its ${codeBytes}-byte redeem script in ${requiredBytes} unlocking bytecode bytes, `
+        + `${requiredBytes - limit} over the network's ${limit}-byte per-input limit`
+      : limitKind === 'stack item'
+        ? `a spend pushes its ${codeBytes}-byte redeem script as one stack item, ${codeBytes - limit} over the `
+          + `network's ${limit}-byte stack item limit`
+        : `its ${codeBytes}-byte script is its locking bytecode, ${codeBytes - limit} over the network's `
+          + `${limit}-byte bytecode limit`;
+    super(`Contract '${contractName}' cannot be deployed: no input can spend its lock, as ${reason}. Nothing was `
+      + 'broadcast. Split the contract (compileFileSplit / compileStringSplit) or reduce it.');
+    this.name = 'UnspendableContractError';
+  }
+}
+
 export class InputMissingLockingBytecodeError extends Error {
   constructor() {
     super('Input UTXO is missing its lockingBytecode. UTXOs fetched from a network provider include it automatically; '

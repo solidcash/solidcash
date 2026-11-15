@@ -38,6 +38,7 @@ import { headSentinelCommitment } from './SortedList.js';
 import type { ConnectedStatefulContract } from './StatefulContract.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
 import { decideDeployerPath, deployThroughDeployer, DeployerPathError } from './deployer.js';
+import { assertDeploymentSpendable, assertSpendableContract } from './spendable-code.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { withOraclePoolArgument } from '../oracle/pool/reader.js';
 import {
@@ -59,6 +60,8 @@ export async function deployStatefulContract<T extends Artifact>(
   if (!artifact.stateLayout) {
     throw new Error(`Contract ${artifact.contractName} is not a stateful contract`);
   }
+  // Code no input could spend is refused before a pool is minted, a prep is built or anything is broadcast.
+  assertDeploymentSpendable(artifact, options.provider, options);
   const deployerPath = decideDeployerPath(artifact, options);
   if (deployerPath.path === 'error') throw new DeployerPathError(deployerPath.message);
   if (deployerPath.path === 'genesis' && deployerPath.warning !== undefined) {
@@ -113,6 +116,16 @@ export async function deployStatefulContract<T extends Artifact>(
   // The census of a framed composition refuses every fungible amount of the contract's own category (framed spec,
   // S2), so a framed contract's token is a category of its own, which `nativeToken.funding` creates.
   const framed = artifact.composition?.convention === 'framed';
+  // The master's whole redeem script, its arguments, category pin and salt included, before the metadata probe below
+  // builds a genesis of it. A framed master's filled program is measured where it is filled.
+  if (!framed) {
+    assertSpendableContract(new Contract(artifact, constructorArgs as any, {
+      provider: options.provider,
+      addressType: options.addressType,
+      category: hexToBin(options.fundingUtxo.txid),
+      salt: options.salt,
+    }));
+  }
   const nativeFunding = options.nativeToken?.funding;
   const mintsToken = options.nativeToken?.reserve !== undefined || options.nativeToken?.bearer !== undefined;
   if (framed && mintsToken && nativeFunding === undefined) {

@@ -16,6 +16,7 @@ import { bytesEqual, type Artifact, type FunctionSplitBundle } from '@solidcash/
 import { framedValidator } from '@solidcash/solidc/runtime';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { FunctionArgument } from '../../Argument.js';
+import { assertDeploymentSpendable } from '../../stateful/spendable-code.js';
 import {
   childGenesisReservation, patchChildCollectionSentinels, patchChildGenesisSlots, patchChildLockSentinels,
   patchChildOutputCount,
@@ -88,6 +89,8 @@ const STAND_IN_CATEGORIES = [new Uint8Array(32).fill(7), new Uint8Array(32).fill
  */
 export function framedChildConstants(options: FramedChildConstantsOptions): FramedChildConstants {
   const { artifact, split, provider } = options;
+  // Every creation of the child mints masters at these locks, so no creator is given the locks of code no input spends.
+  assertDeploymentSpendable(artifact, provider, split === undefined ? {} : { functionSplit: split });
   bindChildOraclePool(provider, artifact, split, options.oraclePool);
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const childPool = resolveMasterPoolSize(options.pool ?? {});

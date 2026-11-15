@@ -10,6 +10,7 @@ import type { PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityRecord } from '../bcmr/identity.js';
 import type { SplitFacets } from './stateful-lifecycle-types.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
+import { assertDeploymentSpendable, assertSpendableContract } from './spendable-code.js';
 
 // Heavy value imports are deferred to method/helper bodies so that loading this
 // module (the `@solidcash/solidcash/contract-factory` entry) does not evaluate the
@@ -362,6 +363,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = overrides.provider
       ?? (signer ? signer.provider : (this.runner as NetworkProvider));
+    // Code no input could spend is refused before a pool is minted or a funding coin is fanned out.
+    assertDeploymentSpendable(this.artifact, provider, overrides);
     // A pool the deployment mints goes first, in transactions of its own, so the constructor can read it.
     const { resolveDeploymentOraclePool } = await import('../oracle/pool/deployment.js');
     const masters = !this.artifact.stateLayout ? 1 : this.artifact.composition?.convention === 'framed'
@@ -399,6 +402,14 @@ export class ContractFactory<T extends Artifact = Artifact> {
         },
       } as T
       : this.artifact;
+    // The master's whole redeem script, before a funding coin is fanned out. Its category pin is as long for any
+    // category, and the category is the funding coin's txid. A framed master's filled program is measured where it is
+    // filled.
+    if (deployArtifact.composition?.convention !== 'framed') {
+      assertSpendableContract(new Contract(deployArtifact, constructorArgs as never, {
+        provider, addressType: overrides.addressType, category: new Uint8Array(32), salt: overrides.salt,
+      }));
+    }
     let { fundingUtxo, funder, changeAddress } = overrides;
     if (!fundingUtxo) {
       if (!signer) {

@@ -50,6 +50,7 @@ import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 import { ownCoinRefusal } from './own-coin.js';
 import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
+import { assertSpendableArtifact } from '../../stateful/spendable-code.js';
 import { registerFunctionSplit } from './split-registry.js';
 import { labelNextBroadcast } from '../../tx-survey.js';
 
@@ -196,6 +197,9 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   if (shippedArtifact.stateLayout === undefined) {
     throw new FramedDeployError(`Contract ${artifact.contractName} is not a stateful contract`);
   }
+  // A monolith genesis locks its masters at the P2SH32 of the shipped program, its creation arguments baked in, which
+  // its slots are filled in place. A split's shards and helpers were measured before (spendable-code.ts).
+  if (split === undefined) assertSpendableArtifact(shippedArtifact, options.provider);
   if (options.fundingUtxo.vout !== 0) {
     throw new FramedDeployError(
       'Funding UTXO must be at vout 0 to create a valid token category. '

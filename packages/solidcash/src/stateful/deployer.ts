@@ -33,6 +33,7 @@ import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.j
 import { fillerOutput } from './filler.js';
 import { getDustThreshold } from '../network/dust-threshold.js';
 import { evaluateFaithfulOrDebugTrace } from './faithful-probe-trace.js';
+import { assertSpendableCode, assertSpendableContract } from './spendable-code.js';
 
 /** A12: a deployment that asks for more than the deployer produces takes today's genesis instead. */
 export type DeployerFallbackCase =
@@ -2132,6 +2133,8 @@ export async function buildDeployerPreps(
     if (!/^[0-9a-fA-F]{70}$/.test(child.deployer.lockingBytecode)) {
       throw new DeployerPrepError(`The deployer of '${child.contractName}' has no P2SH32 locking bytecode`);
     }
+    // A deployer coin is spent only to give birth to C, so no prep locks one for a C whose code no input could spend.
+    assertSpendableCode(child.contractName, child.deployer.code.length / 2, provider);
   }
 
   const transactions: string[] = [];
@@ -3260,6 +3263,8 @@ export async function deployThroughDeployer<T extends Artifact>(
     if (contract.lockingBytecode === undefined || !/^[0-9a-fA-F]+$/.test(contract.lockingBytecode)) {
       throw new DeployerPathError(`Contract '${artifact.contractName}' has no master locking bytecode`);
     }
+    // C's born redeem script, its arguments and category pin included, before the prep is broadcast.
+    assertSpendableContract(contract);
     const masterLock = hexToBin(contract.lockingBytecode);
     const dataNftAddress = getDataNftAddress(contract as never, categoryId);
     const stateLayout = artifact.stateLayout!;

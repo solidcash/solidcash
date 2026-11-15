@@ -141,6 +141,11 @@ once (D12), and the regressions it found are fixed.
   callee's master (`ecdea966a`).
 - A direct call of a function whose keccak256 loop reads dynamic state it does not write builds: the side-cars come
   first and the chunks after them (`766c03afc`).
+- A nested caller's record, selector and call-edge witnesses follow each call's callsite, so a skipped conditional
+  call no longer shifts the ones after it (`a080c1790`, `3b774cd97`).
+- A refused `ecrecoverEvm` compares equal to `address(0)` in native code and in a Solidity port's direct comparison,
+  and the SDK spells a 20-zero address in event records and call results as the covenant pushes it (`28ec568f6`,
+  `76ba9b42e`, `4b2ba0986`, `5b9f7dba6`).
 
 **Call targets, found and fixed the same day** (`docs/security/security-audit-2026-10-16.md`, "Call targets
 (2026-11-15)"):
@@ -149,6 +154,15 @@ once (D12), and the regressions it found are fixed.
   after the call let the spender pick the callee. It is now bound where the call runs.
 - TARGET-3: a computed call target is the spender's choice by design. It now warns
   (`computed-call-target-unverified`).
+- TARGET-4: a loop's view answers, and the witness of a plain parameter element, were never checked, so a registry
+  check did not bind the callee. Only a keccak256-computed target keeps them now (warned); two or more calls through
+  any other loop local are refused at compile time.
+- A call through a collection entry written before the call is read again where it runs, or refused at compile time
+  (`ENTRY_TARGET_WRITTEN_BEFORE_CALL`); the SDK asks for such a callee by name.
+- TARGET-5: a raw call with a payload could be answered with nothing co-spent, a callee's `false` could be hidden,
+  and the expression form of a `{value:}` call paid nothing. A payload now runs its target, a typed payload reads
+  the callee's record, a plain send answers `(true, "")` only, and every payment reaches its target or is refused
+  by name.
 
 **Still refused before sending:**
 - `tx.origin` in a callee laid out by its ordinary build, whether read or passed on.
@@ -156,15 +170,14 @@ once (D12), and the regressions it found are fixed.
 - An A -> B -> C whose C reads another region after its block, whose C shares its block with another call, or whose
   B calls C in a loop or as a frame.
 - A recovery whose R is ±G or ±φ(G).
+- A called contract's own `blockhash(n)` read, and its low-level calls: neither is laid out, and both are now
+  refused by name (`48eb1e011`, `1a46ceefc`).
 
 **Refused at compile time:** a keccak256 loop beside a collection walk or a dynamic-state write
 (`keccak-loop-shares-trailing-band`, `267b570b7`). The two runs read the same inputs after the block, so no
 transaction could satisfy both, though the compiler used to accept the function.
 
 **Found and open:**
-- A nested ordinary callee's direct `blockhash(n)` read gets no oracle coin, and nothing refuses it by name.
-- The SDK maps a nested caller's return witnesses by position among the calls that run, and its callees' selectors
-  by function name, so a skipped conditional call shifts the witnesses after it.
 - A keccak256 chain (`keccakChainReads`) beside a walk or a dynamic write collides as the loop did and is not
   refused. Beside chunks it only reads, its direct build may still put the chunks first.
 - A keccak256 loop beside chunks it only reads and also a mapping loop, per-turn payments or events, or an external

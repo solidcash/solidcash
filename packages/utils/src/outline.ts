@@ -22,6 +22,9 @@ import type { FullLocationData } from './types.js';
  *    outlined helper adds a nested continuation frame, and BCH-2026 control-flow state is scoped to those
  *    frames. A compiler may opt in only its own proven nesting-safe helper ids; their encoded-id/OP_INVOKE pairs
  *    remain atomic and every other invocation stays in the body where it was originally emitted.
+ *    `nestingSafeFunctionIds` is that proof from a helper's own body, and `invocationDepths` bounds the frames the
+ *    nesting adds. A normalised body pushes an id 1..16 or -1 by its single opcode (OP_1..OP_16, OP_1NEGATE), so an
+ *    opted-in id matches in that form only where the caller asks for it.
  * 4. It reads no bytecode-relative context. OP_ACTIVEBYTECODE returns the *function body* once invoked, not the
  *    enclosing script; OP_CODESEPARATOR moves the signing checkpoint; and OP_CHECKSIG and friends sign the
  *    active bytecode, so moving one would change both the sighash preimage and the body the SDK reports as
@@ -30,7 +33,9 @@ import type { FullLocationData } from './types.js';
  *    OP_INVOKE, but compiler-generated bodies use unbalanced TOALTSTACK/FROMALTSTACK sequences as a private
  *    protocol between surrounding fragments. Extracting either half gives a shared helper a caller-dependent
  *    alternate-stack ABI, and later outlining rounds can nest that helper in a different frame. Keep those
- *    protocol boundaries visible in their owning body.
+ *    protocol boundaries visible in their owning body. A caller may admit alternate-stack use that is no handoff at
+ *    all: `OutlineAltStackPolicy` 'balanced' relocates a span only where, on every path through it, it pops nothing
+ *    it did not push itself and leaves the alternate stack as deep as it found it.
  *
  * Spans are relocatable byte-wise because each Script element encodes independently, so the emitted bytes of a
  * span are the same wherever they appear.
@@ -60,6 +65,50 @@ for (const opcode of BARRIER_OPS) BARRIER_FLAGS[opcode] = 1;
 const BARRIER_FLAGS_RELOCATABLE_ALT_STACK = BARRIER_FLAGS.slice();
 BARRIER_FLAGS_RELOCATABLE_ALT_STACK[Op.OP_TOALTSTACK] = 0;
 BARRIER_FLAGS_RELOCATABLE_ALT_STACK[Op.OP_FROMALTSTACK] = 0;
+
+/**
+ * How a span may use the alternate stack (property 5).
+ *
+ * 'barrier' relocates neither OP_TOALTSTACK nor OP_FROMALTSTACK. 'free' relocates either half of a handoff, for a
+ * caller whose finished script nothing reads for it. 'balanced' relocates alternate-stack use private to the span:
+ * on every path through it the span pops only what it pushed itself and ends as deep as it began. Such a span has
+ * no alternate-stack interface, whatever surrounds it, so it holds neither half of a handoff.
+ */
+export type OutlineAltStackPolicy = 'barrier' | 'free' | 'balanced';
+
+/** The opted-in invocations of property 3, and whether their ids may be pushed in the folded single-opcode form. */
+interface NestedInvokePolicy {
+  ids: ReadonlySet<number>;
+  foldedIdentifierPushes: boolean;
+}
+
+/** The number a single-opcode push encodes, OP_1..OP_16 and OP_1NEGATE: a one-byte push folded by normalisation. */
+const foldedPushNumber = (opcode: number): number | undefined => {
+  if (opcode === Op.OP_1NEGATE) return -1;
+  if (opcode >= Op.OP_1 && opcode <= Op.OP_16) return opcode - Op.OP_1 + 1;
+  return undefined;
+};
+
+/** The bytes `element` pushes: a data element or a single-opcode number push. Undefined for any other opcode. */
+const pushedBytes = (element: Script[number]): Uint8Array | undefined => {
+  if (element instanceof Uint8Array) return element;
+  if (element === Op.OP_0) return new Uint8Array(0);
+  if (element === Op.OP_1NEGATE) return Uint8Array.of(0x81);
+  if (element >= Op.OP_1 && element <= Op.OP_16) return Uint8Array.of(element - Op.OP_1 + 1);
+  return undefined;
+};
+
+/** The script number `element` pushes, when it pushes a minimally encoded one within the safe-integer range. */
+const pushedNumber = (element: Script[number]): number | undefined => {
+  if (typeof element === 'number') return foldedPushNumber(element);
+  try {
+    const value = decodeInt(element);
+    return value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)
+      ? Number(value) : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 /**
  * Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
@@ -190,29 +239,27 @@ const controlDelta = (element: Script[number]): number => {
 };
 
 const isAllowedNestedInvoke = (
-  elements: Script, index: number, allowedNestedInvokeIds: ReadonlySet<number> | undefined,
+  elements: Script, index: number, nestedInvokes: NestedInvokePolicy | undefined,
 ): boolean => {
-  if (allowedNestedInvokeIds === undefined || elements[index] !== Op.OP_INVOKE || index === 0) return false;
+  if (nestedInvokes === undefined || elements[index] !== Op.OP_INVOKE || index === 0) return false;
   const operand = elements[index - 1];
-  if (!(operand instanceof Uint8Array)) return false;
-  try {
-    const id = decodeInt(operand);
-    return id >= BigInt(Number.MIN_SAFE_INTEGER)
-      && id <= BigInt(Number.MAX_SAFE_INTEGER)
-      && allowedNestedInvokeIds.has(Number(id));
-  } catch {
-    return false;
+  if (typeof operand === 'number') {
+    if (!nestedInvokes.foldedIdentifierPushes) return false;
+    const id = foldedPushNumber(operand);
+    return id !== undefined && nestedInvokes.ids.has(id);
   }
+  const id = pushedNumber(operand);
+  return id !== undefined && nestedInvokes.ids.has(id);
 };
 
 const isBarrier = (
-  elements: Script, index: number, allowedNestedInvokeIds: ReadonlySet<number> | undefined,
+  elements: Script, index: number, nestedInvokes: NestedInvokePolicy | undefined,
   barrierFlags: Uint8Array,
 ): boolean => {
   const element = elements[index];
   return typeof element === 'number'
     && barrierFlags[element] !== 0
-    && !isAllowedNestedInvoke(elements, index, allowedNestedInvokeIds);
+    && !isAllowedNestedInvoke(elements, index, nestedInvokes);
 };
 
 interface BalanceScratch {
@@ -242,7 +289,7 @@ interface BalanceScratch {
 function longestBalancedSpan(
   elements: Script, anchoredIndices: Uint8Array | undefined,
   regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
-  allowedNestedInvokeIds: ReadonlySet<number> | undefined, barrierFlags: Uint8Array,
+  nestedInvokes: NestedInvokePolicy | undefined, barrierFlags: Uint8Array,
 ): BalanceScratch {
   let bestStart = 0;
   let bestEnd = 0;
@@ -254,7 +301,7 @@ function longestBalancedSpan(
   firstIndexAtDepth[0] = 0;
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
-    if (isBarrier(elements, regionStart + i, allowedNestedInvokeIds, barrierFlags)
+    if (isBarrier(elements, regionStart + i, nestedInvokes, barrierFlags)
       || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
       depth = 0;
       generation = ++scratch.generation;
@@ -281,6 +328,102 @@ function longestBalancedSpan(
       continue;
     }
     const start = firstIndexAtDepth[depth];
+    const bytes = bytePrefix[regionStart + i + 1] - bytePrefix[regionStart + start];
+    if (bytes > bestBytes) {
+      bestStart = start;
+      bestEnd = i + 1;
+      bestBytes = bytes;
+    }
+  }
+  scratch.bestStart = bestStart;
+  scratch.bestEnd = bestEnd;
+  scratch.bestBytes = bestBytes;
+  return scratch;
+}
+
+/**
+ * `longestBalancedSpan` for the 'balanced' alternate-stack policy: the span must also pop only what it pushed and
+ * end as deep on the alternate stack as it began, on every path through it.
+ *
+ * A linear count gives the alternate depth of every path only while no path moves it by a different amount, so an
+ * OP_ELSE, OP_ENDIF or OP_UNTIL must find the alternate depth its opener found: each branch, and each iteration of
+ * a loop, leaves it unchanged. One that does not is a barrier, as is an OP_FROMALTSTACK at the region's own depth,
+ * whose item was pushed before any span here could start. A start then serves a later end at the same control and
+ * alternate depths, provided neither dropped below the start in between, so starts are keyed by both depths and
+ * retired as either falls under them. Kept apart from `longestBalancedSpan` so the other policies' scans, and with
+ * them every result they produce, stay exactly as they were.
+ */
+function longestBalancedAltStackSpan(
+  elements: Script, anchoredIndices: Uint8Array | undefined,
+  regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
+  nestedInvokes: NestedInvokePolicy | undefined, barrierFlags: Uint8Array,
+): BalanceScratch {
+  let bestStart = 0;
+  let bestEnd = 0;
+  let bestBytes = 0;
+  // Both depths are bounded by the region length, so `control * stride + alternate` is a unique key.
+  const stride = regionLength + 1;
+  let control = 0;
+  let alternate = 0;
+  // The alternate depth each open conditional or loop found at its opener, indexed by control depth.
+  const openedAt: number[] = [];
+  const starts = new Map<number, number>();
+  const restart = (at: number): void => {
+    control = 0;
+    alternate = 0;
+    openedAt.length = 0;
+    starts.clear();
+    starts.set(0, at);
+  };
+  const retireControlFrom = (from: number): void => {
+    for (const key of [...starts.keys()]) if (Math.floor(key / stride) >= from) starts.delete(key);
+  };
+  const retireAlternateAbove = (above: number): void => {
+    for (const key of [...starts.keys()]) if (key % stride > above) starts.delete(key);
+  };
+  restart(0);
+  for (let i = 0; i < regionLength; i += 1) {
+    const element = elements[regionStart + i];
+    if (isBarrier(elements, regionStart + i, nestedInvokes, barrierFlags)
+      || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
+      restart(i + 1);
+      continue;
+    }
+    if (element === Op.OP_ELSE) {
+      if (control > 0 && openedAt[control - 1] !== alternate) {
+        restart(i + 1);
+        continue;
+      }
+      // As in longestBalancedSpan: only a start shallower than the OP_ELSE holds its OP_IF.
+      retireControlFrom(control);
+    }
+    const delta = controlDelta(element);
+    if (delta > 0) {
+      openedAt[control] = alternate;
+      control += 1;
+    } else if (delta < 0) {
+      if (control === 0 || openedAt[control - 1] !== alternate) {
+        restart(i + 1);
+        continue;
+      }
+      control -= 1;
+      retireControlFrom(control + 1);
+    } else if (element === Op.OP_TOALTSTACK) {
+      alternate += 1;
+    } else if (element === Op.OP_FROMALTSTACK) {
+      if (alternate === 0) {
+        restart(i + 1);
+        continue;
+      }
+      alternate -= 1;
+      retireAlternateAbove(alternate);
+    }
+    const key = control * stride + alternate;
+    const start = starts.get(key);
+    if (start === undefined) {
+      starts.set(key, i + 1);
+      continue;
+    }
     const bytes = bytePrefix[regionStart + i + 1] - bytePrefix[regionStart + start];
     if (bytes > bestBytes) {
       bestStart = start;
@@ -1098,8 +1241,9 @@ function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[]
 function findCandidates(
   bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
   candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
-  allowedNestedInvokeIds?: ReadonlySet<number>, barrierFlags: Uint8Array = BARRIER_FLAGS,
+  nestedInvokes?: NestedInvokePolicy, barrierFlags: Uint8Array = BARRIER_FLAGS, balancedAltStack = false,
 ): Candidate[] {
+  const balancedSpan = balancedAltStack ? longestBalancedAltStackSpan : longestBalancedSpan;
   const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, bodySortedAnchors, maximumBodyLength } = prepared;
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
     const left = bodyIds[leftBody];
@@ -1355,9 +1499,9 @@ function findCandidates(
         }
       }
     }
-    const balanced = longestBalancedSpan(
+    const balanced = balancedSpan(
       headScript, anchoredIndices, firstStart, length, bodyBytePrefixes[firstBody], balanceScratch,
-      allowedNestedInvokeIds, barrierFlags,
+      nestedInvokes, barrierFlags,
     );
     if (balanced.bestBytes === 0) continue;
 
@@ -1439,10 +1583,15 @@ export function outlineSharedSpans(
    */
   allowedNestedInvokeIds?: ReadonlySet<number>,
   /**
-   * True when a span may carry OP_TOALTSTACK and OP_FROMALTSTACK (property 5), for a caller whose finished script
-   * nothing reads for its alternate-stack handoff.
+   * How a span may carry OP_TOALTSTACK and OP_FROMALTSTACK (property 5, `OutlineAltStackPolicy`). True is 'free',
+   * for a caller whose finished script nothing reads for its alternate-stack handoff; false is 'barrier'.
    */
-  relocatableAltStack = false,
+  relocatableAltStack: boolean | OutlineAltStackPolicy = false,
+  /**
+   * True when an id in `allowedNestedInvokeIds` also matches pushed by its single opcode, OP_1..OP_16 or
+   * OP_1NEGATE, the form a normalised body gives ids 1..16 and -1. False keeps the data-push form only.
+   */
+  foldedIdentifierPushes = false,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -1457,11 +1606,15 @@ export function outlineSharedSpans(
   }));
   const functions: OutlinedFunction[] = [];
   const claimed: Uint8Array[] = [];
-  const nestedInvokePolicy = allowedNestedInvokeIds === undefined
+  const nestedInvokePolicy: NestedInvokePolicy | undefined = allowedNestedInvokeIds === undefined
     ? undefined
-    : new Set(allowedNestedInvokeIds);
-  const barrierFlags = relocatableAltStack ? BARRIER_FLAGS_RELOCATABLE_ALT_STACK : BARRIER_FLAGS;
-  const nestedInvokePolicyKey = `${nestedInvokeCacheKey(allowedNestedInvokeIds)}${relocatableAltStack ? ':alt' : ''}`;
+    : { ids: new Set(allowedNestedInvokeIds), foldedIdentifierPushes };
+  const altStackPolicy: OutlineAltStackPolicy = relocatableAltStack === true ? 'free'
+    : relocatableAltStack === false ? 'barrier' : relocatableAltStack;
+  const barrierFlags = altStackPolicy === 'barrier' ? BARRIER_FLAGS : BARRIER_FLAGS_RELOCATABLE_ALT_STACK;
+  const altStackKey = altStackPolicy === 'free' ? ':alt' : altStackPolicy === 'balanced' ? ':balanced-alt' : '';
+  const foldedKey = foldedIdentifierPushes && allowedNestedInvokeIds !== undefined ? ':folded' : '';
+  const nestedInvokePolicyKey = `${nestedInvokeCacheKey(allowedNestedInvokeIds)}${altStackKey}${foldedKey}`;
   const intern: OutlineIntern = (initialCandidateCache?.get('intern') as OutlineIntern | undefined) ?? {
     keyIds: new Map(),
     bodyByScript: new WeakMap(),
@@ -1511,7 +1664,7 @@ export function outlineSharedSpans(
     const candidates = cached === undefined
       ? findCandidates(
         corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound, prepared,
-        nestedInvokePolicy, barrierFlags,
+        nestedInvokePolicy, barrierFlags, altStackPolicy === 'balanced',
       )
       : costCandidates(cached, idPushBytes, ranking);
     if (round === 0 && cached === undefined) {
@@ -1766,4 +1919,158 @@ export function outlineSharedSpans(
   });
 
   return { bodies: rewritten, functions, savedBytes };
+}
+
+/** Opcodes that read or sign the active bytecode (property 4), which a nesting-safe body must not hold. */
+const BYTECODE_RELATIVE_OPS = new Set<number>([
+  Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
+  Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
+]);
+
+/**
+ * The ids `script` invokes, each named by the push just before its OP_INVOKE, when the body is self-contained as
+ * `nestingSafeFunctionIds` requires; undefined otherwise.
+ */
+function selfContainedCallees(script: Script): number[] | undefined {
+  const opened: { opcode: number; alternate: number }[] = [];
+  let alternate = 0;
+  const callees: number[] = [];
+  for (let index = 0; index < script.length; index += 1) {
+    const element = script[index];
+    if (typeof element !== 'number') continue;
+    if (element === Op.OP_DEFINE || BYTECODE_RELATIVE_OPS.has(element)) return undefined;
+    if (element === Op.OP_IF || element === Op.OP_NOTIF || element === Op.OP_BEGIN) {
+      opened.push({ opcode: element, alternate });
+    } else if (element === Op.OP_ELSE) {
+      const top = opened[opened.length - 1];
+      if (top === undefined || top.opcode === Op.OP_BEGIN || top.alternate !== alternate) return undefined;
+    } else if (element === Op.OP_ENDIF || element === Op.OP_UNTIL) {
+      const top = opened.pop();
+      if (top === undefined || (top.opcode === Op.OP_BEGIN) !== (element === Op.OP_UNTIL)
+        || top.alternate !== alternate) return undefined;
+    } else if (element === Op.OP_TOALTSTACK) {
+      alternate += 1;
+    } else if (element === Op.OP_FROMALTSTACK) {
+      if (alternate === 0) return undefined;
+      alternate -= 1;
+    } else if (element === Op.OP_INVOKE) {
+      const callee = index > 0 ? pushedNumber(script[index - 1]) : undefined;
+      if (callee === undefined) return undefined;
+      callees.push(callee);
+    }
+  }
+  return opened.length === 0 && alternate === 0 ? callees : undefined;
+}
+
+/**
+ * The function ids whose `<id> OP_INVOKE` a span may carry (property 3's opt-in), proven from their own bodies.
+ *
+ * Moving an invocation into a shared function runs the invoked body one frame deeper and otherwise exactly as
+ * before: OP_INVOKE keeps the stack, the alternate stack and the function table, and BCH 2026 scopes conditional
+ * and loop state to the frame, so a body that closes every OP_IF, OP_NOTIF and OP_BEGIN it opens hands no
+ * control-flow state across its frame at any depth. A body qualifies when that is all it relies on: its control
+ * flow is closed (property 1), it defines nothing (property 2), it reads no bytecode-relative context (property
+ * 4), on every path it pops only alternate-stack items it pushed and leaves that stack as deep as it found it (no
+ * handoff, property 5), and every function it invokes is named by the push just before the OP_INVOKE and qualifies
+ * in turn. The set is the least fixed point over `bodies`, so a body that invokes anything outside `bodies`, or
+ * takes part in recursion, never qualifies. The frame the move adds is bounded separately, by `invocationDepths`.
+ */
+export function nestingSafeFunctionIds(bodies: ReadonlyMap<number, Script>): Set<number> {
+  const callees = new Map<number, number[]>();
+  for (const [id, script] of bodies) {
+    const invoked = selfContainedCallees(script);
+    if (invoked !== undefined) callees.set(id, invoked);
+  }
+  const safe = new Set<number>();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [id, invoked] of callees) {
+      if (safe.has(id) || !invoked.every((callee) => safe.has(callee))) continue;
+      safe.add(id);
+      grew = true;
+    }
+  }
+  return safe;
+}
+
+/**
+ * BCH 2026's bound on the control stack, which holds every open OP_IF, OP_NOTIF and OP_BEGIN and one frame for
+ * each OP_INVOKE in progress: evaluation fails once it holds more than this.
+ */
+export const MAXIMUM_CONTROL_STACK_DEPTH = 100;
+
+/**
+ * The deepest control stack `script` reaches, counted from where it starts, and the conditionals and loops it
+ * leaves open at its end. `depthOfInvocation` gives the depth an invocation of an identifier (hex of the bytes it
+ * pushes) adds, its own frame included; `dynamicInvocationDepth` that of an invocation whose identifier is not the
+ * push just before it. Undefined where either is unknown, or where the script defines a function and
+ * `allowDefinitions` is false.
+ */
+export function controlStackDepth(
+  script: Script,
+  depthOfInvocation: (identifierHex: string) => number | undefined,
+  dynamicInvocationDepth?: number,
+  allowDefinitions = false,
+): { deepest: number; open: number } | undefined {
+  let open = 0;
+  let deepest = 0;
+  for (let index = 0; index < script.length; index += 1) {
+    const element = script[index];
+    if (typeof element !== 'number') continue;
+    if (element === Op.OP_IF || element === Op.OP_NOTIF || element === Op.OP_BEGIN) {
+      open += 1;
+      if (open > deepest) deepest = open;
+    } else if (element === Op.OP_ENDIF || element === Op.OP_UNTIL) {
+      open -= 1;
+    } else if (element === Op.OP_DEFINE) {
+      if (!allowDefinitions) return undefined;
+    } else if (element === Op.OP_INVOKE) {
+      const identifier = index > 0 ? pushedBytes(script[index - 1]) : undefined;
+      const depth = identifier === undefined ? dynamicInvocationDepth : depthOfInvocation(binToHex(identifier));
+      if (depth === undefined) return undefined;
+      if (open + depth > deepest) deepest = open + depth;
+    }
+  }
+  return { deepest, open };
+}
+
+/**
+ * Every literal `<body> <id> OP_DEFINE` at the top level of `script`, keyed as OP_DEFINE keys its table (the hex of
+ * the bytes the id pushes), with the index of the body's push. A definition whose body or id the script computes
+ * is not literal and is left out, so an invocation of it stays unresolved.
+ */
+export function literalDefinitions(script: Script): Map<string, { bodyIndex: number; body: Uint8Array }> {
+  const definitions = new Map<string, { bodyIndex: number; body: Uint8Array }>();
+  for (let index = 2; index < script.length; index += 1) {
+    if (script[index] !== Op.OP_DEFINE) continue;
+    const body = script[index - 2];
+    const identifier = pushedBytes(script[index - 1]);
+    if (!(body instanceof Uint8Array) || identifier === undefined) continue;
+    definitions.set(binToHex(identifier), { bodyIndex: index - 2, body });
+  }
+  return definitions;
+}
+
+/**
+ * The deepest control stack an invocation of each function in `bodies` adds, its own frame included, through every
+ * function it invokes in turn. `bodies` is keyed by the hex of the bytes its identifier pushes, as OP_DEFINE keys
+ * its table. A depth is undefined where the code cannot bound it: an invocation whose identifier is not the push
+ * just before it or names nothing in `bodies`, a definition made while running, or recursion.
+ */
+export function invocationDepths(bodies: ReadonlyMap<string, Script>): Map<string, number | undefined> {
+  const depths = new Map<string, number | undefined>();
+  const visiting = new Set<string>();
+  const depthOf = (key: string): number | undefined => {
+    if (depths.has(key)) return depths.get(key);
+    const body = bodies.get(key);
+    if (body === undefined || visiting.has(key)) return undefined;
+    visiting.add(key);
+    const inner = controlStackDepth(body, depthOf);
+    visiting.delete(key);
+    const depth = inner === undefined ? undefined : inner.deepest + 1;
+    depths.set(key, depth);
+    return depth;
+  };
+  for (const key of bodies.keys()) depthOf(key);
+  return depths;
 }

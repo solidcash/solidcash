@@ -34,6 +34,19 @@ export interface KeccakLoopTrailingPredecessors {
   outputs: Output[];
 }
 
+/**
+ * A run laid out right after the keccak side-cars, which the master reads through a witness: the chunks of dynamic
+ * state a callee reads, at an index it takes from `__internal__dynamicChunkInputBase`. Each probe places the run past
+ * its own side-cars and gives the master the unlocker naming the run's first input there.
+ */
+export interface KeccakLoopTrailingSuccessors {
+  inputs: UnlockableUtxo[];
+  /** Their outputs, each at its input's own index. */
+  outputs: Output[];
+  /** The master's unlocker when the run's first input is `firstInputIndex`. */
+  unlockerAt(firstInputIndex: number): Unlocker;
+}
+
 export async function resolveStatefulKeccakLoop(
   host: ResolveStatefulKeccakLoopHost,
   abiFunction: AbiFunction,
@@ -44,6 +57,7 @@ export async function resolveStatefulKeccakLoop(
   frontRegionInputs: UnlockableUtxo[] = [],
   locktime = 0,
   trailingPredecessors: KeccakLoopTrailingPredecessors = { inputs: [], outputs: [] },
+  trailingSuccessors?: KeccakLoopTrailingSuccessors,
 ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
   const blockSize = abiFunction.blockLayout?.blockSize ?? 1;
   // A dynamic loop reads master + blockSize + counter; the block layout's fixed keccakSideCar slot is a
@@ -103,13 +117,15 @@ export async function resolveStatefulKeccakLoop(
     if (k > slots.length + 1) break;
     const probe = new CovenantTransactionBuilder({ provider: host.inner.provider });
     if (locktime > 0) probe.setLocktime(locktime);
-    probe.addInput(masterUtxo, stateInputUnlocker);
+    const keccakInputBase = sidecarBase + trailingPredecessors.inputs.length;
+    // A run that follows the side-cars starts past this probe's k of them, so the master names it there.
+    const masterUnlocker = trailingSuccessors?.unlockerAt(keccakInputBase + k) ?? stateInputUnlocker;
+    probe.addInput(masterUtxo, masterUnlocker);
     dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
     frontRegionInputs.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
     // A mapping loop that precedes the keccak loop in source order consumes its predecessors first; co-spend them
     // ahead of the side-cars so the master's trailing reads land on the keccak side-cars, not the mapping inputs.
     trailingPredecessors.inputs.forEach((u) => probe.addInputs([u]));
-    const keccakInputBase = sidecarBase + trailingPredecessors.inputs.length;
     const recreates: Output[] = [];
     for (let j = 0; j < k; j++) {
       const utxo = sidecarAt(j);
@@ -119,6 +135,7 @@ export async function resolveStatefulKeccakLoop(
       probe.addInput(utxo, unlocker);
       recreates.push(recreate);
     }
+    trailingSuccessors?.inputs.forEach((u) => probe.addInputs([u]));
     probe.addOutput({
       to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
     });
@@ -128,6 +145,7 @@ export async function resolveStatefulKeccakLoop(
     frontRegionInputs.forEach((u) => probe.addOutput(host.frontRegionRecreate(u))); // self-preserving recreate
     trailingPredecessors.outputs.forEach((out) => probe.addOutput(out));
     for (const rec of recreates) probe.addOutput({ ...rec, to: lock });
+    trailingSuccessors?.outputs.forEach((out) => probe.addOutput(out));
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = host.generateLibauthSourceOutputs(probe.inputs);
     const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];

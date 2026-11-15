@@ -8,6 +8,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
+import type { KeccakLoopTrailingSuccessors } from './sc-resolve-stateful-keccak-loop.js';
 
 /** The callee contract, as its own loop resolver probes it. */
 export interface NestedCalleeKeccakLoopContract {
@@ -22,6 +23,7 @@ export interface NestedCalleeKeccakLoopContract {
     frontRegionInputs: UnlockableUtxo[], locktime: number,
     trailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] },
     sharedSidecarPool: NetworkProvider,
+    trailingSuccessors?: KeccakLoopTrailingSuccessors,
   ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }>;
 }
 
@@ -30,22 +32,37 @@ const OUTPUT_ONLY_SLOT_KINDS: ReadonlySet<string> = new Set([
   'returnEvent', 'event', 'eventChunk', 'transfer', 'tcTransfer',
 ]);
 
-/** What else a function can read or write after its block, each by the ABI field that publishes it. */
-const TRAILING_BAND_USERS: ReadonlyArray<readonly [keyof AbiFunction, string]> = [
-  ['collectionIterations', 'a collection walk'],
-  ['dynamicWrites', 'the chunks of dynamic state it writes'],
-  ['dynamicReads', 'the chunks of dynamic state it reads'],
-  ['entryLoopWrites', 'the entries a loop writes'],
-  ['sortedInsertLoops', 'the entries a loop inserts'],
-  ['sortedInsertLoopInfo', 'the entries a loop inserts'],
-  ['sortedUpsertLoopInfo', 'the entries a loop writes'],
-  ['runtimeLoopTransfers', 'the payments of a loop'],
-  ['runtimeLoopEvents', 'the events of a loop'],
-  ['keccakChainReads', 'a keccak256 chain'],
-  ['ecrecoverTrailingLoop', 'a recovery loop'],
-  ['ecrecoverLoopReads', 'a recovery loop'],
-  ['externalCalls', 'the blocks of the contracts it calls'],
-  ['lowLevelCalls', 'the blocks of the contracts it calls'],
+/** The witness naming the first chunk of dynamic state a function reads, as an absolute input index. */
+const DYNAMIC_READ_BASE = '__internal__dynamicChunkInputBase';
+
+// Why a run beside the loop is refused. The loop reads side-car k at master + blockSize + k and recreates it at that
+// index. A walk, and the new chunks a write makes, sit at fixed indexes from the same base, and the compiler counts
+// neither past the side-cars. The chunks a function only reads are found through DYNAMIC_READ_BASE, so they follow.
+const OVERLAPS_INPUTS = ', which its covenant reads from the inputs after its block, where the loop reads its '
+  + 'side-cars';
+const OVERLAPS_OUTPUTS = ', which its covenant checks at the outputs after its block, where the loop recreates its '
+  + 'side-cars';
+const NOT_LAID_OUT = ', and the SDK lays out a callee\'s loop side-cars beside no run but the chunks of dynamic state '
+  + 'it only reads';
+
+/**
+ * What else a function can read or write after its block, each by the ABI field that publishes it, and why it is not
+ * laid out beside the loop. The chunks of dynamic state the function only reads are laid out after the side-cars.
+ */
+const TRAILING_BAND_USERS: ReadonlyArray<readonly [keyof AbiFunction, string, string]> = [
+  ['collectionIterations', 'a collection walk', OVERLAPS_INPUTS],
+  ['dynamicWrites', 'the chunks of dynamic state it writes', OVERLAPS_OUTPUTS],
+  ['entryLoopWrites', 'the entries a loop writes', NOT_LAID_OUT],
+  ['sortedInsertLoops', 'the entries a loop inserts', NOT_LAID_OUT],
+  ['sortedInsertLoopInfo', 'the entries a loop inserts', NOT_LAID_OUT],
+  ['sortedUpsertLoopInfo', 'the entries a loop writes', NOT_LAID_OUT],
+  ['runtimeLoopTransfers', 'the payments of a loop', NOT_LAID_OUT],
+  ['runtimeLoopEvents', 'the events of a loop', NOT_LAID_OUT],
+  ['keccakChainReads', 'a keccak256 chain', NOT_LAID_OUT],
+  ['ecrecoverTrailingLoop', 'a recovery loop', NOT_LAID_OUT],
+  ['ecrecoverLoopReads', 'a recovery loop', NOT_LAID_OUT],
+  ['externalCalls', 'the blocks of the contracts it calls', NOT_LAID_OUT],
+  ['lowLevelCalls', 'the blocks of the contracts it calls', NOT_LAID_OUT],
 ];
 
 const coinKey = (utxo: Pick<Utxo, 'txid' | 'vout'>): string => `${utxo.txid.toLowerCase()}:${utxo.vout}`;
@@ -83,6 +100,11 @@ export function sharedSidecarPoolWithout(
  * master at input 0, its records after it, and a plain coin for each output-only slot before the side-cars. A block
  * that holds anything else before the side-cars, or that is not as wide as the base the callee reads from, is refused
  * before anything is built.
+ *
+ * The chunks of dynamic state the function only reads (`trailingReads`) follow the side-cars: the callee reads them
+ * from the input its `__internal__dynamicChunkInputBase` names, which the build sets to the first chunk's index, and
+ * the probe lays them out past its own side-cars with that witness, so a read made before the loop reaches it. Every
+ * other run after the block is refused by name (TRAILING_BAND_USERS).
  */
 export async function appendCreateBuilderNestedCalleeKeccakLoop(input: {
   bBlockInputs: UnlockableUtxo[];
@@ -96,20 +118,25 @@ export async function appendCreateBuilderNestedCalleeKeccakLoop(input: {
   spent: Iterable<Pick<Utxo, 'txid' | 'vout'>>;
   /** The view a build lists the shared pool through, when it has one (a creation's); the callee's provider else. */
   sharedPool?: NetworkProvider;
+  /** The read-only chunks the build places right after the side-cars, in the order the callee reads them. */
+  trailingReads?: readonly UnlockableUtxo[];
   functionLabel: string;
 }): Promise<{ bBlockInputs: UnlockableUtxo[]; start: number; recreates: Output[] }> {
   const { bAbiFunc, bSc, masterUtxo, bDataNfts, args, spent, functionLabel } = input;
+  const trailingReads = input.trailingReads ?? [];
   const refuse = (what: string): never => {
     throw new Error(`The call of ${functionLabel} cannot be laid out: ${what}`);
   };
-  // The loop's side-cars are the only run this layout places after the callee's block.
   const sharer = TRAILING_BAND_USERS.find(([field]) => {
     const value = bAbiFunc[field];
     return Array.isArray(value) ? value.length > 0 : value === true;
   });
   if (sharer !== undefined) {
-    refuse(`its keccak256 loop shares the inputs after its block with ${sharer[1]}, and the SDK lays out a callee's `
-      + 'loop side-cars only as the one run there');
+    refuse(`its keccak256 loop shares the inputs after its block with ${sharer[1]}${sharer[2]}`);
+  }
+  if (trailingReads.length > 0 && !bAbiFunc.inputs.some((parameter) => parameter.name === DYNAMIC_READ_BASE)) {
+    refuse(`its keccak256 loop shares the inputs after its block with the chunks of dynamic state it reads${
+      OVERLAPS_INPUTS}, as it takes no ${DYNAMIC_READ_BASE} witness to find them past the side-cars`);
   }
   const layout = bAbiFunc.blockLayout;
   const start = layout?.trailingBase ?? layout?.blockSize ?? 1;
@@ -125,18 +152,31 @@ export async function appendCreateBuilderNestedCalleeKeccakLoop(input: {
   if (layout?.slots.some((slot) => slot.kind === 'dataNft' && slot.offset > bDataNfts.length) === true) {
     refuse('its records do not follow its master, where the loop\'s probe places them');
   }
-  // The frame the probe runs: the call's arguments, the record at its slot of a block whose master is input 0, and
-  // every other witness at its default. The loop reads only its arguments and the side-cars.
+  // The frame the probe runs: the call's arguments, the record at its slot of a block whose master is input 0, the
+  // first read chunk where the probe places it, and every other witness at its default. The loop reads only its
+  // arguments and the side-cars.
   const visible = bAbiFunc.inputs.filter((parameter) => !parameter.name.startsWith('__internal__'));
   if (visible.length !== args.length) refuse('its arguments do not match its function');
   const recordOffset = layout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset;
-  let visibleIndex = 0;
-  const frame = bAbiFunc.inputs.map((parameter): FunctionArgument => {
-    if (!parameter.name.startsWith('__internal__')) return args[visibleIndex++]!;
-    if (parameter.name === '__internal__returnOutputIdx') return BigInt(recordOffset ?? -1);
-    return defaultInternalFunctionArg(parameter);
-  });
-  const unlocker = bSc.inner.createAbiUnlocker(bAbiFunc)(...frame);
+  const unlockerAt = (firstRead: number | undefined): Unlocker => {
+    let visibleIndex = 0;
+    const frame = bAbiFunc.inputs.map((parameter): FunctionArgument => {
+      if (!parameter.name.startsWith('__internal__')) return args[visibleIndex++]!;
+      if (parameter.name === '__internal__returnOutputIdx') return BigInt(recordOffset ?? -1);
+      if (parameter.name === DYNAMIC_READ_BASE && firstRead !== undefined) return BigInt(firstRead);
+      return defaultInternalFunctionArg(parameter);
+    });
+    return bSc.inner.createAbiUnlocker(bAbiFunc)(...frame);
+  };
+  const unlocker = unlockerAt(undefined);
+  // Each read chunk is recreated at its own index, as its read-only covenant keeps it.
+  const successors: KeccakLoopTrailingSuccessors | undefined = trailingReads.length === 0 ? undefined : {
+    inputs: [...trailingReads],
+    outputs: trailingReads.map((chunk) => ({
+      to: chunk.unlocker.generateLockingBytecode(), amount: chunk.satoshis, ...(chunk.token && { token: chunk.token }),
+    })),
+    unlockerAt: (firstInputIndex) => unlockerAt(firstInputIndex),
+  };
   const plainCoin = (index: number): UnlockableUtxo => ({
     txid: `${'00'.repeat(28)}${(index + 1).toString(16).padStart(8, '0')}`,
     vout: 0,
@@ -153,7 +193,7 @@ export async function appendCreateBuilderNestedCalleeKeccakLoop(input: {
   try {
     loop = await bSc._resolveStatefulKeccakLoop(
       bAbiFunc, bare(masterUtxo), unlocker, bDataNfts.map(bare), bDataNfts.map((utxo) => utxo.unlocker),
-      frontSlots.map((_, index) => plainCoin(index)), 0, { inputs: [], outputs: [] }, pool,
+      frontSlots.map((_, index) => plainCoin(index)), 0, { inputs: [], outputs: [] }, pool, successors,
     );
   } catch (error) {
     const message = (error as Error).message;

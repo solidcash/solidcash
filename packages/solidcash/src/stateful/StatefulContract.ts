@@ -595,7 +595,9 @@ import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from
 import {
   resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl, type ResolveEcrecoverCoSpendsHost,
 } from './sc-resolve-ecrecover-co-spends.js';
-import { resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl } from './sc-resolve-stateful-keccak-loop.js';
+import {
+  resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl, type KeccakLoopTrailingSuccessors,
+} from './sc-resolve-stateful-keccak-loop.js';
 import { resolveStatefulEcrecoverLoop as resolveStatefulEcrecoverLoopImpl } from './sc-resolve-stateful-ecrecover-loop.js';
 import {
   keccakProbeTrailingRun,
@@ -5610,6 +5612,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     frontRegionInputs: UnlockableUtxo[] = [], locktime = 0,
     trailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] } = { inputs: [], outputs: [] },
     sharedSidecarPool?: NetworkProvider,
+    trailingSuccessors?: KeccakLoopTrailingSuccessors,
   ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
     return resolveStatefulKeccakLoopImpl(
       {
@@ -5622,7 +5625,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         generateLibauthSourceOutputs: (inputs: any) => generateLibauthSourceOutputs(inputs),
       },
       abiFunction, masterUtxo, stateInputUnlocker, dataNftUtxos, dataNftUnlockers,
-      frontRegionInputs, locktime, trailingPredecessors,
+      frontRegionInputs, locktime, trailingPredecessors, trailingSuccessors,
     );
   }
 

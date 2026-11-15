@@ -658,27 +658,10 @@ export async function orchestrateCreateBuilderExternalCalls(
         });
       }
 
-      // A direct callee's keccak256 loop reads one shared side-car per iteration right after its block.
-      let bKeccakLoop: { start: number; recreates: Output[] } | undefined;
-      if (bBlockInputs !== undefined && bAbiFunc?.keccakLoopReads === true && compilerRoute === undefined && bSc) {
-        const label = `${callInfo!.externalContract.inner.artifact.contractName}.${bAbiFunc.name}`;
-        const spent = [
-          ...externalCallUtxoGroups.flatMap((group) => [...(group.blockInputs ?? []), ...(group.keccakInputs ?? [])]),
-          ...bBlockInputs,
-        ];
-        const loop = await appendCreateBuilderNestedCalleeKeccakLoopImpl({
-          bBlockInputs, bAbiFunc, bSc, masterUtxo: bState.masterUtxo, bDataNfts, args: callInfo!.args, spent,
-          ...(overrides?.sharedSidecarPool !== undefined && { sharedPool: overrides.sharedSidecarPool }),
-          functionLabel: label,
-        });
-        bBlockInputs = loop.bBlockInputs;
-        bKeccakLoop = { start: loop.start, recreates: loop.recreates };
-      }
-
       // A direct view callee must co-spend the chunks it reads after its published block. The
       // callee covenant authenticates their address and order; omitting them leaves its hidden
       // dynamic-input base pointing into another participant's inputs.
-      const bDynamicChunkResources: NonNullable<ExternalCallUtxoGroup['dynamicChunkResources']> = [];
+      const bReadChunks: Array<{ input: UnlockableUtxo; name: string; type: string }> = [];
       if (bBlockInputs !== undefined && bAbiFunc !== undefined && compilerRoute === undefined) {
         const written = new Set(bAbiFunc.dynamicWrites ?? []);
         for (const name of bAbiFunc.dynamicReads ?? []) {
@@ -697,16 +680,44 @@ export async function orchestrateCreateBuilderExternalCalls(
             }))
             .sort((left: { index: number }, right: { index: number }) => left.index - right.index);
           for (const { utxo } of chunks) {
-            bBlockInputs.push({
-              ...utxo,
-              unlocker: createReadOnlyDynamicChunkUnlocker(
-                callInfo!.externalContract.inner, 0, externalCategoryId, name, variable.type,
-              ),
-            });
-            bDynamicChunkResources.push({
-              blockSlot: bBlockInputs.length - 1, name, type: variable.type, write: false,
+            bReadChunks.push({
+              input: {
+                ...utxo,
+                unlocker: createReadOnlyDynamicChunkUnlocker(
+                  callInfo!.externalContract.inner, 0, externalCategoryId, name, variable.type,
+                ),
+              },
+              name,
+              type: variable.type,
             });
           }
+        }
+      }
+
+      // A direct callee's keccak256 loop reads one shared side-car per iteration right after its block; the chunks it
+      // reads follow them, found through the witness that names the first chunk's input.
+      let bKeccakLoop: { start: number; recreates: Output[] } | undefined;
+      if (bBlockInputs !== undefined && bAbiFunc?.keccakLoopReads === true && compilerRoute === undefined && bSc) {
+        const label = `${callInfo!.externalContract.inner.artifact.contractName}.${bAbiFunc.name}`;
+        const spent = [
+          ...externalCallUtxoGroups.flatMap((group) => [...(group.blockInputs ?? []), ...(group.keccakInputs ?? [])]),
+          ...bBlockInputs,
+        ];
+        const loop = await appendCreateBuilderNestedCalleeKeccakLoopImpl({
+          bBlockInputs, bAbiFunc, bSc, masterUtxo: bState.masterUtxo, bDataNfts, args: callInfo!.args, spent,
+          ...(overrides?.sharedSidecarPool !== undefined && { sharedPool: overrides.sharedSidecarPool }),
+          trailingReads: bReadChunks.map((chunk) => chunk.input),
+          functionLabel: label,
+        });
+        bBlockInputs = loop.bBlockInputs;
+        bKeccakLoop = { start: loop.start, recreates: loop.recreates };
+      }
+
+      const bDynamicChunkResources: NonNullable<ExternalCallUtxoGroup['dynamicChunkResources']> = [];
+      if (bBlockInputs !== undefined) {
+        for (const { input, name, type } of bReadChunks) {
+          bBlockInputs.push(input);
+          bDynamicChunkResources.push({ blockSlot: bBlockInputs.length - 1, name, type, write: false });
         }
       }
 

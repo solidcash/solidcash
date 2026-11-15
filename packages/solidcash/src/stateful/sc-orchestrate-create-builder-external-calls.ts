@@ -54,6 +54,9 @@ import {
   appendCreateBuilderNestedCalleeLoopWrites as appendCreateBuilderNestedCalleeLoopWritesImpl,
 } from './sc-append-create-builder-nested-callee-loop-writes.js';
 import {
+  appendCreateBuilderNestedCalleeIterations as appendCreateBuilderNestedCalleeIterationsImpl,
+} from './sc-append-create-builder-nested-callee-iterations.js';
+import {
   pushCreateBuilderDirectExternalCallGroup as pushCreateBuilderDirectExternalCallGroupImpl,
 } from './sc-push-create-builder-direct-external-call-group.js';
 import {
@@ -633,6 +636,23 @@ export async function orchestrateCreateBuilderExternalCalls(
         bStreamedEventPlan = nestedBlockCtx.bStreamedEventPlan;
         bDirectChunkValue = nestedBlockCtx.bDirectChunkValue;
         bValueChunkOutputCount = nestedBlockCtx.bValueChunkOutputCount;
+      }
+
+      // A direct callee that iterates a collection reads the walk right after its block, before any dynamic state
+      // it reads: co-spend the walk there, each entry kept at its own index.
+      if (bAbiFunc !== undefined && compilerRoute === undefined && bSc && callInfo
+        && (bAbiFunc.collectionIterations?.length ?? 0) > 0) {
+        bBlockInputs = await appendCreateBuilderNestedCalleeIterationsImpl({
+          bBlockInputs,
+          bAbiFunc,
+          bStatelayout,
+          bSc,
+          externalCategoryId,
+          // The callee's run publishes its record for a caller that reads it, and always for a function that returns.
+          publishesRecord: ec.hasReturnValues === true || (bAbiFunc.outputs?.length ?? 0) > 0,
+          bCompilerInternalArgs,
+          functionLabel: `${callInfo.externalContract.inner.artifact.contractName}.${bAbiFunc.name}`,
+        });
       }
 
       // A direct view callee must co-spend the chunks it reads after its published block. The

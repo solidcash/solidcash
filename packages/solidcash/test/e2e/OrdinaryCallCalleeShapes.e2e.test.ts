@@ -3,8 +3,9 @@
  * the function reads, an entry that iterates a collection, a keccak256 loop on side-cars of the shared pool (salt 0, as
  * a callee off input 0 needs), a sized entry msg.sender keys, a stateful function that recovers keys in a loop, and a
  * keccak256 loop beside a call of another contract, each with its call record published, as a constructor's call
- * always publishes it. Each sent transaction is checked by the VM; each tamper case changes one part of it and expects
- * the covenant that binds that part to refuse.
+ * always publishes it. Then the same sized shapes in a contract another contract calls (D calls T, T co-spent in D's
+ * transaction): T iterates a collection. Each sent transaction is checked by the VM; each tamper case changes one part
+ * of it and expects the covenant that binds that part to refuse.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -467,3 +468,60 @@ describe('an ordinary call whose keccak256 loop runs beside a call of another co
       });
   }
 });
+
+/** The indexes of the outputs of `sent` at `lock`. */
+const outputsAt = (sent: Sent, lock: Uint8Array): number[] => sent.transaction.outputs
+  .map((output, index) => (same(output.lockingBytecode, lock) ? index : -1)).filter((index) => index >= 0);
+
+describe('an ordinary call of a contract whose function iterates a collection and returns an int (D calls T)', () => {
+  const SOURCE = `${P} interface I { function f() external returns (int); }
+    contract T { int total; enumerable mapping(bytes20 => int) bal; function put(bytes20 k, int v) public { bal[k] = v; }
+      function f() external returns (int) { int sum = 0; for (int value of this.bal) { sum = sum + value; } total = sum; return sum; } }
+    contract D { int got; function g(I t) external returns (int) { got = t.f(); return got; } }`;
+
+  for (const emitReturn of [false, true]) {
+    it(`co-spends the walk after the callee's block${emitReturn ? ' behind the caller\'s record slot' : ''}, and `
+      + 'refuses another sum, result, entry or order', async () => {
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+      const d = await s.deploy(compileString(SOURCE, compileOptions('D')));
+      const wallet = await s.wallet();
+      await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(1), 5n).send();
+      await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(2), 7n).send();
+      const tLock = addressToLockScript(t.contract.address);
+      const call = (d.contract.connect(wallet) as any).call.g(tLock).withExternalCall(t.contract);
+      await (emitReturn ? call.emitReturn() : call).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(12n);
+      expect(((await t.contract.getState()) as { total?: bigint }).total).toBe(12n);
+
+      // The callee's block of master, record and record slot, then the walk: the HEAD and both entries, each
+      // recreated as it was at its own index.
+      const master = inputAt(sent, tLock);
+      expect(master).toBe(emitReturn ? 3 : 2);
+      const entryLock = addressToLockScript(getEntryNftAddress(t.contract.inner as never, t.categoryId, 'bal'));
+      const walked = sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, entryLock) ? index : -1))
+        .filter((index) => index >= 0);
+      expect(walked).toEqual([master + 3, master + 4, master + 5]);
+      expect(outputsAt(sent, entryLock)).toEqual(walked);
+      for (const index of walked) {
+        expect(binToHex(sent.transaction.outputs[index]!.token!.nft!.commitment))
+          .toBe(binToHex(sent.sourceOutputs[index].token.nft.commitment));
+      }
+      // Another sum in the callee's record: refused by the callee.
+      const [tRecord] = outputsAt(sent, addressToLockScript(getDataNftAddress(t.contract.inner as never, t.categoryId)));
+      expect(inputPasses(s.provider, withOutput(sent, tRecord!, bumpCommitment), master)).toBe(false);
+      // Another result in its call record: refused by the caller, which reads it, and by the callee.
+      expect(sent.transaction.outputs[master + 2]!.token?.nft?.capability).toBe('none');
+      expect(inputPasses(s.provider, withOutput(sent, master + 2, bumpCommitment), 0)).toBe(false);
+      expect(inputPasses(s.provider, withOutput(sent, master + 2, bumpCommitment), master)).toBe(false);
+      // An entry recreated with another value: refused by the callee and by the entry's covenant.
+      expect(inputPasses(s.provider, withOutput(sent, master + 4, bumpCommitment), master)).toBe(false);
+      expect(inputPasses(s.provider, withOutput(sent, master + 4, bumpCommitment), master + 4)).toBe(false);
+      // The two entries swapped, with their outputs: the walk no longer follows the chain.
+      expect(inputPasses(s.provider, swapIndexes(sent, master + 4, master + 5), master)).toBe(false);
+    });
+  }
+});
+

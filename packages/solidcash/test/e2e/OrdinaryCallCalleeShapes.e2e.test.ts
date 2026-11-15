@@ -19,6 +19,7 @@ import { SignatureTemplate, Signer } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { getDataNftAddress, getDynamicChunkAddress, getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { isPoolInfoOutput } from '../../src/oracle/pool/index.js';
 import { addressToLockScript, solidCashOutputToLibauthOutput } from '../../src/utils.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Artifact } from '@solidcash/utils';
@@ -1468,4 +1469,131 @@ describe('a call of a contract that calls another, by a function that returns a 
       expect(inputPasses(s.provider, removeIndexes(sent, tMaster + 4, 1), tMaster)).toBe(false);
     });
   }
+});
+
+/**
+ * In the transaction `builder` holds, the input at `lock` passes and its witness `name` names input `named`; the witness
+ * moved by one input either way is refused by that input.
+ */
+function expectWitnessNamesInput(s: Setup, builder: any, lock: Uint8Array, name: string, named: number): void {
+  const program = builder.buildLibauthProgram(true) as Sent;
+  const at = inputAt(program, lock);
+  expect(inputPasses(s.provider, program, at)).toBe(true);
+  const unlocker = builder.inputs[at].unlocker as {
+    params: unknown[];
+    abiFunction: { inputs: ReadonlyArray<{ name: string }> };
+    syncEncodedArgsFromParams(indices?: readonly number[]): void;
+  };
+  const position = unlocker.abiFunction.inputs.findIndex((input) => input.name === name);
+  expect(unlocker.params[position]).toBe(BigInt(named));
+  for (const moved of [named - 1, named + 1]) {
+    unlocker.params[position] = BigInt(moved);
+    unlocker.syncEncodedArgsFromParams([position]);
+    expect(inputPasses(s.provider, builder.buildLibauthProgram(true) as Sent, at)).toBe(false);
+  }
+  unlocker.params[position] = BigInt(named);
+  unlocker.syncEncodedArgsFromParams([position]);
+}
+
+describe('nested coordinates read from the assembled transaction: a callee behind a published record', () => {
+  it('names T\'s old chunk as its base, and T\'s master to the chunk, behind A\'s record slot (A calls D, which calls T)',
+    async () => {
+      const source = `${P} interface I { function f(int x) external returns (int); }
+        interface ID { function g(I t, int x) external returns (int); }
+        contract T { int[] a; function f(int x) external returns (int) { a.push(x); a.push(x + 1); return a.length; } }
+        contract D { int got; function g(I t, int x) external returns (int) { got = t.f(x); return got; } }
+        contract A { int got; function h(ID d, I t, int x) external returns (int) { got = d.g(t, x); return got; } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const tLock = addressToLockScript(t.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      const chunkLock = addressToLockScript(getDynamicChunkAddress(t.contract.inner as never, t.categoryId, 'a', 'int256[]'));
+      const dCallee = withCallee(d.contract, 'I', t.contract);
+      const call = (x: bigint): any => (a.contract.connect(wallet) as any).call.h(dLock, tLock, x)
+        .withExternalCall(dCallee).emitReturn();
+      // The first call writes one chunk; the second spends it and writes two, for four elements.
+      for (const [x, length, written, spent] of [[5n, 2n, 1, 0], [7n, 4n, 2, 1]] as const) {
+        if (spent > 0) {
+          // T reads the old chunk at the input its base names, and the chunk's covenant authorizes its spend by the
+          // master at the input its unlocker names: T's.
+          const builder = await call(x).build();
+          const program = builder.buildLibauthProgram(true) as Sent;
+          const builtMaster = inputAt(program, tLock);
+          const oldChunk = inputAt(program, chunkLock);
+          expect(oldChunk).toBe(builtMaster + 3);
+          expectWitnessNamesInput(s, builder, tLock, '__internal__dynamicChunkInputBase', oldChunk);
+          const chunk = builder.inputs[oldChunk].unlocker as {
+            params: unknown[]; abiFunction: { inputs: ReadonlyArray<{ name: string }> };
+          };
+          expect(chunk.params[chunk.abiFunction.inputs.findIndex((input) => input.name === 'masterInputIndex')])
+            .toBe(BigInt(builtMaster));
+          expect(inputPasses(s.provider, program, oldChunk)).toBe(true);
+        }
+        await call(x).send();
+        const sent = s.sent[s.sent.length - 1]!;
+        expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+        expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(length);
+        expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(length);
+        // A's block holds its record slot open (master, record, record slot), and D's block follows; T's follows D's.
+        const dMaster = inputAt(sent, dLock);
+        const tMaster = inputAt(sent, tLock);
+        expect(dMaster).toBe(3);
+        expect(tMaster).toBeGreaterThan(dMaster);
+        // T's new chunks follow its block of master, record and record slot; the old chunk is spent at the same index.
+        const chunks = outputsAt(sent, chunkLock);
+        expect(chunks).toEqual(Array.from({ length: written }, (_, index) => tMaster + 3 + index));
+        const old = sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, chunkLock) ? index : -1))
+          .filter((index) => index >= 0);
+        expect(old).toEqual(Array.from({ length: spent }, (_, index) => tMaster + 3 + index));
+        // Another chunk: refused by T, whose run pins it.
+        for (const index of chunks) {
+          expect(inputPasses(s.provider, withOutput(sent, index, bumpCommitment), tMaster)).toBe(false);
+        }
+        // The old chunk swapped with T's record-slot input: T reads another coin as the old value.
+        if (spent > 0) expect(inputPasses(s.provider, swapInputs(sent, tMaster + 2, tMaster + 3), tMaster)).toBe(false);
+      }
+      expect(((await t.contract.getState()) as { a?: bigint[] }).a).toEqual([5n, 6n, 7n, 8n]);
+    });
+
+  it('names the pool\'s one info coin, in D\'s block, for D and for T behind A\'s record slot (A calls D, which calls T)',
+    async () => {
+      const source = `${P} interface I { function f() external returns (int); }
+        interface ID { function g(I t) external returns (int); }
+        contract T { int n; function f() external returns (int) { n = int(block.number); return n; } }
+        contract D { int n; int got; function g(I t) external returns (int) { n = int(block.number); got = t.f(); return got; } }
+        contract A { int got; function h(ID d, I t) external returns (int) { got = d.g(t); return got; } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const pool = (t.contract.inner as unknown as { oraclePool: string }).oraclePool;
+      const tLock = addressToLockScript(t.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      const dCallee = withCallee(d.contract, 'I', t.contract);
+      const call = (): any => (a.contract.connect(wallet) as any).call.h(dLock, tLock).withExternalCall(dCallee)
+        .emitReturn();
+      const builder = await call().build();
+      const program = builder.buildLibauthProgram(true) as Sent;
+      // One info coin, in D's block; T, which has no block of its own, reads that coin too.
+      const info = program.sourceOutputs.flatMap((output, index) => (isPoolInfoOutput(output, pool) ? [index] : []));
+      expect(info).toHaveLength(1);
+      const dMaster = inputAt(program, dLock);
+      expect(dMaster).toBe(3);
+      expect(info[0]!).toBeGreaterThan(dMaster);
+      expect(info[0]!).toBeLessThan(inputAt(program, tLock));
+      expectWitnessNamesInput(s, builder, dLock, '__internal__blockOracleInputIndex', info[0]!);
+      expectWitnessNamesInput(s, builder, tLock, '__internal__blockOracleInputIndex', info[0]!);
+
+      const height = BigInt(await s.provider.getBlockHeight());
+      await call().send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(height);
+      expect(((await d.contract.getState()) as { n?: bigint }).n).toBe(height);
+      expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(height);
+    });
 });

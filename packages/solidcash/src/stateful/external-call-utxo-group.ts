@@ -331,6 +331,8 @@ export interface ExternalCallUtxoGroup {
   returnPreimageWitnessGroups?: Record<string, number>;
   /** Hidden minting-input ABI witness -> category whose final master coordinate it names. */
   mintingInputWitnessCategories?: Record<string, string>;
+  /** Hidden input ABI witness -> the coin whose final input coordinate it names. */
+  inputWitnessOutpoints?: Record<string, Pick<Utxo, 'txid' | 'vout'>>;
   /** Rebuild this group's master unlocker after probe-derived hidden witnesses become available. */
   refreshInternalArgs?: (
     updates: Record<string, any>,

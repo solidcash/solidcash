@@ -9,6 +9,7 @@ import type { UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import {
   createDataNftUnlocker,
+  createDynamicChunkUnlocker,
   createEntryNftUnlocker,
   createRelocatedDataNftUnlocker,
   createSatoshiContainerUnlocker,
@@ -220,7 +221,45 @@ export function reconcileMaterializedSatoshiContainerUnlockers(
   return changed;
 }
 
-/** Rebind hidden callee-master arguments from the final physical input order. */
+/**
+ * Rebind the old dynamic-state chunks an ordinary callee's write consumes to its master in the final physical input
+ * order: each chunk's covenant authorizes the spend by the master at the index its unlocker names.
+ */
+export function reconcileMaterializedDynamicChunkUnlockers(
+  host: MaterializedNftUnlockerReconcileHost,
+  builder: TransactionBuilder,
+): boolean {
+  let changed = false;
+  for (const group of host.externalCallUtxoGroups) {
+    const chunks = group.ordinaryDynamicChunkInputs;
+    if (group.sharedGroupIndex !== undefined || chunks === undefined || chunks.length === 0) continue;
+    const masterInputIndex = host.allInputs.findIndex((input) => sameOutpoint(input, group.masterUtxo));
+    if (masterInputIndex < 0) continue;
+    for (const [chunkIndex, chunk] of chunks.entries()) {
+      const { unlocker } = chunk.utxo;
+      if (!isContractUnlocker(unlocker)) continue;
+      const position = unlocker.abiFunction.inputs.findIndex((input) => input.name === 'masterInputIndex');
+      if (position < 0 || unlocker.params[position] === BigInt(masterInputIndex)) continue;
+      const contract = groupContract(group);
+      if (!contract?.addressType) {
+        throw new Error(`Cannot rebind dynamic chunk for participant ${group.categoryId} without its contract`);
+      }
+      const utxo: UnlockableUtxo = {
+        ...chunk.utxo,
+        unlocker: createDynamicChunkUnlocker(contract, masterInputIndex, group.categoryId, chunk.name, chunk.type),
+      };
+      chunks[chunkIndex] = { ...chunk, utxo };
+      for (const copies of [host.allInputs, builder.inputs]) {
+        const index = copies.findIndex((input) => sameOutpoint(input, utxo));
+        if (index >= 0) copies[index] = utxo;
+      }
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Rebind hidden callee-master and other input-coordinate arguments from the final physical input order. */
 export function reconcileMaterializedInputWitnesses(
   host: MaterializedNftUnlockerReconcileHost,
   builder: TransactionBuilder,
@@ -228,21 +267,27 @@ export function reconcileMaterializedInputWitnesses(
   const dataNftsChanged = reconcileMaterializedDataNftUnlockers(host, builder);
   const entryNftsChanged = reconcileMaterializedEntryNftUnlockers(host, builder);
   const containersChanged = reconcileMaterializedSatoshiContainerUnlockers(host, builder);
+  const chunksChanged = reconcileMaterializedDynamicChunkUnlockers(host, builder);
   const changedCarriers = new Set<ExternalCallUtxoGroup>();
   for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
-    if (!carrier.mintingInputWitnessCategories || !carrier.refreshInternalArgs) continue;
+    if (!carrier.refreshInternalArgs) continue;
     const updates: Record<string, bigint> = {};
-    for (const [name, categoryId] of Object.entries(carrier.mintingInputWitnessCategories)) {
-      const inputIndex = host.findMintingInputIndex(categoryId);
-      if (inputIndex < 0 || carrier.internalArgs?.[name] === BigInt(inputIndex)) continue;
+    const bind = (name: string, inputIndex: number): void => {
+      if (inputIndex < 0 || carrier.internalArgs?.[name] === BigInt(inputIndex)) return;
       updates[name] = BigInt(inputIndex);
+    };
+    for (const [name, categoryId] of Object.entries(carrier.mintingInputWitnessCategories ?? {})) {
+      bind(name, host.findMintingInputIndex(categoryId));
+    }
+    for (const [name, coin] of Object.entries(carrier.inputWitnessOutpoints ?? {})) {
+      bind(name, host.allInputs.findIndex((input) => sameOutpoint(input, coin)));
     }
     if (Object.keys(updates).length === 0) continue;
     carrier.refreshInternalArgs(updates, { shiftPredOut: false });
     carrier.internalArgs = { ...carrier.internalArgs, ...updates };
     changedCarriers.add(carrier);
   }
-  if (changedCarriers.size === 0) return dataNftsChanged || entryNftsChanged || containersChanged;
+  if (changedCarriers.size === 0) return dataNftsChanged || entryNftsChanged || containersChanged || chunksChanged;
   host.syncRefreshedCarrierMasters(builder, changedCarriers);
   return true;
 }

@@ -32470,8 +32470,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(3n), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_EQUALVERIFY, locationData);
+      // An empty target, address(0), names no contract: the only coin it matches is an empty-lock coin, which a
+      // miner can include and which would then answer the call. A call with a payload through it fails.
       this.emit(Op.OP_ROT, locationData);
-      this.emit(Op.OP_DROP, locationData); // [data, idx]
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(Op.OP_VERIFY, locationData); // [data, idx]
     }
 
     // Read target's unlocking bytecode
@@ -32627,8 +32631,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);                                    // [data, target]
     this.emit(encodeInt(BigInt(this.getStackIndex(callInputParam) + 2)), locationData);
     this.emit(Op.OP_PICK, locationData);                     // [data, target, idx]
-    // 1. Identity. A 20-byte imported-Solidity identity must name a canonical lock of that identity; an empty
-    //    target equals no locking bytecode, so a call to address(0) fails closed.
+    // 1. Identity. A 20-byte imported-Solidity identity must name a canonical lock of that identity; a call to
+    //    address(0) fails (emitCompatTargetIdentity).
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);             // [data, target, idx, lbc]
     this.emit(Op.OP_ROT, locationData);                      // [data, idx, lbc, target]
@@ -32710,16 +32714,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * [.., candidateLbc, target] -> [..]: a 20-byte target must be a canonical lock of that identity
-   * (emitCompatAddressMatch); any other target must match exactly, so address(0) fails closed.
+   * (emitCompatAddressMatch); any other target must match exactly. An empty target, address(0), fails, as does an
+   * empty lock for a 20-byte target (it projects to the zero identity): the only coin either matches is an empty-lock
+   * coin, which a miner can include and which would then answer the call.
    */
   private emitCompatTargetIdentity(loc: SingleLocationData): void {
-    this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_VERIFY, loc);
     this.emit(encodeInt(20n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_SWAP, loc);                              // [.., target20, candidateLbc] = [identity, lock]
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_VERIFY, loc);
     this.emitCompatAddressMatch(loc);                        // consumes both, EQUALVERIFY inside
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);                       // lbc == target (full lock, exact)
@@ -54382,6 +54390,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_NUMEQUAL, locationData);
         this.emit(Op.OP_IF, locationData);
         this.emit(Op.OP_SWAP, locationData);          // [idx, target20, lbc] = [identity, lock]
+        // An empty lock projects to the zero identity, address(0), and only an empty-lock coin has one.
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_VERIFY, locationData);
         this.emitCompatAddressMatch(locationData);    // consumes both, EQUALVERIFY inside
         this.emit(Op.OP_ELSE, locationData);
         this.emitCalleeIdentityOperands(locationData); // address(0) refused
@@ -55040,6 +55051,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(2n), loc);
     this.emit(Op.OP_PICK, loc);                          // [elem, idx, callee_bc, elem]
     this.emit(Op.OP_EQUALVERIFY, loc);                   // [elem, idx]
+    if (slot.interfaceName === '__raw__') {
+      // A raw call through an empty element, address(0), fails: only an empty-lock coin matches it.
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_VERIFY, loc);                      // [elem, idx]
+    }
 
     if (callMode === ExternalCallMode.REGULAR || callMode === ExternalCallMode.STATICCALL) {
       // 2. master bytecode preservation (input == output)
@@ -55372,6 +55390,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_addr)') + 1)), loc); // +1: utxobc
     this.emit(Op.OP_PICK, loc);           // [..., utxobc, addr]
     this.emit(Op.OP_EQUALVERIFY, loc);    // [...]
+    if (node.opaqueReturn) {
+      // A raw call through an empty target, address(0), fails: only an empty-lock coin matches it.
+      this.emitPickAt(this.getStackIndex('(ilc_addr)'), loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_VERIFY, loc);
+    }
 
     // 2-3. master bytecode + category preservation (REGULAR + STATICCALL)
     if (callMode === ExternalCallMode.REGULAR || callMode === ExternalCallMode.STATICCALL) {

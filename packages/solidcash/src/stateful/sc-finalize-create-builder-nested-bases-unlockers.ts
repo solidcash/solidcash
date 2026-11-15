@@ -16,6 +16,7 @@ import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
+import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import { groupLayoutTrailingBase } from './writer-event-delegate-layout.js';
 
 export function selectorParamSlot(
@@ -198,6 +199,17 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       }
       return childGroupIndices;
     };
+    // An ordinary caller's coordinates for its own callees are planned here from band widths, which count no slot of
+    // the root's block that a plain send compacts or a published record holds open. The builder re-reads them from
+    // the assembled transaction, as it does the root's and a low-level call's nested callers'.
+    const rebindsCalleeCoordinates = !group.compilerRoute && group.callBatch === undefined
+      && group.callBatchUnit === undefined && group.delegateCallGroupIndex === undefined;
+    const calleeGroupForSlot = (slot: number): number | undefined => {
+      const callsiteId = bAbiFunc?.externalCalls?.[slot]?.callsiteId;
+      const children = getChildGroupIndices();
+      return callsiteId === undefined ? children[slot]
+        : children.find((index) => groupMetas[index].ecSlot.callsiteId === callsiteId);
+    };
 
     for (let i = group.compilerRoute ? 0 : userArgCount; i < bAbiInputs.length; i++) {
       const paramName = bAbiInputs[i].name;
@@ -235,6 +247,14 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
           + (group.ordinaryDynamicChunkInputs?.length ?? 0);
         bFinalArgs.push(BigInt(thisGroupEnd));
+        // The region begins at the master of the callee of the first call, wherever the transaction places it.
+        const firstCallee = rebindsCalleeCoordinates ? calleeGroupForSlot(0) : undefined;
+        if (firstCallee !== undefined) {
+          const physical = externalCallUtxoGroups[externalCallUtxoGroups[firstCallee].sharedGroupIndex ?? firstCallee];
+          group.mintingInputWitnessCategories = {
+            ...group.mintingInputWitnessCategories, [paramName]: physical.categoryId,
+          };
+        }
       } else if (paramName.startsWith('__internal__extcallAnchorIdx')) {
         // Batch-route callees address their own callees physically; -1 selects the direct identity proof.
         bFinalArgs.push(-1n);
@@ -304,9 +324,17 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           }
         }
         if (bReturningSlotIdx < childReturning.length) {
-          const childRetIdx = returnEventIndexMap.get(childReturning[bReturningSlotIdx]);
+          const childIdx = childReturning[bReturningSlotIdx];
+          const childRetIdx = returnEventIndexMap.get(childIdx);
           if (childRetIdx !== undefined) {
             bFinalArgs.push(BigInt(childRetIdx));
+            // Read where the callee's record lands, as the root's own return witnesses are.
+            if (rebindsCalleeCoordinates) {
+              group.returnWitnessGroups = {
+                ...group.returnWitnessGroups,
+                [paramName]: logicalReturnGroupIndex(externalCallUtxoGroups, childIdx),
+              };
+            }
           }
           bReturningSlotIdx++;
         }

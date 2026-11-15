@@ -10218,6 +10218,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             categoryId: this.categoryId,
             inner: this.inner,
             signer: this._signer,
+            ...(overrides?.callerLockingBytecode !== undefined
+              && { callerLockingBytecode: overrides.callerLockingBytecode }),
             hydrateExternalPredicateState: (...a: any[]) => (this as any)._hydrateExternalPredicateState(...a),
             evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a),
             vmapCounterDomain: (...a: any[]) => (this as any)._vmapCounterDomain(...a),

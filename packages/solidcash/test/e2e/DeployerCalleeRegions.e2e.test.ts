@@ -4,9 +4,10 @@
  * branch deletes (DS-6), a collection's walk, the blocks of the contracts it calls or reads (a low-level call's among
  * them), the oracle pool coins its block reads co-spend, and a keccak256 loop's side-cars from the shared pool (A14
  * item 6), before the block of a contract it calls; and the chunks, walk and loop side-cars of a contract it calls that
- * pushes, iterates or hashes in a loop. An entry msg.sender keys is the child's, as the genesis step resolves it. Each
- * creation is checked by the VM; each tamper case changes one part of a finished creation and expects the input that
- * binds it to refuse.
+ * pushes, iterates or hashes in a loop. The build runs for the child as the sender the genesis step resolves, so an
+ * entry msg.sender keys, a loop's among them, and every copy of msg.sender it stores, with the chunks and the chunked
+ * value its 35 bytes size, are the child's. Each creation is checked by the VM; each tamper case changes one part of a
+ * finished creation and expects the input that binds it to refuse.
  *
  * The ordinary build of a loop's payments fails on the production profile (the same call fails as an ordinary call
  * there), so those cases run on the relaxed mock, whose minted coins only pad the build: the creation spends none.
@@ -152,6 +153,48 @@ const masterInput = (captured: Captured, lock: Uint8Array): number => captured.s
 /** The indexes of the outputs at `lock`. */
 const outputsAt = (captured: Captured, lock: Uint8Array): number[] => captured.transaction.outputs
   .map((output, index) => (same(output.lockingBytecode, lock) ? index : -1)).filter((index) => index >= 0);
+
+/** A 35-byte lock that is neither the child's nor any coin's: what a forged creation stores instead of the child. */
+const OTHER_P2SH32 = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x5a), 0x87);
+
+/** The child's master lock in a captured creation: the P2SH32 output that carries a minting NFT not of `callee`. */
+function childLock(captured: Captured, callee: string): Uint8Array {
+  const master = captured.transaction.outputs.find((output) => output.token?.nft?.capability === 'minting'
+    && binToHex(output.token.category) !== callee && output.lockingBytecode.length === 35
+    && output.lockingBytecode[0] === 0xaa);
+  if (master === undefined) throw new Error('the creation creates no child master');
+  return Uint8Array.from(master.lockingBytecode);
+}
+
+/** The NFT outputs of `category` whose commitment holds `lock`. */
+const holding = (captured: Captured, category: string, lock: Uint8Array): number[] => captured.transaction.outputs
+  .map((output, index) => (output.token !== undefined && binToHex(output.token.category) === category
+    && binToHex(output.token.nft?.commitment ?? new Uint8Array()).includes(binToHex(lock)) ? index : -1))
+  .filter((index) => index >= 0);
+
+/** `captured` with `from` replaced by `to`, a lock of the same length, in the commitment of output `index`. */
+const storing = (captured: Captured, index: number, from: Uint8Array, to: Uint8Array): Captured => withOutput(
+  captured, index, (output) => ({
+    ...output,
+    token: {
+      ...output.token,
+      nft: {
+        ...output.token.nft,
+        commitment: hexToBin(binToHex(output.token.nft.commitment).split(binToHex(from)).join(binToHex(to))),
+      },
+    },
+  }),
+);
+
+/** Neither the stand-in sender of a callee's build nor its edge record reaches the creation (A7). */
+function expectNoStandInSender(captured: Captured, child: Uint8Array, callee: string): void {
+  // An edge record the callee pins for a call of its own is of its own category.
+  expect(captured.transaction.outputs.some((output) => binToHex(output.lockingBytecode) === '5161'
+    && (output.token === undefined || binToHex(output.token.category) !== callee))).toBe(false);
+  // The child's lock holds its master only; no coin the creation spends sits there.
+  expect(captured.transaction.outputs.filter((output) => same(output.lockingBytecode, child))).toHaveLength(1);
+  expect(captured.sourceOutputs.some((output) => same(output.lockingBytecode, child))).toBe(false);
+}
 
 describe('a callee that writes and inserts a mapping in a loop (A7, A14 item 5)', () => {
   const SOURCE = `${P} interface I { function f(int k) external returns (bool); }
@@ -492,6 +535,57 @@ describe('a creating call whose child\'s callee writes a mapping in a loop (A7, 
   });
 });
 
+describe('a creating call whose child\'s callee stores msg.sender (A7, A14 item 4)', () => {
+  it('pushes the child the creator makes onto an array, where its lock runs past a chunk', async () => {
+    const source = `interface I { function f() external returns (bool); }
+      contract T { address[] members; function add(address a) public { members.push(a); }
+        function f() external returns (bool) { members.push(msg.sender); return true; } }
+      contract Child { bool ok; constructor(I t) { ok = t.f(); } function read() { require(ok); } }
+      contract Factory { int made; function make(I a) { new Child(a); made = made + 1; } }`;
+    const s = setup();
+    const artifacts = compileStringMulti(source, {
+      allowUnsafeOperations: true, __deployerNew: true, genesisCalls: true,
+    } as never);
+    const t = await s.deploy(artifacts.T!, { initialState: {} });
+    const factory = await s.deploy(artifacts.Factory!, { initialState: { made: 0n } });
+    const wallet = await s.wallet();
+    // 1 + 26 + 26 + 36 bytes of members: a 25-byte sender's push fits the first chunk, the child's does not.
+    for (const member of [encodeLockingBytecodeP2pkh(alicePkh), encodeLockingBytecodeP2pkh(bobPkh), OTHER_P2SH32]) {
+      await (t.contract.connect(wallet) as any).call.add(member).send();
+    }
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const fundingUtxo: Utxo = { txid: nextTxid(), vout: 0, satoshis: 2_000_000n };
+    await s.provider.seedUtxo(binToHex(authorLock), fundingUtxo);
+    await s.wallet();
+    const result = await StatefulContract.deployFrom({
+      provider: s.provider, factory: factory.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [addressToLockScript(t.contract.address)], childArtifacts: { Child: artifacts.Child! },
+      fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: change.address,
+      childCallees: [{ deployment: 0, callees: [{ contract: t.contract }] }],
+    });
+    const creation = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(creation as never)).toBe(true);
+    expect(creation.transaction.outputs.some((output) => binToHex(output.lockingBytecode) === '5161')).toBe(false);
+    // The second chunk, which holds the last bytes of the child's lock, changed: refused by T.
+    const tLock = addressToLockScript(t.contract.address);
+    const { getDataNftAddress } = await import('../../src/stateful/covenant-helpers.js');
+    const dataLock = addressToLockScript(getDataNftAddress(t.contract.inner as never, t.categoryId));
+    const chunks = creation.transaction.outputs.map((output, index) => (output.token !== undefined
+      && binToHex(output.token.category) === t.categoryId && output.token.nft?.capability === 'mutable'
+      && !same(output.lockingBytecode, dataLock) && !same(output.lockingBytecode, tLock) ? index : -1))
+      .filter((index) => index >= 0);
+    expect(chunks).toHaveLength(2);
+    for (const index of chunks) {
+      expect(inputPasses(s.provider, withOutput(creation, index, bumpCommitment), masterInput(creation, tLock))).toBe(false);
+    }
+    const members = ((await t.contract.getState()) as { members?: Uint8Array[] }).members!;
+    expect(members).toHaveLength(4);
+    expect(binToHex(members[3]!)).toBe(binToHex(addressToLockScript(result.children![0]!.address)));
+  });
+});
+
 describe('a creating call whose child\'s callee reads the block (A7, A14 item 4)', () => {
   it('builds the creating call again when a block between its prep and itself moves the info coin', async () => {
     const source = `interface I { function f() external returns (int); }
@@ -707,6 +801,207 @@ describe('a callee whose sized block is keyed by msg.sender (A7, A14 item 5)', (
     expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
     expect(await (t.contract as any).owner(addressToLockScript(created.contract.address))).toBe(9n);
     expect(await (t.contract as any).owner(encodeLockingBytecodeP2pkh(alicePkh))).toBe(4n);
+  });
+});
+
+describe('a callee whose sized block stores msg.sender (A7, A14 item 5)', () => {
+  const ARRAY = `${P} interface I { function f() external returns (bool); }
+    contract T { address[] members; function add(address a) public { members.push(a); }
+      function f() external returns (bool) { members.push(msg.sender); return true; } }
+    contract C { bool ok; constructor(I t) { ok = t.f(); } function read() { require(ok); } }`;
+
+  it('pushes the child where its lock runs past a chunk a 25-byte sender would fit, and refuses another member', async () => {
+    const { parseChunkCommitment, buildChunkCommitment } = await import('@solidcash/utils');
+    const s = setup();
+    const t = await s.deploy(compileString(ARRAY, compileOptions('T')));
+    const wallet = await s.wallet();
+    // The framed array holds 1 + 26 + 26 + 36 = 89 bytes: one more P2PKH member fits the first 120-byte chunk
+    // (115), the child's 35-byte lock does not (125), so the creation lays out a second chunk.
+    for (const member of [encodeLockingBytecodeP2pkh(alicePkh), encodeLockingBytecodeP2pkh(bobPkh), OTHER_P2SH32]) {
+      await (t.contract.connect(wallet) as any).call.add(member).send();
+    }
+    const tLock = addressToLockScript(t.contract.address);
+    const c = compileString(ARRAY, compileOptions('C'));
+    const extra = { initArgs: [tLock], constructorCallees: [{ contract: t.contract }] };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    // The stock VM, standard and with a real network's limits, accepts it too.
+    expect(createVirtualMachineBch2026(true).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    const child = childLock(captured, t.categoryId);
+    expectNoStandInSender(captured, child, t.categoryId);
+    const master = masterInput(captured, tLock);
+    const { getDataNftAddress } = await import('../../src/stateful/covenant-helpers.js');
+    const dataLock = addressToLockScript(getDataNftAddress(t.contract.inner as never, t.categoryId));
+    const chunks = captured.transaction.outputs.map((output, index) => ({ output, index }))
+      .filter(({ output }) => output.token !== undefined && binToHex(output.token.category) === t.categoryId
+        && output.token.nft?.capability === 'mutable' && !same(output.lockingBytecode, dataLock)
+        && !same(output.lockingBytecode, tLock))
+      .map(({ output, index }) => ({ index, ...parseChunkCommitment(binToHex(output.token!.nft!.commitment)) }))
+      .sort((left, right) => left.chunkIndex - right.chunkIndex);
+    expect(chunks.map((chunk) => [chunk.chunkIndex, chunk.chunkData.length])).toEqual([[0, 120], [1, 5]]);
+    const blob = Uint8Array.from(chunks.flatMap((chunk) => [...chunk.chunkData]));
+    // Four members, the last the child: `OP_4`, then each member's push.
+    expect(blob[0]).toBe(0x54);
+    expect(binToHex(blob).endsWith(`23${binToHex(child)}`)).toBe(true);
+
+    // Another 35-byte lock as the new member, chunked as the child's was: refused by the callee, which pushes the
+    // sender the genesis step names.
+    const forged = hexToBin(binToHex(blob).slice(0, -70) + binToHex(OTHER_P2SH32));
+    let rechunked = captured;
+    for (const chunk of chunks) {
+      const data = forged.slice(chunk.chunkIndex * 120, chunk.chunkIndex * 120 + chunk.chunkData.length);
+      const commitment = hexToBin(buildChunkCommitment(chunk.chunkIndex, data));
+      rechunked = withOutput(rechunked, chunk.index, (output) => ({
+        ...output, token: { ...output.token, nft: { ...output.token.nft, commitment } },
+      }));
+    }
+    expect(inputPasses(s.provider, rechunked, master)).toBe(false);
+    // The last chunk changed, the two chunks swapped, and the record's length changed: each refused.
+    expect(inputPasses(s.provider, withOutput(captured, chunks[1]!.index, bumpCommitment), master)).toBe(false);
+    const [first, second] = [chunks[0]!.index, chunks[1]!.index];
+    expect(inputPasses(s.provider, withOutput(withOutput(captured, first, () => captured.transaction.outputs[second]),
+      second, () => captured.transaction.outputs[first]), master)).toBe(false);
+    const [record] = outputsAt(captured, dataLock);
+    expect(inputPasses(s.provider, withOutput(captured, record!, bumpCommitment), master)).toBe(false);
+
+    const created = await s.deploy(c, extra);
+    const members = ((await t.contract.getState()) as { members?: Uint8Array[] }).members!;
+    expect(members.map((member) => binToHex(member))).toEqual([
+      binToHex(encodeLockingBytecodeP2pkh(alicePkh)), binToHex(encodeLockingBytecodeP2pkh(bobPkh)),
+      binToHex(OTHER_P2SH32), binToHex(addressToLockScript(created.contract.address)),
+    ]);
+  });
+
+  const STRUCT = `${P} interface I { function f(int x, bytes note) external returns (bool); }
+    contract T { struct Rec { address who; bytes note; } int[] a; mapping(int => Rec) recs;
+      function f(int x, bytes note) external returns (bool) { a.push(x); recs[x] = Rec(msg.sender, note); return true; } }
+    contract C { bool ok; constructor(I t, int x, bytes note) { ok = t.f(x, note); } function read() { require(ok); } }`;
+
+  it('writes the child into a struct value that its lock takes past the inline limit, and refuses another', async () => {
+    const s = setup();
+    const t = await s.deploy(compileString(STRUCT, compileOptions('T')));
+    // Plain coins at the funder's lock for the block's output-only slots.
+    await s.wallet();
+    const tLock = addressToLockScript(t.contract.address);
+    const c = compileString(STRUCT, compileOptions('C'));
+    // The value is the who push and the note push: 26 + 31 = 57 bytes for a P2PKH sender, inline; 36 + 31 = 67 for
+    // the child, past the 60-byte limit, so it keeps a head and its root and continues in a chunk of its own.
+    const note = new Uint8Array(30).fill(7);
+    const extra = { initArgs: [tLock, 5n, note], constructorCallees: [{ contract: t.contract }] };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect(createVirtualMachineBch2026(true).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    const child = childLock(captured, t.categoryId);
+    expectNoStandInSender(captured, child, t.categoryId);
+    const master = masterInput(captured, tLock);
+    const { getEntryNftAddress } = await import('../../src/stateful/covenant-helpers.js');
+    const entryLock = addressToLockScript(getEntryNftAddress(t.contract.inner as never, t.categoryId, 'recs'));
+    const { sha256 } = await import('@noble/hashes/sha2.js');
+    const value = Uint8Array.of(0x23, ...child, 0x1e, ...note);
+    // The child's node: its key, then the value's length, its root and its first 28 bytes.
+    const node = outputsAt(captured, entryLock).find((index) => binToHex(captured.transaction.outputs[index]!.token!.nft!
+      .commitment).endsWith(binToHex(Uint8Array.of(value.length, 0, 0, 0, ...sha256(value), ...value.slice(0, 28)))));
+    expect(node).toBeDefined();
+    // Its continuation: the value's last 39 bytes, at an address of its own.
+    const continuation = captured.transaction.outputs.findIndex((output) => output.token !== undefined
+      && binToHex(output.token.category) === t.categoryId
+      && binToHex(output.token.nft?.commitment ?? new Uint8Array()) === `0000${binToHex(value.slice(28))}`);
+    expect(continuation).toBeGreaterThan(master);
+    // The child's lock changed in the node, the continuation changed: each refused.
+    const flipped = withOutput(captured, node!, (output) => {
+      const commitment = Uint8Array.from(output.token.nft.commitment);
+      commitment[commitment.length - 20] ^= 1;
+      return { ...output, token: { ...output.token, nft: { ...output.token.nft, commitment } } };
+    });
+    expect(inputPasses(s.provider, flipped, master)).toBe(false);
+    expect(inputPasses(s.provider, withOutput(captured, continuation, bumpCommitment), master)).toBe(false);
+
+    const created = await s.deploy(c, extra);
+    const stored = await (t.contract as any).recs(5n) as { who: Uint8Array; note: Uint8Array };
+    expect(binToHex(stored.who)).toBe(binToHex(addressToLockScript(created.contract.address)));
+    expect(binToHex(stored.note)).toBe(binToHex(note));
+  });
+
+  // Shapes whose stored copy keeps the layout a 25-byte sender gives: the creation's run pins the child in place.
+  const SHAPES: Array<{ name: string; body: string; read: (t: any, child: Uint8Array) => Promise<Uint8Array> }> = [
+    { name: 'an address array', body: 'address[] members; function f(int x) external returns (bool) { members.push(msg.sender); return true; }',
+      read: async (t) => (await t.getState()).members[0] },
+    { name: 'a mapping value', body: 'int[] a; mapping(int => address) owners; function f(int x) external returns (bool) { a.push(x); owners[x] = msg.sender; return true; }',
+      read: async (t) => t.owners(5n) },
+    { name: 'a struct field of a mapping value', body: 'struct Rec { address who; int x; } int[] a; mapping(int => Rec) recs; function f(int x) external returns (bool) { a.push(x); recs[x] = Rec(msg.sender, x); return true; }',
+      read: async (t) => (await t.recs(5n)).who },
+    { name: 'a struct field of an array element', body: 'struct Rec { address who; int x; } Rec[] log; function f(int x) external returns (bool) { log.push(Rec(msg.sender, x)); return true; }',
+      read: async (t) => (await t.getState()).log[0].who },
+    { name: 'a state variable', body: 'int[] a; address last; function f(int x) external returns (bool) { a.push(x); last = msg.sender; return true; }',
+      read: async (t) => (await t.getState()).last },
+    { name: 'the value of the entry it keys', body: 'int[] a; mapping(address => address) m; function f(int x) external returns (bool) { a.push(x); m[msg.sender] = msg.sender; return true; }',
+      read: async (t, child) => t.m(child) },
+  ];
+  for (const shape of SHAPES) {
+    it(`stores the child as ${shape.name}, and refuses a creation that stores another lock`, async () => {
+      const source = `${P} interface I { function f(int x) external returns (bool); } contract T { ${shape.body} }
+        contract C { bool ok; constructor(I t, int x) { ok = t.f(x); } function read() { require(ok); } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      await s.wallet();
+      const tLock = addressToLockScript(t.contract.address);
+      const c = compileString(source, compileOptions('C'));
+      const extra = { initArgs: [tLock, 5n], constructorCallees: [{ contract: t.contract }] };
+      const captured = await s.capture(c, extra);
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+      expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+      const child = childLock(captured, t.categoryId);
+      expectNoStandInSender(captured, child, t.categoryId);
+      const master = masterInput(captured, tLock);
+      const stores = holding(captured, t.categoryId, child);
+      expect(stores.length).toBeGreaterThan(0);
+      for (const index of stores) {
+        expect(inputPasses(s.provider, storing(captured, index, child, OTHER_P2SH32), master)).toBe(false);
+      }
+      const created = await s.deploy(c, extra);
+      const lock = addressToLockScript(created.contract.address);
+      expect(binToHex(await shape.read(t.contract, lock))).toBe(binToHex(lock));
+    });
+  }
+});
+
+describe('a callee that writes a collection in a loop under keys msg.sender names (A7, A14 item 5)', () => {
+  // One key: a loop's inserts that chain from one node are ordered by key, and a child's keys may fall either way.
+  const SOURCE = `${P} interface I { function f(int[] ks) external returns (bool); }
+    contract T { mapping(address => mapping(int => int)) m;
+      function put(int[] ks) public { for (int i = 0; i < ks.length; i++) { m[msg.sender][ks[i]] = 100 + ks[i]; } }
+      function f(int[] ks) external returns (bool) { for (int i = 0; i < ks.length; i++) { m[msg.sender][ks[i]] = ks[i]; } return true; } }
+    contract C { bool ok; constructor(I t, int a) { ok = t.f([a]); } function read() { require(ok); } }`;
+
+  it('keys the loop\'s entry by the child, beside another sender\'s, and refuses a creation that changes it', async () => {
+    const s = setup();
+    const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+    // Another sender's entries under the same keys, so the child's is inserted among nodes of the chain.
+    await (t.contract.connect(await s.wallet()) as any).call.put([3n, 4n]).send();
+    const tLock = addressToLockScript(t.contract.address);
+    const c = compileString(SOURCE, compileOptions('C'));
+    // The array the constructor builds is no constructor parameter, so the callee's arguments are given.
+    const extra = { initArgs: [tLock, 4n], constructorCallees: [{ contract: t.contract, args: [[4n]] }] };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    expectNoStandInSender(captured, childLock(captured, t.categoryId), t.categoryId);
+    const master = masterInput(captured, tLock);
+    const { getEntryNftAddress } = await import('../../src/stateful/covenant-helpers.js');
+    const entries = outputsAt(captured, addressToLockScript(getEntryNftAddress(t.contract.inner as never, t.categoryId, 'm')));
+    // The child's node and the relinked node before it.
+    expect(entries).toHaveLength(2);
+    for (const index of entries) {
+      expect(inputPasses(s.provider, withOutput(captured, index, bumpCommitment), master)).toBe(false);
+    }
+
+    const created = await s.deploy(c, extra);
+    const child = addressToLockScript(created.contract.address);
+    expect(await (t.contract as any).m(child, 4n)).toBe(4n);
+    expect(await (t.contract as any).m(child, 3n)).toBe(0n);
+    expect(await (t.contract as any).m(encodeLockingBytecodeP2pkh(alicePkh), 4n)).toBe(104n);
   });
 });
 

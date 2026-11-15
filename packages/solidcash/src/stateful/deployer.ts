@@ -537,6 +537,32 @@ async function calleeEntrySlot(
 /** How many callee blocks the ordinary build has laid out: each takes pads at a lock of its own. */
 let calleeBuilds = 0;
 
+/** What a stand-in sender's category is drawn from: no coin or category of any network is. */
+const STAND_IN_SENDER_TAG = new TextEncoder().encode('SolidCash constructor callee sender');
+
+/**
+ * The child's master lock `sender` as the caller of an ordinary build of a constructor's call (A7): a coin at `sender`
+ * that holds a minting NFT of a category of its own, which each build spends with the edge record that caller pins
+ * for the call (F1). With them the build's run resolves `msg.sender` to `sender`, as the creation's genesis step does.
+ * Neither is a coin of any network, and neither reaches the creation.
+ */
+async function standInSender(
+  sender: Uint8Array,
+): Promise<{ category: string; caller: import('./stb-materialize-caller-edge-outputs.js').StandInCaller }> {
+  const { sha256 } = await import('@solidcash/utils');
+  const category = binToHex(sha256(Uint8Array.of(...STAND_IN_SENDER_TAG, ...sender)));
+  return {
+    category,
+    caller: {
+      identity: {
+        txid: binToHex(sha256(hexToBin(category))), vout: 0, satoshis: 1000n,
+        token: { category, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+        unlocker: { generateLockingBytecode: () => sender, generateUnlockingBytecode: () => new Uint8Array() },
+      },
+    },
+  };
+}
+
 /**
  * A callee block laid out by the ordinary call path itself (A14 item 5): the callee's own call of its function with its
  * record emitted (`StatefulFunctionCall.build`), not sent. That build sizes what a fixed layout cannot: a loop's entries,
@@ -549,11 +575,11 @@ let calleeBuilds = 0;
  * output-only index, or the build's fee input) takes a wallet coin of the creation. The callee's run in the creation
  * pins its NFT outputs again, its call record among them, whose digest covers the genesis call's tag.
  *
- * The build's sender is its pad lock, a direct caller, where the creation's is the child's master lock `sender`, which
- * the genesis step resolves (A7). Only an entry that `msg.sender` keys depends on which: the build co-spends the entry
- * its key names, or the node before it. So the pad lock is drawn until the key it gives each such access falls between
- * the same two nodes as the child's key: the build then co-spends the node the child's insert spends, and only the slot
- * of the key differs, which the frame names as the child's. The run in the creation pins what `msg.sender` writes.
+ * The creation's `msg.sender` is the child's master lock `sender`, which the genesis step resolves (A7). The build of a
+ * function that reads it resolves the same lock, through a stand-in caller at `sender` (`standInSender`), spent and
+ * appended after everything the block holds: every key the build derives from the sender, every copy it stores, and the
+ * sizes, chunks, digests and commitments that follow from them are the child's. The stand-in's coin and edge record
+ * stay out of the block, and the creation's frame takes the genesis call in place of the stand-in's category.
  */
 async function planCalleeBlockByCall(
   call: ConstructorCall, sender: Uint8Array, context: { spent: Set<string> }, refuse: (what: string) => never,
@@ -574,62 +600,12 @@ async function planCalleeBlockByCall(
   const masterLock = addressToLockScript(callee.contract.address);
   const { default: Signer } = await import('../Signer.js');
   const { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX } = await import('@solidcash/utils');
-  const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
-  const { getEntryNftAddress } = await import('./covenant-helpers.js');
-  const { SortedList } = await import('./SortedList.js');
-  if ((fn.sortedUpsertLoopInfo ?? []).some((info) => (info.fixedKeySources ?? []).some(isMsgSenderKeySource))) {
-    refuse('it writes a collection in a loop under keys msg.sender names, which a build whose sender is not the child '
-      + 'lays out for another key (the genesis step resolves the child as the sender, A7)');
-  }
-  // Each entry access msg.sender keys: the child's slot and the node before it, which its insert spends.
-  const senderKeyed = await Promise.all((fn.entryAccesses ?? [])
-    .filter((access) => (access.keySources ?? []).some(isMsgSenderKeySource))
-    .map(async (access) => {
-      const collection = artifact.stateLayout?.collections?.find(
-        (candidate) => candidate.name === access.collection || candidate.signature === access.collection,
-      ) ?? refuse(`its ${access.collection} access names no collection the SDK can read`);
-      if (collection.sorted !== true) {
-        refuse(`it keys '${access.collection}' by msg.sender, which is not a sorted mapping, so no entry proves the `
-          + 'child\'s key absent');
-      }
-      const entryAddress = getEntryNftAddress(contract, categoryId, access.collection);
-      const list = SortedList.fromUtxos((await provider.getUtxos(entryAddress))
-        .filter((utxo) => utxo.token?.category === categoryId));
-      const childSlot = await calleeEntrySlot(access, collection, fn, call.args, sender, refuse);
-      if (list.find(childSlot) !== undefined) {
-        refuse(`it keys '${access.collection}' by msg.sender, and the child's key is in it already, whose entry the `
-          + 'build, whose sender is not the child, does not co-spend');
-      }
-      let before: ReturnType<InstanceType<typeof SortedList>['predecessorOf']>;
-      try {
-        before = list.predecessorOf(childSlot);
-      } catch (error) {
-        return refuse(`its ${access.collection} has no entry before the child's key (${(error as Error).message})`);
-      }
-      return { access, collection, list, childSlot, before: coinKey(before.utxo) };
-    }));
-  const padSlots = async (lock: Uint8Array): Promise<Uint8Array[]> => Promise.all(senderKeyed.map(
-    ({ access, collection }) => calleeEntrySlot(access, collection, fn, call.args, lock, refuse)));
-  const fits = async (lock: Uint8Array): Promise<boolean> => (await padSlots(lock)).every((slot, index) => {
-    const { list, before } = senderKeyed[index]!;
-    return list.find(slot) === undefined && coinKey(list.predecessorOf(slot).utxo) === before;
-  });
   // The build's pads and its fee input stand at a lock of their own, each build another, from a list of stand-in coins:
   // the build neither lists nor splits a real wallet's coins, signs nothing, and the creation replaces every input at
   // that lock with one of its wallet coins.
   calleeBuilds += 1;
-  const padHashOf = (draw: number): Uint8Array => Uint8Array.from({ length: 20 }, (_, index) => (
-    index < 4 ? (calleeBuilds >>> (8 * index)) & 0xff : index < 8 ? (draw >>> (8 * (index - 4))) & 0xff : 0xcd));
-  const p2pkh = (hash: Uint8Array): Uint8Array => Uint8Array.of(0x76, 0xa9, 0x14, ...hash, 0x88, 0xac);
-  let draw = 0;
-  while (senderKeyed.length > 0 && !(await fits(p2pkh(padHashOf(draw))))) {
-    draw += 1;
-    if (draw >= 1 << 16) {
-      refuse('it keys a collection by msg.sender, and no stand-in sender of its build has a key beside the child\'s');
-    }
-  }
-  const padHash = padHashOf(draw);
-  const padLock = p2pkh(padHash);
+  const padHash = Uint8Array.from({ length: 20 }, (_, index) => (index < 4 ? (calleeBuilds >>> (8 * index)) & 0xff : 0xcd));
+  const padLock = Uint8Array.of(0x76, 0xa9, 0x14, ...padHash, 0x88, 0xac);
   const padCoins: Utxo[] = Array.from({ length: 64 }, (_, index) => ({
     txid: `${binToHex(padHash)}${index.toString(16).padStart(24, '0')}`, vout: 1, satoshis: 1_000_000n,
   }));
@@ -643,16 +619,24 @@ async function planCalleeBlockByCall(
   const sidecars = fn.keccakCompute === true || fn.keccakLoopReads === true || fn.keccakChainReads === true
     || fn.ecrecoverCompute === true || (callee.externalContracts ?? []).length > 0;
   const sidecarPool = sidecars ? sharedPoolView(provider, context.spent) : undefined;
+  // A function that reads msg.sender is built for the child as its caller.
+  const senderReader = fn.inputs.some((input) => input.name === '__internal__msgSenderCategory');
+  const standIn = senderReader ? await standInSender(sender) : undefined;
   const route = { abiFunction: fn, emitReturn: true };
   const { StatefulFunctionCall } = await import('./StatefulContract.js');
   const participant = new StatefulFunctionCall(
     () => connected._createBuilder(functionName, [...call.args], {
       ...route, signerUtxos: padCoins, ...(sidecarPool === undefined ? {} : { sharedSidecarPool: sidecarPool }),
+      ...(standIn === undefined ? {} : {
+        callerLockingBytecode: sender, msgSenderCategory: hexToBin(standIn.category).reverse(),
+        standInCaller: standIn.caller,
+      }),
     }) as never,
     connected as never, functionName, [...call.args], route,
   );
-  // A call of another contract builds the call again, which keeps the pool.
+  // Each build of the call, a call of another contract's among them, keeps the pool and the sender.
   if (sidecarPool !== undefined) participant._withSharedSidecarPool(sidecarPool);
+  if (standIn !== undefined) participant.withCallerIdentity(sender, standIn.category)._withStandInCaller(standIn.caller);
   try {
     for (const external of callee.externalContracts ?? []) participant.withExternalCall(external as never);
   } catch (error) {
@@ -712,33 +696,41 @@ async function planCalleeBlockByCall(
     || carrier.token.nft?.capability !== 'none') {
     return refuse('the ordinary build of its call publishes no call record in its block');
   }
-  // The child's slot of each entry msg.sender keys replaces the pad lock's, in the frame and in the nodes the build laid
-  // out (the new node, and the relinked one before it whose next it names): both keys follow the same node.
-  const renamed = (await padSlots(padLock)).map((slot, index) => [
-    binToHex(slot), binToHex(senderKeyed[index]!.childSlot),
-  ] as const);
-  const rename = (hex: string): string => renamed.reduce((text, [standIn, child]) => text.split(standIn).join(child), hex);
-  for (const [name, value] of Object.entries(witnesses)) {
-    if (value instanceof Uint8Array) witnesses[name] = hexToBin(rename(binToHex(value)));
-  }
+  // The pad lock stands for the creation's wallet coins, which a frame does not name.
   if (Object.values(witnesses).some((value) => value instanceof Uint8Array && binToHex(value).includes(binToHex(padLock)))) {
-    refuse('the ordinary build of its call names its stand-in sender in its frame, which the child\'s call would not');
+    refuse('the ordinary build of its call names its pad lock in its frame, where the creation has a coin of its own');
+  }
+  // Change the build pays back to its pad lock, and the stand-in sender's coin and edge record, follow the block: none
+  // is the callee's, and the creation's change takes the change.
+  const standInOutput = (output: Output): boolean => standIn !== undefined && output.token?.category === standIn.category;
+  let end = built.outputs.length;
+  while (end > 0 && (lockHex(built.outputs[end - 1]!.to) === binToHex(padLock) || standInOutput(built.outputs[end - 1]!))) {
+    end -= 1;
+  }
+  if (built.outputs.slice(0, end).some(standInOutput)) {
+    refuse('the ordinary build of its call lays out a token of its stand-in sender inside its block');
   }
   const pads = new Set([binToHex(padLock), BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX.toLowerCase()]);
+  const padAt = (index: number): boolean => pads.has(binToHex(built.inputs[index]!.unlocker.generateLockingBytecode()));
+  // The stand-in sender's coin follows every coin of the block, and only pads follow it: it leaves no index, and the
+  // pads after it take its place, as they would in a build without it.
+  const standInAt = standIn === undefined ? -1 : built.inputs.findIndex((input) => (
+    input.txid === standIn.caller.identity.txid && input.vout === standIn.caller.identity.vout));
+  if (standInAt >= 0 && built.inputs.some((_, index) => index > standInAt && !padAt(index))) {
+    refuse('the ordinary build of its call spends a coin of its block after its stand-in sender\'s');
+  }
   const inputs: CalleeBlockInput[] = [{ utxo: { ...listedCoin(master!), lockingBytecode: masterLock } }];
-  for (const input of built.inputs.slice(1)) {
-    const lock = input.unlocker.generateLockingBytecode();
-    if (pads.has(binToHex(lock))) {
+  for (const [index, input] of built.inputs.entries()) {
+    if (index === 0 || index === standInAt) continue;
+    if (padAt(index)) {
       inputs.push(undefined);
       continue;
     }
     const { unlocker } = input;
+    const lock = unlocker.generateLockingBytecode();
     inputs.push({ utxo: { ...listedCoin(input), lockingBytecode: lock }, unlocker: (at) => movedUnlocker(unlocker, at) });
     context.spent.add(coinKey(input));
   }
-  // Change the build pays back to its pad lock, after the block, is not the callee's: the creation's change takes it.
-  let end = built.outputs.length;
-  while (end > 0 && lockHex(built.outputs[end - 1]!.to) === binToHex(padLock)) end -= 1;
   // A pad coin the build returns at its own index, as a 2-way recovery's middle input, which no covenant reads, is
   // a balanced slot: the creation fills it with a wallet coin and the filler.
   const returnsPad = (output: Output, index: number): boolean => {
@@ -761,10 +753,6 @@ async function planCalleeBlockByCall(
         },
       }),
     }));
-  for (const output of outputs) {
-    const nft = output.token?.category === categoryId ? output.token.nft : undefined;
-    if (nft !== undefined) nft.commitment = rename(nft.commitment);
-  }
   // Every index of the block holds an input and an output: an output-only index takes a wallet coin, and an input
   // whose coin the call consumes without an output of its own takes the filler output.
   while (inputs.length < outputs.length) inputs.push(undefined);
@@ -781,8 +769,7 @@ async function planCalleeBlockByCall(
     return sum + (nested.contract !== undefined && nested.covenantUnlocker !== true ? nested.contract.bytesize : 0);
   }, 0);
   return {
-    ...call, args, contract, fn, categoryId, masterLock,
-    senderReader: fn.inputs.some((input) => input.name === '__internal__msgSenderCategory'),
+    ...call, args, contract, fn, categoryId, masterLock, senderReader,
     inputs, outputs, rules, carrier: outputs[carrierOffset!]!, carrierOffset, lanes: [], witnesses,
     guardedInserts: new Map(), relocated, extraBytes,
   };

@@ -26,6 +26,8 @@ export type ResolveCreateBuilderUpsertLoopDomainKeysHost = {
   readonly categoryId: string;
   readonly inner: any;
   readonly signer: any;
+  /** The lock of the contract calling the frame, which a `msg.sender` key names in place of the signer's. */
+  readonly callerLockingBytecode?: Uint8Array;
   hydrateExternalPredicateState: (...args: any[]) => Promise<Record<string, unknown>>;
   evaluateExternalExpression: (...args: any[]) => unknown;
   vmapCounterDomain: (...args: any[]) => bigint[] | undefined | null;
@@ -259,8 +261,12 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
       }
       value = array[array.length - 1];
     } else if (source.kind === 'msgSender') {
-      if (!host.signer) throw new Error(`vmap upsert loop ${info.collection}: msg.sender key requires a signer`);
-      value = host.signer.getAddress();
+      // A frame a contract calls keys msg.sender by that contract, as its run resolves the sender; tx.origin, and the
+      // sender of a direct call, is the signer.
+      if (host.callerLockingBytecode !== undefined && source.senderOp !== 'tx.origin') {
+        value = Uint8Array.from(host.callerLockingBytecode);
+      } else if (!host.signer) throw new Error(`vmap upsert loop ${info.collection}: msg.sender key requires a signer`);
+      else value = host.signer.getAddress();
     } else if (source.kind === 'expression') {
       const stateLengthDeltas = Object.fromEntries(
         (loopAbiFunction.dynamicWrites ?? []).map((name: any) => [name, 1n]),

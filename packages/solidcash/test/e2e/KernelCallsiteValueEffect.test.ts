@@ -6,7 +6,7 @@ import {
   Contract,
   Signer,
 } from '../../src/index.js';
-import { StatefulContract } from '../../src/stateful/index.js';
+import { StatefulContract, StatefulMasterPaymentError } from '../../src/stateful/index.js';
 import * as messageBus from '../../src/message-bus/index.js';
 import { participantOf } from '../../src/message-bus/compose-participant-helpers.js';
 import { isContractUnlocker } from '../../src/interfaces.js';
@@ -155,7 +155,9 @@ describe('kernel framedsite value effects', () => {
     transfer.amount += 1n;
     expect(messageBusVmAccepts(builder)).toBe(false);
     transfer.amount -= 1n;
-    await composition.send();
-    expect((await sink.getState()).total).toBe(2_000n);
+    // The value lands on the sink's master lock, which spends only the coin that carries its minting NFT, so no
+    // input could ever spend it (A8): the SDK refuses to send the composition, and the sink's state is unchanged.
+    await expect(composition.send()).rejects.toThrow(StatefulMasterPaymentError);
+    expect((await sink.getState()).total).toBe(0n);
   }, 180_000);
 });

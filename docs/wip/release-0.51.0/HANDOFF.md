@@ -230,7 +230,10 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
 - `nested-guard`: the follow-ups to its fix below:
   - a guard discovery cannot evaluate;
   - the block clock and the untaken-call base on the late-transitive and delegatecall paths, which fail closed today;
-- `raw-send-target`: the raw value-only send after a write of its target (under "Soundness, documented").
+- `raw-send-target`: the follow-ups to TARGET-6 below:
+  - a message-bus build;
+  - unsafe, split and merge functions, genesis bodies and framed bodies, which its call-site registers skip;
+  - the SDK's recipe for a compat low-level call.
 
 **Landed after the release** (on `post-0.51.0`):
 
@@ -254,6 +257,23 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
     files, nothing is newly refused and no bytes or ABI moved. A union of every file that names keccak256, side-cars
     or dynamic chunks passed: 51 solidc files (2,062 passed, 6 skipped) and 167 solidcash files (1,632 passed, 12
     skipped), none failed.
+- **DELEGATE-1, an expression-form delegatecall not pinned** (`5aee903a3`; CRITICAL for the contracts it reaches).
+  The ledger's "Delegatecall target" section has the details.
+  - With `(bool ok, bytes data) = impl.delegatecall(input)`, a spender could co-spend any implementation, or none,
+    and set the caller's state; it was VM-confirmed on the 0.51.0 code.
+  - The statement form, library calls and the SDK's default proxy were pinned all along.
+  - 0.50.1 has the same code, by reading.
+  - No corpus, example or SolidPool contract uses the expression form.
+  - A 0.51.1 patch release is the user's decision.
+- **TARGET-6, a low-level call bound to its target's value before the function wrote it** (`ea5d53251`,
+  `ad4a6b785`). It now binds the written value where it runs, or is refused by name.
+- Checks for both:
+  - `DelegatecallTargetPin` passed 24 of 24 (6 failed before the fix);
+  - `LowLevelCallSiteTarget` passed 10, and its e2e 9;
+  - the 352-file corpus is unchanged (no bytes or ABI moved, nothing newly refused);
+  - a union of every file on low-level calls, delegatecall and call targets, plus the release's merge-check list
+    and the size-pin candidates, passed: 108 solidc files (3,189 passed, 6 skipped) and 259 solidcash files (2,156
+    passed, 13 skipped), none failed.
 
 **Soundness, documented:**
 
@@ -261,9 +281,10 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
   compiles with `[computed-call-target-unverified]`.
 - **Hidden `false`** (TARGET-5, by decision): an opaque `bytes`, selector-literal or `abi.encodeWithSignature`
   payload can still hide a callee's `false` behind `(true, "")`.
-- **Raw value-only send after a write of its target:** it pays the value the target had at the start of the
-  function. The spender cannot choose it, but the EVM would pay the new value. The SDK refuses to fill the callee
-  in. A compile-time refusal would be better.
+- **TARGET-6's remaining bodies.** A low-level call after a write of its target is fixed in ordinary bodies (see
+  "Landed after the release"). On the following bodies it may still bind the value from the top of the body: a
+  message-bus build, unsafe, split and merge functions, genesis bodies and framed bodies. In progress on
+  `raw-send-target`.
 - **20-byte lock** (LOW, needs a miner): an output with a 20-byte lock is non-standard but valid in a block, and
   under `evmCompat` it could stand for an EVM address.
 - **CONTAINER-SUM-1:** not determined whether 0.50.1 is affected, because the test's honest spend does not build

@@ -17,7 +17,10 @@ target, is spender-chosen by design and now warned; TARGET-4, unchecked loop wit
 the contract could check, and TARGET-5, raw calls answered without their callee and value calls that paid nothing,
 are fixed; see "Call targets (2026-11-15)" at the end. Container sums (2026-11-14): CONTAINER-SUM-1 (a runtime
 loop's payments) and CONTAINER-SUM-2 (a kernel route's, VM-confirmed on 0.50.1) let a builder drain a second
-container coin, and are fixed; see "Container sums" at the end.
+container coin, and are fixed; see "Container sums" at the end. After 0.51.0 (2026-11-16), two more are fixed:
+- TARGET-6, a low-level call bound to its target's value before the function wrote it; see "Call targets".
+- DELEGATE-1 (CRITICAL, VM-confirmed on the 0.51.0 code), an expression-form delegatecall that was not pinned to
+  its implementation; see "Delegatecall target" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1826,6 +1829,17 @@ profile.
   with value to a co-spent contract, whose payment would land at the callee's master lock. Tests:
   `RawCallPayloadCoSpend`, `RawCallTypedPayloadRead`, `RawCallTypedValueCall`, `LowLevelValueCallPayment` and
   `RawCallEmptyReturn`.
+- **TARGET-6** (MEDIUM; found 2026-11-16, after 0.51.0; `ea5d53251`, `ad4a6b785`). A low-level call made after a
+  write of its target was bound to the target's value at the top of the body.
+  - Cause: the compiler copies a raw call's receiver into a local declared there (`__extaddr_*`, `__extaddr_ll_*`),
+    and the call's pin and payment read that local.
+  - Effect: `payee = p; payee.call{value: v}("")` paid the old payee, and `token = t; token.call(p)` required the
+    old token. The spender could choose neither, but the EVM calls the new one.
+  - Fix: the pin and the payment now read the written value where the call runs, through a call-site register.
+    An entry the call cannot read there is refused (`ENTRY_TARGET_WRITTEN_BEFORE_CALL`). A raw call made after
+    such a write is marked `targetWrittenBeforeCall`, and the SDK asks for its callee by name.
+  - Tests: `LowLevelCallSiteTarget` (solidc, 10) and `LowLevelCallSiteTarget.e2e` (9). In the e2e, the old target
+    is refused.
 
 ### By design, with a warning
 
@@ -1843,12 +1857,17 @@ profile.
   witness.
 ### Open
 
-- A call made after a write of its target binds the body-top input value when it is a raw value-only call or an
-  `__extaddr_ll_` target. It calls a contract the EVM would not call, though the spender cannot choose it. A stored
-  chain is read again at the call (`e675d87e9`), and a collection-entry chain too after a straight-line write of
-  the same entry; any other write before such a call is refused (`842860db9`). The SDK refuses to resolve a callee
-  whose target the function can write before the call (`ExternalCallTargetWrittenBeforeCallError`), so the author
-  passes it with `withExternalCall`.
+- TARGET-6's call-site registers do not reach every body. On the following, a low-level call after a write of its
+  target may still bind the value from the top of the body (under examination, 2026-11-16):
+  - a message-bus build, where `verifyGraphEmissionRow` reads an `__extaddr_ll_` target before the handler body;
+  - unsafe, split and merge functions;
+  - genesis bodies;
+  - framed bodies.
+
+  The SDK refuses to resolve a callee whose target the function can write before the call
+  (`ExternalCallTargetWrittenBeforeCallError`), so the author passes it with `withExternalCall`. For a compat
+  low-level call, `lowLevelCalls[].targetSource` still publishes the recipe from before the write, so the SDK
+  co-spends the old callee and the build fails at preflight (fails closed).
 - The genesis body's check after the body still reads the variable, so a constructor that writes its target after
   the call fails closed.
 - Two calls through one variable reassigned between them share one callee identity and are refused when the two
@@ -1888,3 +1907,34 @@ holds: a builder who co-spent a second container coin and drained it to a filler
   (2026-11-16, the test run against the 0.50.1 tree, mocknet VM): the honest spend and the control pass, and the spend
   that drains a second container coin in a pad's place is accepted by every covenant input. Message-bus composition is
   experimental in 0.50; a direct build is not affected by this one.
+
+## Delegatecall target (2026-11-16)
+
+Found on `post-0.51.0` while closing TARGET-6, and confirmed on the VM on the 0.51.0 code.
+
+- **DELEGATE-1** (CRITICAL for the contracts it reaches; `5aee903a3`). An expression-form delegatecall,
+  `(bool ok, bytes data) = impl.delegatecall(input)`, was not pinned to its implementation.
+  - The statement form `impl.delegatecall(input);` checks three things: that the co-spent delegate's lock is the
+    target, its published position, and the forwarded selector (`visitLowLevelCallStatement`, when
+    `pinsDelegateCoSpend`). The expression arm of `visitLowLevelCall` only marked the delegate edge and pushed
+    `(1, "")`.
+  - A function that delegatecalls skips its own state covenant, because the delegate's run verifies the caller's
+    state. With the expression form, a spender could therefore co-spend a hostile implementation of the same layout
+    and selector, or none, and settle the caller at any state.
+  - `DelegatecallTargetPin.test.ts` shows it with `impl` as a constructor argument, a state variable, and a
+    parameter checked against storage: a proxy counter at 5 settled at 999. Before the fix, 6 of its 24 cases
+    failed: the expression form with a hostile delegate and with none, for each of the three sources. After the
+    fix, 24 of 24 pass.
+  - Fix: the expression arm now emits the statement form's pin (`emitDelegateCoSpendPin`).
+  - Reached: explicit expression-form delegatecalls, as in ports of OpenZeppelin's `Address.functionDelegateCall`
+    (UUPS `upgradeToAndCall`). By reading, Yul `delegatecall` lowers to the same node. There only the identity pin
+    applies, because its payload is a placeholder; on the EVM, a fallback proxy's caller picks the function too.
+  - Not reached:
+    - the statement form;
+    - library calls: `L.f()` lowers to the statement form, and a library call whose value is used is refused;
+    - the SDK's default proxy (`__forward`).
+
+    No contract in this repository's corpus or examples uses the expression form, and none of SolidPool's does.
+    The 352-file corpus compiles to the same bytes after the fix.
+  - Versions: 0.50.1 has the same expression arm, by reading; it was not run on the VM. A contract that uses the
+    expression form compiles to new bytes and must be redeployed.

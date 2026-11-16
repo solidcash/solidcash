@@ -2,7 +2,20 @@
 
 ## Unreleased
 
+### Security
+
+- An expression-form delegatecall, `(bool ok, bytes data) = impl.delegatecall(input)`, was not pinned to its
+  implementation (DELEGATE-1, in 0.51.0 and, by reading, 0.50.x). A spender could co-spend other code, or none, and
+  set the calling contract's state at will. It is now pinned as the statement form `impl.delegatecall(input);` always
+  was. A contract that uses the expression form compiles to new bytes: recompile and redeploy it. The statement form,
+  library calls and the SDK's default proxy were not affected.
+
 ### Fixed
+
+- A low-level call made after a write of its target in the same function now pins and pays the written value, as
+  the EVM calls it (TARGET-6). Before, `payee = p; payee.call{value: v}("")` paid the old payee, and
+  `token = t; token.call(p)` required the old token. A call the compiler cannot read at its site is refused
+  (`ENTRY_TARGET_WRITTEN_BEFORE_CALL`).
 
 - On the direct convention, a nested callee's external call under a false guard on `block.number` or
   `block.timestamp` no longer spends the callee. The SDK now gives the guard the block clock when it works out which

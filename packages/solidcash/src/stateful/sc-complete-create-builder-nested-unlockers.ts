@@ -332,6 +332,14 @@ export async function completeCreateBuilderNestedUnlockers(
           childExternalCallInputPositions.push({ name: input.name, categoryId: physical.categoryId });
           return BigInt(nestedMasterIndices[firstNestedGroupIndex]);
         }
+        // A function whose one call has no master-index witness of its own reads that call's master at this base. A
+        // conditional call this run does not make has no callee here, and is stated as not made by -1, as the root and
+        // an ordinary frame state theirs: the epilogue passes over a negative master, and the call site, reached only
+        // when the call runs, requires a non-negative one. The block's end named an input that is not the callee.
+        const calls = childFn.externalCalls ?? [];
+        if (!child.compilerRoute && calls.length === 1 && calls[0].occurrence === 'conditional'
+          && !calls[0].loopArrayVar
+          && !childFn.inputs.some((candidate) => /^__internal__extcallMasterIdx\d*$/.test(candidate.name))) return -1n;
         const physicalGroupIndex = child.sharedGroupIndex ?? groupIdx;
         const childBlockSize = externalCallUtxoGroups[physicalGroupIndex].blockInputs?.length
           ?? externalCallUtxoGroups[physicalGroupIndex].blockLayout?.blockSize

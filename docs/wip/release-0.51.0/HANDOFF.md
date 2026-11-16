@@ -227,8 +227,21 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
 
 - `keccak-band`: the keccak256 chain beside a walk or a dynamic write, the chain beside read-only chunks, and the
   loop beside read-only chunks with a companion (under "Not refused yet");
-- `nested-guard`: the two known issues from 0.50.0 (under "Soundness, documented");
+- `nested-guard`: the follow-ups to its fix below:
+  - a guard discovery cannot evaluate;
+  - the block clock and the untaken-call base on the late-transitive and delegatecall paths, which fail closed today;
 - `raw-send-target`: the raw value-only send after a write of its target (under "Soundness, documented").
+
+**Landed after the release** (on `post-0.51.0`):
+
+- **The two known issues from 0.50.0** (`f5185b232`, `071e8a69c`), both reproduced on 0.51.0 first.
+  - A nested callee's external call under a false `block.number` or `block.timestamp` guard spent the callee,
+    because discovery gave the guard no block clock. The clock now comes from the pool coin the callee's run reads,
+    and call arguments that read the block resolve.
+  - A called contract's only conditional call, when not made, named an input that is not the callee, so every such
+    run was refused. It is now stated as not made (-1), as at the root.
+  - Checks: `NestedCalleeBlockGuard.e2e` passed 4 of 4 (0 of 4 before the fix). A union of 125 nested-call SDK
+    files passed: 1,129 tests passed, 3 skipped, 0 failed.
 
 **Soundness, documented:**
 
@@ -243,10 +256,9 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
   under `evmCompat` it could stand for an EVM address.
 - **CONTAINER-SUM-1:** not determined whether 0.50.1 is affected, because the test's honest spend does not build
   on the 0.50.1 tree. CONTAINER-SUM-2 is VM-confirmed on 0.50.1 (message-bus kernel routes, experimental there).
-- **Known issues from 0.50.0, not re-checked:**
-  - a nested callee's external call under a false `block.number` or `block.timestamp` guard spends the callee
-    anyway;
-  - `block.number` in a nested callee's external-call arguments is unresolved.
+- **A guard discovery cannot evaluate** (found 2026-11-16 while fixing the 0.50.0 issues). An example is a guard
+  reading an earlier call's result. A nested callee's call under such a guard is kept, so if the guard is false at
+  run time, a callee that reads no `msg.sender` is spent and its state changes. In progress on `nested-guard`.
 
 **Refused by name (fail closed), could be built later:**
 

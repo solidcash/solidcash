@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- On the direct convention, a nested callee's external call under a false guard on `block.number` or
+  `block.timestamp` no longer spends the callee. The SDK now gives the guard the block clock when it works out which
+  calls a called contract makes, read from the pool coin that contract's run reads. Without it the guard stayed
+  unresolved, the call was kept, and the callee was spent with its state changed. Arguments of such a call that read
+  `block.number` or `block.timestamp` now resolve too.
+- A called contract whose only call is conditional, and not made in a run, is now stated as not making it, as a
+  root function is. Such runs were refused before, whatever the guard read.
+
 ## 0.51.0
 
 All six packages move to 0.51.0 together. Source files need `pragma solidcash ^0.51.0`: a caret range on 0.x pins the

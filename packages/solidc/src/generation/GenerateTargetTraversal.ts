@@ -31049,11 +31049,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
       // A target the body can change after the call pays the callee the identity check binds: the value captured here.
-      const recipient = slot === undefined ? undefined
-        : this.callSiteTargets.get(slot.slotIndex)?.register ?? slot.addressParam;
+      // A raw call's inlined receiver, which that check reads by its own name, is paid as read here when the body
+      // writes it before the call: its compiler local holds the value from the body top.
+      const register = slot === undefined ? undefined : this.callSiteTargets.get(slot.slotIndex)?.register;
+      const reread = register === undefined && slot !== undefined && this.inlinedLowLevelReceiver(slot) !== undefined
+        ? this.lowLevelCallSiteTargets.get(node) : undefined;
+      const recipient = register ?? (reread === undefined ? slot?.addressParam : undefined);
       if (recipient !== undefined) {
         node.callOptions.value = this.emitValueTransfer(
           node.valueTransferIndex, node.callOptions.value, recipient, locationData, node,
+        );
+      } else if (reread !== undefined) {
+        node.callOptions.value = this.emitValueTransferToExpression(
+          node.valueTransferIndex, node.callOptions.value, cloneNode(reread) as ExpressionNode, locationData, node,
         );
       } else if (slot !== undefined && (slot.addressLiteral !== undefined || slot.addressIsMsgSender === true
         || slot.addressStateVar !== undefined || slot.runtimeTernaryAddress === true)
@@ -54210,6 +54218,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A call the body does not make itself (one an invoked body makes) has no site here to fill a register.
       const runs = this.externalCallRuns(body, slot);
       if (runs === 0) continue;
+      // The call site reads a copy of an expression capture: what it reads must still be on the stack there.
+      for (const capture of [target, selector]) {
+        if (capture?.kind === 'expression') writes.keepReads(capture.expression, slot);
+      }
       if (target !== undefined) {
         targets.set(slot.slotIndex, {
           register: `__internal__extcallTarget${slot.slotIndex}`, capture: target, repeats: runs > 1,
@@ -54270,9 +54282,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * How a call site reads its call's target when the body can change the target after the call, from the source the
    * identity check after the body takes: a state variable, a runtime ternary of stack variables, or the address
    * variable (an inlined low-level call's own receiver first). A chain the body top read into a compiler local
-   * (SynthesizeExternalAddressLocals: `s.f.m()`, `IFoo(param.x).m()`) is read again where the call runs when a write
-   * of what it reads can land between the two: the local holds the value from before the write, and the call goes to
-   * the written one. undefined when the target the check reads is the one the call ran with.
+   * (SynthesizeExternalAddressLocals: `s.f.m()`, `IFoo(param.x).m()`, a raw call's receiver `target.call(..)` or
+   * `s.to.call(..)`) is read again where the call runs when a write of what it reads can land between the two: the
+   * local holds the value from before the write, and the call goes to the written one. undefined when the target the
+   * check reads is the one the call ran with.
    */
   private callSiteTargetCapture(slot: ExternalCallSlot, writes: CallSiteWrites): CallSiteCapture | undefined {
     if (slot.addressIsMsgSender) return undefined;
@@ -54289,7 +54302,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return writes.after(names, slot) ? { kind: 'expression', expression: address } : undefined;
     }
     if (!slot.addressParam) return undefined;
-    if (slot.addressParam.startsWith('__extaddr_') && !slot.addressParam.startsWith('__extaddr_ll_')) {
+    // An inlined low-level receiver the check reads by its own name holds the value the call ran with, unless it is
+    // written after the call, below. Any other compiler local holds its initializer's value from the body top.
+    if (slot.addressParam.startsWith('__extaddr_') && this.inlinedLowLevelReceiver(slot) === undefined) {
       const chain = writes.staleInitializer(slot.addressParam, slot);
       if (chain !== undefined) return { kind: 'expression', expression: chain };
     }
@@ -54299,9 +54314,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * The stack variable a raw call's `__extaddr_ll_<name>` target names, when it is on the stack (a parameter or a
+   * constructor value): the identity check after the body reads it by that name rather than the compiler local.
+   */
+  private inlinedLowLevelReceiver(slot: ExternalCallSlot): string | undefined {
+    const name = slot.addressParam?.startsWith('__extaddr_ll_')
+      ? slot.addressParam.slice('__extaddr_ll_'.length) : undefined;
+    return name !== undefined && this.stack.includes(name) ? name : undefined;
+  }
+
+  /**
    * Whether the function can write the call's target before the call: the callee the call runs on is then not the one
-   * the caller's state and the call's arguments name before the run, which a builder resolves a callee from. A raw
-   * low-level receiver (`__extaddr_ll_`) is not covered.
+   * the caller's state and the call's arguments name before the run, which a builder resolves a callee from.
    */
   private callSiteTargetWrittenBefore(slot: ExternalCallSlot, writes: CallSiteWrites): boolean {
     if (slot.addressIsMsgSender) return false;
@@ -54314,7 +54338,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && address.ifTrue instanceof IdentifierNode && address.ifFalse instanceof IdentifierNode
         && writes.before([address.condition.name, address.ifTrue.name, address.ifFalse.name], [], slot);
     }
-    if (slot.addressParam.startsWith('__extaddr_ll_')) return false;
+    const receiver = this.inlinedLowLevelReceiver(slot);
+    if (receiver !== undefined) return writes.before([receiver], [], slot);
     if (slot.addressParam.startsWith('__extaddr_')) return writes.staleInitializer(slot.addressParam, slot) !== undefined;
     return writes.before([slot.addressParam], [], slot);
   }

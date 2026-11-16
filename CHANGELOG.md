@@ -14,13 +14,14 @@ category. Measured against 0.50.1, a minimal counter grows from 1,231 to 1,416 b
 - `new` of a stateful contract on the direct convention goes through a one-shot deployer coin, `Deploy<C>`, which pins
   the child's code, constructor arguments, records and value. A constructor can call other contracts, write mappings
   and arrays, emit events, publish BCMR metadata, read block fields and its token container, and receive value; a
-  `new` can sit in a branch or a loop. See [Contract creation](https://solidcash.org/docs/language/contract-creation).
+  `new` can sit in a branch or a loop, within limits the compiler names. See
+  [Contract creation](https://solidcash.org/docs/language/contract-creation).
 - `pragma satoshicontainer single` keeps a contract's satoshis in one coin and `pragma tokencontainer single` each token
   container in one coin, so a call has one shape however much the contract holds. `this.payMinerFee` lets a container
   pay the fee by omission, with no owner or relayer.
 - A constant-bound loop whose turns pay or emit is unrolled, so each turn has its own output.
 - A direct program within 1,000 bytes of the input limit gets an outlining pass that shares its repeated spans: the
-  NativeUsdt and OpenZeppelin ERC20 ports that were over 10,000 bytes now fit.
+  NativeUsdt and OpenZeppelin ERC20 test ports, whose spending inputs were over the 10,000-byte limit, now fit.
 - A default compile takes the direct build when the message-bus build is over the input limit, and the SDK refuses to
   deploy code that no input can spend.
 

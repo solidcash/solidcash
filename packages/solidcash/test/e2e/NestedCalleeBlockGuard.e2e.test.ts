@@ -3,8 +3,8 @@
  * guard holds). D's run reads block.number and block.timestamp from the info coin of its oracle pool, and the SDK
  * decides from that coin whether D's call is made: a false guard leaves T unspent and its state as it was, a true one
  * calls T. A guard on D's own state is the contrast; there, as under a false guard on the block, D's one call is skipped
- * and stated as not made. The arguments of D's call read the block from the same coin. Each sent transaction is checked
- * by the VM.
+ * and stated as not made. The arguments of D's call read the block from the same coin. A `require` on the block before
+ * D's call that fails is refused by the VM, as an EVM revert would be. Each sent transaction is checked by the VM.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -29,6 +29,7 @@ const SOURCE = `pragma solidcash ^0.51.0;
     function byTime(IT t, int atLeast) external;
     function byState(IT t, int atLeast) external;
     function stamp(IT t) external;
+    function requireHeight(IT t, int atLeast) external;
   }
   contract T { int height; int clock; int calls;
     function set(int h, int c) external { height = h; clock = c; calls = calls + 1; } }
@@ -36,12 +37,14 @@ const SOURCE = `pragma solidcash ^0.51.0;
     function byHeight(IT t, int atLeast) external { if (int(block.number) >= atLeast) { t.set(1, 1); } runs = runs + 1; }
     function byTime(IT t, int atLeast) external { if (int(block.timestamp) >= atLeast) { t.set(2, 2); } runs = runs + 1; }
     function byState(IT t, int atLeast) external { if (runs >= atLeast) { t.set(3, 3); } runs = runs + 1; }
-    function stamp(IT t) external { t.set(int(block.number) + 1, int(block.timestamp) + 1); runs = runs + 1; } }
+    function stamp(IT t) external { t.set(int(block.number) + 1, int(block.timestamp) + 1); runs = runs + 1; }
+    function requireHeight(IT t, int atLeast) external { require(int(block.number) >= atLeast); t.set(6, 6); runs = runs + 1; } }
   contract A { int runs;
     function byHeight(ID d, IT t, int atLeast) external { d.byHeight(t, atLeast); runs = runs + 1; }
     function byTime(ID d, IT t, int atLeast) external { d.byTime(t, atLeast); runs = runs + 1; }
     function byState(ID d, IT t, int atLeast) external { d.byState(t, atLeast); runs = runs + 1; }
-    function stamp(ID d, IT t) external { d.stamp(t); runs = runs + 1; } }`;
+    function stamp(ID d, IT t) external { d.stamp(t); runs = runs + 1; }
+    function requireHeight(ID d, IT t, int atLeast) external { d.requireHeight(t, atLeast); runs = runs + 1; } }`;
 
 const compileOptions = (primary: string): never => ({
   deployer: true, genesisCalls: true, messageBus: false, primaryContractName: primary,
@@ -64,6 +67,8 @@ interface Chain {
   a: DeployResult<Artifact>;
   /** A's function `name` on D and T, sent by a wallet. */
   send(name: string, ...args: bigint[]): Promise<Sent>;
+  /** How many transactions the builder has handed to the chain. */
+  sentCount(): number;
   tState(): Promise<Required<TState>>;
   runs(deployed: DeployResult<Artifact>): Promise<bigint>;
   tLock: Uint8Array;
@@ -126,7 +131,7 @@ async function chain(): Promise<Chain> {
   };
   const runs = async (deployed: DeployResult<Artifact>): Promise<bigint> => (
     ((await deployed.contract.getState()) as { runs?: bigint }).runs ?? 0n);
-  return { provider, t, d, a, send, tState, runs, tLock, dLock };
+  return { provider, t, d, a, send, sentCount: () => sent.length, tState, runs, tLock, dLock };
 }
 
 const same = (left: Uint8Array, right: Uint8Array): boolean => binToHex(left) === binToHex(right);
@@ -201,6 +206,25 @@ describe('a called contract\'s call under a guard on the block, on the direct co
     const fields = infoCoinFields(sent, poolOf(c.d));
     expect(await c.tState()).toEqual({ height: fields.number + 1n, clock: fields.timestamp + 1n, calls: 1n });
     expect(spends(sent, c.tLock)).toBe(true);
+    expect(await c.runs(c.d)).toBe(1n);
+  });
+
+  it('is refused by the VM, as an EVM revert would be, when D requires a height not reached before its call, and '
+    + 'calls T when the height is reached', async () => {
+    const c = await chain();
+    const before = c.sentCount();
+
+    // D's require fails: its run does not settle, so nothing lands, T's call included.
+    const refusal = await c.send('requireHeight', HEIGHT_OUT_OF_REACH).then(() => undefined, (error: unknown) => error);
+    expect((refusal as Error | undefined)?.message).toMatch(/^A\.requireHeight\(\d+\) was not sent: .*OP_VERIFY/s);
+    expect(c.sentCount()).toBe(before);
+    expect(await c.tState()).toEqual({ height: 0n, clock: 0n, calls: 0n });
+    expect(await c.runs(c.d)).toBe(0n);
+    expect(await c.runs(c.a)).toBe(0n);
+
+    const met = await c.send('requireHeight', 0n);
+    expect(spends(met, c.tLock)).toBe(true);
+    expect(await c.tState()).toEqual({ height: 6n, clock: 6n, calls: 1n });
     expect(await c.runs(c.d)).toBe(1n);
   });
 });

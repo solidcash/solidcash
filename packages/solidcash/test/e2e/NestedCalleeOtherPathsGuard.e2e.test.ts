@@ -81,14 +81,22 @@ contract Relay() {
     if (make) { IFoo(foo).inc(4); }
     this.relays = this.relays + 1;
   }
+  function crowded(address foo) public {
+    if (tx.inputs.length > 1000) { IFoo(foo).inc(5); }
+    this.relays = this.relays + 1;
+  }
 }`;
 
 const RELAY_IMPL = `pragma solidcash >=0.8.0;
-interface IRelay { function relay(address foo, bool make); }
+interface IRelay { function relay(address foo, bool make); function crowded(address foo); }
 contract RelayImpl() {
   bigint counter;
   function viaRelay(address relayer, address foo, bool make) public {
     IRelay(relayer).relay(foo, make);
+    this.counter = this.counter + 1;
+  }
+  function viaCrowded(address relayer, address foo) public {
+    IRelay(relayer).crowded(foo);
     this.counter = this.counter + 1;
   }
 }`;
@@ -166,6 +174,32 @@ describe('the delegatecall path: a proxy\'s implementation calls Foo when its gu
       expect(await field(relay, 'relays')).toBe(2n);
       expect(await field(foo, 'hits')).toBe(4n);
     }, 300_000);
+
+  it('refuses by name a call the late pass plans under a guard the compiler publishes no form of, which is false at '
+    + 'run time', async () => {
+    const { provider, proxy, impl, foo } = await delegateChain(RELAY_IMPL);
+    const relay = await deploy(provider, new Contract(compileString(RELAY), [], { provider }), { relays: 0n });
+    (impl.sc as unknown as { _registerResolvedExternal(name: string, contract: unknown): void })
+      ._registerResolvedExternal('IRelay', relay.sc);
+    (relay.sc as unknown as { _registerResolvedExternal(name: string, contract: unknown): void })
+      ._registerResolvedExternal('IFoo', foo.sc);
+    // Fewer than a thousand inputs: Relay never makes this call. The late pass plans Relay's calls, and no caller edge
+    // protects them, so Foo, spent on a guess, would settle inc(5).
+    let outcome: string;
+    let error: unknown;
+    try {
+      await (proxy.sc.call as any).__fallback().withDelegatecall(impl.sc, 'viaCrowded', [relay.lock, foo.lock]).send();
+      outcome = `sent; Foo hits ${await field(foo, 'hits')}; Relay relays ${await field(relay, 'relays')}`;
+    } catch (caught) {
+      error = caught;
+      outcome = `refused: ${(caught as Error).message}`;
+    }
+    expect(outcome).toMatch(/^refused: Relay\.crowded's call of IFoo\.inc \(line \d+\) cannot be built: it runs only /);
+    expect(outcome).toContain('under a guard the compiler publishes no form of');
+    expect(error).toBeInstanceOf(CallGuardUndecidedError);
+    expect(await field(foo, 'hits')).toBe(0n);
+    expect(await field(relay, 'relays')).toBe(0n);
+  }, 300_000);
 });
 
 // The transaction's own contract delegatecalls as well as calling D, so the late pass re-reads D's calls after

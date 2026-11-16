@@ -59,6 +59,8 @@ import { isMsgSenderKeySource } from './soft-state-overlays.js';
 import { hydrateExternalPredicateState } from './sc-hydrate-external-predicate-state.js';
 import type { OnChainState } from './StateReader.js';
 import { blockClockState, executingOraclePool } from './block-clock-state.js';
+import { CallGuardUndecidedError } from '../Errors.js';
+import { callGuardText } from './call-guard-text.js';
 import {
   type ValueChunkProducerPathDisposition,
 } from './ValueChunkProducerIdentity.js';
@@ -217,6 +219,17 @@ export async function expandCreateBuilderLateTransitive(
           callsiteId: conditionCallsite.callsiteId, resultConsumers: parentFn.resultConsumers, lane: 'condition',
         }, iterationIndex, parentIncomingCallerAddress,
       ) : Promise.resolve(undefined);
+    // A call this parent may skip, under a guard its frame cannot decide, is refused by name: the late pass lays no
+    // caller edge for the calls it plans, so nothing in the parent would refuse its callee running uncalled.
+    const undecidedLateCall = (nested: ExternalCallAbi, callee: string, reason?: string): CallGuardUndecidedError => (
+      new CallGuardUndecidedError(
+        `${logicalParentArtifact.contractName}.${parentFn.name}`,
+        `${nested.interfaceName}.${nested.functionName}`
+          + `${nested.sourceLocation === undefined ? '' : ` (line ${nested.sourceLocation.line})`}`,
+        callee,
+        nested.condition === undefined ? undefined : callGuardText(nested.condition, parentFn),
+        reason,
+      ));
     const frames: Array<{ nested: ExternalCallAbi; iterationIndex: number; occurrenceIndex: number }> = [];
     for (const nested of parentFn.externalCalls) {
       let alreadyPublished = false;
@@ -257,9 +270,9 @@ export async function expandCreateBuilderLateTransitive(
             conditionReturns, iterationIndex, false, parentOutgoingSelfAddress,
             undefined, undefined, false, parentIncomingCallerAddress,
           );
-          if (typeof active !== 'boolean') throw new Error(
-            `Could not resolve runtime predicate for late external callsite ${nested.callsiteId}`,
-          );
+          if (typeof active !== 'boolean') {
+            throw undecidedLateCall(nested, nested.interfaceName, 'a value it reads did not resolve');
+          }
           if (!active) continue;
         }
         // Legacy compact return carriers are addressed by source iteration. Dense reached rows can reuse
@@ -348,6 +361,12 @@ export async function expandCreateBuilderLateTransitive(
       };
       const proxyCallee = 'implementation' in registeredCallee ? registeredCallee : undefined;
       const callee = (proxyCallee?.proxy ?? registeredCallee) as any;
+      // Under predicates the compiler could not write down, no frame can decide whether the parent makes this call.
+      // A message-bus route binds the rows it runs instead.
+      if (nested.conditionUnpublished === true && nested.condition === undefined && !parent.compilerRoute) {
+        const executing = (proxyCallee?.implementation ?? callee) as { inner?: { artifact?: { contractName?: string } } };
+        throw undecidedLateCall(nested, executing.inner?.artifact?.contractName ?? nested.interfaceName);
+      }
       const graphChildSources = nested.rawArgSources ?? nested.argSources;
       if (preparedAtomicNodes && parentFn.resultConsumers) {
         // Validate the compiler's argument lanes before speculative probing; authenticated result refreshes

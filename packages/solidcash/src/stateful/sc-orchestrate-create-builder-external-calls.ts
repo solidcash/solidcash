@@ -83,6 +83,7 @@ import {
 import {
   loadCreateBuilderOutStateReads as loadCreateBuilderOutStateReadsImpl,
 } from './sc-load-create-builder-out-state-reads.js';
+import { selectCompatCalleeBlockCalls } from './sc-select-compat-callee-block-calls.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
@@ -139,6 +140,8 @@ export type OrchestrateCreateBuilderExternalCallsResult = {
   externalOutStateUtxoGroups: ExternalCallUtxoGroup[];
   outStateInputCount: number;
   maxBhLocktime: number;
+  /** The entry's low-level calls whose callee runs as a direct group here, not on the low-level path. */
+  compatLowLevelCallIndices: ReadonlySet<number>;
 };
 
 /**
@@ -495,6 +498,15 @@ export async function orchestrateCreateBuilderExternalCalls(
     }
   }
 
+  // A compat call whose stateful callee needs its whole block runs that callee as a direct group. While typed calls
+  // stay unresolved, the low-level path keeps it.
+  const compatCalls = resolvedExternalCalls !== undefined || (externalCalls?.length ?? 0) === 0
+    ? selectCompatCalleeBlockCalls(abiFunction, overrides?.calls) : [];
+  if (compatCalls.length > 0) {
+    externalCalls ??= [];
+    resolvedExternalCalls ??= [];
+  }
+
   let externalCallUtxoGroups: ExternalCallUtxoGroup[] = [];
   // Total return event count including transitive chains (updated in external call block)
   // Combined metadata for all groups (direct + transitive); used by _deriveFullTransactionState
@@ -519,7 +531,8 @@ export async function orchestrateCreateBuilderExternalCalls(
   // A raw call with no co-spent callee still publishes witnesses (its negative sentinels and, for a value
   // transfer, the transfer's output coordinate), so the witness fill must run even when no group exists.
   const hasAbsentCalleeSlots = (absentCalleeSlots?.size ?? 0) > 0;
-  if (externalCalls && (externalCalls.length > 0 || hasAbsentCalleeSlots) && resolvedExternalCalls) {
+  if (externalCalls && (externalCalls.length > 0 || hasAbsentCalleeSlots || compatCalls.length > 0)
+    && resolvedExternalCalls) {
 
     // Count total funders needed across all B blocks and snapshot the signer pool once.
     if (host.signer) {
@@ -528,8 +541,8 @@ export async function orchestrateCreateBuilderExternalCalls(
           getSignerUtxos: () => signerFundingCoins(host.signer!),
           unlockP2PKH: () => host.signer!.unlockP2PKH(),
         },
-        externalCalls,
-        resolvedExternalCalls,
+        [...externalCalls, ...compatCalls.map((call) => call.ec)],
+        [...resolvedExternalCalls, ...compatCalls.map((call) => call.callInfo)],
         earlySignerUtxos,
       );
       sharedFunderPool = allocated.sharedFunderPool;
@@ -556,9 +569,10 @@ export async function orchestrateCreateBuilderExternalCalls(
       dummyFunderUnlockingBytecode: DUMMY_FUNDER_UNLOCKING_BYTECODE,
     };
 
-    for (let slotIndex = 0; slotIndex < externalCalls.length; slotIndex++) {
-      const ec = externalCalls[slotIndex];
-      const callInfo = resolvedExternalCalls[slotIndex];
+    // One direct callee's block and group.
+    const materializeDirectCalleeGroup = async (
+      slotIndex: number, ec: ExternalCallAbi, callInfo: ExternalCallInfo,
+    ): Promise<void> => {
       if (callInfo) assertCallSelectorScheme(ec, host.inner.artifact, callInfo.externalContract.inner.artifact);
       // A raw call's `{value:}` pays the call's target address, the co-spent callee's master lock, where the coin is
       // stuck, and the callee reads msg.value from its satoshi container, which the payment never reaches. Refuse it
@@ -873,6 +887,9 @@ export async function orchestrateCreateBuilderExternalCalls(
           });
         }
       }
+    };
+    for (let slotIndex = 0; slotIndex < externalCalls.length; slotIndex++) {
+      await materializeDirectCalleeGroup(slotIndex, externalCalls[slotIndex], resolvedExternalCalls[slotIndex]);
     }
 
     await consolidateDirectCallBatches({
@@ -948,6 +965,17 @@ export async function orchestrateCreateBuilderExternalCalls(
         },
         externalCallUtxoGroups, groupMetas, directGroupCount,
       );
+    }
+
+    // A compat call's callee follows every typed group and fills no caller ABI slot; the caller reads it through its
+    // call-input witness. Its msg.sender is the caller a typed call presents.
+    for (const [ordinal, compat] of compatCalls.entries()) {
+      await materializeDirectCalleeGroup(externalCalls.length + ordinal, compat.ec, compat.callInfo);
+      const group = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
+      group.edgeLowLevelCallIndex = compat.callIndex;
+      groupMetas.push({
+        ecSlot: directGroupEcSlot(compat.ec, group), callerCategoryId: host.categoryId, parentGroupIndex: -1,
+      });
     }
 
     // _externalCallInputBase: runtime param (needed for mutual A<->B calls)
@@ -1070,7 +1098,7 @@ export async function orchestrateCreateBuilderExternalCalls(
         const resolvedLlcCalls = overrides?.calls ?? [];
         for (let i = 0; i < llcCalls.length; i++) {
           const callInfo = resolvedLlcCalls[i];
-          if (!callInfo) continue;
+          if (!callInfo || compatCalls.some((call) => call.callIndex === i)) continue;
           if (callInfo.type === 'stateful') {
             lowLevelCallOutputCount += 1 + callInfo.contract.inner.stateLayout!.dataNftCount;
           } else {
@@ -1262,10 +1290,11 @@ export async function orchestrateCreateBuilderExternalCalls(
   // caller's edge in the caller's own category. A call's slot is its published callsite (the slot index its caller's
   // edge witness is named by): a skipped conditional call or a loop's reached calls part groups from slots, at the top
   // level as in a nested caller. A nested call of an artifact that publishes no callsite takes its position among its
-  // parent's co-spent callees.
+  // parent's co-spent callees. A compat call's edge is its low-level call's.
   {
     const siblingSlot = new Map<number, number>();
     for (let i = 0; i < externalCallUtxoGroups.length; i++) {
+      if (externalCallUtxoGroups[i].edgeLowLevelCallIndex !== undefined) continue;
       const parent = allGroupParentIndices[i] ?? -1;
       externalCallUtxoGroups[i].edgeParentIndex = parent;
       if (parent < 0) {
@@ -1305,5 +1334,6 @@ export async function orchestrateCreateBuilderExternalCalls(
     externalOutStateUtxoGroups,
     outStateInputCount,
     maxBhLocktime,
+    compatLowLevelCallIndices: new Set(compatCalls.map((call) => call.callIndex)),
   };
 }

@@ -170,8 +170,8 @@ export function appendCallerEdges(
       delegate !== undefined || unlocker?.abiFunction.externalCalls?.[group.edgeEcSlot]?.interfaceName === '__raw__',
     );
   }
-  // A compat low-level call made by the entry itself.
-  for (const group of host.lowLevelCallUtxoGroups) {
+  // A compat low-level call made by the entry itself, its callee on the low-level path or a direct external group.
+  for (const group of [...host.lowLevelCallUtxoGroups, ...groups]) {
     if (group.edgeLowLevelCallIndex === undefined) continue;
     attest(
       group, unlockerOf(host.masterUtxo), `__internal__lowLevelCallEdgeOutputIdx${group.edgeLowLevelCallIndex}`,

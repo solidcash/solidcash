@@ -35,10 +35,9 @@ describe('MasterChef deposit', () => {
     await lp.transfer(bob.getAddress(), 1000n).send();
     await lp.connect(bob).approve(chefIdentity, 1000n).send();
     console.log('approve ok');
-    // The call arguments now read `block.number` from the pool coin (328f2a88f), so deposit reaches SafeERC20's raw
-    // transferFrom. Compiled direct, that compat call co-spends only its stateful callee's master and data records,
-    // and the transaction fails closed at preflight (packages/solidc/docs/deferrals.md, 2026-11-12). This flips when
-    // the callee's full block is supplied.
-    await expect(chef.connect(bob).deposit(0n, 100n).send()).rejects.toThrow(/BCH-2026 preflight failed/);
+    // `updatePool` mints from `block.number`, which the call arguments read from the pool coin (328f2a88f).
+    await chef.connect(bob).deposit(0n, 100n).send();
+    console.log('deposit ok');
+    expect(true).toBe(true);
   });
 });

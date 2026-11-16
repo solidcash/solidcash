@@ -12320,6 +12320,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // (the builder will be rebuilt when .withCall() is used)
           continue;
         }
+        // Its callee already runs as a direct external group with its whole block.
+        if (externalCallsOrchestrated.compatLowLevelCallIndices.has(i)) continue;
 
         if (callInfo.type === 'stateful') {
           const materializedLlc = await materializeCreateBuilderLowLevelStatefulCallImpl(
@@ -12864,7 +12866,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         externalReadUtxos,
         outStateInputCount,
         iterationEntryInputs,
-        externalCallGroupCount: externalCallUtxoGroups.length,
+        // A compat call's callee group answers no typed callsite.
+        externalCallGroupCount: externalCallUtxoGroups
+          .filter((group) => group.edgeLowLevelCallIndex === undefined).length,
         reachedExternalCalls: externalCallsOrchestrated.externalCalls,
       },
     );
@@ -14116,6 +14120,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       producerCalls, allowProvisional, planningContext, consumer, occurrenceIndex,
       executionCallerAddress,
     );
+  }
+
+  /**
+   * The lock `address(this)` names in an ordinary entry, as `_createBuilder` derives its public self: the CREATE lock
+   * when the entry authenticates its own self, else the executing lock.
+   * @internal
+   */
+  _ordinaryEntrySelfAddress(abiFunction: AbiFunction | undefined): Uint8Array {
+    const registeredSelf = findDeploymentByAddress(this.inner.provider, this.target);
+    const authenticated = hexToBin(registeredSelf?.lockingBytecode || this.inner.lockingBytecode);
+    const logical = this._logicalAddress === undefined ? undefined : addressToLockScript(this._logicalAddress);
+    return usesOrdinarySelfIdentity(abiFunction) && logical !== undefined
+      && binToHex(logical).toLowerCase() !== binToHex(authenticated).toLowerCase() ? logical : authenticated;
   }
 
   /**

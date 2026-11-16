@@ -51,6 +51,5 @@
     "eslint": "^8.54.0",
     "typescript": "^5.9.2",
     "vitest": "^5.0.4"
-  },
-  "gitHead": "bf02a4b641d5d03c035d052247a545109c17b708"
+  }
 }

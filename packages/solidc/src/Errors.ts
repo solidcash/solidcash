@@ -90,6 +90,10 @@ export type SolidcDiagnosticCode =
   | 'ENTRY_TARGET_WRITTEN_BEFORE_CALL'
   // A message-bus handler whose call the route checks before the handler's body runs writes that call's target first.
   | 'ROUTE_TARGET_WRITTEN_BEFORE_CALL'
+  // A framed master's call whose target the function read at its top and then wrote before the call.
+  | 'FRAMED_TARGET_WRITTEN_BEFORE_CALL'
+  // A constructor's call, in a genesis body, through a target the constructor read at its top and then wrote.
+  | 'GENESIS_TARGET_WRITTEN_BEFORE_CALL'
   // An external call left in an invoked function body, where no entry point lays out or binds its callee.
   | 'EXTERNAL_CALL_IN_SUBROUTINE'
   // A `{value: v}` call whose target no output the covenant checks can be built for, so the payment would drop.

@@ -6312,7 +6312,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitFramedComputedTarget(node: ExternalFunctionCallNode): void {
     // The visit emits the value and registers it on the stack model; the site drops that registration when its
-    // check parks the value on the alternate stack.
+    // check parks the value on the alternate stack. A target the body wrote after a compiler local read it is refused
+    // before code generation reaches here (collectLowLevelCallSiteTargets).
     this.visit(node.addressExpression);
   }
 
@@ -54346,20 +54347,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * and pays that local where it runs, and a raw call with no register pays it there too. When the function writes
    * what the local read between the two, the local still holds the value from before the write, while the EVM's call
    * goes to the written one, so such a call reads the local's initializer again, where it runs. A collection entry the
-   * call cannot read there is refused by name (bodyWrites). A framed body binds its calls by record.
+   * call cannot read there is refused by name (bodyWrites). A runtime graph handler and a framed master check every
+   * call's target where it runs, so each of their calls is read again the same way.
    */
   private collectLowLevelCallSiteTargets(node: FunctionDefinitionNode): Map<Node, ExpressionNode> {
     const targets = new Map<Node, ExpressionNode>();
     const body = node.body;
-    if (!body || this.framedMaster) return targets;
-    // A runtime graph handler checks each call's row where the call runs, from the call's own target, with none of the
-    // direct convention's call-site registers (collectCallSiteTargets): every call it makes is read there.
-    const graphHandler = node.graphRuntimeEmissionHandler === true;
+    if (!body) return targets;
+    // A runtime graph handler checks each call's row where the call runs, a framed master binds each call's record to
+    // the target its code holds there (emitFramedComputedTarget), and a genesis body checks each call's target where
+    // the call runs and again after the body (emitGenesisCalleeChecks), all with none of the direct convention's
+    // call-site registers (collectCallSiteTargets): every call they make is looked at.
+    const readsEveryCall = node.graphRuntimeEmissionHandler === true || this.framedMaster || this.inGenesisMode;
     const sites: { call: Node; target: IdentifierNode }[] = [];
     walkInvocationAst(body, (child) => {
       const target = child instanceof LowLevelCallNode || child instanceof LowLevelCallStatementNode
         ? child.targetExpression
-        : child instanceof ExternalFunctionCallNode && (graphHandler
+        : child instanceof ExternalFunctionCallNode && (readsEveryCall
           || (child.interfaceName === '__raw__' && child.callOptions?.value !== undefined))
           ? child.addressExpression : undefined;
       if (target instanceof IdentifierNode && target.name.startsWith('__extaddr_')) sites.push({ call: child, target });
@@ -54369,10 +54373,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const { call, target } of sites) {
       const chain = writes.staleInitializer(target.name, call);
       if (chain === undefined) continue;
+      if (this.framedMaster) this.refuseFramedTargetWrittenFirst(node, call);
+      // A genesis call is checked after the body too, against the local; only its call site could read again.
+      if (this.inGenesisMode && call instanceof ExternalFunctionCallNode) {
+        this.refuseGenesisTargetWrittenFirst(node, call);
+      }
       writes.keepReads(chain, call);
       targets.set(call, chain);
     }
     return targets;
+  }
+
+  /**
+   * A framed master binds a call's record to the target its code holds where it calls. A target the body read into a
+   * compiler local at its top and then wrote is the value from before the write there, while the EVM's call goes to
+   * the written one. Reading the local's initializer again at the call does not settle on the framed path, so the
+   * function is refused by name instead.
+   */
+  private refuseFramedTargetWrittenFirst(fn: FunctionDefinitionNode, call: Node): never {
+    const described = call instanceof ExternalFunctionCallNode && call.interfaceName !== '__raw__'
+      ? `its call to ${call.interfaceName}.${call.functionName}` : 'a low-level call';
+    throw new SolidcDiagnosticError(
+      'FRAMED_TARGET_WRITTEN_BEFORE_CALL',
+      `'${fn.name}' writes the target of ${described} before the call. A framed call binds its record to the target `
+        + 'the function read at its top, the value from before the write, while the EVM\'s call goes to the written '
+        + 'one. Call through the value written (the parameter or local it came from), or make the call before the '
+        + 'write.',
+      { functionName: fn.name },
+    );
+  }
+
+  /**
+   * A constructor's call in a genesis body through a receiver the address-local pass read at the body's top (a stored
+   * address or chain a raw call names) when the constructor writes it first: the local holds the state from before the
+   * write, and the genesis checks bind the call to it where it runs and after the body. The constructor is refused by
+   * name; a typed call is captured where it runs already.
+   */
+  private refuseGenesisTargetWrittenFirst(fn: FunctionDefinitionNode, call: ExternalFunctionCallNode): never {
+    const described = call.interfaceName !== '__raw__'
+      ? `its call to ${call.interfaceName}.${call.functionName}` : 'a low-level call';
+    throw new SolidcDiagnosticError(
+      'GENESIS_TARGET_WRITTEN_BEFORE_CALL',
+      `'${fn.name}' writes the target of ${described} before the call. A constructor's call is bound to the target the `
+        + 'constructor read at its top, the value from before the write, while the EVM\'s call goes to the written '
+        + 'one. Call through the value written (the parameter it came from), or make the call before the write.',
+      { functionName: fn.name },
+    );
   }
 
   /**

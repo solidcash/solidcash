@@ -116,6 +116,25 @@ describe('a low-level call through a target its function writes before the call'
     expect(compile).toThrow(/Make the call before the write, or write the same entry unconditionally/);
   });
 
+  it('refuses by name a constructor\'s raw call through a stored target it writes first (Deploy<C>)', () => {
+    // The receiver is read at the top of `create`, before the constructor writes it; the genesis checks bind the call
+    // to that read where the call runs and after the body.
+    const compile = (): Artifact => compileString(`pragma solidcash >=0.8.0;
+      interface I { function f(int x) external returns (bool); }
+      contract C {
+        address token;
+        bool ok;
+        constructor(address t) {
+          token = t;
+          (bool success, bytes data) = token.call(abi.encodeWithSelector(I.f.selector, 5));
+          ok = success;
+        }
+        function read() external { require(ok); }
+      }`, { deployer: true, genesisCalls: true } as never);
+    expect(compile).toThrow(/GENESIS_TARGET_WRITTEN_BEFORE_CALL/);
+    expect(compile).toThrow(/writes the target of a low-level call before the call/);
+  });
+
   it('publishes a raw call whose stored target the function writes first, and no other', () => {
     const artifact = compileString(CALLER, { evmCompat: true, forceStateful: true });
     expect(rawCallOf(artifact, 'retargetThenCall')?.targetWrittenBeforeCall).toBe(true);

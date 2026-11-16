@@ -33575,9 +33575,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const target = this.lowLevelCallSiteTarget(node, node.targetExpression);
     this.emitLowLevelCallValue(node, locationData, target);
 
-    if (node.callMode === 'delegatecall' || this.isCompilerRoutedLowLevelBatch(node)) {
-      // Delegatecall: proxy doesn't verify delegate's calldata - the delegate handles
-      // its own verification via _proxyMasterIndex. Push dummy success/returnData.
+    if (node.callMode === 'delegatecall') {
+      // C1/piece-3, the expression form `(bool ok, bytes data) = impl.delegatecall(input)`: the function skips its own
+      // state covenant for the delegate, so the delegate co-spend is forced and pinned exactly as for the statement
+      // form. A spend that co-spends other code, or none, then fails here instead of writing this contract's state.
+      if (this.currentFunction.pinsDelegateCoSpend) this.emitDelegateCoSpendPin(node, target, locationData);
+      // A reached delegatecall succeeded or the co-spent delegate aborted the transaction.
+      this.markDelegateEdgeReached(node);
+      this.emit(Op.OP_1, locationData);           // [true]
+      this.emit(encodeInt(0n), locationData);      // [true, empty]
+    } else if (this.isCompilerRoutedLowLevelBatch(node)) {
+      // A message-bus route binds the routed batch. Push dummy success/returnData.
       this.markDelegateEdgeReached(node);
       this.emit(Op.OP_1, locationData);           // [true]
       this.emit(encodeInt(0n), locationData);      // [true, empty]
@@ -33624,129 +33632,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitLowLevelCallValue(node, locationData, target);
 
     if (node.callMode === 'delegatecall') {
-      // C1/piece-3: FORCE + PIN the delegate co-spend. The input at __internal__delegateInputIndex must have
-      // locking bytecode == impl (the delegatecall target), so a real delegate is required, not optional - the
-      // delegate then authorizes the proxy's state via _proxyMasterIndex. Emitted only when impl is a covenant
-      // (pinsDelegateCoSpend); a P2PKH-placeholder target keeps the C1 warning path.
-      if (this.currentFunction.pinsDelegateCoSpend) {
-        // (a) IDENTITY: the delegate at delegateInputIndex is the contract at impl.
-        this.visit(target);                          // [impl]
-        this.emitDelegateInputIndex(node, locationData);
-        // Real stack: [impl, delegateIdx]
-        this.emit(Op.OP_UTXOBYTECODE, locationData); // [impl, delegate_utxobc]
-        this.emit(Op.OP_EQUALVERIFY, locationData);  // []
-        this.popFromStack();                         // untrack impl
-
-        // (a2) POSITION: the delegate must sit exactly one proxy block after THIS input. The delegate derives
-        // its state owner positionally (`proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`), so the
-        // identity and payload pins alone leave that owner unfixed: a witness could name a delegate placed after
-        // ANOTHER master's block, and the delegate would authorize that master while this proxy's own state
-        // covenant is skipped on the delegatecall path. A proxy publishes the distance as the constructor input
-        // `__proxyBlockSize`, which its own p2sh32 commits to; the SDK supplies the grafted `1 + dataNftCount`.
-        // A message-bus route derives its owner one route block back instead, so a proxy may publish that distance
-        // beside it as `__proxyRouteBlockSize`: the forwarded payload's selector then picks exactly one of the two,
-        // the route's for SCB1 (the reserved route selector) and the direct one otherwise, and the payload pin
-        // below requires that selector to be the delegate's first push, the item its dispatcher invokes.
-        // A custom proxy that places the delegate by its own layout keeps the witness-only pin until it declares
-        // `__proxyBlockSize`, which docs/delegatecall-security.md records as the remaining requirement.
-        const singleFunctionLibrary = node.synthesizedFromLibraryCall && !node.librarySelectorDispatched;
-        const ownForwardInput = this.currentFunction.name === '__forward'
-          && node.data instanceof IdentifierNode
-          && node.data.name === 'input'
-          && this.currentFunction.parameters[0]?.name === 'input';
-        const positionPinned = this.forwardsProxyDistance('__proxyBlockSize')
-          && !this.currentFunction.delegateIndexFromBlockSlot;
-        const routeDistance = positionPinned && !singleFunctionLibrary
-          && this.forwardsProxyDistance('__proxyRouteBlockSize');
-        if (positionPinned) {
-          this.debugComputeBase('delegate-position', '__proxyBlockSize',
-            this.getStackIndex('__proxyBlockSize'), 0);
-          // Every value pushed here is untracked, so each one gets a stack-model marker: a later bottom-ordinal
-          // pick is only the named slot while the model's length is the runtime depth.
-          this.emitPickTrackedFromBottom('__proxyBlockSize', locationData);  // [blockSize]
-          this.pushToStack('(proxy-block-size)');
-          if (routeDistance) {
-            if (ownForwardInput) {
-              this.emitPickTrackedFromBottom('input', locationData);         // [blockSize, input]
-              this.pushToStack('(proxy-call-kind)');
-            } else {
-              this.visit(node.data);                                         // [blockSize, input]
-            }
-            // A payload shorter than a selector fails the split.
-            this.emit(encodeInt(4n), locationData);
-            this.emit(Op.OP_SPLIT, locationData);
-            this.emit(Op.OP_DROP, locationData);                            // [blockSize, selector]
-            this.emit(hexToBin('53434231'), locationData);
-            this.emit(Op.OP_EQUAL, locationData);                           // [blockSize, isRoute]
-            this.emit(Op.OP_IF, locationData);
-            this.popFromStack();
-            this.emit(Op.OP_DROP, locationData);
-            this.popFromStack();
-            this.emitPickTrackedFromBottom('__proxyRouteBlockSize', locationData); // [routeBlockSize]
-            this.pushToStack('(proxy-block-size)');
-            this.emit(Op.OP_ENDIF, locationData);                           // [distance]
-          }
-          this.emitMasterInputIndex(locationData);                          // [distance, proxyMaster]
-          this.pushToStack('(proxy-master)');
-          this.emit(Op.OP_ADD, locationData);                               // [expectedDelegate]
-          this.popFromStack(2);
-          this.pushToStack('(proxy-expected-delegate)');
-          this.emitDelegateInputIndex(node, locationData);                  // [expectedDelegate, delegateIdx]
-          this.emit(Op.OP_NUMEQUALVERIFY, locationData);                    // []
-          this.popFromStack();
-        }
-
-        // (b) SELECTOR: the delegate's unlocking bytecode leads with the forwarded calldata (`input`), so a
-        // co-spent-but-wrong delegate FUNCTION can't slip past the identity pin. Mirrors emitLowLevelCall-
-        // Verification: skip the push-opcode byte, then compare the next |input| bytes against `input`.
-        // C1/piece-7: skipped for a single-public-function library. Such a library compiles to a contract with
-        // one entry point, whose unlocking script carries NO leading selector - and with one function there is
-        // nothing for a caller to choose, so the identity pin alone is the whole property.
-        if (!singleFunctionLibrary) {
-          if (ownForwardInput) {
-            this.emit(Op.OP_INPUTINDEX, locationData);
-            this.emit(Op.OP_INPUTBYTECODE, locationData);
-            this.pushToStack('(forward-encoded-args)');
-            // Unlockers push ABI values in reverse stack order. The synthetic delegate-input index first.
-            this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
-            this.popFromStack();
-            this.pushToStack('(forward-delegate-index)');
-            this.pushToStack('(forward-user-args)');
-            this.emit(Op.OP_SWAP, locationData);
-            this.emit(Op.OP_DROP, locationData);
-            this.popFromStack(2);
-            this.pushToStack('(forward-user-args)');
-            this.emitPushdataDecode(new BytesType(), locationData);
-            this.popFromStack();
-            this.pushToStack('(input)');
-            this.pushToStack('(forward-remaining-args)');
-            this.emit(Op.OP_DROP, locationData);
-            this.popFromStack();
-          } else {
-            this.visit(node.data);
-          }
-          this.emitDelegateInputIndex(node, locationData);
-          // Real stack: [input, delegateIdx]
-          this.emit(Op.OP_INPUTBYTECODE, locationData); // [input, ubcode]
-          this.emit(encodeInt(1n), locationData);
-          this.emit(Op.OP_SPLIT, locationData);        // [input, pushbyte, ubcode_rest]
-          if (routeDistance) {
-            // The selector the position pin read is the delegate's first push: a push of exactly four bytes.
-            this.emit(Op.OP_SWAP, locationData);       // [input, ubcode_rest, pushbyte]
-            this.emit(hexToBin('04'), locationData);
-            this.emit(Op.OP_EQUALVERIFY, locationData); // [input, ubcode_rest]
-          } else {
-            this.emit(Op.OP_NIP, locationData);        // [input, ubcode_rest]
-          }
-          this.emit(Op.OP_OVER, locationData);         // [input, ubcode_rest, input]
-          this.emit(Op.OP_SIZE, locationData);         // [input, ubcode_rest, input, input_len]
-          this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest, input_len]
-          this.emit(Op.OP_SPLIT, locationData);        // [input, payload, remaining]
-          this.emit(Op.OP_DROP, locationData);         // [input, payload]
-          this.emit(Op.OP_EQUALVERIFY, locationData);  // []
-          this.popFromStack();                         // untrack input
-        }
-      }
+      // C1/piece-3: FORCE + PIN the delegate co-spend. Emitted only when impl is a covenant (pinsDelegateCoSpend); a
+      // P2PKH-placeholder target keeps the C1 warning path.
+      if (this.currentFunction.pinsDelegateCoSpend) this.emitDelegateCoSpendPin(node, target, locationData);
       this.markDelegateEdgeReached(node);
     } else if (!this.isCompilerRoutedLowLevelBatch(node)) {
       this.emitLowLevelCallVerification(node.data, node.callIndex, locationData, target);
@@ -33754,6 +33642,134 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
     }
     return node;
+  }
+
+  /**
+   * C1/piece-3: FORCE + PIN a delegatecall's co-spend, in either form of the call. The input at the delegate index
+   * must have locking bytecode == impl (the delegatecall target), so a real delegate is required, not optional - the
+   * delegate then authorizes the proxy's state via _proxyMasterIndex, while this function skips its own state
+   * covenant. `target` is the target as read where the call runs (lowLevelCallSiteTarget). Stack-neutral.
+   */
+  private emitDelegateCoSpendPin(
+    node: LowLevelCallNode | LowLevelCallStatementNode, target: ExpressionNode, locationData: SingleLocationData,
+  ): void {
+    // (a) IDENTITY: the delegate at delegateInputIndex is the contract at impl.
+    this.visit(target);                          // [impl]
+    this.emitDelegateInputIndex(node, locationData);
+    // Real stack: [impl, delegateIdx]
+    this.emit(Op.OP_UTXOBYTECODE, locationData); // [impl, delegate_utxobc]
+    this.emit(Op.OP_EQUALVERIFY, locationData);  // []
+    this.popFromStack();                         // untrack impl
+
+    // (a2) POSITION: the delegate must sit exactly one proxy block after THIS input. The delegate derives
+    // its state owner positionally (`proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`), so the
+    // identity and payload pins alone leave that owner unfixed: a witness could name a delegate placed after
+    // ANOTHER master's block, and the delegate would authorize that master while this proxy's own state
+    // covenant is skipped on the delegatecall path. A proxy publishes the distance as the constructor input
+    // `__proxyBlockSize`, which its own p2sh32 commits to; the SDK supplies the grafted `1 + dataNftCount`.
+    // A message-bus route derives its owner one route block back instead, so a proxy may publish that distance
+    // beside it as `__proxyRouteBlockSize`: the forwarded payload's selector then picks exactly one of the two,
+    // the route's for SCB1 (the reserved route selector) and the direct one otherwise, and the payload pin
+    // below requires that selector to be the delegate's first push, the item its dispatcher invokes.
+    // A custom proxy that places the delegate by its own layout keeps the witness-only pin until it declares
+    // `__proxyBlockSize`, which docs/delegatecall-security.md records as the remaining requirement.
+    const singleFunctionLibrary = node instanceof LowLevelCallStatementNode
+      && node.synthesizedFromLibraryCall && !node.librarySelectorDispatched;
+    const ownForwardInput = this.currentFunction.name === '__forward'
+      && node.data instanceof IdentifierNode
+      && node.data.name === 'input'
+      && this.currentFunction.parameters[0]?.name === 'input';
+    const positionPinned = this.forwardsProxyDistance('__proxyBlockSize')
+      && !this.currentFunction.delegateIndexFromBlockSlot;
+    const routeDistance = positionPinned && !singleFunctionLibrary
+      && this.forwardsProxyDistance('__proxyRouteBlockSize');
+    if (positionPinned) {
+      this.debugComputeBase('delegate-position', '__proxyBlockSize',
+        this.getStackIndex('__proxyBlockSize'), 0);
+      // Every value pushed here is untracked, so each one gets a stack-model marker: a later bottom-ordinal
+      // pick is only the named slot while the model's length is the runtime depth.
+      this.emitPickTrackedFromBottom('__proxyBlockSize', locationData);  // [blockSize]
+      this.pushToStack('(proxy-block-size)');
+      if (routeDistance) {
+        if (ownForwardInput) {
+          this.emitPickTrackedFromBottom('input', locationData);         // [blockSize, input]
+          this.pushToStack('(proxy-call-kind)');
+        } else {
+          this.visit(node.data);                                         // [blockSize, input]
+        }
+        // A payload shorter than a selector fails the split.
+        this.emit(encodeInt(4n), locationData);
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_DROP, locationData);                            // [blockSize, selector]
+        this.emit(hexToBin('53434231'), locationData);
+        this.emit(Op.OP_EQUAL, locationData);                           // [blockSize, isRoute]
+        this.emit(Op.OP_IF, locationData);
+        this.popFromStack();
+        this.emit(Op.OP_DROP, locationData);
+        this.popFromStack();
+        this.emitPickTrackedFromBottom('__proxyRouteBlockSize', locationData); // [routeBlockSize]
+        this.pushToStack('(proxy-block-size)');
+        this.emit(Op.OP_ENDIF, locationData);                           // [distance]
+      }
+      this.emitMasterInputIndex(locationData);                          // [distance, proxyMaster]
+      this.pushToStack('(proxy-master)');
+      this.emit(Op.OP_ADD, locationData);                               // [expectedDelegate]
+      this.popFromStack(2);
+      this.pushToStack('(proxy-expected-delegate)');
+      this.emitDelegateInputIndex(node, locationData);                  // [expectedDelegate, delegateIdx]
+      this.emit(Op.OP_NUMEQUALVERIFY, locationData);                    // []
+      this.popFromStack();
+    }
+
+    // (b) SELECTOR: the delegate's unlocking bytecode leads with the forwarded calldata (`input`), so a
+    // co-spent-but-wrong delegate FUNCTION can't slip past the identity pin. Mirrors emitLowLevelCall-
+    // Verification: skip the push-opcode byte, then compare the next |input| bytes against `input`.
+    // C1/piece-7: skipped for a single-public-function library. Such a library compiles to a contract with
+    // one entry point, whose unlocking script carries NO leading selector - and with one function there is
+    // nothing for a caller to choose, so the identity pin alone is the whole property.
+    if (singleFunctionLibrary) return;
+    if (ownForwardInput) {
+      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emit(Op.OP_INPUTBYTECODE, locationData);
+      this.pushToStack('(forward-encoded-args)');
+      // Unlockers push ABI values in reverse stack order. The synthetic delegate-input index first.
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
+      this.popFromStack();
+      this.pushToStack('(forward-delegate-index)');
+      this.pushToStack('(forward-user-args)');
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(forward-user-args)');
+      this.emitPushdataDecode(new BytesType(), locationData);
+      this.popFromStack();
+      this.pushToStack('(input)');
+      this.pushToStack('(forward-remaining-args)');
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack();
+    } else {
+      this.visit(node.data);
+    }
+    this.emitDelegateInputIndex(node, locationData);
+    // Real stack: [input, delegateIdx]
+    this.emit(Op.OP_INPUTBYTECODE, locationData); // [input, ubcode]
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);        // [input, pushbyte, ubcode_rest]
+    if (routeDistance) {
+      // The selector the position pin read is the delegate's first push: a push of exactly four bytes.
+      this.emit(Op.OP_SWAP, locationData);       // [input, ubcode_rest, pushbyte]
+      this.emit(hexToBin('04'), locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData); // [input, ubcode_rest]
+    } else {
+      this.emit(Op.OP_NIP, locationData);        // [input, ubcode_rest]
+    }
+    this.emit(Op.OP_OVER, locationData);         // [input, ubcode_rest, input]
+    this.emit(Op.OP_SIZE, locationData);         // [input, ubcode_rest, input, input_len]
+    this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest, input_len]
+    this.emit(Op.OP_SPLIT, locationData);        // [input, payload, remaining]
+    this.emit(Op.OP_DROP, locationData);         // [input, payload]
+    this.emit(Op.OP_EQUALVERIFY, locationData);  // []
+    this.popFromStack();                         // untrack input
   }
 
   /**
@@ -33776,7 +33792,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *  - a hand-written delegatecall picks the `__internal__delegateInputIndex` witness.
    * Leaves exactly one untracked value on the real stack.
    */
-  private emitDelegateInputIndex(node: LowLevelCallStatementNode, locationData: SingleLocationData): void {
+  private emitDelegateInputIndex(
+    node: LowLevelCallNode | LowLevelCallStatementNode, locationData: SingleLocationData,
+  ): void {
     if (this.currentFunction.graphEmissionHandler) {
       const nftCount = this.currentFunction.requiredNftIndices?.length
         ?? new Set(this.stateVariables.map((state) => state.nftIndex ?? 0)).size;
@@ -54251,9 +54269,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!body || this.framedMaster) return targets;
     const sites: { call: Node; target: IdentifierNode }[] = [];
     walkInvocationAst(body, (child) => {
-      // An expression delegatecall reads no target where it runs (visitLowLevelCall).
-      const target = (child instanceof LowLevelCallNode && child.callMode !== 'delegatecall')
-        || child instanceof LowLevelCallStatementNode ? child.targetExpression
+      const target = child instanceof LowLevelCallNode || child instanceof LowLevelCallStatementNode
+        ? child.targetExpression
         : child instanceof ExternalFunctionCallNode && child.interfaceName === '__raw__'
           && child.callOptions?.value !== undefined ? child.addressExpression : undefined;
       if (target instanceof IdentifierNode && target.name.startsWith('__extaddr_')) sites.push({ call: child, target });

@@ -225,11 +225,9 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
 
 **In progress after the release (2026-11-16)**, each by an agent on its own branch, landed by the lander:
 
-- `keccak-band`: the follow-ups to its fix below, which are a chain beside a mapping loop, payments or events, the
-  fixed sorted batch (both under "Not refused yet"), and a non-sorted entry-loop write after the loop, untested;
-- `nested-guard`: the follow-ups to its fix below:
-  - a guard discovery cannot evaluate;
-  - the block clock and the untaken-call base on the late-transitive and delegatecall paths, which fail closed today;
+- `nested-guard`: the root path's version of the undecided guard (under "Soundness, documented"), the late pass's
+  unpublished guard and unplanned loops, the compiler flag for a call after an early `return` or in a ternary arm,
+  and the evmCompat root refused at input 0;
 - `raw-send-target`: the follow-ups to TARGET-6 below:
   - a message-bus build;
   - unsafe, split and merge functions, genesis bodies and framed bodies, which its call-site registers skip;
@@ -245,7 +243,22 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
     run was refused. It is now stated as not made (-1), as at the root.
   - Checks: `NestedCalleeBlockGuard.e2e` passed 4 of 4 (0 of 4 before the fix). A union of 125 nested-call SDK
     files passed: 1,129 tests passed, 3 skipped, 0 failed.
-- **The keccak256 trailing band** (`d924cd68b`, `c23ca4de0`, `612da652d`, `9f47268d7`).
+- **A called contract's undecided guard** (`42478d5ef`, `5a1ade82d`, `28ff018a3`, `b6e82bcfa`, `c481c8ef1`).
+  - Discovery kept a call under a guard it could not evaluate, so a false guard spent the callee. Examples are a
+    guard reading an earlier call's result, or a mapping entry.
+  - It now decides the guard in the called contract's frame, with the block clock, the entries the guard reads and
+    the earlier calls' results. Otherwise it refuses by name (`CallGuardUndecidedError`).
+  - The compiler publishes `conditionUnpublished` for a call under a guard it cannot write down. It is ABI only, so
+    no bytecode moves.
+  - The late pass and the delegatecall path read the block clock. A delegate's callee or a late frame states a
+    skipped single call as -1.
+  - A false `require` on the block before a called contract's call is refused by the VM.
+  - Checks: `NestedCalleeGuardDecision.e2e` passed 2 of 2, `NestedCalleeOtherPathsGuard.e2e` 4 of 4, and
+    `NestedCalleeBlockGuard.e2e` 5 of 5. A combined union with the keccak follow-ups also passed. It covered every
+    nested-call, delegatecall, keccak256, side-car, chunk and artifact test: 93 solidc files (3,445 passed, 10
+    skipped) and 356 solidcash files (3,148 passed, 16 skipped), none failed.
+- **The keccak256 trailing band** (`d924cd68b`, `c23ca4de0`, `612da652d`, `9f47268d7`; follow-ups `d7b8083c7`,
+  `3aa7d6af8`, `aed354f3a`).
   - A chain beside a collection walk or a dynamic write took the same indexes after the block as the walk's
     entries or the write's new chunks. It is now refused (`keccak-chain-shares-trailing-band`).
   - A chain beside chunks it only reads, and a loop beside read chunks with a mapping loop, per-turn payments or
@@ -257,6 +270,14 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
     files, nothing is newly refused and no bytes or ABI moved. A union of every file that names keccak256, side-cars
     or dynamic chunks passed: 51 solidc files (2,062 passed, 6 skipped) and 167 solidcash files (1,632 passed, 12
     skipped), none failed.
+  - Follow-ups:
+    - A chain beside a mapping loop, per-turn payments or events collided too, because the runs' cursors start at 0
+      and only a keccak256 loop seeds them; it is refused now.
+    - `612da652d` had refused a loop beside a read and a fixed sorted write, which works; `d7b8083c7` lets it
+      compile again.
+    - Side-cars and read chunks beside a fixed sorted write now spend: `KeccakSideCarsBesideSortedBatch.e2e`, 4 of 4,
+      with tamper cases.
+    - The corpus is still unchanged, and the combined union below covers them.
 - **DELEGATE-1, an expression-form delegatecall not pinned** (`5aee903a3`; CRITICAL for the contracts it reaches).
   The ledger's "Delegatecall target" section has the details.
   - With `(bool ok, bytes data) = impl.delegatecall(input)`, a spender could co-spend any implementation, or none,
@@ -289,9 +310,15 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
   under `evmCompat` it could stand for an EVM address.
 - **CONTAINER-SUM-1:** not determined whether 0.50.1 is affected, because the test's honest spend does not build
   on the 0.50.1 tree. CONTAINER-SUM-2 is VM-confirmed on 0.50.1 (message-bus kernel routes, experimental there).
-- **A guard discovery cannot evaluate** (found 2026-11-16 while fixing the 0.50.0 issues). An example is a guard
-  reading an earlier call's result. A nested callee's call under such a guard is kept, so if the guard is false at
-  run time, a callee that reads no `msg.sender` is spent and its state changes. In progress on `nested-guard`.
+- **An undecided guard on the root path** (found 2026-11-16). Discovery now decides or refuses a called contract's
+  guard (see "Landed after the release"). The root still keeps a call whose guard it cannot resolve
+  (`sc-expand-resolve-create-builder-external-calls.ts:258-260`) and ignores `conditionUnpublished`. A false guard
+  then spends a callee that reads no `msg.sender`. Also open on the SDK side:
+  - the late pass keeps a call under an unpublished guard;
+  - discovery keeps a looped call whose loop it cannot plan.
+
+  On the compiler side, a call after an early `return`, or one in a ternary arm, may carry neither a `condition` nor
+  the flag (suspected from reading). All of these are in progress on `nested-guard`.
 
 **Refused by name (fail closed), could be built later:**
 
@@ -303,13 +330,16 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
 - a called contract's own `blockhash(n)` read, and a called contract's low-level call with a payload;
 - `tx.origin` passed on through a callee laid out by its ordinary build.
 
-**Not refused yet** (both in progress on `keccak-band`):
+**Not refused yet:** none known. The two keccak256 items listed here at the release are settled: a chain beside a
+mapping loop, payments or events is refused, and side-cars beside a fixed sorted write work.
 
-- a keccak256 chain beside a mapping loop, per-turn payments or events: chains get no shared cursors, and those
-  runs' bases do not count the chain;
-- a keccak256 loop or chain beside a fixed sorted batch (`sortedBatchInfo`), not examined yet.
+**Found during the 0.51.0 merge and after (SDK, fails closed):**
 
-**Found during the 0.51.0 merge (SDK, fails closed):**
+- A fixed mapping write or read before a keccak256 loop stops the loop's probe. The probe stands an `OP_TRUE` coin in
+  each entry slot, and the write checks its proof input inline. The call then fails at the VM. A chain has no probe
+  and is not affected.
+- An evmCompat root that makes a typed call and a compat low-level call was refused at input 0 in an agent's test,
+  not yet explained (examined on `nested-guard`).
 
 - Master's compat-call callee groups (`7766bf6f5`) are materialized after transitive discovery, so they get no
   nested refusals and no transitive callees. A compat callee that itself calls on, reads `blockhash` or makes a

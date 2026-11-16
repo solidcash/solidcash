@@ -180,18 +180,21 @@ once (D12), and the regressions it found are fixed.
 (`keccak-loop-shares-trailing-band`, `267b570b7`). The two runs read the same inputs after the block, so no
 transaction could satisfy both, though the compiler used to accept the function.
 
-**Refused after 0.51.0** (`d924cd68b`, `612da652d`):
-- a keccak256 chain (`keccakChainReads`) beside a walk or a dynamic write (`keccak-chain-shares-trailing-band`);
-- a keccak256 loop after a mapping loop beside chunks the entry only reads (`keccak-loop-shares-trailing-band`).
+**Refused after 0.51.0** (`d924cd68b`, `612da652d`, `3aa7d6af8`):
+- a keccak256 chain (`keccakChainReads`) beside a walk, a dynamic write, a mapping loop, per-turn payments or events
+  (`keccak-chain-shares-trailing-band`);
+- a keccak256 loop after a loop over a mapping, beside chunks the entry only reads
+  (`keccak-loop-shares-trailing-band`). A fixed sorted write is no such loop (`d7b8083c7`).
 
 **Laid out after 0.51.0** (`c23ca4de0`, `9f47268d7`). The SDK puts the chunks an entry only reads after the
 side-cars, where the contract reads them. This covers a chain, and a loop beside a mapping loop, per-turn payments or
 events; both used to compile but could not be spent. A loop beside read chunks and an external call is refused by
 the SDK by name.
 
-**Found and open:**
-- A keccak256 chain beside a mapping loop, per-turn payments or events collides and is not refused.
-- A keccak256 loop or chain beside a fixed sorted batch is not examined.
+Beside a fixed sorted write, a keccak256 loop or chain works, with or without read chunks (`aed354f3a`).
+
+**Found and open:** a fixed mapping write or read before a keccak256 loop stops the loop's probe, so the call fails
+at the VM (fails closed).
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs

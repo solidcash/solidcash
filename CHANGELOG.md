@@ -24,14 +24,25 @@
   `block.number` or `block.timestamp` now resolve too.
 - A called contract whose only call is conditional, and not made in a run, is now stated as not making it, as a
   root function is. Such runs were refused before, whatever the guard read.
-- A keccak256 chain beside a collection walk or a dynamic-state write is now refused at compile time
-  (`keccak-chain-shares-trailing-band`), as the keccak256 loop already was. Both runs take the same inputs after the
-  block, so no transaction could spend the function. A keccak256 loop placed after a mapping loop, beside dynamic
-  state the function only reads, is refused for the same reason (`keccak-loop-shares-trailing-band`).
+- A keccak256 chain beside a collection walk, a dynamic-state write, a mapping loop, per-turn payments or events is
+  now refused at compile time (`keccak-chain-shares-trailing-band`), as the keccak256 loop already was beside a walk
+  or a write. The other run counts its coins from the block's end without the chain's side-cars, so no transaction
+  could spend the function. A keccak256 loop placed after a loop over a mapping, beside dynamic state the function
+  only reads, is refused for the same reason (`keccak-loop-shares-trailing-band`).
 - The SDK now lays out the dynamic-state chunks a function only reads after its keccak256 side-cars, where the
-  contract reads them. This covers a keccak256 chain, and a keccak256 loop beside a mapping loop, per-turn payments
-  or events. Such functions compiled but could not be spent. A keccak256 loop beside read chunks and an external call
-  is refused by the SDK by name.
+  contract reads them. This covers a keccak256 chain, a keccak256 loop beside a mapping loop, per-turn payments or
+  events, and either one beside a fixed sorted write. Such functions compiled but could not be spent. A keccak256
+  loop beside read chunks and an external call is refused by the SDK by name.
+- A called contract's call under a guard the SDK cannot decide is now refused by name before anything is sent
+  (`CallGuardUndecidedError`). Before, the call was made on a guess, which spent the callee when the guard was false.
+  The SDK decides a called contract's guard in that contract's own frame, with the block clock, the mapping entries
+  the guard reads and the results of its earlier calls. The late pass and the delegatecall path now read the block
+  clock too, and state a skipped single call as not made.
+
+### Changed
+
+- An external call in the ABI carries `conditionUnpublished: true` when it runs under a guard the compiler cannot
+  write down, so the SDK can tell it from a call inside an `if` condition. No bytecode changes.
 
 ## 0.51.0
 

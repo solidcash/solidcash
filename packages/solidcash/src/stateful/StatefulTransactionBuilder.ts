@@ -926,17 +926,17 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * A keccak256 loop or chain whose band after the block holds its side-cars (`keccakLoopSideCars`, a chain's too) and
-   * the chunks of dynamic state the function only reads, and nothing else: the loop reads side-car k at
+   * A keccak256 loop or chain whose side-cars (`keccakLoopSideCars`, a chain's too) open the band after the block, the
+   * chunks of dynamic state the function only reads following them: the loop reads side-car k at
    * master + blockSize + k, the chain its FINAL side-car at master + blockSize + n/136, and the function finds the chunks
-   * through its witness, so the chunks follow the side-cars, as their outputs already do.
+   * through its witness, so the chunks follow the side-cars, as their outputs already do. A loop that runs first may
+   * have a mapping loop, per-turn payments or events after the chunks, which count both (readChunksFollowKeccakSideCars).
    */
   private get keccakLoopLeadsReadChunks(): boolean {
     const abiFunction = (this.masterUtxo?.unlocker as { abiFunction?: AbiFunction } | undefined)?.abiFunction;
     return abiFunction !== undefined && readChunksFollowKeccakSideCars(abiFunction)
       && this.keccakLoopSideCars.length > 0 && this.iterationEntryInputs.length > 0
-      && this.dynamicChunkInputs.length === 0 && this.insertLoopPredecessorInputs.length === 0
-      && !this.loopEntriesBeforeDynamicChunks
+      && this.dynamicChunkInputs.length === 0 && !this.keccakLoopFollowsTrailingUser
       && this.externalCallUtxoGroups.length === 0 && this.lowLevelCallUtxoGroups.length === 0;
   }
 

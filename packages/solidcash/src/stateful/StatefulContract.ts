@@ -13162,6 +13162,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ));
     const keccakFrontRegion = padKeccakFront(fixedKeccakBase);
     if (abiFunction?.keccakLoopReads && this.categoryId) {
+      // The loop reads side-car k at master + blockSize + k, and the chunks of dynamic state the function only reads
+      // must then follow the side-cars. Beside a call of another contract the build orders the callee's block and the
+      // read chunks by its own rules, apart from the side-cars, so such a call is refused by name before anything is
+      // built, as a callee's loop refuses the runs it is not laid out beside.
+      if (dynamicReadChunkInputs.length > 0
+        && ((abiFunction.externalCalls?.length ?? 0) > 0 || (abiFunction.lowLevelCalls?.length ?? 0) > 0)) {
+        throw new Error(`The call of ${this.inner.artifact.contractName}.${abiFunction.name} cannot be laid out: its `
+          + 'keccak256 loop reads side-car k at master + blockSize + k, the chunks of dynamic state it only reads would '
+          + 'follow the side-cars, and the SDK lays out the blocks of the contracts it calls beside no such run. Read the '
+          + 'state, or hash in the loop, in a function of its own');
+      }
       // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe. When a
       // mapping loop precedes the keccak loop in source order, its bracketing predecessors (and their exact
       // recreated chain outputs) occupy the front of the trailing band, so the probe co-spends them first.

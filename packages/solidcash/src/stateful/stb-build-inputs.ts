@@ -279,10 +279,16 @@ export function buildInputs(
         ...host.keccakLoopSideCars,
         ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
       ];
-    // A keccak loop or chain beside nothing but the chunks of dynamic state the function only reads takes the band's
-    // start: the chunks are found through the function's witness, wherever they sit.
+    // A keccak loop or chain beside the chunks of dynamic state the function only reads takes the band's start: the
+    // chunks are found through the function's witness, wherever they sit. A mapping loop after the keccak loop takes
+    // its predecessors past both, as its covenant counts them.
     const trailingInputs = host.keccakLoopLeadsReadChunks
-      ? [...host.keccakLoopSideCars, ...host.iterationEntryInputs]
+      ? [
+        ...host.keccakLoopSideCars,
+        ...host.iterationEntryInputs,
+        ...trailingInsertPredecessors,
+        ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
+      ]
       : sourceOrderedTrailingInputs;
     let trailingIdx = 0;
     let trailingDisposalIdx = 0;
@@ -934,8 +940,10 @@ export function buildInputs(
     ...externalOutStateInputs, ...externalCallInputs,
     ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
     ...entryInputs,
+    // Side-cars that lead the read chunks run first (keccakLoopLeadsReadChunks), so a mapping loop's predecessors
+    // follow both.
     ...(host.keccakLoopLeadsReadChunks
-      ? [...trailingLoopInputs, ...host.iterationEntryInputs]
+      ? [...host.keccakLoopSideCars, ...host.iterationEntryInputs, ...host.insertLoopPredecessorInputs]
       : [...host.iterationEntryInputs, ...trailingLoopInputs]),
     ...host.dynamicChunkInputs, ...host.trailingDisposalInputs,
     ...tokenContainerInputs, ...satoshiContainerInputs,

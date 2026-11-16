@@ -12206,6 +12206,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       };
       const condition = framed ? allOf(activation.flatMap(knownConjuncts))
         : activation.some((value) => containsUnresolvedConditionNode(value)) ? undefined : allOf(activation);
+      // Direct: the call runs under predicates the compiler could not write down, so no builder can decide whether
+      // it runs. Published apart from a call with no predicate, which runs whenever its statement does.
+      const conditionUnpublished = !framed && activation.length > 0 && condition === undefined;
       const containsUnresolvedPreCallRequireNode = (
         expression: ExternalCallExpression, seen = new Set<ExternalCallExpression>(),
       ): boolean => {
@@ -12396,6 +12399,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // omission for legacy artifacts where argument provenance was not published.
         argSources,
         ...(condition && { condition }),
+        ...(conditionUnpublished && { conditionUnpublished: true }),
         ...(preCallRequires.length > 0 && { preCallRequires }),
         sourceCallNode: node,
       });

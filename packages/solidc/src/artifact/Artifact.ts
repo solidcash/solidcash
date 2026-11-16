@@ -4247,6 +4247,7 @@ function buildFunctionAbiMetadata(
           }),
           ...occurrenceInfo,
           ...(ec.condition && { condition: ec.condition }),
+          ...(ec.conditionUnpublished && { conditionUnpublished: true }),
           ...(!ec.batchInvocations && ec.preCallRequires?.length && {
             preCallRequires: ec.preCallRequires,
           }),

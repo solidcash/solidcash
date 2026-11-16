@@ -1689,6 +1689,11 @@ export interface ExternalCallAbi {
   occurrence?: 'once' | 'conditional' | 'loop';
   /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
   condition?: ExternalCallExpression;
+  /**
+   * Direct convention: the callsite runs under enclosing branch predicates the compiler could not serialize, so it
+   * publishes no `condition` and no builder can decide whether the call runs. A callsite with no predicate omits both.
+   */
+  conditionUnpublished?: boolean;
   /** Compiler-proven necessary `require` predicates before this call. A false guard makes the call unreachable. */
   preCallRequires?: readonly ExternalCallExpression[];
   /** Exact affine pre-test loop recurrence which reaches this callsite. Unlike `maximumOccurrences`, this

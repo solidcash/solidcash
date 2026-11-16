@@ -204,7 +204,9 @@ export function rawCallName(ec: ExternalCallAbi): string {
  * unless its function also delegatecalls; the builder lays the edge for a typed call, and for a raw call only when the
  * callee reads its contract caller (stb-materialize-caller-edge-outputs.ts). A frame of a multi-call spend lays none.
  */
-function callCountsCallerEdge(ec: ExternalCallAbi, abiFunction: AbiFunction | undefined, callee: unknown): boolean {
+export function callCountsCallerEdge(
+  ec: ExternalCallAbi, abiFunction: AbiFunction | undefined, callee: unknown,
+): boolean {
   if (ec.callsiteId === undefined || ec.callOrdinal !== undefined) return false;
   if (!abiFunction?.inputs.some((input) => input.name === `__internal__callEdgeOutputIdx${ec.callsiteId}`)) return false;
   if (ec.interfaceName !== '__raw__') return true;

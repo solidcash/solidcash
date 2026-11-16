@@ -23,7 +23,7 @@ import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
 import { callGuardText } from './call-guard-text.js';
 import { ExternalCallReachUndecidedError } from './external-call-iteration-domain.js';
-import { containsReturningExpression } from './sc-expand-resolve-create-builder-external-calls.js';
+import { callCountsCallerEdge, containsReturningExpression } from './sc-expand-resolve-create-builder-external-calls.js';
 
 export type TransitiveExternalContract = {
   categoryId: string;
@@ -231,13 +231,18 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       }
 
       const cContract = cRegistered as TransitiveExternalContract;
-      // A call B may skip, under a guard B's frame cannot decide, is refused rather than kept: co-spent on a guess, C
-      // would run without being called whenever the guard is false, and a C that reads no msg.sender would settle it.
-      // A message-bus route binds each row it runs instead.
-      if (reach !== 'reached' && !directGroup.compilerRoute) {
+      // A call B may skip, under a guard B's frame cannot decide, is refused rather than kept when nothing in B refuses
+      // a skip: co-spent on a guess, C would run without being called whenever the guard is false, and a C that reads
+      // no msg.sender would settle it. B counts the caller edges it pins, so a call that carries one (a typed call
+      // under a guard the compiler could not publish) is kept: B's own covenant refuses the edge the build laid for a
+      // call B skips. A message-bus route binds each row it runs instead.
+      if (reach !== 'reached' && !directGroup.compilerRoute
+        && (directGroup.callMode === 'delegatecall' || !callCountsCallerEdge(bEc, bAbiFunc, cContract))) {
         const callee = cContract.inner.artifact.contractName;
+        const rawName = bEc.rawFunctionName ?? cContract.inner.artifact.abi.find((candidate) => bEc.rawSelector
+          !== undefined && candidate.selector?.toLowerCase() === bEc.rawSelector.toLowerCase())?.name;
         const name = bEc.interfaceName === '__raw__'
-          ? `${callee}.${bEc.rawFunctionName ?? 'call'}` : `${bEc.interfaceName}.${bEc.functionName}`;
+          ? `${callee}.${rawName ?? 'call'}` : `${bEc.interfaceName}.${bEc.functionName}`;
         throw new CallGuardUndecidedError(
           `${bContract.inner.artifact.contractName}.${bAbiFunc.name}`,
           `${name}${bEc.sourceLocation === undefined ? '' : ` (line ${bEc.sourceLocation.line})`}`,

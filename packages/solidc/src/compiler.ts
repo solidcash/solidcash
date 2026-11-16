@@ -145,7 +145,7 @@ import AstBuilder, { lvalueKeyUnitsBuilt } from './ast/AstBuilder.js';
 import { Class, GlobalFunction, TimeOp } from './ast/Globals.js';
 import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal, {
-  assertKeccakLoopBand, assertRecoveryLoopBand,
+  assertKeccakChainBand, assertKeccakLoopBand, assertRecoveryLoopBand,
 } from './generation/GenerateTargetTraversal.js';
 import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
@@ -18464,6 +18464,7 @@ function compileResolvedAst(
   for (const fn of ast.contract.functions) {
     assertRecoveryLoopBand(fn);
     assertKeccakLoopBand(fn);
+    assertKeccakChainBand(fn);
   }
 
   const constructorParamLength = ast.contract.parameters.length;

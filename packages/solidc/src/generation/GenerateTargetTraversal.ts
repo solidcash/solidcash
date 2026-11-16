@@ -838,6 +838,47 @@ export function assertKeccakLoopBand(fn: FunctionDefinitionNode): void {
     + `${walked !== undefined ? 'walk' : 'write'}, into a function of its own`);
 }
 
+/**
+ * A keccak256 chain of an entry beside a run that takes the same indexes after the block, refused by name. The chain
+ * hashes an unbounded parameter in one side-car per full 136-byte block and a FINAL one: the entry reads FINAL from the
+ * input master + blockSize + n/136 for an n-byte value and its digest from the output of that index, and each step takes
+ * its state from the input and output just before its own, so the chain holds the indexes from the block's end on. A
+ * collection walk reads its entries from the inputs right after the block, and a write of dynamic state checks its new
+ * chunks at the outputs right after the block. Neither counts the chain's side-cars and the chain counts neither. The
+ * chunks an entry only reads are found through its `__internal__dynamicChunkInputBase` witness, so they follow the
+ * side-cars, and a recovery loop counts the chain's side-cars from the hashed parameter's length
+ * (assertRecoveryLoopBand): neither is refused here.
+ */
+export class KeccakChainSideCarError extends SolidCashError {
+  constructor(node: Node, public readonly reason: string, detail: string) {
+    super(node, `${reason}: ${detail}`);
+  }
+}
+
+/**
+ * Refuse a source entry whose keccak256 chain shares the indexes after its block with a collection walk or a write of
+ * dynamic state (KeccakChainSideCarError), naming the entry and both runs. Run on the code generator's final function
+ * facts. A constructor never chains (its deploy supplies a fixed slot), and a compiler-named function is not checked.
+ */
+export function assertKeccakChainBand(fn: FunctionDefinitionNode): void {
+  if (fn.keccakChainReads !== true || !fn.isEntryPoint || fn.name.startsWith('__')) return;
+  const walked = fn.collectionIterations?.[0]?.collection;
+  const written = fn.dynamicWrites?.[0];
+  const other = walked !== undefined
+    ? `walks the collection '${walked}', whose entries it reads from the inputs right after its block, where the chain `
+      + 'reads its side-cars'
+    : written !== undefined
+      ? `writes the dynamic state '${written}', whose new chunks it checks at the outputs right after its block, where `
+        + 'the chain recreates its side-cars'
+      : undefined;
+  if (other === undefined) return;
+  throw new KeccakChainSideCarError(fn, 'keccak-chain-shares-trailing-band', `'${fn.name}' hashes an unbounded `
+    + 'parameter in a keccak256 chain, which reads its FINAL side-car from the input master + blockSize + n/136 for an '
+    + 'n-byte value, after one side-car per full 136-byte block, and recreates each at the output of its own index, and '
+    + `${other}. Neither run counts the coins of the other, so no transaction holds both. Hash the value in a function `
+    + `of its own, or move the ${walked !== undefined ? 'walk' : 'write'} into one`);
+}
+
 const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
   'keccak-loop-and-straight-line-mix-not-enabled':
     'this keccak256 call reads a fixed compute side-car slot that its keccak-loop function did not reserve. A '

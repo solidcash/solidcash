@@ -180,11 +180,18 @@ once (D12), and the regressions it found are fixed.
 (`keccak-loop-shares-trailing-band`, `267b570b7`). The two runs read the same inputs after the block, so no
 transaction could satisfy both, though the compiler used to accept the function.
 
+**Refused after 0.51.0** (`d924cd68b`, `612da652d`):
+- a keccak256 chain (`keccakChainReads`) beside a walk or a dynamic write (`keccak-chain-shares-trailing-band`);
+- a keccak256 loop after a mapping loop beside chunks the entry only reads (`keccak-loop-shares-trailing-band`).
+
+**Laid out after 0.51.0** (`c23ca4de0`, `9f47268d7`). The SDK puts the chunks an entry only reads after the
+side-cars, where the contract reads them. This covers a chain, and a loop beside a mapping loop, per-turn payments or
+events; both used to compile but could not be spent. A loop beside read chunks and an external call is refused by
+the SDK by name.
+
 **Found and open:**
-- A keccak256 chain (`keccakChainReads`) beside a walk or a dynamic write collides as the loop did and is not
-  refused. Beside chunks it only reads, its direct build may still put the chunks first.
-- A keccak256 loop beside chunks it only reads and also a mapping loop, per-turn payments or events, or an external
-  call keeps the old input order; not checked.
+- A keccak256 chain beside a mapping loop, per-turn payments or events collides and is not refused.
+- A keccak256 loop or chain beside a fixed sorted batch is not examined.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs

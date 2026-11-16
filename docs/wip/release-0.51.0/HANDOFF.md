@@ -225,8 +225,8 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
 
 **In progress after the release (2026-11-16)**, each by an agent on its own branch, landed by the lander:
 
-- `keccak-band`: the keccak256 chain beside a walk or a dynamic write, the chain beside read-only chunks, and the
-  loop beside read-only chunks with a companion (under "Not refused yet");
+- `keccak-band`: the follow-ups to its fix below, which are a chain beside a mapping loop, payments or events, the
+  fixed sorted batch (both under "Not refused yet"), and a non-sorted entry-loop write after the loop, untested;
 - `nested-guard`: the follow-ups to its fix below:
   - a guard discovery cannot evaluate;
   - the block clock and the untaken-call base on the late-transitive and delegatecall paths, which fail closed today;
@@ -242,6 +242,18 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
     run was refused. It is now stated as not made (-1), as at the root.
   - Checks: `NestedCalleeBlockGuard.e2e` passed 4 of 4 (0 of 4 before the fix). A union of 125 nested-call SDK
     files passed: 1,129 tests passed, 3 skipped, 0 failed.
+- **The keccak256 trailing band** (`d924cd68b`, `c23ca4de0`, `612da652d`, `9f47268d7`).
+  - A chain beside a collection walk or a dynamic write took the same indexes after the block as the walk's
+    entries or the write's new chunks. It is now refused (`keccak-chain-shares-trailing-band`).
+  - A chain beside chunks it only reads, and a loop beside read chunks with a mapping loop, per-turn payments or
+    events, compiled but could not be spent: the SDK put the chunks before the side-cars. The SDK now puts the
+    side-cars first, and each shape spends on the VM, with tamper cases refused.
+  - A loop after a mapping loop beside read chunks is refused, because the compiler's own indexes disagree. A loop
+    with read chunks and an external call is refused by the SDK, whose output assembly cannot lay it out.
+  - Checks: the four new or changed test files passed (3, 1, 5 and 4 tests). Across the corpus snapshot of 352
+    files, nothing is newly refused and no bytes or ABI moved. A union of every file that names keccak256, side-cars
+    or dynamic chunks passed: 51 solidc files (2,062 passed, 6 skipped) and 167 solidcash files (1,632 passed, 12
+    skipped), none failed.
 
 **Soundness, documented:**
 
@@ -270,12 +282,11 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
 - a called contract's own `blockhash(n)` read, and a called contract's low-level call with a payload;
 - `tx.origin` passed on through a callee laid out by its ordinary build.
 
-**Not refused yet:**
+**Not refused yet** (both in progress on `keccak-band`):
 
-- a keccak256 chain beside a collection walk or a dynamic-state write cannot be spent, and the compiler does not
-  refuse it;
-- a keccak256 loop beside read-only chunks together with a mapping loop, per-turn payments, events or an external
-  call keeps the old input order, unchecked.
+- a keccak256 chain beside a mapping loop, per-turn payments or events: chains get no shared cursors, and those
+  runs' bases do not count the chain;
+- a keccak256 loop or chain beside a fixed sorted batch (`sortedBatchInfo`), not examined yet.
 
 **Found during the 0.51.0 merge (SDK, fails closed):**
 

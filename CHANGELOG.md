@@ -11,6 +11,14 @@
   `block.number` or `block.timestamp` now resolve too.
 - A called contract whose only call is conditional, and not made in a run, is now stated as not making it, as a
   root function is. Such runs were refused before, whatever the guard read.
+- A keccak256 chain beside a collection walk or a dynamic-state write is now refused at compile time
+  (`keccak-chain-shares-trailing-band`), as the keccak256 loop already was. Both runs take the same inputs after the
+  block, so no transaction could spend the function. A keccak256 loop placed after a mapping loop, beside dynamic
+  state the function only reads, is refused for the same reason (`keccak-loop-shares-trailing-band`).
+- The SDK now lays out the dynamic-state chunks a function only reads after its keccak256 side-cars, where the
+  contract reads them. This covers a keccak256 chain, and a keccak256 loop beside a mapping loop, per-turn payments
+  or events. Such functions compiled but could not be spent. A keccak256 loop beside read chunks and an external call
+  is refused by the SDK by name.
 
 ## 0.51.0
 

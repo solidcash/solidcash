@@ -175,10 +175,11 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       return { state, externalReturns };
     };
     // Whether B's run makes a call: `skipped` when B's frame proves it does not; `undecided` for a call under a guard
-    // the frame cannot decide, with why when the compiler published the guard; `reached` otherwise, also for a call
-    // whose arguments do not resolve, which are resolved, or refused, once its callee is known. A looped call keeps
-    // its loop's planning: a frame that cannot plan the loop leaves the call as it was.
-    const reachOf = async (bEc: ExternalCallAbi): Promise<'reached' | 'skipped' | { undecided?: string }> => {
+    // the frame cannot decide, with why when the compiler published the guard, or in a loop whose number of turns the
+    // frame cannot plan (`loop`); `reached` otherwise, also for a call whose arguments do not resolve, which are
+    // resolved, or refused, once its callee is known.
+    type Reach = 'reached' | 'skipped' | { undecided?: string; loop?: true };
+    const reachOf = async (bEc: ExternalCallAbi): Promise<Reach> => {
       // The compiler could not write down a predicate the call runs under, so no frame can decide whether B makes it.
       if (bEc.conditionUnpublished === true && bEc.condition === undefined) return {};
       if (typeof bContract._planExternalCallOccurrences !== 'function') return 'reached';
@@ -203,8 +204,14 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         });
         return occurrences.length === 0 ? 'skipped' : 'reached';
       } catch (error) {
-        return guarded && error instanceof ExternalCallReachUndecidedError
-          ? { undecided: 'a value it reads did not resolve' } : 'reached';
+        if (!(error instanceof ExternalCallReachUndecidedError)) return 'reached';
+        if (guarded) return { undecided: 'a value it reads did not resolve' };
+        if (bEc.occurrence !== 'loop') return 'reached';
+        // A loop over a state array of targets runs once per element, and not at all over an empty one.
+        const targets = bEc.loopArrayVar === undefined ? undefined : frame.state[bEc.loopArrayVar];
+        if (Array.isArray(targets)) return targets.length === 0 ? 'skipped' : 'reached';
+        // A loop that may run no turn would leave C spent and uncalled.
+        return { undecided: 'the number of turns of its loop did not resolve', loop: true };
       }
     };
 
@@ -247,7 +254,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
           `${bContract.inner.artifact.contractName}.${bAbiFunc.name}`,
           `${name}${bEc.sourceLocation === undefined ? '' : ` (line ${bEc.sourceLocation.line})`}`,
           callee,
-          bEc.condition === undefined ? undefined : callGuardText(bEc.condition, bAbiFunc),
+          reach.loop ? { loop: true } : bEc.condition === undefined ? undefined : callGuardText(bEc.condition, bAbiFunc),
           reach.undecided,
         );
       }

@@ -55,21 +55,31 @@ export class CallGuardUndecidedError extends Error {
     public readonly call: string,
     /** The contract the call reaches. */
     public readonly callee: string,
-    /** The guard as the artifact publishes it, or undefined when the compiler publishes no form of it. */
-    public readonly guard: string | undefined,
-    /** Why the published guard did not resolve. */
+    /**
+     * The guard as the artifact publishes it; undefined when the compiler publishes no form of it; `{ loop: true }` when
+     * the call runs once per turn of a loop whose number of turns does not resolve.
+     */
+    public readonly guard: string | undefined | { readonly loop: true },
+    /** Why the published guard, or the loop, did not resolve. */
     public readonly reason?: string,
   ) {
     const contract = caller.slice(0, caller.lastIndexOf('.')) || caller;
-    super(`${caller}'s call of ${call} cannot be built: it runs only under ${guard === undefined
-      ? 'a guard the compiler publishes no form of, so the SDK cannot tell before it builds the transaction whether '
-        + `${contract} makes the call`
-      : `the guard \`${guard}\`, and the SDK cannot tell before it builds the transaction whether that holds`
-        + `${reason === undefined ? '' : ` (${reason})`}`}. Spending ${callee} on a guess would let it run without being `
-      + 'called when the guard is false. Make the guard something the SDK can evaluate when it builds: the state of '
-      + `${contract}, an argument, block.number or block.timestamp, or the result of an earlier call whose contract it `
-      + 'can run; or move the call into a function of its own that requires the guard, and call that function only '
-      + 'when the guard holds.');
+    const because = reason === undefined ? '' : ` (${reason})`;
+    const loop = typeof guard === 'object';
+    super(`${caller}'s call of ${call} cannot be built: it runs ${guard === undefined
+      ? 'only under a guard the compiler publishes no form of, so the SDK cannot tell before it builds the transaction '
+        + `whether ${contract} makes the call`
+      : loop
+        ? `once per turn of a loop, and the SDK cannot tell before it builds the transaction whether the loop turns${because}`
+        : `only under the guard \`${guard}\`, and the SDK cannot tell before it builds the transaction whether that `
+          + `holds${because}`}. Spending ${callee} on a guess would let it run without being called when the `
+      + `${loop ? 'loop does not turn' : 'guard is false'}. ${loop
+        ? `Bound the loop by something the SDK can evaluate when it builds: the state of ${contract}, an argument, `
+          + 'block.number or block.timestamp, or the result of an earlier call whose contract it can run.'
+        : 'Make the guard something the SDK can evaluate when it builds: the state of '
+          + `${contract}, an argument, block.number or block.timestamp, or the result of an earlier call whose contract `
+          + 'it can run; or move the call into a function of its own that requires the guard, and call that function '
+          + 'only when the guard holds.'}`);
     this.name = 'CallGuardUndecidedError';
   }
 }

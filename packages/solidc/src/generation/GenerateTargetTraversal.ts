@@ -877,6 +877,12 @@ export function assertKeccakLoopBand(fn: FunctionDefinitionNode): void {
  * chunks an entry only reads are found through its `__internal__dynamicChunkInputBase` witness, so they follow the
  * side-cars, and a recovery loop counts the chain's side-cars from the hashed parameter's length
  * (assertRecoveryLoopBand): neither is refused here.
+ *
+ * A mapping loop, per-turn payments and events take their coins from the shared cursors, which start at the block's
+ * end past the walk's entries, the read chunks and a sorted batch's rewrites (emitTrailingWriteInputBase/OutputBase,
+ * emitRuntimeLoopEffectVerification). Only a keccak256 loop seeds those cursors with its side-cars
+ * (emitLoopKeccakSetup); a chain does not, so these runs need the chain's indexes too and are refused the same way. A
+ * fixed write of a sorted mapping is a batch whose coins the entry finds through its witnesses, and is not refused.
  */
 export class KeccakChainSideCarError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
@@ -885,27 +891,38 @@ export class KeccakChainSideCarError extends SolidCashError {
 }
 
 /**
- * Refuse a source entry whose keccak256 chain shares the indexes after its block with a collection walk or a write of
- * dynamic state (KeccakChainSideCarError), naming the entry and both runs. Run on the code generator's final function
- * facts. A constructor never chains (its deploy supplies a fixed slot), and a compiler-named function is not checked.
+ * Refuse a source entry whose keccak256 chain shares the indexes after its block with a collection walk, a write of
+ * dynamic state, a mapping loop, per-turn payments or events (KeccakChainSideCarError), naming the entry and both runs.
+ * Run on the code generator's final function facts. A constructor never chains (its deploy supplies a fixed slot), and
+ * a compiler-named function is not checked.
  */
 export function assertKeccakChainBand(fn: FunctionDefinitionNode): void {
   if (fn.keccakChainReads !== true || !fn.isEntryPoint || fn.name.startsWith('__')) return;
   const walked = fn.collectionIterations?.[0]?.collection;
   const written = fn.dynamicWrites?.[0];
-  const other = walked !== undefined
-    ? `walks the collection '${walked}', whose entries it reads from the inputs right after its block, where the chain `
-      + 'reads its side-cars'
+  const mapped = mappingLoopCollection(fn);
+  const [noun, other]: readonly [string, string] | readonly [undefined, undefined] = walked !== undefined
+    ? ['walk', `walks the collection '${walked}', whose entries it reads from the inputs right after its block, where `
+      + 'the chain reads its side-cars']
     : written !== undefined
-      ? `writes the dynamic state '${written}', whose new chunks it checks at the outputs right after its block, where `
-        + 'the chain recreates its side-cars'
-      : undefined;
+      ? ['write', `writes the dynamic state '${written}', whose new chunks it checks at the outputs right after its `
+        + 'block, where the chain recreates its side-cars']
+      : mapped !== undefined
+        ? ['mapping loop', `runs a loop over the mapping '${mapped}', whose entries it takes from the inputs and `
+          + 'outputs right after its block, where the chain reads and recreates its side-cars']
+        : (fn.runtimeLoopTransfers?.length ?? 0) > 0
+          ? ['payments', 'pays in a loop, whose payments it checks at the outputs right after its block, where the '
+            + 'chain recreates its side-cars']
+          : (fn.runtimeLoopEvents?.length ?? 0) > 0
+            ? ['events', 'emits events in a loop, whose records it checks at the outputs right after its block, where '
+              + 'the chain recreates its side-cars']
+            : [undefined, undefined];
   if (other === undefined) return;
   throw new KeccakChainSideCarError(fn, 'keccak-chain-shares-trailing-band', `'${fn.name}' hashes an unbounded `
     + 'parameter in a keccak256 chain, which reads its FINAL side-car from the input master + blockSize + n/136 for an '
     + 'n-byte value, after one side-car per full 136-byte block, and recreates each at the output of its own index, and '
     + `${other}. Neither run counts the coins of the other, so no transaction holds both. Hash the value in a function `
-    + `of its own, or move the ${walked !== undefined ? 'walk' : 'write'} into one`);
+    + `of its own, or move the ${noun} into one`);
 }
 
 const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {

@@ -77,6 +77,9 @@ event of a constant-bound loop, kept one output for all its turns (constant-boun
 loop that stays rolled fails its second turn instead); a framed contract's address took payments it can never
 spend (the SDK now refuses them).
 
+Status, 2026-11-16: part of SolidCash 0.51.0, prepared on branch `release/0.51.0` (this line merged with master).
+What stays open, and how the work was run, is in `docs/wip/release-0.51.0/HANDOFF.md`.
+
 Status on branch `deployer-spec`, 2026-11-15: the open items noted on 2026-11-14 are built. Each full suite was run
 once (D12), and the regressions it found are fixed.
 

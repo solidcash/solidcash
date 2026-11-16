@@ -1399,3 +1399,9 @@ unassumed
 unslotted
 uqdiv
 xdoesnotexist
+busgen
+groth
+mimc
+mkwt
+solidpool
+typechecks

@@ -88,6 +88,8 @@ export type SolidcDiagnosticCode =
   | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
   // A call through a collection entry its function writes before the call where the call cannot read the written entry.
   | 'ENTRY_TARGET_WRITTEN_BEFORE_CALL'
+  // A message-bus handler whose call the route checks before the handler's body runs writes that call's target first.
+  | 'ROUTE_TARGET_WRITTEN_BEFORE_CALL'
   // An external call left in an invoked function body, where no entry point lays out or binds its callee.
   | 'EXTERNAL_CALL_IN_SUBROUTINE'
   // A `{value: v}` call whose target no output the covenant checks can be built for, so the payment would drop.

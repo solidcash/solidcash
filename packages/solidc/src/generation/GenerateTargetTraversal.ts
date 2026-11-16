@@ -1052,10 +1052,10 @@ interface CallSiteWrites {
   /** Whether a write of one of `names` (a local, a parameter, a branch capture) can run after a run of the call. */
   after(names: readonly string[], slot: ExternalCallSlot): boolean;
   /**
-   * Whether a write can land before a run of the call: a reassignment of one of the stack variables `names`, or a
-   * write of one of the state roots `roots`.
+   * Whether a write can land before a run of the call (a slot's calls, or one call node): a reassignment of one of the
+   * stack variables `names`, or a write of one of the state roots `roots`.
    */
-  before(names: readonly string[], roots: readonly string[], slot: ExternalCallSlot): boolean;
+  before(names: readonly string[], roots: readonly string[], call: ExternalCallSlot | Node): boolean;
   /**
    * The initializer of local `name` when a write of what it reads can land between it and a run of the call: a slot's
    * calls, or one low-level call node.
@@ -20694,6 +20694,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const slots = logicalSlots.every((slot) => slot.sourceEffectOrdinal !== undefined)
         ? logicalSlots.sort((left, right) => left.sourceEffectOrdinal! - right.sourceEffectOrdinal!)
         : logicalSlots;
+      // These rows are checked here, before the handler's body runs, against the frame handed to it.
+      for (const slot of slots) this.refuseRouteRowTargetWrittenFirst(targetFunc, slot);
       const emissionStackBaseline = [...this.stack];
       const emissionResults: string[] = [];
       this.scopeDepth += 1;
@@ -30900,16 +30902,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         + `lacks compiler metadata (slot ${node.callInfo?.externalCallSlotIndex ?? 'unset'}, `
         + `slots ${this.externalCallSlots.map((slot) => `${slot.interfaceName}.${slot.functionName}`).join(', ')})`,
       );
+      // A target the body wrote after its compiler local read it is read again here (lowLevelCallSiteTarget).
+      const target = this.lowLevelCallSiteTargets.get(node);
       if (this.graphStraightRuntimeMode) {
         this.verifyGraphEmissionRow(graphEmissionSlot, this.currentFunction, node.parameters, locationData, {
-          disposition: 'defer-whole-vector', parametersAreCallArguments: true,
+          disposition: 'defer-whole-vector', parametersAreCallArguments: true, ...(target !== undefined && { target }),
         });
         const rowName = `(__graph_straight_row_${this.graphStraightRuntimeRows.length})`;
         this.stack[0] = rowName;
         this.graphStraightRuntimeRows.push(rowName);
         return node;
       }
-      this.consumeGraphRuntimeEmissionRow(graphEmissionSlot, node.parameters, node, locationData);
+      this.consumeGraphRuntimeEmissionRow(graphEmissionSlot, node.parameters, node, locationData, target);
       if (node.opaqueReturn) {
         // A reached graph edge is successful or the co-spend aborts. Pair that success bit with the exact
         // producer-authenticated blob peeled from this occurrence's row.
@@ -31509,6 +31513,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return row?.selector;
   }
 
+  /**
+   * The route checks a handler's call rows from the frame it hands the handler, before the handler's body runs
+   * (verifyGraphEmissionRow without call arguments): a compiler local's initializer, a state field, a parameter's
+   * value. A row whose target the body writes before its call is bound there to the value from before the write, a
+   * contract the EVM's call does not go to. Such a handler is refused by name, which the route's admission attributes
+   * to it, so its function keeps only its direct entry, which binds the call where it runs. A constructor value and a
+   * literal are never written.
+   */
+  private refuseRouteRowTargetWrittenFirst(handler: FunctionDefinitionNode, slot: ExternalCallSlot): void {
+    const body = handler.body;
+    const target = slot.addressParam;
+    if (!body || target === undefined || slot.addressSource?.kind === 'constructorArg') return;
+    const calls: Node[] = [];
+    walkInvocationAst(body, (child) => {
+      if (child instanceof ExternalFunctionCallNode && child.callInfo?.externalCallSlotIndex === slot.slotIndex) {
+        calls.push(child);
+      }
+    });
+    if (calls.length === 0) return;
+    const writes = this.bodyWrites(body);
+    const writtenFirst = calls.some((call) => {
+      try {
+        return target.startsWith('__extaddr_')
+          ? writes.staleInitializer(target, call) !== undefined
+          : writes.before([target], [], call);
+      } catch {
+        // An entry the call cannot read after its write (ENTRY_TARGET_WRITTEN_BEFORE_CALL) is written first too.
+        return true;
+      }
+    });
+    if (!writtenFirst) return;
+    const calling = slot.interfaceName === '__raw__' ? 'a low-level call'
+      : `its call to ${slot.interfaceName}.${slot.functionName}`;
+    throw new SolidcDiagnosticError(
+      'ROUTE_TARGET_WRITTEN_BEFORE_CALL',
+      `'${handler.name}' writes the target of ${calling} before the call. The message-bus route checks a handler's `
+        + 'calls from the frame it hands the handler, before the handler\'s body runs, so it would bind the target '
+        + 'from before the write. The handler is refused from the route; its function keeps its direct entry, which '
+        + 'binds the call where it runs.',
+      { functionName: handler.name, call: slot.functionName },
+    );
+  }
+
   /** Verify one source-executed call against the compiler-owned participant emission frame. */
   private verifyGraphEmissionRow(
     slot: ExternalCallSlot,
@@ -31520,9 +31567,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       parametersAreCallArguments?: boolean;
       /** Per-row selector for a collapsed mixed-handler batch; defaults to the physical slot selector. */
       emissionSelector?: Uint8Array;
+      /** At the call site, the call's target as read there when the body wrote it first (lowLevelCallSiteTarget). */
+      target?: ExpressionNode;
     },
   ): number {
     const { disposition, parametersAreCallArguments = false, emissionSelector } = verification;
+    const targetReadAgain = parametersAreCallArguments ? verification.target : undefined;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process
       ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
       // EVERY variant of this check (returning, consuming, deferred, non-returning) builds its operands from the
@@ -31656,8 +31706,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A graph-emission clone receives source call arguments, but a constructor-bound receiver remains part of
     // the persistent contract ABI frame. Re-visiting the source identifier treats it like a transient expression
     // and uses a top-relative lookup through the clone's hidden result/caller context.
-    const evaluatedTargetExpression = parametersAreCallArguments && slot.sourceCallNode !== undefined
-      && constructorTarget === undefined;
+    const evaluatedTargetExpression = targetReadAgain !== undefined || (parametersAreCallArguments
+      && slot.sourceCallNode !== undefined && constructorTarget === undefined);
     // Solidity library inlining routes an immutable/state-bound low-level receiver through
     // `__extaddr_ll_<name>`. Graph verification runs before the cloned handler body has
     // materialized that local, but the authenticated constructor value is already in the
@@ -31673,7 +31723,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         stateVariable.name === slot.addressParam!.slice('__extaddr_ll_'.length))
       : undefined;
     let evaluatedSelectorExpression = false;
-    if (evaluatedTargetExpression) {
+    if (targetReadAgain !== undefined) {
+      this.visit(cloneNode(targetReadAgain));
+    } else if (evaluatedTargetExpression) {
       this.visit(slot.sourceCallNode!.addressExpression);
     } else if (constructorTarget || inlinedConstructorTarget) {
       this.emit(encodeInt(BigInt(this.getStackIndex(
@@ -32177,12 +32229,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return returnTypes.length;
   }
 
-  /** Consume one reached conditional/loop call from the runtime graph emission vector. */
+  /**
+   * Consume one reached conditional/loop call from the runtime graph emission vector. `target`, when given, is the
+   * call's target as read where it runs (lowLevelCallSiteTarget).
+   */
   private consumeGraphRuntimeEmissionRow(
     slot: ExternalCallSlot,
     parameters: ExpressionNode[],
     node: Node,
     locationData: SingleLocationData,
+    target?: ExpressionNode,
   ): void {
     const emissionSelector = node instanceof ExternalFunctionCallNode
       ? this.graphEmissionSelectorForCall(slot, node)
@@ -32190,6 +32246,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const returned = this.verifyGraphEmissionRow(slot, this.currentFunction, parameters, locationData, {
       disposition: 'consume-vector-prefix', parametersAreCallArguments: true,
       ...(emissionSelector !== undefined && { emissionSelector }),
+      ...(target !== undefined && { target }),
     });
     if (returned > 0) return;
     this.emit(Op.OP_DUP, locationData);
@@ -54295,12 +54352,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const targets = new Map<Node, ExpressionNode>();
     const body = node.body;
     if (!body || this.framedMaster) return targets;
+    // A runtime graph handler checks each call's row where the call runs, from the call's own target, with none of the
+    // direct convention's call-site registers (collectCallSiteTargets): every call it makes is read there.
+    const graphHandler = node.graphRuntimeEmissionHandler === true;
     const sites: { call: Node; target: IdentifierNode }[] = [];
     walkInvocationAst(body, (child) => {
       const target = child instanceof LowLevelCallNode || child instanceof LowLevelCallStatementNode
         ? child.targetExpression
-        : child instanceof ExternalFunctionCallNode && child.interfaceName === '__raw__'
-          && child.callOptions?.value !== undefined ? child.addressExpression : undefined;
+        : child instanceof ExternalFunctionCallNode && (graphHandler
+          || (child.interfaceName === '__raw__' && child.callOptions?.value !== undefined))
+          ? child.addressExpression : undefined;
       if (target instanceof IdentifierNode && target.name.startsWith('__extaddr_')) sites.push({ call: child, target });
     });
     if (sites.length === 0) return targets;
@@ -54506,12 +54567,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return landed.some((write) => (write.names === undefined || write.names.some((name) => names.includes(name)))
           && calls.some((call) => write.end > at.get(call)! || sharesLoop(write.node, call)));
       },
-      before: (names, roots, slot) => {
-        const calls = callsOf(slot);
+      before: (names, roots, call) => {
+        const calls = runsOf(call);
         return landed.some((write) => ((!(write.node instanceof VariableDefinitionNode)
           && (write.names === undefined || write.names.some((name) => names.includes(name))))
           || write.roots === 'any' || [...write.roots].some((root) => roots.includes(root)))
-          && calls.some((call) => write.end < at.get(call)! || sharesLoop(write.node, call)));
+          && calls.some((run) => write.end < at.get(run)! || sharesLoop(write.node, run)));
       },
       staleInitializer: (name, call) => {
         const declaration = declarations.get(name);

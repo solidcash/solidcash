@@ -58,6 +58,8 @@ pushd ../.. && yarn build && popd
 
 To publish a new release, we use `yarn update-version 'x.x.x'` in the root directory to bump the version before release, and then `yarn publish-all` in the root directory to publish the release. In case of a tagged release (such as `next`), we use `yarn publish-all --dist-tag <tag name>` to publish the release with the specified tag.
 
+Each package's `prepublishOnly` runs its whole test suite and lint, so `yarn publish-all` runs every suite again before it publishes; once the suites have passed on the release commit, `yarn publish-all --ignore-scripts` skips them. `yarn publish-all` cannot finish npm's sign-in when the publishing account's second factor is a security key: npm refuses the write and prints a sign-in link that lerna does not follow. 0.51.0 was published one package at a time with npm itself instead, with [`docs/wip/release-0.51.0/scripts/publish-one.sh`](docs/wip/release-0.51.0/scripts/publish-one.sh).
+
 ## solidc
 
 ### Prerequisites

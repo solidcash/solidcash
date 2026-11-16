@@ -3929,6 +3929,8 @@ export class LowLevelCallNode extends ExpressionNode {
   callIndex: number = 0;  // assigned during pre-scan
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
+  // The function can write the call's target before the call (code generation, markLowLevelTargetsWrittenFirst).
+  targetWrittenBeforeCall?: boolean;
   // Compiler-owned delegate expressions (currently returning split forwarders) use the authenticated
   // cross-input return-event channel rather than the raw low-level `(true, emptyBytes)` result.
   synthesizedFromLibraryCall = false;
@@ -3956,6 +3958,8 @@ export class LowLevelCallStatementNode extends StatementNode {
   callIndex: number = 0;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
+  // The function can write the call's target before the call (code generation, markLowLevelTargetsWrittenFirst).
+  targetWrittenBeforeCall?: boolean;
   // Set when synthesized from `L.f()` library-call sugar (SynthesizeLibraryDelegateCalls): the user wrote a
   // typed library call, not a raw delegatecall, so suppress the low-level-call warning.
   synthesizedFromLibraryCall = false;

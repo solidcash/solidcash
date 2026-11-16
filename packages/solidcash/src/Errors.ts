@@ -30,13 +30,16 @@ export class MixedCompileModeCallError extends Error {
 
 /**
  * A call whose target the function writes before the call runs on a callee the caller's current state and the
- * call's arguments do not name (ABI `targetWrittenBeforeCall`), so the builder cannot resolve it from them.
+ * call's arguments do not name (ABI `targetWrittenBeforeCall`), so the builder cannot resolve it from them. `remedy`
+ * names how the author passes the callee: withExternalCall for a call slot, withCall for a low-level call.
  */
 export class ExternalCallTargetWrittenBeforeCallError extends Error {
-  constructor(functionName: string, interfaceName: string, methodName: string) {
+  constructor(
+    functionName: string, interfaceName: string, methodName: string, remedy = 'withExternalCall(contract)',
+  ) {
     super(`'${functionName}' writes the target of its call to ${interfaceName}.${methodName} before the call, so the `
       + 'call runs on a callee the contract\'s current state and the call\'s arguments do not name. Pass the callee '
-      + 'the call runs on with withExternalCall(contract).');
+      + `the call runs on with ${remedy}.`);
   }
 }
 

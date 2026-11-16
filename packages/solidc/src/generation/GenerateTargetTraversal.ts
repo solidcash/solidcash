@@ -12068,6 +12068,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // runs. Its register starts empty; the call site fills it and the checks after the body read it.
     ({ targets: this.callSiteTargets, selectors: this.callSiteSelectors } = this.collectCallSiteTargets(node));
     this.lowLevelCallSiteTargets = this.collectLowLevelCallSiteTargets(node);
+    this.markLowLevelTargetsWrittenFirst(node);
     for (const target of [...this.callSiteTargets.values(), ...this.callSiteSelectors.values()]) {
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(target.register);
@@ -54382,6 +54383,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       targets.set(call, chain);
     }
     return targets;
+  }
+
+  /**
+   * Marks each low-level `call`/`staticcall` whose target the function can write before the call, for the artifact
+   * (`lowLevelCalls[].targetWrittenBeforeCall`): a compiler local whose initializer is written in between, or a target
+   * reading a stack variable or state root written before the call. Its published `targetSource` reads the caller's
+   * state and arguments from before the write, so a builder must not resolve the callee from it.
+   */
+  private markLowLevelTargetsWrittenFirst(node: FunctionDefinitionNode): void {
+    const body = node.body;
+    if (!body) return;
+    const calls: (LowLevelCallNode | LowLevelCallStatementNode)[] = [];
+    walkInvocationAst(body, (child) => {
+      if ((child instanceof LowLevelCallNode || child instanceof LowLevelCallStatementNode)
+        && child.callMode !== 'delegatecall') calls.push(child);
+    });
+    if (calls.length === 0) return;
+    const writes = this.bodyWrites(body);
+    for (const call of calls) {
+      const target = call.targetExpression;
+      let writtenFirst: boolean;
+      if (target instanceof IdentifierNode && target.name.startsWith('__extaddr_')) {
+        try {
+          writtenFirst = writes.staleInitializer(target.name, call) !== undefined;
+        } catch {
+          writtenFirst = true;
+        }
+      } else {
+        const names: string[] = [];
+        const roots: string[] = [];
+        walkInvocationAst(target, (inner) => {
+          if (inner instanceof IdentifierNode) names.push(inner.name);
+          if (inner instanceof StateAccessNode || inner instanceof MappingAccessNode) roots.push(inner.name);
+        });
+        writtenFirst = writes.before(names, roots, call);
+      }
+      if (writtenFirst) call.targetWrittenBeforeCall = true;
+      else delete call.targetWrittenBeforeCall;
+    }
   }
 
   /**

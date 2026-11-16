@@ -3492,6 +3492,9 @@ function buildFunctionAbiMetadata(
   const provenance = indexBody(func);
   const callTargets = lowLevelCallTargets(func, contract, provenance);
   const callTargetSources = lowLevelCallTargetSources(func, provenance);
+  // The calls whose target the function can write before the call (markLowLevelTargetsWrittenFirst).
+  const callTargetsWrittenFirst = new Set(provenance.calls
+    .filter((call) => call.targetWrittenBeforeCall === true).map((call) => call.callIndex));
   const delegateForwarding = (() => {
     const statements = func.body.statements ?? [];
     if (statements.length !== 2) return undefined;
@@ -4391,6 +4394,8 @@ function buildFunctionAbiMetadata(
           targetSource: callTargetSources[index] ?? lc.targetSource,
         }),
         ...(lc.dataSource !== undefined && { dataSource: lc.dataSource }),
+        // The source reads the caller's state and arguments from before a write of the target.
+        ...(callTargetsWrittenFirst.has(index) && { targetWrittenBeforeCall: true as const }),
       })),
     }),
     ...(delegateForwarding && { delegateForwarding }),

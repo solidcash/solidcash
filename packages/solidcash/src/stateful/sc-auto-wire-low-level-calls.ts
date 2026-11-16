@@ -7,6 +7,7 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, ArgSource, Artifact, ExternalCallExpression } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { ExternalCallTargetWrittenBeforeCallError } from '../Errors.js';
 import { findDeploymentByAddressValue } from './deployment-registry.js';
 import { hydrateExternalPredicateState } from './sc-hydrate-external-predicate-state.js';
 
@@ -79,6 +80,13 @@ export async function autoWireLowLevelCalls(host: AutoWireLowLevelCallsHost): Pr
     if (row.callMode === 'delegatecall' || row.occurrence !== 'once' || !row.targetSource) return;
     const payload = payloadParts(row.dataSource);
     if (!payload) return;
+    // The function writes this call's target before the call: the published source reads the caller's state and
+    // arguments from before the write, and the covenant pins the callee the call runs on. Only the author knows it.
+    if (row.targetWrittenBeforeCall === true) {
+      throw new ExternalCallTargetWrittenBeforeCallError(
+        host.functionName ?? '<function>', 'address', row.callMode, 'withCall(contract, functionName, args)',
+      );
+    }
     onChainState ??= (await caller.getFullState()).state;
     const sources = [row.targetSource, ...payload.args];
     const callerState = await hydrateExternalPredicateState(

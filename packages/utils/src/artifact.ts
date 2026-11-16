@@ -877,6 +877,12 @@ export interface AbiFunction {
      */
     targetSource?: ArgSource;
     dataSource?: ArgSource;
+    /**
+     * The function can write the call's target before the call: the callee the call runs on is not the one the
+     * caller's state and arguments name before the run, which `targetSource` reads. A builder does not resolve the
+     * callee from them; the author passes it with `.withCall()`.
+     */
+    targetWrittenBeforeCall?: true;
   }[];
   /**
    * Compiler proof that this function is only a singular delegate frame: one unconditional low-level

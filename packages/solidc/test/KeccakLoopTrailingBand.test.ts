@@ -41,6 +41,12 @@ const READ_BEFORE_MAPPING_LOOP = `contract T { bytes32 h; int[] a; int seen; map
   function f(bytes b, int k, int[] keys) public { int v = a[0]; ${LOOP} ${MAPPING_LOOP} seen = v; }
 }`;
 
+/** A read, the keccak256 loop and a fixed write of a sorted mapping: a sorted batch, which is no mapping loop. */
+const READ_BESIDE_FIXED_MAPPING_WRITE = `contract T { bytes32 h; int[] a; int seen; mapping(int => int) values;
+  function put(int x) public { a.push(x); }
+  function f(bytes b, int k, int key) public { int v = a[0]; ${LOOP} this.values[key] = 1; seen = v; }
+}`;
+
 /** The refusal, or `undefined` if the fixture compiled. */
 function refusalOf(source: string): KeccakLoopSideCarError | undefined {
   try {
@@ -84,7 +90,7 @@ describe('a keccak256 loop beside a run that takes the indexes after the block',
   it('refuses the loop after a mapping loop beside a read, naming the function, the mapping and the state', () => {
     const refusal = refusalOf(READ_AFTER_MAPPING_LOOP);
     expect(refusal?.reason).toBe('keccak-loop-shares-trailing-band');
-    expect(refusal?.message).toContain('\'f\' hashes in a keccak256 loop that runs after a loop writing the mapping '
+    expect(refusal?.message).toContain('\'f\' hashes in a keccak256 loop that runs after a loop over the mapping '
       + '\'values\', and reads the dynamic state \'a\'');
     expect(refusal?.message).toContain('reads side-car k from the input master + blockSize + m + k, past the m inputs of '
       + 'the mapping loop but not past the chunks');
@@ -102,5 +108,19 @@ describe('a keccak256 loop beside a run that takes the indexes after the block',
     expect(entry.keccakLoopReads).toBe(true);
     expect(entry.keccakLoopPrecedesTrailingUser).toBe(true);
     expect(entry.dynamicReads).toEqual(['a']);
+  });
+
+  it('compiles the loop beside a read and a fixed write of a sorted mapping, a batch that no loop runs', () => {
+    expect(refusalOf(READ_BESIDE_FIXED_MAPPING_WRITE)).toBeUndefined();
+    const artifact = compileString(READ_BESIDE_FIXED_MAPPING_WRITE) as unknown as {
+      abi: Array<{ name: string; keccakLoopReads?: boolean; keccakLoopPrecedesTrailingUser?: boolean;
+        dynamicReads?: string[]; sortedBatchInfo?: Array<{ collection: string }>; sortedUpsertLoopInfo?: unknown[] }>;
+    };
+    const entry = artifact.abi.find((row) => row.name === 'f')!;
+    expect(entry.keccakLoopReads).toBe(true);
+    expect(entry.keccakLoopPrecedesTrailingUser).toBeUndefined();
+    expect(entry.dynamicReads).toEqual(['a']);
+    expect(entry.sortedBatchInfo?.map((batch) => batch.collection)).toEqual(['values']);
+    expect(entry.sortedUpsertLoopInfo).toBeUndefined();
   });
 });

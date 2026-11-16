@@ -813,12 +813,24 @@ export function assertRecoveryLoopBand(fn: FunctionDefinitionNode): void {
  * master + blockSize + m + k, while the mapping loop takes its coins past the chunks the entry only reads, which it counts
  * and the keccak256 loop does not. Beside such chunks the two runs need the same indexes, so that order is refused too; a
  * loop that runs first is counted by the mapping loop, per-turn payments and events after it, and the chunks follow its
- * side-cars.
+ * side-cars. A fixed write of a sorted mapping is no mapping loop (mappingLoopCollection): it is a sorted batch, whose
+ * coins the entry finds through its witnesses.
  */
 export class KeccakLoopSideCarError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
     super(node, `${reason}: ${detail}`);
   }
+}
+
+/**
+ * The mapping a runtime loop of `fn` reads or writes entry by entry after the block, if any: a sorted insert or upsert
+ * loop, or an entry the pre-scan marks as written in a loop. `entryLoopWrites` alone does not tell: a fixed write of a
+ * sorted mapping records its collection there too (emitSortedValueUpsert), and that write is a sorted batch, whose
+ * predecessor and rewrite the entry finds through `__internal__vmapBatchProof_N` and `__internal__vmapBatchPredOut_N`.
+ */
+function mappingLoopCollection(fn: FunctionDefinitionNode): string | undefined {
+  return fn.sortedUpsertLoopInfo?.[0]?.collection ?? fn.sortedInsertLoopInfo?.[0]?.collection
+    ?? fn.sortedInsertLoops?.[0] ?? (fn.entryAccesses ?? []).find((access) => access.inLoop === true)?.collection;
 }
 
 /**
@@ -845,11 +857,10 @@ export function assertKeccakLoopBand(fn: FunctionDefinitionNode): void {
       + `${walked !== undefined ? 'walk' : 'write'}, into a function of its own`);
   }
   const read = fn.dynamicReads?.[0];
-  const mapped = fn.entryLoopWrites?.[0] ?? fn.sortedInsertLoops?.[0] ?? fn.sortedInsertLoopInfo?.[0]?.collection
-    ?? fn.sortedUpsertLoopInfo?.[0]?.collection;
+  const mapped = mappingLoopCollection(fn);
   if (read === undefined || mapped === undefined || fn.keccakLoopPrecedesTrailingUser === true) return;
   throw new KeccakLoopSideCarError(fn, 'keccak-loop-shares-trailing-band', `'${fn.name}' hashes in a keccak256 loop `
-    + `that runs after a loop writing the mapping '${mapped}', and reads the dynamic state '${read}'. The mapping loop `
+    + `that runs after a loop over the mapping '${mapped}', and reads the dynamic state '${read}'. The mapping loop `
     + `takes its coins after the block past the chunks of '${read}', which it counts, and the keccak256 loop reads `
     + 'side-car k from the input master + blockSize + m + k, past the m inputs of the mapping loop but not past the '
     + 'chunks, so the side-cars and the mapping loop\'s coins need the same indexes and no transaction holds both. Hash '

@@ -15,7 +15,9 @@ and -5 on master; see "Oracle pools (2026-11-04)" at the end. Call targets (2026
 ways a spender could choose the callee of a call whose answer the caller uses, are fixed; TARGET-3, the computed
 target, is spender-chosen by design and now warned; TARGET-4, unchecked loop witnesses and view answers for targets
 the contract could check, and TARGET-5, raw calls answered without their callee and value calls that paid nothing,
-are fixed; see "Call targets (2026-11-15)" at the end.
+are fixed; see "Call targets (2026-11-15)" at the end. Container sums (2026-11-14): CONTAINER-SUM-1 (a runtime
+loop's payments) and CONTAINER-SUM-2 (a kernel route's, VM-confirmed on 0.50.1) let a builder drain a second
+container coin, and are fixed; see "Container sums" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1863,3 +1865,26 @@ profile.
 - An opaque `bytes`, selector-literal or `abi.encodeWithSignature` payload can still hide a callee's `false` behind
   `(true, "")` (TARGET-5, by decision). `deploymentRecipes.ts` records a transfer's recipient as written, not as the
   P2PKH lock the covenant pays under `evmCompat`.
+
+## Container sums (2026-11-14, recorded 2026-11-16)
+
+Two paths paid from a contract's satoshi container without counting every coin at the container's lock. The
+container covenant accepts a filler output at its index, so only the payer's own program can bound what a coin there
+holds: a builder who co-spent a second container coin and drained it to a filler kept its satoshis. Both were found on
+2026-11-14 while building runtime-loop payments for deployer creations, and fixed that day in the squashed commits
+`e7fe44e3a` (solidc) and `9cb9b35c9` (solidcash); this entry was missing from the ledger until the 0.51.0 release.
+
+- **CONTAINER-SUM-1 (HIGH, direct convention).** `emitSlotScans` skipped the container-coin sum for a function whose
+  BCH payments run in a runtime loop. The function now counts its runtime-loop outflow (`RUNTIME_LOOP_VALUE_SENT`,
+  beside the fixed outflows) in the conservation check, and a direct function whose looped payments a subroutine
+  settles, where no sum can follow them, is a compile error (`RUNTIME_LOOP_PAYMENTS_UNCOUNTED`). Test:
+  `packages/solidcash/test/e2e/RuntimeLoopFixedTransfer.test.ts` (a second container coin drained is refused, kept is
+  accepted). Whether 0.50.1 is affected is not determined: on the 0.50.1 tree the test's honest spends do not build
+  (fixed and runtime-loop transfers together failed conservation there, which this fix also changed).
+- **CONTAINER-SUM-2 (HIGH, message-bus kernel routes).** A kernel route's handlers pay inside their own invoked
+  frames, and the route did not bound the coins at the satoshi container lock. The route now counts them against the
+  transfers it reached (`GRAPH_TRANSFER_REACHED`). Test:
+  `packages/solidcash/test/journal-message-bus/e2e/KernelRouteContainerSum.test.ts`. VM-confirmed on 0.50.1
+  (2026-11-16, the test run against the 0.50.1 tree, mocknet VM): the honest spend and the control pass, and the spend
+  that drains a second container coin in a pad's place is accepted by every covenant input. Message-bus composition is
+  experimental in 0.50; a direct build is not affected by this one.

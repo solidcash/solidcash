@@ -6,13 +6,24 @@ was run, what the user decided, and every item still open, with pointers. The sc
 
 ## Where things are
 
-- **`release/0.51.0`** (worktree `/Code/cashscript/.worktrees/release-0.51.0`) is the release candidate:
+- **SolidCash 0.51.0 is out** (2026-11-16). The six packages are on npm as `latest`, published from master at
+  `eda85a88d`, which is tagged `v0.51.0`. Master and the tag are pushed to `origin`
+  (`github.com/solidcash/solidcash`). [Publishing](#publishing-2026-11-16) says how it went.
+- **master** merged `release/0.51.0` (`5b9c9d712`), then took `eda85a88d`, which gives testing, solidhat and
+  create-solidhat the pack rules utils and solidc have. Before the merge, master was at `a04d90c7c`, which
+  `release/0.51.0` already contained.
+- **`post-0.51.0`** (worktree `/Code/cashscript/.worktrees/post-0.51.0`) carries the work after the release:
+  - the `gitHead` fields dropped;
+  - the lint cleared;
+  - the publishing notes;
+  - this handoff;
+  - then the open items below.
+
+  Master moves to it only by a fast-forward. Neither is pushed past the tag.
+- **`release/0.51.0`** (worktree `/Code/cashscript/.worktrees/release-0.51.0`) was the release candidate:
   `deployer-spec` at `7d8fb3900`, merged with master (`6c32f972a`), then a raw-call probe fix (`ed9de1ad9`), a stale
-  debug dump removed (`f9ca3e948`), the 0.51.0 version (`d0d7718b3`) and the docs. **Not pushed, not tagged, not
-  published.** Pushing, tagging `v0.51.0` and publishing the six packages to npm are the user's to start.
+  debug dump removed (`f9ca3e948`), the 0.51.0 version (`d0d7718b3`) and the docs. It is not pushed; master holds it.
 - **`deployer-spec`** stays at `7d8fb3900`, the line before the master merge.
-- **master** carries 0.51.0: on 2026-11-16 it merged `release/0.51.0` in a merge commit, so its tree is the release
-  branch's. Before that it was at `a04d90c7c`, which `release/0.51.0` already contained. Not pushed either.
 - **What 0.51.0 contains**: 616 non-merge commits since 0.50.1 (`mainnet-final`, `95f051c36`). These comprise:
   - master's 2026-11-11 landing (the sushi line, caller edges, void-call binding, the single-container pragmas);
   - the other party's `deployer-coins` work (deployer coins, from 2026-11-12);
@@ -57,14 +68,55 @@ At `d0d7718b3`, once, on a snapshot worktree:
 Every package suite is therefore green at the release candidate, apart from the stale utils expectation fixed in
 `0fdd163bf` and the two solidhat cases that need a full `node_modules`.
 
+### Publishing (2026-11-16)
+
+- **Pack rules.** testing, solidhat and create-solidhat had none. Their tarballs would have carried `src/`, `test/`,
+  the build's `tsbuildinfo` and their vitest configs, and solidhat's its `docs/` notes. `eda85a88d` gives them
+  utils' `.npmignore`, so all six ship `dist` only. The tarballs hold:
+
+  | Package | Files |
+  |---|---|
+  | utils | 126 |
+  | solidc | 618 |
+  | solidcash | 1,752 |
+  | testing | 81 |
+  | solidhat | 75 |
+  | create-solidhat | 9 |
+
+  utils, testing, solidhat and create-solidhat have the file counts of their 0.50.0 tarballs.
+- **Gates.**
+  - A clean rebuild of all six from the tag.
+  - The package smoke (`yarn test:package-smoke`) on that rebuild.
+  - The suites had passed on the same package code: only a utils test changed after `d0d7718b3`.
+  - Lint was skipped at the user's word. solidc and solidcash failed it with 106 style errors, all in test files;
+    they were cleared after the release on `post-0.51.0`.
+- **How.**
+  - `yarn publish-all --ignore-scripts` published utils, then npm asked for the second factor again.
+  - The account's second factor is a security key. npm refuses the write and prints a sign-in link. The user
+    signs in there and gets a one-time password, and each password publishes one package. npm then accepts writes
+    without a password for a few minutes.
+  - npm also processes a publish asynchronously, so lerna's `from-package` saw utils as missing and would have
+    published it again.
+  - The other five therefore went out one at a time with npm itself. [`scripts/publish-one.sh`](scripts/publish-one.sh)
+    is that procedure, made general.
+- **Checked afterwards.**
+  - npm's checksums equal those in the publish logs.
+  - A fresh install of the six from npm holds one copy of each.
+  - Its `solidc` reports 0.51.0, compiles `pragma solidcash ^0.51.0`, and refuses `^0.50.0`.
+- **Metadata.** On npm, solidc and solidcash 0.51.0 name `bf02a4b6…` as their `gitHead`, as solidcash 0.50.1 did.
+  The 2026-06-11 rename copied that field into their `package.json` from the upstream packages, and npm keeps a
+  `gitHead` the manifest already has. `15e1020f5` drops the field, but a published version keeps its metadata.
+
 ## SolidPool (bch-next) on 0.51.0
 
 SolidPool needs this release: its contracts use `pragma satoshicontainer single`, `pragma tokencontainer single`,
-`this.payMinerFee` and deployer `new`, none of which 0.50.1 has. Today `bch-next/node_modules/@solidcash/*` are
-symlinks to the `deployer-coins` worktree, which has none of the fixes since 2026-11-14. Its
-`Dockerfile.indexer` installs 0.50.x from npm. Adopting 0.51.0 is SolidPool's own release step:
+`this.payMinerFee` and deployer `new`, none of which 0.50.1 has.
 
-1. Pin the five `@solidcash/*` dependencies to 0.51.0 and drop the worktree symlinks.
+bch-next rebased its contracts on 0.51.0 on 2026-11-16. The commits are `4ce6491` and `fe2cd91`, on its master,
+`browser-native-engine` and `pool-contracts`. Its `package.json` still names the 0.50.x packages, though, and its
+`Dockerfile.indexer` installs them from npm. Adopting 0.51.0 is SolidPool's own release step:
+
+1. Pin the five `@solidcash/*` dependencies to 0.51.0, now on npm, and drop any local links.
 2. Change `pragma solidcash ^0.50.0` to `^0.51.0` in the six contract sources. The artifacts embed the source
    and are regenerated in the next step.
 3. Regenerate the artifacts (`npm run contracts:build`). They are stale even against the `deployer-coins` link,
@@ -134,7 +186,8 @@ Findings from committing bch-next's pending work on 2026-11-15. Not acted on; bc
 - **Commits.** Commit in logical chunks, each typechecked. Take every number in a message from a measurement. Push
   only when the user asks.
 - **Never touch:**
-  - `/Code/cashscript` itself: never `cd` there, and run git from a worktree;
+  - `/Code/cashscript` itself: never `cd` there, and run git from a worktree. Master is checked out there, so a merge
+    or fast-forward of master the user asks for runs as `git -C /Code/cashscript`;
   - `git stash`;
   - the `deployer-coins` worktree (another party);
   - tornado-36's `deployer-genesis-pins`;
@@ -158,12 +211,24 @@ Findings from committing bch-next's pending work on 2026-11-15. Not acted on; bc
   - a plain send answers `(true, "")` only.
 - **The release** (2026-11-16): version 0.51.0, the full suites run once, then an independent review by a Fable
   model. Its findings come to the user; they are not merged on their own.
+- **Publishing** (2026-11-16):
+  - master carries 0.51.0, and the tag `v0.51.0` points at master;
+  - publish the six packages, skipping lint;
+  - push master and the tag;
+  - then finish the lint, fix this handoff, and go on with the open items.
 
 ## Open items
 
 Each item has its home doc; this list gathers them. The security ledger is
 `docs/security/security-audit-2026-10-16.md` ("Call targets", "Container sums" and the older "Open" sections). The
 spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.md`.
+
+**In progress after the release (2026-11-16)**, each by an agent on its own branch, landed by the lander:
+
+- `keccak-band`: the keccak256 chain beside a walk or a dynamic write, the chain beside read-only chunks, and the
+  loop beside read-only chunks with a companion (under "Not refused yet");
+- `nested-guard`: the two known issues from 0.50.0 (under "Soundness, documented");
+- `raw-send-target`: the raw value-only send after a write of its target (under "Soundness, documented").
 
 **Soundness, documented:**
 
@@ -214,7 +279,9 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
 - the framed `evmCompat` exact-byte ecrecover comparison;
 - `eventValueOfArgument` covers scalars only;
 - the collection-chain SDK flag is static;
-- `deploymentRecipes.ts` records a transfer's recipient as written, not as the P2PKH lock it pays.
+- `deploymentRecipes.ts` records a transfer's recipient as written, not as the P2PKH lock it pays;
+- no script typechecks the test files (vitest strips the types). Under `tsconfig.framed-tests.json`, the 24 files
+  the lint touched hold 61 type errors, all older than the lint (found 2026-11-16).
 
 **Won't fix:**
 
@@ -233,11 +300,14 @@ Under `/Code/cashscript/.worktrees`:
 
 **Keep:**
 
-- `release-0.51.0`;
-- `deployer-spec`;
+- `post-0.51.0`, the line after the release;
+- `release-0.51.0` and `deployer-spec`, until the user says otherwise;
 - `release-review`, until the conformance review has been read: it holds the review's tests and their verdicts.
 
-**Remove when the release is out:**
+**Agent worktrees after the release.** Each is removed once its work has landed: `lint-0.51`, `keccak-band`,
+`nested-guard` and `raw-send-target`.
+
+**The release is out, so these can go, on the user's word:**
 
 - `release-0.51.0-full`, the full-run snapshot;
 - `release-base-0.50.1`, the 0.50.1 build used for the comparisons;

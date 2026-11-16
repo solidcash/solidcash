@@ -58,6 +58,7 @@ import {
 import { isMsgSenderKeySource } from './soft-state-overlays.js';
 import { hydrateExternalPredicateState } from './sc-hydrate-external-predicate-state.js';
 import type { OnChainState } from './StateReader.js';
+import { blockClockState, executingOraclePool } from './block-clock-state.js';
 import {
   type ValueChunkProducerPathDisposition,
 } from './ValueChunkProducerIdentity.js';
@@ -175,7 +176,14 @@ export async function expandCreateBuilderLateTransitive(
       logicalParentArtifact, parentFn.name, parentFn.selector, graphParentArgsRaw,
     );
     const graphPlanningResults = createGraphPlanningProducerResultContext();
-    const parentState = await logicalParentContract.getState() as Record<string, StateValue>;
+    // The parent's guards and the arguments it passes read the block as its run does: from the info coin of the pool
+    // its executing code binds. Without the clock a guard on block.number or block.timestamp did not resolve and the
+    // call was refused, also when discovery had decided it.
+    const parentState = {
+      ...await logicalParentContract.getState() as Record<string, StateValue>,
+      ...await blockClockState(parentContract.inner.provider, logicalParentArtifact,
+        executingOraclePool(parentContract.inner, logicalParentArtifact), parentFn.externalCalls),
+    };
     // Collection entries are not part of scalar getState(). Resolve compiler-described reads from the
     // logical invocation's authenticated collection before choosing a late edge or preparing its arguments.
     const hydrateState = async (

@@ -8,7 +8,10 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { addressToLockScript } from '../utils.js';
 import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { CallGuardUndecidedError } from '../Errors.js';
 import type { UnlockableUtxo } from '../interfaces.js';
+import { blockClockState, executingOraclePool } from './block-clock-state.js';
+import { callGuardText } from './call-guard-text.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { createGraphPlanningProducerResultContext } from './graph-planning-producer-result.js';
@@ -46,6 +49,8 @@ export type MaterializeCreateBuilderLowLevelStatefulCallResult = {
   delegateVisibleInputs: { name: string }[];
   delegateSelfAddress: Uint8Array;
   delegateCallerIdentity: { categoryId: string; lockingBytecode: string } | undefined;
+  /** The state the delegate's own calls are planned in: the owner's, with the clock the implementation reads. */
+  delegateState: Record<string, unknown>;
   graphPlanningResults: ReturnType<typeof createGraphPlanningProducerResultContext>;
   preparedAtomicNodes: any[] | undefined;
   nestedIndices: number[];
@@ -159,6 +164,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       delegateVisibleInputs: [],
       delegateSelfAddress: new Uint8Array(),
       delegateCallerIdentity: undefined,
+      delegateState: onChainState.state,
       graphPlanningResults: createGraphPlanningProducerResultContext(),
       preparedAtomicNodes,
       nestedIndices: [],
@@ -295,6 +301,30 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     // without a public-self witness uses the physical proxy; an authenticated CREATE route uses its SCID.
     lockingBytecode: binToHex(delegateSelfAddress),
   });
+  // The implementation's code runs in the owner's state and reads the block from the pool it binds itself. Its guards
+  // and the arguments it passes are planned with that clock beside the owner's state, as the root plans its own; without
+  // it a guard on block.number or block.timestamp did not resolve and the call was refused.
+  const implementation = callInfo.contract.inner;
+  const delegateState: Record<string, unknown> = {
+    ...onChainState.state,
+    ...await blockClockState(implementation.provider, implementation.artifact,
+      executingOraclePool(implementation, implementation.artifact), publishedNestedExternalCalls),
+  };
+  // A call the delegate may skip, under a guard no frame can decide, is refused: co-spent on a guess, its callee would
+  // run without being called whenever the guard is false. A compiler route binds the rows it runs instead.
+  const refuseUndecided = (nested: ExternalCallAbi, reason?: string): never => {
+    const connected = (host.selfContract?._externalRegistry?.get(nested.interfaceName)
+      ?? callInfo.contract?._externalRegistry?.get(nested.interfaceName)) as
+      { inner?: { artifact?: { contractName?: string } } } | undefined;
+    throw new CallGuardUndecidedError(
+      `${implementation.artifact.contractName}.${delegateFn?.name ?? callInfo.functionName}`,
+      `${nested.interfaceName}.${nested.functionName}`
+        + `${nested.sourceLocation === undefined ? '' : ` (line ${nested.sourceLocation.line})`}`,
+      connected?.inner?.artifact?.contractName ?? nested.interfaceName,
+      nested.condition === undefined || delegateFn === undefined ? undefined : callGuardText(nested.condition, delegateFn),
+      reason,
+    );
+  };
   const nestedExternalCalls: ExternalCallAbi[] = [];
   for (const nested of publishedNestedExternalCalls) {
     // A failed source require is a necessary-condition proof that no outgoing call was reached. Resolve
@@ -307,7 +337,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
         ),
         getEntries: host.getEntries,
       }, nested.preCallRequires, delegateVisibleArgs, callInfo.contract.inner.artifact,
-      onChainState.state, delegateVisibleInputs, delegateSelfAddress);
+      delegateState, delegateVisibleInputs, delegateSelfAddress);
       const rejected = nested.preCallRequires.some((guard) => host.evaluateExternalExpression(
         guard, delegateVisibleArgs, callInfo.contract.inner.artifact, guardState,
         delegateVisibleInputs, undefined, 0, false, delegateSelfAddress,
@@ -316,8 +346,9 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       if (rejected) continue;
     }
     if (!nested.condition) {
-    // Older artifacts and control-flow shapes not yet expressible by ExternalCallExpression retain
-    // the existing covenant-driven occurrence handling. Never infer inactivity from a missing guard.
+      if (nested.conditionUnpublished === true && !compilerDelegateRoute) refuseUndecided(nested);
+      // Older artifacts and control-flow shapes not yet expressible by ExternalCallExpression retain
+      // the existing covenant-driven occurrence handling. Never infer inactivity from a missing guard.
       nestedExternalCalls.push(nested);
       continue;
     }
@@ -325,7 +356,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       [{ kind: 'expression', expression: nested.condition }],
       delegateVisibleArgs,
       callInfo.contract,
-      onChainState.state,
+      delegateState,
       delegateVisibleInputs,
       delegateSelfAddress,
       publishedNestedExternalCalls,
@@ -347,7 +378,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
         reached = await host.planExternalCallOccurrences(nested, {
           functionArgs: delegateVisibleArgs,
           artifact: callInfo.contract.inner.artifact,
-          state: onChainState.state,
+          state: delegateState,
           callerInputs: delegateVisibleInputs,
           executionSelfAddress: delegateSelfAddress,
           externalReturns: conditionReturns,
@@ -362,19 +393,14 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       nested.condition,
       delegateVisibleArgs,
       callInfo.contract.inner.artifact,
-      onChainState.state,
+      delegateState,
       delegateVisibleInputs,
       conditionReturns,
       0,
       false,
       delegateSelfAddress,
     );
-    if (typeof active !== 'boolean') {
-      throw new Error(
-        'Could not resolve runtime predicate for conditional external call '
-      + `${nested.interfaceName}.${nested.functionName} at callsite ${nested.callsiteId ?? 'unknown'}.`,
-      );
-    }
+    if (typeof active !== 'boolean') refuseUndecided(nested, 'a value it reads did not resolve');
     if (active) nestedExternalCalls.push(nested);
   }
   return {
@@ -386,6 +412,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     delegateVisibleInputs,
     delegateSelfAddress,
     delegateCallerIdentity,
+    delegateState,
     graphPlanningResults,
     preparedAtomicNodes,
     nestedIndices,

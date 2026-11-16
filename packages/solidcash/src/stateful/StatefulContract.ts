@@ -12436,7 +12436,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   delegateCallerIdentity,
                   graphPlanningResults,
                   callInfo,
-                  onChainState,
+                  // The delegate's calls read the owner's state and the clock its implementation reads.
+                  onChainState: { ...onChainState, state: materializedLlc.delegateState },
                   preparedAtomicNodes,
                   rootProducerPath,
                   nestedIndices,

@@ -6,6 +6,7 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type {
   AbiFunction, Artifact, ExternalCallAbi, ExternalCallExpression, StateLayout, StateValue,
 } from '@solidcash/utils';
+import { blockClockState, executingOraclePool } from './block-clock-state.js';
 import type { FunctionArgument } from '../Argument.js';
 import { CallGuardUndecidedError } from '../Errors.js';
 import type { UnlockableUtxo } from '../interfaces.js';
@@ -20,7 +21,6 @@ import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
 import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
-import { artifactOraclePool, readPoolClock } from '../oracle/pool/reader.js';
 import { callGuardText } from './call-guard-text.js';
 import { ExternalCallReachUndecidedError } from './external-call-iteration-domain.js';
 import { containsReturningExpression } from './sc-expand-resolve-create-builder-external-calls.js';
@@ -118,31 +118,6 @@ export async function resolveTransitiveExternalContract(
   return deployment?.contract as TransitiveExternalContract | undefined;
 }
 
-/** Whether a compiler-published expression reads the block clock a builder states beside a contract's state. */
-function readsBlockClock(value: unknown, seen = new Set<object>()): boolean {
-  if (value === null || typeof value !== 'object' || seen.has(value)) return false;
-  seen.add(value);
-  const { kind, name } = value as { kind?: unknown; name?: unknown };
-  if (kind === 'state' && (name === '__block_number' || name === '__block_timestamp')) return true;
-  return Object.values(value).some((child) => readsBlockClock(child, seen));
-}
-
-/**
- * The clock B's run reads, stated as the root states its own (`recipeState`): `block.number` and `block.timestamp` are
- * published as `state:__block_number` and `state:__block_timestamp`, and B's run slices both from the info coin of the
- * pool it binds, the coin the transaction co-spends for it. Empty when B's calls read neither.
- */
-async function blockClockState(
-  contract: TransitiveExternalContract, calls: readonly ExternalCallAbi[],
-): Promise<Record<string, StateValue>> {
-  const { artifact, oraclePool, provider } = contract.inner;
-  if (artifact.usesBlockOracle !== true || !readsBlockClock(calls)) return {};
-  const pool = oraclePool ?? artifactOraclePool(artifact);
-  if (pool === undefined) return {};
-  const { number, timestamp } = await readPoolClock(provider, pool);
-  return { __block_number: number, __block_timestamp: timestamp };
-}
-
 /** A callee that advertises a message-bus route can execute several returning methods from one spend. */
 export type SharedMethodBatchBuilder = (
   shared: ExternalCallUtxoGroup,
@@ -179,7 +154,8 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       ? hexToBin(directGroup.callerIdentity.lockingBytecode) : undefined;
     // B's guards and the arguments it passes read the block where B's run reads it. Without the clock a guard on
     // block.number or block.timestamp stayed unresolved, so its call was kept and C spent although B made no call.
-    const bClock = await blockClockState(bContract, bAbiFunc.externalCalls);
+    const bClock = await blockClockState(bContract.inner.provider, bContract.inner.artifact,
+      executingOraclePool(bContract.inner, bContract.inner.artifact), bAbiFunc.externalCalls);
     const bFrameState = async (): Promise<Record<string, unknown>> => ({ ...(await bContract.getState()), ...bClock });
     // The frame a guard of B's is read in: B's state with its clock and the mapping entries the guard reads, and the
     // results of the earlier calls it reads, each derived as the root derives its own guards' results.

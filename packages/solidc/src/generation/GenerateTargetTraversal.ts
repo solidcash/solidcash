@@ -1058,14 +1058,42 @@ interface CallSiteWrites {
   before(names: readonly string[], roots: readonly string[], call: ExternalCallSlot | Node): boolean;
   /**
    * The initializer of local `name` when a write of what it reads can land between it and a run of the call: a slot's
-   * calls, or one low-level call node.
+   * calls, or one low-level call node. What it reads is compared by field path (bodyWrites).
    */
   staleInitializer(name: string, call: ExternalCallSlot | Node): ExpressionNode | undefined;
+  /**
+   * Whether a write before a run of the call can change what `expression` reads, by field path: a rewrite of a stack
+   * variable it reads (its declaration aside), or a write of a state field it reads.
+   */
+  writtenBefore(expression: ExpressionNode, call: ExternalCallSlot | Node): boolean;
   /**
    * Keeps every stack variable `expression` reads on the stack where the call runs, so a copy of it can be read there:
    * a final use before the call, with no reassignment between, becomes a pick.
    */
   keepReads(expression: ExpressionNode, call: ExternalCallSlot | Node): void;
+}
+/** A field path into a value, from its top (`['roles', 'worker']`); `[]` is the whole value. */
+type FieldPath = readonly string[];
+/**
+ * The state a write may change: each root (a state variable or collection, by name) with the field paths it changes
+ * in the values it writes, under any key; or 'any' (assembly).
+ */
+type StateWrites = ReadonlyMap<string, readonly FieldPath[]> | 'any';
+const NO_STATE_WRITES: StateWrites = new Map();
+/** Whether two field paths share a location: one is a prefix of the other, so `[]` overlaps every path. */
+function fieldPathsOverlap(left: FieldPath, right: FieldPath): boolean {
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+/** `into` with `from`'s writes added. */
+function mergeStateWrites(into: StateWrites, from: StateWrites): StateWrites {
+  if (into === 'any' || from === 'any') return 'any';
+  if (from.size === 0) return into;
+  const merged = new Map(into);
+  for (const [root, paths] of from) merged.set(root, [...(merged.get(root) ?? []), ...paths]);
+  return merged;
 }
 /** A bound route's verifier input index; -1 on a standalone batch. */
 const ACTIVE_VERIFIER_INDEX = '__internal__activeVerifierIndex';
@@ -54307,6 +54335,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       after: (names, slot) => (positions ??= this.bodyWrites(body)).after(names, slot),
       before: (names, roots, slot) => (positions ??= this.bodyWrites(body)).before(names, roots, slot),
       staleInitializer: (name, call) => (positions ??= this.bodyWrites(body)).staleInitializer(name, call),
+      writtenBefore: (expression, call) => (positions ??= this.bodyWrites(body)).writtenBefore(expression, call),
       keepReads: (expression, call) => (positions ??= this.bodyWrites(body)).keepReads(expression, call),
     };
     for (const slot of this.externalCallSlots) {
@@ -54388,8 +54417,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Marks each low-level `call`/`staticcall` whose target the function can write before the call, for the artifact
    * (`lowLevelCalls[].targetWrittenBeforeCall`): a compiler local whose initializer is written in between, or a target
-   * reading a stack variable or state root written before the call. Its published `targetSource` reads the caller's
-   * state and arguments from before the write, so a builder must not resolve the callee from it.
+   * a write before the call can change, both by field path (bodyWrites). Its published `targetSource` reads the
+   * caller's state and arguments from before the write, so a builder must not resolve the callee from it.
    */
   private markLowLevelTargetsWrittenFirst(node: FunctionDefinitionNode): void {
     const body = node.body;
@@ -54411,13 +54440,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           writtenFirst = true;
         }
       } else {
-        const names: string[] = [];
-        const roots: string[] = [];
-        walkInvocationAst(target, (inner) => {
-          if (inner instanceof IdentifierNode) names.push(inner.name);
-          if (inner instanceof StateAccessNode || inner instanceof MappingAccessNode) roots.push(inner.name);
-        });
-        writtenFirst = writes.before(names, roots, call);
+        writtenFirst = writes.writtenBefore(target, call);
       }
       if (writtenFirst) call.targetWrittenBeforeCall = true;
       else delete call.targetWrittenBeforeCall;
@@ -54564,9 +54587,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `t = t.next()` writes after its call; a write in a loop with a call can run on either side of it). `after` and
    * `before`: whether a write can land after, or before, a run of `slot`'s call. `staleInitializer`: the initializer of
    * local `name` when a write of what it reads can land between the declaration and a run of the call (a slot's calls,
-   * or one low-level call node); a write of another field of an entry, or a constructor rebuild carrying the read field
-   * over, does not count, and a local assigned after its declaration has none. A call writes what its callee writes;
+   * or one low-level call node); a local assigned after its declaration has none. A call writes what its callee writes;
    * assembly may write anything; a write of a local array's element changes the array in place.
+   *
+   * What the initializer reads is compared by field path, and keys are not compared: a read of `jobs[k].token` is
+   * changed by a write of `jobs` under any key at `token`, above it (the whole entry) or below it, not by one of
+   * `jobs[k].state`. A struct field write (`m[k].f = v`) changes its field. A rebuild by the struct's constructor, to
+   * which the AstBuilder lowers a field write of a packed struct array, a stored struct or a local struct, changes the
+   * fields it does not carry over from the location it writes (rebuiltPaths), read in the same statement or through a
+   * local copying the location earlier (`S t = m[k]; ..; m[k] = S(t.a, v)`), less what the local changed since.
    *
    * An initializer reading a collection entry is read again at the call only where visitMappingAccess reads the
    * written value: every write of it before the call is a straight-line whole-value write of the same entry slot.
@@ -54575,17 +54604,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private bodyWrites(body: Node): Omit<CallSiteWrites, 'state'> {
     const at = new Map<Node, number>();
     const writes: {
-      names: readonly string[] | undefined; element: string | undefined; roots: ReadonlySet<string> | 'any'; node: Node;
+      names: readonly string[] | undefined; element: string | undefined; written: StateWrites; node: Node;
     }[] = [];
     const loops: Node[] = [];
     const declarations = new Map<string, VariableDefinitionNode>();
-    const calleeRoots = new Map<FunctionDefinitionNode, ReadonlySet<string> | 'any'>();
+    const redeclared = new Set<string>();
+    // The block each statement is in: a local declared there is in scope after it, to the block's end.
+    const blockOf = new Map<Node, BlockNode>();
+    const calleeWrites = new Map<FunctionDefinitionNode, StateWrites>();
     walkInvocationAst(body, (child) => {
       at.set(child, at.size);
       if (child instanceof WhileNode || child instanceof DoWhileNode || child instanceof CollectionIterationNode) {
         loops.push(child);
       }
-      if (child instanceof VariableDefinitionNode && !declarations.has(child.name)) declarations.set(child.name, child);
+      if (child instanceof BlockNode) for (const statement of child.statements ?? []) blockOf.set(statement, child);
+      if (child instanceof VariableDefinitionNode) {
+        if (declarations.has(child.name)) redeclared.add(child.name);
+        else declarations.set(child.name, child);
+      }
       const names = child instanceof AssignNode || child instanceof DeleteLocalNode ? [child.identifier.name]
         : child instanceof TupleAssignmentNode
           ? child.elements.flatMap((element) => (element.name && !element.skip ? [element.name] : []))
@@ -54594,9 +54630,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // An element write leaves the array in its slot, so it counts only for an initializer that reads the array.
       const element = child instanceof ArrayAssignNode || child instanceof ArrayDeleteNode
         || child instanceof ArrayPushNode || child instanceof ArrayPopNode ? child.name : undefined;
-      const roots = this.stateRootsWrittenAt(child, calleeRoots);
-      if (names === undefined || names.length > 0 || element !== undefined || roots === 'any' || roots.size > 0) {
-        writes.push({ names, element, roots, node: child });
+      const written = this.stateWritesAt(child, calleeWrites);
+      if (names === undefined || names.length > 0 || element !== undefined || written === 'any' || written.size > 0) {
+        writes.push({ names, element, written, node: child });
       }
     });
     const subtree = (root: Node): Set<Node> => {
@@ -54628,24 +54664,134 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const runsOf = (call: ExternalCallSlot | Node): Node[] => (call instanceof Node ? [call] : callsOf(call));
     const sharesLoop = (write: Node, call: Node): boolean =>
       loopBodies.some((inside) => inside.has(write) && inside.has(call));
-    // A write that leaves `field` of the entry it writes as it was: a write of another field, or a rebuild of the entry
-    // by its struct's constructor (not a function returning the struct) carrying the field over from that same entry.
-    const keepsField = (write: Node, field: string | undefined): boolean => {
-      if (field === undefined) return false;
-      if (write instanceof MappingFieldAssignNode) return write.fieldName !== field;
-      if (!(write instanceof MappingAssignNode) || write.entrySlotIndex < 0 || write.arrayIndex !== undefined
-        || write.arrayPush || write.arrayPop || !(write.expression instanceof FunctionCallNode)) return false;
-      const rebuild = write.expression;
-      const struct = rebuild.type;
-      if (!(struct instanceof StructType) || rebuild.identifier.name !== struct.name
-        || rebuild.resolvedFunction !== undefined || rebuild.identifier.type instanceof FunctionType
-        || this.resolvedLibraries[rebuild.identifier.name] || rebuild.parameters.length !== struct.fields.length) {
-        return false;
+    // The field paths of local `name` that `write`, a write of it, changes.
+    const localPaths = (write: Node, name: string): FieldPath[] => (write instanceof AssignNode
+      && write.identifier.name === name ? this.rebuiltPaths(write.expression, this.carriedOver(write)) : [[]]);
+    // Locals a function may change in place: handed to it whole, or by a member of a reference type. A struct's own
+    // constructor copies its arguments (`t = S(1, t.roles)` is a field write of `t`).
+    let escaping: Set<string> | undefined;
+    const escapes = (name: string): boolean => {
+      if (escaping === undefined) {
+        const found = new Set<string>();
+        walkInvocationAst(body, (child) => {
+          if (!(child instanceof FunctionCallNode || child instanceof IndirectCallNode)
+            || (child instanceof FunctionCallNode && this.structConstructed(child) !== undefined)) return;
+          for (const argument of child.parameters) {
+            let value: ExpressionNode = argument;
+            while (value instanceof CastNode) value = value.expression;
+            let root: ExpressionNode = value;
+            while (root instanceof FieldAccessNode || root instanceof ArrayAccessNode) {
+              root = root instanceof FieldAccessNode ? root.expression : root.array;
+            }
+            if (root instanceof IdentifierNode && (root === value || !this.isValueType(value.type))) found.add(root.name);
+          }
+        });
+        escaping = found;
       }
-      const argument = rebuild.parameters[struct.fields.findIndex((member) => member.name === field)];
-      return argument instanceof FieldAccessNode && argument.name === field
-        && argument.expression instanceof MappingAccessNode && argument.expression.name === write.name
-        && argument.expression.entrySlotIndex === write.entrySlotIndex && argument.expression.arrayIndex === undefined;
+      return escaping.has(name);
+    };
+    // The earliest copy (`snapshot`) each write's carried fields were proven from.
+    const copiedAt = new Map<Node, number>();
+    // What `write` carries over at `path` through local `name` copying the location it writes (`S t = m[k]`, a user's
+    // copy, CoalesceMappingEntryFieldWrites' `__mefw`): the paths under `path` the local changed since the copy.
+    // undefined when `name` is no such copy: declared more than once or with no initializer, handed to a function,
+    // out of scope at the write, copying another location, or with assembly or a write of the location's keys
+    // between the copy and the write.
+    const snapshot = (name: string, write: Node, path: FieldPath): FieldPath[] | undefined => {
+      const declaration = declarations.get(name);
+      const block = declaration === undefined ? undefined : blockOf.get(declaration);
+      const to = at.get(write);
+      if (declaration?.expression === undefined || block === undefined || to === undefined || redeclared.has(name)
+        || escapes(name)) return undefined;
+      const from = subtreeEnd(declaration);
+      if (to <= from || to > subtreeEnd(block) || !this.sameLocation(declaration.expression, write)) return undefined;
+      const keys = new Set<string>();
+      for (const key of this.locationKeys(write)) {
+        walkInvocationAst(key, (inner) => { if (inner instanceof IdentifierNode) keys.add(inner.name); });
+      }
+      const changed: FieldPath[] = [];
+      for (const other of landed) {
+        if (other.node === declaration || other.node === write
+          || !((other.end > from && other.end < to) || sharesLoop(other.node, write))) continue;
+        if (other.names === undefined || other.names.some((written) => keys.has(written))) return undefined;
+        if (other.element === name) changed.push([]);
+        if (other.names.includes(name)) changed.push(...localPaths(other.node, name));
+      }
+      copiedAt.set(write, Math.min(copiedAt.get(write) ?? Infinity, at.get(declaration)!));
+      return changed.filter((changedPath) => fieldPathsOverlap(changedPath, path))
+        .map((changedPath) => (changedPath.length > path.length ? changedPath : path));
+    };
+    // Each write's state by field path, with what it carries through a local copy; memoized.
+    const precise = new Map<Node, StateWrites>();
+    const stateOf = (write: (typeof landed)[number], declared: number): StateWrites => {
+      let written = precise.get(write.node);
+      if (written === undefined) {
+        const own = this.stateWriteOf(write.node, this.carriedOver(write.node, snapshot));
+        written = own === undefined ? write.written : new Map([own]);
+        precise.set(write.node, written);
+      }
+      // A copy taken before the window opens says nothing of the location's value at its start.
+      const copied = copiedAt.get(write.node);
+      return copied === undefined || copied > declared || written === 'any' ? written
+        : new Map([...written.keys()].map((root): [string, FieldPath[]] => [root, [[]]]));
+    };
+    // What `expression` reads, each at the field path it reads below it: `s.to` reads local `s` at `[to]`,
+    // `jobs[k].roles.worker` an entry of `jobs` at `[roles, worker]`, and the key `k` whole.
+    const readsOf = (expression: ExpressionNode): {
+      stack: { name: string; path: FieldPath }[]; state: { root: string; path: FieldPath }[];
+      entries: MappingAccessNode[];
+    } => {
+      const above = new Map<Node, FieldAccessNode>();
+      walkInvocationAst(expression, (inner) => {
+        if (inner instanceof FieldAccessNode) above.set(inner.expression, inner);
+      });
+      const pathOf = (node: Node): FieldPath => {
+        const path: string[] = [];
+        for (let field = above.get(node); field !== undefined; field = above.get(field)) path.push(field.name);
+        return path;
+      };
+      const stack: { name: string; path: FieldPath }[] = [];
+      const state: { root: string; path: FieldPath }[] = [];
+      const entries: MappingAccessNode[] = [];
+      walkInvocationAst(expression, (inner) => {
+        if (inner instanceof IdentifierNode) stack.push({ name: inner.name, path: pathOf(inner) });
+        if (inner instanceof StateAccessNode) state.push({ root: inner.name, path: pathOf(inner) });
+        if (inner instanceof MappingAccessNode) {
+          state.push({ root: inner.name, path: inner.arrayIndex === undefined ? pathOf(inner) : [] });
+          entries.push(inner);
+          // An element of a parameter or local array, should one read reach here as an entry: its writes are too.
+          if (inner.collection === undefined && inner.isPackedStateArrayAccess !== true) {
+            stack.push({ name: inner.name, path: [] });
+          }
+        }
+      });
+      return { stack, state, entries };
+    };
+    // The writes that can change what `expression` reads and land after position `from` (`declaration` aside) and
+    // before a run of the call. A local's declaration counts as a write of it only for `redeclarations` (a body-top
+    // initializer reading a name a later declaration shadows).
+    const changing = (
+      expression: ExpressionNode, from: number, declaration: Node | undefined, call: ExternalCallSlot | Node,
+      redeclarations: boolean,
+    ): { writes: (typeof landed)[number][]; entries: MappingAccessNode[] } => {
+      const { stack, state, entries } = readsOf(expression);
+      const calls = runsOf(call);
+      const changes = (write: (typeof landed)[number]): boolean => {
+        if (write.names === undefined) return true;
+        if ((redeclarations || !(write.node instanceof VariableDefinitionNode))
+          && write.names.some((written) => stack.some((read) => read.name === written
+          && localPaths(write.node, written).some((path) => fieldPathsOverlap(path, read.path))))) return true;
+        if (write.element !== undefined && stack.some((read) => read.name === write.element)) return true;
+        const written = stateOf(write, from);
+        return written === 'any' || state.some((read) => (written.get(read.root) ?? [])
+          .some((path) => fieldPathsOverlap(path, read.path)));
+      };
+      return {
+        writes: landed.filter((write) => write.node !== declaration
+          && calls.some((run) => (write.end > from && write.end < at.get(run)!) || sharesLoop(write.node, run))
+          && changes(write)),
+        entries,
+      };
     };
     return {
       after: (names, slot) => {
@@ -54657,7 +54803,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const calls = runsOf(call);
         return landed.some((write) => ((!(write.node instanceof VariableDefinitionNode)
           && (write.names === undefined || write.names.some((name) => names.includes(name))))
-          || write.roots === 'any' || [...write.roots].some((root) => roots.includes(root)))
+          || write.written === 'any' || roots.some((root) => (write.written as ReadonlyMap<string, unknown>).has(root)))
           && calls.some((run) => write.end < at.get(run)! || sharesLoop(write.node, run)));
       },
       staleInitializer: (name, call) => {
@@ -54668,41 +54814,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (landed.some((write) => write.node !== declaration && write.names?.includes(name) === true)) {
           return undefined;
         }
-        const stack = new Set<string>();
-        const roots = new Set<string>();
-        const entries: MappingAccessNode[] = [];
-        const fields = new Map<MappingAccessNode, string>();
-        walkInvocationAst(initializer, (inner) => {
-          if (inner instanceof IdentifierNode) stack.add(inner.name);
-          if (inner instanceof StateAccessNode) roots.add(inner.name);
-          if (inner instanceof MappingAccessNode) {
-            roots.add(inner.name);
-            entries.push(inner);
-            // An element of a parameter or local array, should one read reach here as an entry: its writes are too.
-            if (inner.collection === undefined && inner.isPackedStateArrayAccess !== true) stack.add(inner.name);
-          }
-          if (inner instanceof FieldAccessNode && inner.expression instanceof MappingAccessNode) {
-            fields.set(inner.expression, inner.name);
-          }
-        });
-        const declared = subtreeEnd(declaration);
-        const calls = runsOf(call);
-        // A write of a collection read here that keeps every field read of its entries, whichever entry it writes.
-        const keepsReads = (write: Node): boolean => (write instanceof MappingAssignNode
-          || write instanceof MappingFieldAssignNode) && entries.some((entry) => entry.name === write.name)
-          && entries.every((entry) => entry.name !== write.name || keepsField(write, fields.get(entry)));
-        const changing = landed.filter((write) => write.node !== declaration
-          && (write.names === undefined || write.roots === 'any'
-            || write.names.some((written) => stack.has(written))
-            || (write.element !== undefined && stack.has(write.element))
-            || [...write.roots].some((root) => roots.has(root)))
-          && calls.some((run) => (write.end > declared && write.end < at.get(run)!) || sharesLoop(write.node, run))
-          && !keepsReads(write.node));
-        if (changing.length === 0) return undefined;
+        const { writes: written, entries } = changing(
+          initializer, subtreeEnd(declaration), declaration, call, true,
+        );
+        if (written.length === 0) return undefined;
         if (entries.length === 0) return initializer;
         const readsWritten = entries.every((entry) => entry.collection?.sorted !== true && entry.arrayIndex === undefined
           && entry.isPackedStateArrayAccess !== true)
-          && changing.every(({ node: write }) => (write instanceof MappingAssignNode
+          && written.every(({ node: write }) => (write instanceof MappingAssignNode
             || write instanceof MappingFieldAssignNode) && straightLine.has(write)
             && entries.some((entry) => entry.name === write.name && entry.entrySlotIndex === write.entrySlotIndex));
         if (readsWritten) return initializer;
@@ -54719,6 +54838,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           },
         );
       },
+      writtenBefore: (expression, call) => changing(expression, -1, undefined, call, false).writes.length > 0,
       keepReads: (expression, call) => {
         const last = Math.max(-1, ...runsOf(call).map((run) => at.get(run) ?? -1));
         if (last < 0) return;
@@ -54738,49 +54858,169 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The state roots (variables and collections, by name) `child` writes itself or through the functions it may call:
-   * the one it names, or any function for a call through a function value. 'any' for assembly. `memo` holds each
-   * function's answer.
+   * The state `child` writes (StateWrites): its own write (stateWriteOf), what the functions it may call write under
+   * any key (any function, through a function value), or 'any' for assembly. `memo` holds each function's answer.
    */
-  private stateRootsWrittenAt(
-    child: Node, memo: Map<FunctionDefinitionNode, ReadonlySet<string> | 'any'>,
-  ): ReadonlySet<string> | 'any' {
+  private stateWritesAt(child: Node, memo: Map<FunctionDefinitionNode, StateWrites>): StateWrites {
     if (child instanceof AssemblyStatementNode) return 'any';
-    if (child instanceof StateAssignNode || child instanceof DeleteStateNode || child instanceof MappingAssignNode
-      || child instanceof MappingFieldAssignNode || child instanceof MappingDeleteNode
-      || child instanceof StateArrayAssignNode || child instanceof StateArrayPushNode
-      || child instanceof StateArrayPopNode || child instanceof StateArrayDeleteNode) return new Set([child.name]);
+    const own = this.stateWriteOf(child, this.carriedOver(child));
+    if (own !== undefined) return new Map([own]);
     const throughValue = child instanceof IndirectCallNode || (child instanceof FunctionCallNode
       && child.resolvedFunction?.functionId === undefined && child.identifier?.type instanceof FunctionType);
     const callees = throughValue ? this.userFunctionList
       : child instanceof FunctionCallNode && child.resolvedFunction ? [child.resolvedFunction] : [];
-    const roots = new Set<string>();
+    let written: StateWrites = NO_STATE_WRITES;
     for (const callee of callees) {
-      const written = this.stateRootsWrittenBy(callee, memo);
+      written = mergeStateWrites(written, this.stateWritesBy(callee, memo));
       if (written === 'any') return 'any';
-      for (const root of written) roots.add(root);
     }
-    return roots;
+    return written;
   }
 
-  /** The state roots a function's body writes (stateRootsWrittenAt), memoized; a recursive call adds nothing more. */
-  private stateRootsWrittenBy(
-    callee: FunctionDefinitionNode, memo: Map<FunctionDefinitionNode, ReadonlySet<string> | 'any'>,
-  ): ReadonlySet<string> | 'any' {
+  /** The state a function's body writes (stateWritesAt), memoized; a recursive call adds nothing more. */
+  private stateWritesBy(callee: FunctionDefinitionNode, memo: Map<FunctionDefinitionNode, StateWrites>): StateWrites {
     const known = memo.get(callee);
     if (known !== undefined) return known;
-    memo.set(callee, new Set());
-    const roots = new Set<string>();
-    let any = false;
+    memo.set(callee, NO_STATE_WRITES);
+    let written: StateWrites = NO_STATE_WRITES;
     walkInvocationAst(callee.body, (inner) => {
-      if (any || inner === callee.body) return;
-      const written = this.stateRootsWrittenAt(inner, memo);
-      if (written === 'any') any = true;
-      else for (const root of written) roots.add(root);
+      if (written === 'any' || inner === callee.body) return;
+      written = mergeStateWrites(written, this.stateWritesAt(inner, memo));
     });
-    const result = any ? 'any' : roots;
-    memo.set(callee, result);
-    return result;
+    memo.set(callee, written);
+    return written;
+  }
+
+  /**
+   * The state `node` writes itself: its root, with the field paths it changes in the value it writes (rebuiltPaths,
+   * `carried` finding what it carries over). A delete, push or pop, or the write of an entry's array element, changes
+   * the whole value. undefined when `node` writes no state itself.
+   */
+  private stateWriteOf(
+    node: Node, carried: (value: ExpressionNode, path: FieldPath) => FieldPath[] | undefined,
+  ): [string, FieldPath[]] | undefined {
+    if (node instanceof StateAssignNode) return [node.name, this.rebuiltPaths(node.expression, carried)];
+    if (node instanceof MappingAssignNode) {
+      return [node.name, node.arrayIndex !== undefined || node.arrayPush || node.arrayPop ? [[]]
+        : this.rebuiltPaths(node.expression, carried)];
+    }
+    if (node instanceof MappingFieldAssignNode) {
+      return [node.name, (node.trailingMembers?.length ?? 0) > 0 ? [[node.fieldName]]
+        : this.rebuiltPaths(node.expression, carried, [node.fieldName])];
+    }
+    if (node instanceof StateArrayAssignNode) return [node.name, this.rebuiltPaths(node.value, carried)];
+    if (node instanceof DeleteStateNode || node instanceof MappingDeleteNode || node instanceof StateArrayPushNode
+      || node instanceof StateArrayPopNode || node instanceof StateArrayDeleteNode) return [node.name, [[]]];
+    return undefined;
+  }
+
+  /**
+   * The field paths a write changes in the value it writes, from that value's top, when it places `value` at `path`:
+   * none where `carried` finds `value` carried over, each field of a rebuild by the struct's own constructor by itself
+   * (`m[k] = S(m[k].a, v)` changes `[b]`), else all of `path`.
+   */
+  private rebuiltPaths(
+    value: ExpressionNode, carried: (value: ExpressionNode, path: FieldPath) => FieldPath[] | undefined,
+    path: FieldPath = [],
+  ): FieldPath[] {
+    const kept = carried(value, path);
+    if (kept !== undefined) return kept;
+    const struct = value instanceof FunctionCallNode ? this.structConstructed(value) : undefined;
+    if (!(value instanceof FunctionCallNode) || struct === undefined) return [path];
+    return struct.fields.flatMap((field, index) => {
+      const argument = value.parameters[value.fieldNames === undefined ? index : value.fieldNames.indexOf(field.name)];
+      return argument === undefined ? [[...path, field.name]]
+        : this.rebuiltPaths(argument, carried, [...path, field.name]);
+    });
+  }
+
+  /** The struct `call` builds with its own constructor, not a function returning one. */
+  private structConstructed(call: FunctionCallNode): StructType | undefined {
+    const struct = call.type;
+    return struct instanceof StructType && call.identifier.name === struct.name && call.resolvedFunction === undefined
+      && !(call.identifier.type instanceof FunctionType) && !this.resolvedLibraries[call.identifier.name]
+      && call.parameters.length === struct.fields.length ? struct : undefined;
+  }
+
+  /**
+   * What `write` carries over when it places `value` at `path`: the paths under `path` it changes, none for a read of
+   * the location it writes at that same path in the same statement, and through a local copy of the location
+   * (`snapshot`, bodyWrites) what the local changed since the copy. undefined when `value` is no such read.
+   */
+  private carriedOver(
+    write: Node, snapshot?: (name: string, write: Node, path: FieldPath) => FieldPath[] | undefined,
+  ): (value: ExpressionNode, path: FieldPath) => FieldPath[] | undefined {
+    return (value, path) => {
+      let base: ExpressionNode = value;
+      const read: string[] = [];
+      while (base instanceof FieldAccessNode) {
+        read.unshift(base.name);
+        base = base.expression;
+      }
+      if (read.length !== path.length || read.some((field, index) => field !== path[index])) return undefined;
+      if (this.sameLocation(base, write)) return [];
+      return base instanceof IdentifierNode && snapshot !== undefined ? snapshot(base.name, write, path) : undefined;
+    };
+  }
+
+  /**
+   * Whether `read`, evaluated where `write` runs, reads the location it writes: the same state variable or local, the
+   * same entry (its entry slot, or keys naming the same stack values) or the same packed array element.
+   */
+  private sameLocation(read: ExpressionNode, write: Node): boolean {
+    if (write instanceof StateAssignNode) return read instanceof StateAccessNode && read.name === write.name;
+    if (write instanceof AssignNode) return read instanceof IdentifierNode && read.name === write.identifier.name;
+    if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) {
+      return read instanceof MappingAccessNode && read.name === write.name && read.arrayIndex === undefined
+        && read.isPackedStateArrayAccess !== true
+        && ((write.entrySlotIndex >= 0 && read.entrySlotIndex === write.entrySlotIndex)
+          || this.sameStableKeys(read.keys, write.keys));
+    }
+    if (write instanceof StateArrayAssignNode) {
+      const index = read instanceof MappingAccessNode && read.name === write.name && read.arrayIndex === undefined
+        && read.keys.length === 1 ? read.keys[0]
+        : read instanceof ArrayAccessNode && (read.array instanceof IdentifierNode
+          || read.array instanceof StateAccessNode) && read.array.name === write.name ? read.index : undefined;
+      return index !== undefined && this.sameStableKeys([index], [write.index]);
+    }
+    return false;
+  }
+
+  /** The keys naming the location `write` writes: an entry's keys, a packed array element's index. */
+  private locationKeys(write: Node): readonly ExpressionNode[] {
+    if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) return write.keys;
+    if (write instanceof StateArrayAssignNode) return [write.index];
+    return [];
+  }
+
+  /**
+   * Whether two key lists name the same values where one statement reads both: stack variables, literals, transaction
+   * values, and casts and arithmetic of them, none of which a call in the statement can write. A field of a local is
+   * not taken: a call in the statement may change a struct handed to it.
+   */
+  private sameStableKeys(left: readonly ExpressionNode[], right: readonly ExpressionNode[]): boolean {
+    const same = (a: ExpressionNode, b: ExpressionNode): boolean => {
+      if (a instanceof IdentifierNode && b instanceof IdentifierNode) {
+        return a.name === b.name && !this.stateVariables.some((variable) => variable.name === a.name);
+      }
+      if (a instanceof IntLiteralNode && b instanceof IntLiteralNode) return a.value === b.value;
+      if (a instanceof BoolLiteralNode && b instanceof BoolLiteralNode) return a.value === b.value;
+      if (a instanceof NullaryOpNode && b instanceof NullaryOpNode) return a.operator === b.operator;
+      if (a instanceof CastNode && b instanceof CastNode) {
+        return String(a.type) === String(b.type) && a.isUnsafe === b.isUnsafe && same(a.expression, b.expression);
+      }
+      if (a instanceof BinaryOpNode && b instanceof BinaryOpNode) {
+        return a.operator === b.operator && same(a.left, b.left) && same(a.right, b.right);
+      }
+      return false;
+    };
+    return left.length === right.length && left.every((key, index) => same(key, right[index]!));
+  }
+
+  /** Whether a value of `type` is copied when handed to a function: no struct, array, dynamic bytes or string. */
+  private isValueType(type: Type | undefined): boolean {
+    return type !== undefined && !(type instanceof StructType) && !(type instanceof ArrayType)
+      && !(type instanceof BytesType && type.bound === undefined) && type !== PrimitiveType.STRING;
   }
 
   /**

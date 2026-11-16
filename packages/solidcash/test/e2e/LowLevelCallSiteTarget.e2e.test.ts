@@ -50,6 +50,40 @@ contract Payer {
   }
 }`;
 
+/**
+ * A payer whose functions write another field of the struct they pay through, then pay its `to`: a stored struct, an
+ * element of a packed struct array (whose field write is a rebuild of the element, as EACC's MarketplaceV1 writes
+ * `job.state` before SafeERC20 calls `job.token`) and an entry of a mapping of structs. The `to` read at the top of the
+ * body is current at the call.
+ */
+const FIELD_PAYER = `pragma solidcash >=0.8.0;
+contract FieldPayer {
+  struct Split { address to; int share; }
+  Split split;
+  Split[] splits;
+  mapping(int => Split) book;
+  int sends;
+  function setPayee(address p) external { split = Split(p, 1); splits.push(Split(p, 1)); book[0] = Split(p, 1); }
+  function reshareThenPay(int share, int amount) external {
+    split.share = share;
+    (bool ok, bytes data) = split.to.call{value: amount}("");
+    require(ok && data.length == 0);
+    sends = sends + 1;
+  }
+  function reshareElementThenPay(int k, int share, int amount) external {
+    splits[k].share = share;
+    (bool ok, bytes data) = splits[k].to.call{value: amount}("");
+    require(ok && data.length == 0);
+    sends = sends + 1;
+  }
+  function reshareEntryThenPay(int k, int share, int amount) external {
+    book[k].share = share;
+    (bool ok, bytes data) = book[k].to.call{value: amount}("");
+    require(ok && data.length == 0);
+    sends = sends + 1;
+  }
+}`;
+
 /** The same payer written as a Solidity port. */
 const SOLIDITY_PAYER = `pragma solidity ^0.8.0;
 contract Payer {
@@ -179,6 +213,22 @@ describe('a value call through a stored struct\'s field its function writes firs
   it('pays the written field, and the spend that pays the old one is refused', async () => {
     const { payer, first, second } = await payerWithPayee(compileString(NATIVE_PAYER, { forceStateful: true }));
     await expectPays(payer.resplitThenPay(second, AMOUNT), second, first);
+  });
+});
+
+describe('a value call through a field its function does not write, after a write of another field (native)', () => {
+  const artifact = compileString(FIELD_PAYER, { forceStateful: true });
+
+  it.each([
+    ['a stored struct', (payer: any): any => payer.reshareThenPay(2n, AMOUNT)],
+    ['an element of a packed struct array', (payer: any): any => payer.reshareElementThenPay(0n, 2n, AMOUNT)],
+    ['an entry of a mapping of structs', (payer: any): any => payer.reshareEntryThenPay(0n, 2n, AMOUNT)],
+  ])('pays the stored address of %s, and the spend that pays another is refused', async (_where, call) => {
+    const { payer, first, second } = await payerWithPayee(artifact);
+    await expectPays(call(payer), first, second);
+    const tx = await call(payer).send();
+    expect(paymentTo(decodeTransactionUnsafe(hexToBin(tx.hex)), first)).toBeGreaterThanOrEqual(0);
+    expect((await payer.getState()).sends).toBe(1n);
   });
 });
 

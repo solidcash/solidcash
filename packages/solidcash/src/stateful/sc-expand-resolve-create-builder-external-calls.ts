@@ -11,8 +11,11 @@ import type {
   StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { ExternalCallTargetWrittenBeforeCallError, RawCallCalleeRequiredError } from '../Errors.js';
+import {
+  CallGuardUndecidedError, ExternalCallTargetWrittenBeforeCallError, RawCallCalleeRequiredError,
+} from '../Errors.js';
 import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
+import { callGuardText } from './call-guard-text.js';
 import { connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex } from './deployment-registry.js';
 import { externalCallIterationIndices } from './external-call-iteration-domain.js';
 
@@ -195,6 +198,23 @@ export function rawCallName(ec: ExternalCallAbi): string {
   return ec.rawSelector === undefined ? 'with an opaque payload' : `with selector 0x${ec.rawSelector}`;
 }
 
+/**
+ * Whether the calling function counts a caller edge for `ec`, so that its own covenant refuses the edge the build lays
+ * for a call its run then skips. The compiler gives a call an edge witness (`__internal__callEdgeOutputIdx<callsite>`)
+ * unless its function also delegatecalls; the builder lays the edge for a typed call, and for a raw call only when the
+ * callee reads its contract caller (stb-materialize-caller-edge-outputs.ts). A frame of a multi-call spend lays none.
+ */
+function callCountsCallerEdge(ec: ExternalCallAbi, abiFunction: AbiFunction | undefined, callee: unknown): boolean {
+  if (ec.callsiteId === undefined || ec.callOrdinal !== undefined) return false;
+  if (!abiFunction?.inputs.some((input) => input.name === `__internal__callEdgeOutputIdx${ec.callsiteId}`)) return false;
+  if (ec.interfaceName !== '__raw__') return true;
+  const selected = (callee as { implementation?: unknown } | undefined)?.implementation ?? callee;
+  const abi = (selected as { inner?: { artifact?: Artifact } } | undefined)?.inner?.artifact?.abi ?? [];
+  return abi.some((candidate) => ((ec.rawFunctionName !== undefined && candidate.name === ec.rawFunctionName)
+    || (ec.rawSelector !== undefined && candidate.selector?.toLowerCase() === ec.rawSelector.toLowerCase()))
+    && candidate.usesMsgSender === true);
+}
+
 export function containsReturningExpression(value: unknown, seen = new Set<object>()): boolean {
   if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
   seen.add(value as object);
@@ -253,6 +273,33 @@ export async function expandResolveCreateBuilderExternalCalls(
     }
   }
 
+  // Calls the function may skip under a guard its frame cannot decide, with why when the compiler published the guard.
+  // Kept as candidates below, as before, and refused by name once the callee is known unless the function's own
+  // covenant refuses a skipped call: it counts the caller edges it pins, so the edge the build lays for a typed call
+  // the run skips fails that count. A call with no such edge, co-spent on a guess, would let its callee run uncalled.
+  const undecidedGuards = new Map<ExternalCallAbi, string | undefined>();
+  if (!overrideExternalCalls) {
+    for (const call of externalCalls ?? []) {
+      if (call.conditionUnpublished === true && call.condition === undefined) undecidedGuards.set(call, undefined);
+    }
+  }
+  const refuseUndecided = (ec: ExternalCallAbi, callee: unknown): never => {
+    const selected = (callee as { implementation?: unknown }).implementation ?? callee;
+    const calleeArtifact = (selected as { inner?: { artifact?: Artifact } }).inner?.artifact;
+    const calleeName = calleeArtifact?.contractName ?? ec.interfaceName;
+    const rawName = ec.rawFunctionName ?? calleeArtifact?.abi.find((candidate) => ec.rawSelector !== undefined
+      && candidate.selector?.toLowerCase() === ec.rawSelector.toLowerCase())?.name;
+    const name = ec.interfaceName === '__raw__'
+      ? `${calleeName}.${rawName ?? 'call'}` : `${ec.interfaceName}.${ec.functionName}`;
+    throw new CallGuardUndecidedError(
+      `${artifact.contractName}.${abiFunction?.name ?? '<function>'}`,
+      `${name}${ec.sourceLocation === undefined ? '' : ` (line ${ec.sourceLocation.line})`}`,
+      calleeName,
+      ec.condition === undefined || abiFunction === undefined ? undefined : callGuardText(ec.condition, abiFunction),
+      undecidedGuards.get(ec),
+    );
+  };
+
   // Producer results resolved for the activation predicates, reused to resolve a conditional call's target.
   let producerReturns: ReadonlyMap<string, FunctionArgument> | undefined;
   // A published false activation has no call operand or participant block to resolve. The final covenant
@@ -296,6 +343,7 @@ export async function expandResolveCreateBuilderExternalCalls(
           hasReturns: conditionReturns !== undefined,
         }));
       }
+      if (verdict === undefined) undecidedGuards.set(call, 'a value it reads did not resolve');
       return verdict !== false;
     });
     if (externalCalls.length === 0) {
@@ -548,6 +596,8 @@ export async function expandResolveCreateBuilderExternalCalls(
         canAutoResolve = false;
         break;
       }
+      if (undecidedGuards.has(ec) && !isBusCompiledEntry(artifact, abiFunction?.selector)
+        && !callCountsCallerEdge(ec, abiFunction, registered)) refuseUndecided(ec, registered);
       let functionName = ec.functionName;
       if (ec.interfaceName === '__raw__') {
         const selected = (registered as { implementation?: unknown }).implementation ?? registered;

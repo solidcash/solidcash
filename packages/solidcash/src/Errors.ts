@@ -40,6 +40,37 @@ export class ExternalCallTargetWrittenBeforeCallError extends Error {
   }
 }
 
+/**
+ * A contract's call that its run may skip, under a guard the SDK cannot evaluate before it builds the transaction. A
+ * callee co-spent on a guess runs without being called when the guard is false, so the SDK refuses the call instead.
+ */
+export class CallGuardUndecidedError extends Error {
+  constructor(
+    /** The calling function, `Contract.function`. */
+    public readonly caller: string,
+    /** The call, `Interface.function`, with its source line when the artifact publishes it. */
+    public readonly call: string,
+    /** The contract the call reaches. */
+    public readonly callee: string,
+    /** The guard as the artifact publishes it, or undefined when the compiler publishes no form of it. */
+    public readonly guard: string | undefined,
+    /** Why the published guard did not resolve. */
+    public readonly reason?: string,
+  ) {
+    const contract = caller.slice(0, caller.lastIndexOf('.')) || caller;
+    super(`${caller}'s call of ${call} cannot be built: it runs only under ${guard === undefined
+      ? 'a guard the compiler publishes no form of, so the SDK cannot tell before it builds the transaction whether '
+        + `${contract} makes the call`
+      : `the guard \`${guard}\`, and the SDK cannot tell before it builds the transaction whether that holds`
+        + `${reason === undefined ? '' : ` (${reason})`}`}. Spending ${callee} on a guess would let it run without being `
+      + 'called when the guard is false. Make the guard something the SDK can evaluate when it builds: the state of '
+      + `${contract}, an argument, block.number or block.timestamp, or the result of an earlier call whose contract it `
+      + 'can run; or move the call into a function of its own that requires the guard, and call that function only '
+      + 'when the guard holds.');
+    this.name = 'CallGuardUndecidedError';
+  }
+}
+
 export class UndefinedInputError extends Error {
   constructor() {
     super('Input is undefined');

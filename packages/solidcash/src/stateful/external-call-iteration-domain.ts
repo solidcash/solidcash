@@ -32,3 +32,14 @@ export function externalCallIterationIndices(
     indices.push(index);
   }
 }
+
+/**
+ * The planner could not decide whether a frame reaches a call: the call's guard, or the domain of the loop around it,
+ * did not resolve on the frame it was given. Unlike a call whose arguments did not resolve, such a call may not run.
+ */
+export class ExternalCallReachUndecidedError extends Error {
+  constructor(readonly callsiteId: number | undefined, readonly reason: string) {
+    super(`External callsite ${callsiteId ?? 'unknown'} ${reason}`);
+    this.name = 'ExternalCallReachUndecidedError';
+  }
+}

@@ -3,8 +3,11 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, Artifact, ExternalCallAbi, StateLayout, StateValue } from '@solidcash/utils';
+import type {
+  AbiFunction, Artifact, ExternalCallAbi, ExternalCallExpression, StateLayout, StateValue,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { CallGuardUndecidedError } from '../Errors.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { assertCallSelectorScheme } from './call-record.js';
@@ -18,6 +21,9 @@ import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
 import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
 import { artifactOraclePool, readPoolClock } from '../oracle/pool/reader.js';
+import { callGuardText } from './call-guard-text.js';
+import { ExternalCallReachUndecidedError } from './external-call-iteration-domain.js';
+import { containsReturningExpression } from './sc-expand-resolve-create-builder-external-calls.js';
 
 export type TransitiveExternalContract = {
   categoryId: string;
@@ -175,25 +181,62 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
     // block.number or block.timestamp stayed unresolved, so its call was kept and C spent although B made no call.
     const bClock = await blockClockState(bContract, bAbiFunc.externalCalls);
     const bFrameState = async (): Promise<Record<string, unknown>> => ({ ...(await bContract.getState()), ...bClock });
+    // The frame a guard of B's is read in: B's state with its clock and the mapping entries the guard reads, and the
+    // results of the earlier calls it reads, each derived as the root derives its own guards' results.
+    const guardFrame = async (guard: ExternalCallExpression): Promise<{
+      state: Record<string, unknown>; externalReturns?: ReadonlyMap<string, FunctionArgument>;
+    }> => {
+      const state = await bContract._hydrateExternalPredicateState(
+        [guard], directGroup.functionArgs, bContract.inner.artifact, await bFrameState(), bAbiFunc.inputs, bSelfAddress,
+      );
+      if (!containsReturningExpression(guard) || typeof bContract._resolveExternalExpressionReturns !== 'function') {
+        return { state };
+      }
+      const externalReturns = await bContract._resolveExternalExpressionReturns(
+        [{ kind: 'expression', expression: guard }], [...directGroup.functionArgs], bContract, state, bAbiFunc.inputs,
+        bSelfAddress, bAbiFunc.externalCalls, false, undefined, undefined, 0, bIncomingCaller,
+      );
+      return { state, externalReturns };
+    };
+    // Whether B's run makes a call: `skipped` when B's frame proves it does not; `undecided` for a call under a guard
+    // the frame cannot decide, with why when the compiler published the guard; `reached` otherwise, also for a call
+    // whose arguments do not resolve, which are resolved, or refused, once its callee is known. A looped call keeps
+    // its loop's planning: a frame that cannot plan the loop leaves the call as it was.
+    const reachOf = async (bEc: ExternalCallAbi): Promise<'reached' | 'skipped' | { undecided?: string }> => {
+      // The compiler could not write down a predicate the call runs under, so no frame can decide whether B makes it.
+      if (bEc.conditionUnpublished === true && bEc.condition === undefined) return {};
+      if (typeof bContract._planExternalCallOccurrences !== 'function') return 'reached';
+      const guarded = bEc.condition !== undefined && bEc.occurrence !== 'loop';
+      let frame: Awaited<ReturnType<typeof guardFrame>>;
+      try {
+        frame = guarded ? await guardFrame(bEc.condition!) : { state: await bFrameState() };
+      } catch (error) {
+        if (!guarded) return 'reached';
+        if (error instanceof DeferredTransitiveReturnProbeError) throw error;
+        return { undecided: `reading it failed: ${error instanceof Error ? error.message : String(error)}` };
+      }
+      try {
+        const occurrences = await bContract._planExternalCallOccurrences(bEc, {
+          functionArgs: directGroup.functionArgs,
+          artifact: bContract.inner.artifact,
+          state: frame.state,
+          callerInputs: bAbiFunc.inputs,
+          executionSelfAddress: bSelfAddress,
+          ...(bIncomingCaller !== undefined && { executionMsgSender: bIncomingCaller }),
+          ...(frame.externalReturns !== undefined && { externalReturns: frame.externalReturns }),
+        });
+        return occurrences.length === 0 ? 'skipped' : 'reached';
+      } catch (error) {
+        return guarded && error instanceof ExternalCallReachUndecidedError
+          ? { undecided: 'a value it reads did not resolve' } : 'reached';
+      }
+    };
 
     for (const bEc of bAbiFunc.externalCalls) {
       // A conditional edge the authenticated frame can already prove unreachable does not need a callee group.
       // Without this an `action == 0` callback still plans (and must resolve) every other branch's target.
-      if (typeof bContract._planExternalCallOccurrences === 'function') {
-        try {
-          const occurrences = await bContract._planExternalCallOccurrences(bEc, {
-            functionArgs: directGroup.functionArgs,
-            artifact: bContract.inner.artifact,
-            state: await bFrameState(),
-            callerInputs: bAbiFunc.inputs,
-            executionSelfAddress: bSelfAddress,
-            ...(bIncomingCaller !== undefined && { executionMsgSender: bIncomingCaller }),
-          });
-          if (occurrences.length === 0) continue;
-        } catch {
-          // An unresolvable guard retains the call; the callee still needs a group.
-        }
-      }
+      const reach = await reachOf(bEc);
+      if (reach === 'skipped') continue;
       // Resolve C from the exact compiler-published address when B has no connect-time interface binding.
       const cRegistered = await resolveTransitiveExternalContract(
         bContract, bEc, directGroup.functionArgs, bAbiFunc,
@@ -212,6 +255,21 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       }
 
       const cContract = cRegistered as TransitiveExternalContract;
+      // A call B may skip, under a guard B's frame cannot decide, is refused rather than kept: co-spent on a guess, C
+      // would run without being called whenever the guard is false, and a C that reads no msg.sender would settle it.
+      // A message-bus route binds each row it runs instead.
+      if (reach !== 'reached' && !directGroup.compilerRoute) {
+        const callee = cContract.inner.artifact.contractName;
+        const name = bEc.interfaceName === '__raw__'
+          ? `${callee}.${bEc.rawFunctionName ?? 'call'}` : `${bEc.interfaceName}.${bEc.functionName}`;
+        throw new CallGuardUndecidedError(
+          `${bContract.inner.artifact.contractName}.${bAbiFunc.name}`,
+          `${name}${bEc.sourceLocation === undefined ? '' : ` (line ${bEc.sourceLocation.line})`}`,
+          callee,
+          bEc.condition === undefined ? undefined : callGuardText(bEc.condition, bAbiFunc),
+          reach.undecided,
+        );
+      }
       assertCallSelectorScheme(bEc, bContract.inner.artifact, cContract.inner.artifact);
 
       // Detect circular calls (B->A): the transitive target is the primary contract

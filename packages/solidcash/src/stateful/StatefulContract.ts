@@ -647,6 +647,7 @@ export {
   visitExpandingExternalCallGroups,
 } from './external-call-graph-frontier.js';
 import { buildStatefulFunctionCall as buildStatefulFunctionCallImpl } from './sc-build-stateful-function-call.js';
+import { ExternalCallReachUndecidedError } from './external-call-iteration-domain.js';
 import { kernelReadCarrierCapabilityForSelectedRoute } from './kernel-read-carrier-route.js';
 export {
   authenticateKernelReadCarrierRoute,
@@ -14204,22 +14205,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         frame.externalReturns, iteration, false, frame.executionSelfAddress, bindings,
         undefined, false, frame.executionMsgSender,
       );
-    const candidates = call.iterationDomain
-      ? evaluateExternalCallAffineIterationDomain(call.iterationDomain,
-        (expression, bindings) => {
-          const value = evaluate(expression, 0, bindings);
-          return typeof value === 'bigint' || typeof value === 'boolean' ? value : undefined;
-        })
-      : externalCallCandidateIterationIndices(call, frame.functionArgs);
+    // Whether the frame reaches the call is undecided when its loop's domain or its guard does not resolve; that is
+    // a typed failure, apart from arguments that do not resolve for a call the frame does reach.
+    let candidates: readonly number[] | undefined;
+    try {
+      candidates = call.iterationDomain
+        ? evaluateExternalCallAffineIterationDomain(call.iterationDomain,
+          (expression, bindings) => {
+            const value = evaluate(expression, 0, bindings);
+            return typeof value === 'bigint' || typeof value === 'boolean' ? value : undefined;
+          })
+        : externalCallCandidateIterationIndices(call, frame.functionArgs);
+    } catch (error) {
+      throw new ExternalCallReachUndecidedError(call.callsiteId,
+        `has an iteration domain that does not resolve: ${error instanceof Error ? error.message : String(error)}`);
+    }
     if (!candidates) {
-      throw new Error(`External callsite ${call.callsiteId ?? 'unknown'} has no exact iteration domain`);
+      throw new ExternalCallReachUndecidedError(call.callsiteId, 'has no exact iteration domain');
     }
     const reached: Array<{ args: readonly FunctionArgument[]; sourceIteration: number; occurrenceIndex: number }> = [];
     for (const sourceIteration of candidates) {
       if (call.condition) {
         const active = evaluate(call.condition, sourceIteration);
         if (typeof active !== 'boolean') {
-          throw new Error(`External callsite ${call.callsiteId ?? 'unknown'} has unresolved condition`);
+          throw new ExternalCallReachUndecidedError(call.callsiteId, 'has unresolved condition');
         }
         if (!active) continue;
       }

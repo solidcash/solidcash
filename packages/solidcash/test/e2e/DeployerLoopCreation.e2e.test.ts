@@ -10,6 +10,7 @@ import {
   binToHex, createVirtualMachineBch2026, decodeTransaction,
   encodeLockingBytecodeP2pkh, hash256, hexToBin, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
+import type { Output } from '@bitauth/libauth';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
@@ -18,7 +19,11 @@ import { compileStringMulti } from '../direct-compile.js';
 import { alicePkh, alicePriv, bobPkh } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 
-async function setup(source: string, factoryName: string) {
+async function setup(source: string, factoryName: string): Promise<{
+  provider: MockNetworkProvider; funder: ReturnType<SignatureTemplate['unlockP2PKH']>; change: string;
+  artifacts: ReturnType<typeof compileStringMulti>; deployed: Awaited<ReturnType<typeof StatefulContract.deploy>>;
+  preps: Utxo[];
+}> {
   const provider = new MockNetworkProvider({ profile: 'production' });
   const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
   const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
@@ -41,7 +46,9 @@ async function setup(source: string, factoryName: string) {
 }
 
 /** The creation's source outputs, for a VM run of one of its inputs. */
-async function sourceOutputsOf(provider: MockNetworkProvider, tx: any, prepTransactions: string[], restore: () => Promise<void>) {
+async function sourceOutputsOf(
+  provider: MockNetworkProvider, tx: any, prepTransactions: string[], restore: () => Promise<void>,
+): Promise<Output[]> {
   const prepOutputs = new Map<string, any>();
   for (const hex of prepTransactions) {
     const prep = decodeTransaction(hexToBin(hex));

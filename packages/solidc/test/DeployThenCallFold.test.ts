@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString as compileDirect } from './direct-compile.js';
-const compileString = (source: string, options: Record<string, unknown> = {}) =>
+const compileString = (source: string, options: Record<string, unknown> = {}): ReturnType<typeof compileDirect> =>
   compileDirect(source, { ...options, __legacyDeployFold: true });
 
 // A direct-setter call on a freshly-deployed local is FOLDED into the deploy genesis: the child is deployed

@@ -7,7 +7,6 @@ import { encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress } fr
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { DeployerPrepError } from '../../src/stateful/deployer.js';
 import { compileStringMulti } from '../direct-compile.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
@@ -163,7 +162,9 @@ describe('A18: a registry creates a pool through its deployer', () => {
       childContainers: [{ deployment: 0, satoshis: 1200n, tokens: [{ categoryId: asset, amount: 5n }] }],
       fundingUtxo: prep, funder, changeAddress: change.address,
     });
-    const rows = await provider.getUtxos(getTokenContainerAddress(result.child.inner as never, result.childCategoryId, asset));
+    const rows = await provider.getUtxos(
+      getTokenContainerAddress(result.child.inner as never, result.childCategoryId, asset),
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.satoshis).toBe(1200n);
     expect(rows[0]!.token?.amount).toBe(5n);

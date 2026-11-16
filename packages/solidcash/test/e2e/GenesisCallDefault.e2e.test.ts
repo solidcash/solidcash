@@ -29,7 +29,9 @@ describe('a constructor calls a callee compiled with the default options', () =>
     const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
     if (typeof change === 'string') throw new Error(change);
     let serial = 0;
-    const deploy = async (artifact: any, initArgs: any[] = [], extra: any = {}) => {
+    const deploy = async (
+      artifact: any, initArgs: any[] = [], extra: any = {},
+    ): Promise<Awaited<ReturnType<typeof StatefulContract.deploy>>> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0x7a + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,

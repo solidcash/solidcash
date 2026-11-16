@@ -19,7 +19,9 @@ const compile = (source: string, options: Record<string, unknown>): {
   warnings: string[];
 } => {
   const warnings: string[] = [];
-  const artifact = compileString(source, { messageBus: false, warningListener: (warning) => warnings.push(warning.message), ...options });
+  const artifact = compileString(source, {
+    messageBus: false, warningListener: (warning) => warnings.push(warning.message), ...options,
+  });
   return { artifact, warnings };
 };
 
@@ -349,13 +351,13 @@ describe('B7.5: what the constructor does', () => {
     // A8: the pragma and a function that uses the container; the pragma alone keeps nothing.
     const satoshi = compile(`pragma solidcash ^0.51.0; pragma satoshicontainer single;
       contract C() { int n; constructor() { n = 1; } function pay(address r) { payable(r).transfer(1200); n = n + 1; } }`,
-      { deployer: true });
+    { deployer: true });
     expect(satoshi.artifact.deployer!.satoshiContainer).toBe('required');
 
     const token = compile(`pragma solidcash ^0.51.0; pragma tokencontainer single;
       contract C(bytes32 asset) { int n; constructor() { n = 1; }
         function take(address to, int amount) { this.tokens[asset].transfer(to, amount); } }`,
-      { deployer: true });
+    { deployer: true });
     expect(token.artifact.deployer!.tokenRows).toEqual([0]);
   });
 
@@ -551,7 +553,9 @@ describe('B7.9: the genesis range order', () => {
   } => {
     const { artifact } = compile(source, { deployer: true });
     const create = artifact.deployer!.abi.find((fn) => fn.name === 'create')!;
-    const slots = create.blockLayout!.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset, slotIndex: slot.slotIndex }));
+    const slots = create.blockLayout!.slots.map((slot) => ({
+      kind: slot.kind, offset: slot.offset, slotIndex: slot.slotIndex,
+    }));
     return {
       kinds: slots.map((slot) => slot.kind), outputs: artifact.deployer!.genesisOutputs, slots,
       tokenRows: [...artifact.deployer!.tokenRows],

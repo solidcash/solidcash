@@ -477,7 +477,7 @@ describe('B9.5: a creating call through Deploy<C>', () => {
       contract Child { int born; constructor() { born = int(block.timestamp); } }
       contract Factory { int childCount;
         function make(int notBefore) { require(tx.time >= notBefore); new Child(); childCount = childCount + 1; } }`,
-      { allowUnsafeOperations: true, __deployerNew: true } as never);
+    { allowUnsafeOperations: true, __deployerNew: true } as never);
     const deploymentFunding: Utxo = { txid: 'ad'.repeat(32), vout: 0, satoshis: 200000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
     const f = await StatefulContract.deploy(artifacts.Factory, [], {

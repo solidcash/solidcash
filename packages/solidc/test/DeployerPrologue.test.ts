@@ -17,7 +17,9 @@ import {
 import { compileString } from '../src/index.js';
 
 type Output = { lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any };
-type Input = { outpointIndex: number; outpointTransactionHash: Uint8Array; sequenceNumber: number; unlockingBytecode: Uint8Array };
+type Input = {
+  outpointIndex: number; outpointTransactionHash: Uint8Array; sequenceNumber: number; unlockingBytecode: Uint8Array;
+};
 
 const P = 'pragma solidcash ^0.51.0;';
 const EMPTY = new Uint8Array(0);
@@ -28,7 +30,9 @@ const vm = createVirtualMachineBch2026();
 
 const dummyHash = (seed: number): Uint8Array => Uint8Array.from({ length: 32 }, (_, i) => (0x40 + seed * 7 + i * 19) & 0xff);
 const num = (value: bigint | number): Uint8Array => bigIntToVmNumber(BigInt(value));
-const pushes = (values: readonly Uint8Array[]): Uint8Array => new Uint8Array(values.flatMap((value) => [...encodeDataPush(value)]));
+const pushes = (values: readonly Uint8Array[]): Uint8Array => (
+  new Uint8Array(values.flatMap((value) => [...encodeDataPush(value)]))
+);
 
 function compile(source: string): Artifact {
   const warn = console.warn;
@@ -40,13 +44,17 @@ function compile(source: string): Artifact {
   }
 }
 
-interface Context { deployer: DeployerAbi; xDisplay: Uint8Array; xVm: Uint8Array; masterLock: Uint8Array; dataLock: Uint8Array }
+interface Context {
+  deployer: DeployerAbi; xDisplay: Uint8Array; xVm: Uint8Array; masterLock: Uint8Array; dataLock: Uint8Array;
+}
 
 function context(artifact: Artifact): Context {
   const deployer = artifact.deployer!;
   const xDisplay = dummyHash(3);
   const xVm = Uint8Array.from(xDisplay).reverse();
-  const redeem = new Uint8Array([...encodeDataPush(Uint8Array.from([...xVm, 0x02])), 0xc0, 0xce, 0x88, ...hexToBin(deployer.code)]);
+  const redeem = new Uint8Array([
+    ...encodeDataPush(Uint8Array.from([...xVm, 0x02])), 0xc0, 0xce, 0x88, ...hexToBin(deployer.code),
+  ]);
   const masterLock = encodeLockingBytecodeP2sh32(hash256(redeem));
   const dataLock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(buildDataNftCovenantScript(xDisplay, masterLock))));
   return { deployer, xDisplay, xVm, masterLock, dataLock };
@@ -65,7 +73,9 @@ const record = (artifact: Artifact, ctx: Context, values: Record<string, unknown
   },
 });
 
-const filler = (n: number): Output[] => Array.from({ length: n }, () => ({ lockingBytecode: OP_TRUE, valueSatoshis: 1000n }));
+const filler = (n: number): Output[] => (
+  Array.from({ length: n }, () => ({ lockingBytecode: OP_TRUE, valueSatoshis: 1000n }))
+);
 
 /** C's satoshi container lock for (M, X), with C's own container options (A4.4). */
 const satoshiRow = (artifact: Artifact, ctx: Context, valueSatoshis: bigint): Output => ({
@@ -79,7 +89,7 @@ const satoshiRow = (artifact: Artifact, ctx: Context, valueSatoshis: bigint): Ou
 function verify(
   ctx: Context, outputs: Output[], values: Record<string, Uint8Array> = {}, extra: { input: Input; source: Output }[] = [],
   options: { deployerInputOnly?: boolean; surplusPush?: boolean } = {},
-) {
+): string | true {
   const create = ctx.deployer.abi.find((entry) => entry.name === 'create')!;
   const all: Record<string, Uint8Array> = {
     __internal__budgetPad: EMPTY,
@@ -101,7 +111,9 @@ function verify(
   ]);
   const leading = Array.from({ length: DEPLOYER_INPUT }, (_, i): Input => (i === 1
     ? { outpointIndex: 1, outpointTransactionHash: ctx.xDisplay, sequenceNumber: 0xffffffff, unlockingBytecode: EMPTY }
-    : { outpointIndex: 0, outpointTransactionHash: dummyHash(10 + i), sequenceNumber: 0xffffffff, unlockingBytecode: EMPTY }));
+    : {
+      outpointIndex: 0, outpointTransactionHash: dummyHash(10 + i), sequenceNumber: 0xffffffff, unlockingBytecode: EMPTY,
+    }));
   const inputs: Input[] = [...leading, {
     outpointIndex: 0, outpointTransactionHash: ctx.xDisplay, sequenceNumber: 0xffffffff, unlockingBytecode: unlocking,
   }, ...extra.map((entry) => entry.input)];
@@ -193,14 +205,18 @@ describe('A4.3 step 7 and A4.5: the identity flag', () => {
   it('refuses 1 with a non-zero sender category', () => {
     const outputs = base();
     outputs[0] = authhead();
-    expect(verify(ctx, outputs, { __internal__identity: num(1), __internal__msgSenderCategory: dummyHash(20) })).not.toBe(true);
+    expect(verify(ctx, outputs, {
+      __internal__identity: num(1), __internal__msgSenderCategory: dummyHash(20),
+    })).not.toBe(true);
   });
 });
 
 describe('A4.5: V counts the events the constructor filled', () => {
   const artifact = compile('contract C { int n; event E(int v); constructor(bool b) { n = 1; if (b) { emit E(5); } } }');
   const ctx = context(artifact);
-  const skipped = (): Output[] => [...filler(OUTBASE), master(ctx), record(artifact, ctx, { n: 1n }), { lockingBytecode: OP_TRUE, valueSatoshis: 1000n }];
+  const skipped = (): Output[] => [
+    ...filler(OUTBASE), master(ctx), record(artifact, ctx, { n: 1n }), { lockingBytecode: OP_TRUE, valueSatoshis: 1000n },
+  ];
   it('passes an honest creation whose emit did not run', () => {
     expect(verify(ctx, skipped(), { b: EMPTY })).toBe(true);
   });
@@ -219,7 +235,9 @@ describe('A4.3 step 8: a sender category is proved by the creator', () => {
     const p2pkh = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(7), 0x88, 0xac]);
     const ctxOutputs = [...filler(OUTBASE), master(ctx), record(artifact, ctx, { owner: p2pkh })];
     const extra = [{
-      input: { outpointIndex: 0, outpointTransactionHash: dummyHash(30), sequenceNumber: 0xffffffff, unlockingBytecode: EMPTY },
+      input: {
+        outpointIndex: 0, outpointTransactionHash: dummyHash(30), sequenceNumber: 0xffffffff, unlockingBytecode: EMPTY,
+      },
       source: { lockingBytecode: p2pkh, valueSatoshis: 10_000n },
     }];
     expect(verify(ctx, ctxOutputs, {}, extra, { deployerInputOnly: true })).toBe(true);
@@ -242,9 +260,13 @@ describe('A4.3 step 8: a sender category is proved by the creator', () => {
     const fakeRedeem = Uint8Array.of(0x75, 0x51);
     const fakeLock = encodeLockingBytecodeP2sh32(hash256(fakeRedeem));
     const list = Uint8Array.from(ctx.xVm);
-    const unlocking = new Uint8Array([...pushes([Uint8Array.of(1, 2, 3, 4), new Uint8Array(32)]), ...encodeDataPush(fakeRedeem)]);
+    const unlocking = new Uint8Array([
+      ...pushes([Uint8Array.of(1, 2, 3, 4), new Uint8Array(32)]), ...encodeDataPush(fakeRedeem),
+    ]);
     const extra = [{
-      input: { outpointIndex: 1, outpointTransactionHash: dummyHash(31), sequenceNumber: 0xffffffff, unlockingBytecode: unlocking },
+      input: {
+        outpointIndex: 1, outpointTransactionHash: dummyHash(31), sequenceNumber: 0xffffffff, unlockingBytecode: unlocking,
+      },
       source: { lockingBytecode: fakeLock, valueSatoshis: 1200n, token: { category: Uint8Array.from(k).reverse(), amount: 0n, nft: { capability: 'minting', commitment: EMPTY } } },
     }];
     const outputs = [...filler(OUTBASE), master(ctx), record(artifact, ctx, { owner: fakeLock }), {

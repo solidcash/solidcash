@@ -11,7 +11,7 @@ import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh3
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import {
-  asmToScript, AUTHHEAD_BODY, buildDataNftCovenantScript, buildEntryNftCovenantScript,
+  AUTHHEAD_BODY, buildDataNftCovenantScript, buildEntryNftCovenantScript,
   buildPushdataCommitment, buildSatoshiContainerCovenantScript, buildTokenContainerCovenantScript,
   computeCollectionHash, containerKeepsTokenless, containerMasterRetires, encodePushdataValue, scriptToBytecode,
   type Artifact, type DeployerAbi,
@@ -25,6 +25,10 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 type VmInput = VmTransaction['inputs'][number];
 type SourceOutputs = NonNullable<VmProgram['sourceOutputs']>;
+type Spend = {
+  sourceOutputs: SourceOutputs;
+  transaction: { version: number; locktime: number; inputs: VmInput[]; outputs: VmOutput[] };
+};
 
 const P = 'pragma solidcash ^0.51.0;';
 const EMPTY = new Uint8Array(0);
@@ -36,7 +40,6 @@ const vm = createVirtualMachineBch2026();
 const pushes = (values: readonly Uint8Array[]): Uint8Array =>
   new Uint8Array(values.flatMap((value) => [...encodeDataPush(value)]));
 
-const redeemOf = (artifact: Artifact): Uint8Array => scriptToBytecode(asmToScript(artifact.bytecode));
 
 function dummyInput(index: number): VmInput {
   return {
@@ -77,7 +80,9 @@ function recordOutput(
   };
 }
 
-function genesisMasters(deployer: DeployerAbi, contractArgs: { name: string; value: Uint8Array }[] = []) {
+function genesisMasters(
+  deployer: DeployerAbi, contractArgs: { name: string; value: Uint8Array }[] = [],
+): { x: Uint8Array; redeem: Uint8Array; master: Uint8Array } {
   const x = dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
   const category = Uint8Array.from([...x.slice().reverse(), 0x02]);
   const argumentBytes = new Uint8Array(contractArgs.slice().reverse()
@@ -108,7 +113,9 @@ function tokenRowLock(artifact: Artifact, master: Uint8Array, token: Uint8Array)
 
 /** The author coin (X, 1) of the deployer coin at input DEPLOYER_INPUT (A4.3 step 4). */
 function authorInput(index: number): VmInput {
-  return { ...dummyInput(index), outpointTransactionHash: dummyInput(DEPLOYER_INPUT).outpointTransactionHash, outpointIndex: 1 };
+  return {
+    ...dummyInput(index), outpointTransactionHash: dummyInput(DEPLOYER_INPUT).outpointTransactionHash, outpointIndex: 1,
+  };
 }
 
 function createSpend(
@@ -123,7 +130,7 @@ function createSpend(
   extraOutputs: VmOutput[] = [],
   extraInputs: VmInput[] = [],
   extraSourceOutputs: SourceOutputs = [],
-) {
+): Spend {
   // The deployer program keeps a block reader's `__oraclePool` in create's argument band; the master lock pins it
   // even though genesis block reads come from the locktime.
   const createInputs = deployer.abi.find((entry) => entry.name === 'create')?.inputs ?? [];
@@ -144,7 +151,7 @@ function createSpend(
   }));
   // OUTBASE is the master; the record follows it when C has one.
   const dataNftCount = artifact.stateLayout?.dataNftCount ?? 0;
-  const { x, redeem, master } = genesisMasters(deployer, contractArgs);
+  const { x, master } = genesisMasters(deployer, contractArgs);
   outputs.push(adjustMaster({
     lockingBytecode: master,
     valueSatoshis: 1200n,
@@ -226,7 +233,7 @@ describe('B7.16: create at an output base different from its input', () => {
 });
 
 describe('A4.4: the data record is pinned at its row', () => {
-  const x = () => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
+  const x = (): Uint8Array => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
 
   it('refuses the record at another lock or of another value', () => {
     const artifact = compileString(C, { deployer: true, messageBus: false });
@@ -284,7 +291,7 @@ describe('B7.7: a constructor helper that writes state', () => {
 
 describe('A3 rule 4: the start of a token container in a constructor', () => {
   const asset = Uint8Array.from({ length: 32 }, (_, i) => (0x21 + i * 7) & 0xff);
-  const tokenStart = (pragma: string) => `${P} ${pragma} contract C(bytes32 asset) { int n;
+  const tokenStart = (pragma: string): string => `${P} ${pragma} contract C(bytes32 asset) { int n;
     constructor() { n = int(this.tokens[asset].tokenAmount); } }`;
 
   it('reads one unit for a container the contract keeps single', () => {
@@ -351,7 +358,7 @@ describe('B7.10: the balance journal', () => {
 
 describe('B7.13: the HEAD of an unwritten sorted collection', () => {
   const source = `${P} contract C { mapping(int => int) m; constructor() { } }`;
-  const spendWith = (mutate: (head: VmOutput) => VmOutput) => {
+  const spendWith = (mutate: (head: VmOutput) => VmOutput): Spend => {
     const artifact = compileString(source, { deployer: true, messageBus: false });
     console.error('ENTRYABI', JSON.stringify(artifact.deployer!.abi.find((f) => f.name === 'create')!.inputs.map((i) => [i.name, i.type])));
     const { x, master } = genesisMasters(artifact.deployer!);
@@ -384,7 +391,7 @@ describe('B7.13: the HEAD of an unwritten sorted collection', () => {
 });
 
 describe('B7.12: the identity output when the flag is 1', () => {
-  const spendWith = (mutate: (outputs: VmOutput[]) => VmOutput[]) => {
+  const spendWith = (mutate: (outputs: VmOutput[]) => VmOutput[]): Spend => {
     const artifact = compileString(C, { deployer: true, messageBus: false });
     const { x } = genesisMasters(artifact.deployer!);
     const genX = Uint8Array.from(x).reverse();
@@ -457,8 +464,8 @@ describe('B7.12: the master lock commits to the contract arguments', () => {
 });
 
 describe('B7.16: the master output is pinned', () => {
-  const deployerOf = () => compileString(C, { deployer: true, messageBus: false });
-  const spends = (adjust: (output: VmOutput) => VmOutput) => {
+  const deployerOf = (): Artifact => compileString(C, { deployer: true, messageBus: false });
+  const spends = (adjust: (output: VmOutput) => VmOutput): Spend => {
     const artifact = deployerOf();
     return createSpend(artifact, artifact.deployer!, undefined, [], adjust);
   };
@@ -500,7 +507,7 @@ describe('B7.16: the deployer coin and the output base', () => {
 });
 
 describe('A4.3 steps 3 and 4: the deployer coin is (X, 0) and the author coin (X, 1) is spent', () => {
-  const x = () => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
+  const x = (): Uint8Array => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
 
   it('refuses another coin in the author coin\'s place, and the author coin at an index the parameter does not name', () => {
     const artifact = compileString(C, { deployer: true, messageBus: false });
@@ -523,7 +530,9 @@ describe('A4.3 steps 3 and 4: the deployer coin is (X, 0) and the author coin (X
     const artifact = compileString(C, { deployer: true, messageBus: false });
     for (const [deployerVout, otherVout, accepted] of [[2, 0, false], [0, 2, true]] as const) {
       const spend = createSpend(artifact, artifact.deployer!);
-      spend.transaction.inputs[0] = { ...spend.transaction.inputs[0], outpointTransactionHash: x(), outpointIndex: otherVout };
+      spend.transaction.inputs[0] = {
+        ...spend.transaction.inputs[0], outpointTransactionHash: x(), outpointIndex: otherVout,
+      };
       spend.transaction.inputs[DEPLOYER_INPUT].outpointIndex = deployerVout;
       expect(vm.verify(spend as never) === true, `deployer at vout ${deployerVout}`).toBe(accepted);
     }
@@ -533,7 +542,7 @@ describe('A4.3 steps 3 and 4: the deployer coin is (X, 0) and the author coin (X
 describe('A4.4: an optional satoshi row', () => {
   const SENDS = `${P} contract C(address payable to) { int n; constructor() payable { payable(to).send(1200); n = 1; } }`;
   const to = Uint8Array.from([0x76, 0xa9, 0x14, ...Array.from({ length: 20 }, (_, i) => i + 1), 0x88, 0xac]);
-  const spendWith = (deployValue: bigint, row: (master: Uint8Array, artifact: Artifact) => VmOutput) => {
+  const spendWith = (deployValue: bigint, row: (master: Uint8Array, artifact: Artifact) => VmOutput): Spend => {
     const artifact = compileString(SENDS, { deployer: true, messageBus: false });
     const { master } = genesisMasters(artifact.deployer!, [{ name: 'to', value: to }]);
     const transfer: VmOutput = { lockingBytecode: to, valueSatoshis: 1200n };
@@ -611,8 +620,10 @@ describe('B7.10: msg.value is the deploy value', () => {
     ), [], (output) => output, undefined, { __internal__deployValue: bigIntToVmNumber(2000n) });
     const verdict = vm.verify(spend as never);
     if (verdict !== true) {
-      const st = vm.evaluate({ ...(spend as never), inputIndex: 3 } as never) as unknown as { error?: string; ip?: number; instructions?: { opcode: number }[] };
-      console.error('READFAIL', st.error, st.ip, (st.instructions ?? []).slice(Math.max(0,(st.ip??0)-10),(st.ip??0)+2).map((x)=>x.opcode.toString(16)).join(' '));
+      const st = vm.evaluate({ ...(spend as never), inputIndex: 3 } as never) as unknown as {
+        error?: string; ip?: number; instructions?: { opcode: number }[];
+      };
+      console.error('READFAIL', st.error, st.ip, (st.instructions ?? []).slice(Math.max(0, (st.ip ?? 0) - 10), (st.ip ?? 0) + 2).map((x)=>x.opcode.toString(16)).join(' '));
     }
     expect(verdict).toBe(true);
   });
@@ -645,7 +656,7 @@ describe('B7.10: address(this) and this.activeBytecode', () => {
 
 
 describe('B7.12 / A4.5: the census', () => {
-  const deployerOf = () => compileString(C, { deployer: true, messageBus: false });
+  const deployerOf = (): Artifact => compileString(C, { deployer: true, messageBus: false });
   const tokenOutput = (
     category: Uint8Array,
     nft: { capability: 'none' | 'mutable' | 'minting'; commitment: Uint8Array } | undefined,
@@ -655,11 +666,11 @@ describe('B7.12 / A4.5: the census', () => {
     valueSatoshis: 1200n,
     token: { category, amount, ...(nft === undefined ? {} : { nft }) },
   });
-  const x = () => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
+  const x = (): Uint8Array => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
   const run = (
     extra: VmOutput[] = [], adjustMaster: (output: VmOutput) => VmOutput = (output) => output,
     valueOverrides: Record<string, Uint8Array> = {},
-  ) => {
+  ): Spend => {
     const artifact = deployerOf();
     return createSpend(artifact, artifact.deployer!, undefined, [], adjustMaster, undefined,
       valueOverrides, undefined, 0, 0xffffffff, extra);
@@ -726,7 +737,7 @@ describe('B7.18: a constructor mapping write', () => {
     }, undefined, 0, 0xffffffff, [entry]) as never)).toBe(true);
   });
 
-  const entryFor = (artifact: Artifact, value: bigint) => {
+  const entryFor = (artifact: Artifact, value: bigint): { x: Uint8Array; master: Uint8Array; entry: VmOutput } => {
     const { x, master } = genesisMasters(artifact.deployer!);
     const collection = artifact.stateLayout!.collections![0];
     const covenant = scriptToBytecode(buildEntryNftCovenantScript(
@@ -794,7 +805,7 @@ describe('B7.18: a held read feeds the next entry', () => {
     const lock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
       buildEntryNftCovenantScript(x, computeCollectionHash(collection.signature), master),
     )));
-    const commitmentFor = (key: bigint, value: bigint) => {
+    const commitmentFor = (key: bigint, value: bigint): Uint8Array => {
       const slot = sha256.hash(encodePushdataValue(key, 'int'));
       slot[31] &= 0x7f;
       return new Uint8Array([...slot, ...new Uint8Array(32), ...encodePushdataValue(value, 'int')]);

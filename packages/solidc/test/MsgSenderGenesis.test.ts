@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   binToHex, decodeAuthenticationInstructions, decodeTransaction, encodeAuthenticationInstructions,
-  encodeTransaction, hash256, hexToBin,
+  hash256, hexToBin,
 } from '@bitauth/libauth';
 import type { Output, Transaction } from '@bitauth/libauth';
 import { clearCompileCache, compileString } from '../src/index.js';
@@ -52,6 +52,16 @@ function childLock(X: Uint8Array, S: Uint8Array): Uint8Array {
   return concat(PREFIX, hash256(concat(Uint8Array.of(0x21), X, hexToBin('02c0ce88'), S)), SUFFIX);
 }
 
+interface Fixture {
+  attempt: () => Promise<string>;
+  sawMutation: () => boolean;
+  provider: ReturnType<typeof createTestProvider>;
+  X: Uint8Array;
+  D: Uint8Array;
+  L: Uint8Array;
+  signer: HDSigner;
+}
+
 describe('B6.6/B6.7: the genesis sender', () => {
   async function fixture(options: {
     /** Bytes appended to the deployer coin's script as its redeem. */
@@ -70,7 +80,7 @@ describe('B6.6/B6.7: the genesis sender', () => {
     extraPush?: boolean;
     /** The lock output g_out carries, given the child's L. */
     gOutLock?: (L: Uint8Array) => Uint8Array;
-  } = {}) {
+  } = {}): Promise<Fixture> {
     const provider = createTestProvider();
     const signer = HDSigner.fromPhrase(
       'test test test test test test test test test test test junk', provider,

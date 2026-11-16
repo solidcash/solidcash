@@ -12,7 +12,7 @@ import {
   sha256 as libsha,
 } from '@bitauth/libauth';
 import {
-  asmToScript, buildDataNftCovenantScript, buildPushdataCommitment, scriptToBytecode,
+  buildDataNftCovenantScript, buildPushdataCommitment, scriptToBytecode,
   type Artifact, type DeployerAbi,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
@@ -56,7 +56,8 @@ const createUnlock = (deployer: DeployerAbi, values: Record<string, Uint8Array>)
 };
 
 /** The category `x`, C's redeem and master lock for a deployer seeded at `seedIndex`. */
-const masters = (deployer: DeployerAbi, seedIndex = DEPLOYER_INPUT) => {
+type Masters = { x: Uint8Array; redeem: Uint8Array; master: Uint8Array };
+const masters = (deployer: DeployerAbi, seedIndex = DEPLOYER_INPUT): Masters => {
   const x = dummyInput(seedIndex).outpointTransactionHash;
   const category = Uint8Array.from([...x.slice().reverse(), 0x02]);
   const redeem = new Uint8Array([...encodeDataPush(category), 0xc0, 0xce, 0x88, ...hexToBin(deployer.code)]);
@@ -111,7 +112,7 @@ const calleeRun = (options: {
   record: (digest31: Uint8Array) => Uint8Array;
   callDigest: Uint8Array;
 }): CalleeRun => {
-  const { callee, calleeSeed, callerX, callerSlot, gIn, gOut, unlock, inputIndex, returnIndex } = options;
+  const { callee, calleeSeed, callerX, callerSlot, gIn, gOut, unlock, inputIndex } = options;
   const calleeDeployer = callee.deployer!;
   const master = masters(calleeDeployer, calleeSeed);
   const tag = new Uint8Array([
@@ -148,7 +149,10 @@ const calleeRun = (options: {
   };
 };
 
-/** The digest the caller computes: `ff ff ‖ X ‖ slot ‖ selector ‖ size ‖ argument`, the tag being the parameter's first 34 bytes (A7). */
+/**
+ * The digest the caller computes: `ff ff ‖ X ‖ slot ‖ selector ‖ size ‖ argument`, the tag being the parameter's
+ * first 34 bytes (A7).
+ */
 const callDigest = (tag: Uint8Array, selector: string, argument: Uint8Array): Uint8Array => {
   const preimage = new Uint8Array([
     0xff, 0xff, ...tag.slice(0, 34), ...hexToBin(selector), argument.length & 0xff, (argument.length >> 8) & 0xff,

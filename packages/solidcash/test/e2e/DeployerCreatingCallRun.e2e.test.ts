@@ -103,7 +103,13 @@ function withChildArgument(
   return copy;
 }
 
-async function setup(source: string, factoryName: string, options: { initialBalance?: bigint; preps?: number } = {}) {
+async function setup(
+  source: string, factoryName: string, options: { initialBalance?: bigint; preps?: number } = {},
+): Promise<{
+    provider: MockNetworkProvider; captured: Spend[]; funder: ReturnType<SignatureTemplate['unlockP2PKH']>; change: string;
+    artifacts: ReturnType<typeof compileStringMulti>; deployed: Awaited<ReturnType<typeof StatefulContract.deploy>>;
+    prepFunding: Utxo;
+  }> {
   clearGenesisReservations();
   const provider = new MockNetworkProvider({ profile: 'production' });
   const captured = captureBroadcasts(provider);
@@ -123,6 +129,8 @@ async function setup(source: string, factoryName: string, options: { initialBala
   return { provider, captured, funder, change: change.address, artifacts, deployed, prepFunding };
 }
 
+type DeployFrom = ReturnType<typeof StatefulContract.deployFrom>;
+
 const CHILD = `
 contract Child(int x) {
     int n;
@@ -136,7 +144,7 @@ describe('A14 item 4: a creating call reads its children from the creator\'s run
       contract Factory { int made;
         function make(int a, int b) { new Child{args: (a * 200)}(b + 300); this.made = this.made + 1; }
       }`, 'Factory');
-    const call = (extra: Record<string, unknown>) => StatefulContract.deployFrom({
+    const call = (extra: Record<string, unknown>): DeployFrom => StatefulContract.deployFrom({
       provider, factory: deployed.contract, deployFunctionName: 'make', deployFunctionArgs: [3n, 4n],
       childArtifact: artifacts.Child, fundingUtxo: prepFunding, funder, changeAddress: change, ...extra,
     } as never);
@@ -178,7 +186,7 @@ describe('A14 item 4: a creating call reads its children from the creator\'s run
           this.made = this.made + 1;
         }
       }`, 'Factory');
-    const call = (take: boolean, fundingUtxo: Utxo) => StatefulContract.deployFrom({
+    const call = (take: boolean, fundingUtxo: Utxo): DeployFrom => StatefulContract.deployFrom({
       provider, factory: deployed.contract, deployFunctionName: 'make', deployFunctionArgs: [take, 7n],
       childArtifact: artifacts.Child, fundingUtxo, funder, changeAddress: change,
     });
@@ -337,7 +345,7 @@ describe('A14 item 4: a creating call reads its children from the creator\'s run
         }
       }`, 'Factory', { initialBalance: 50_000n });
     expect(artifacts.Factory.abi.find((entry) => entry.name === 'make')?.runtimeLoopTransfers).toHaveLength(1);
-    const containerOf = (contract: any, category: string) => getSatoshiContainerAddress(contract.inner, category);
+    const containerOf = (contract: any, category: string): string => getSatoshiContainerAddress(contract.inner, category);
     const held = async (address: string): Promise<bigint> => (await provider.getUtxos(address))
       .reduce((total, utxo) => total + utxo.satoshis, 0n);
     const factoryContainer = containerOf(deployed.contract, deployed.contract.categoryId);

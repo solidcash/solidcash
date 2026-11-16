@@ -13,6 +13,8 @@ import { compileStringMulti } from '../direct-compile.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 
+type DeployFrom = ReturnType<typeof StatefulContract.deployFrom>;
+
 const FACTORY = `
 contract Child(int x) {
     int n;
@@ -47,7 +49,7 @@ describe('A creating call broadcasts nothing until its creation passes the VM', 
 
     const prepFunding: Utxo = { txid: 'f2'.repeat(32), vout: 0, satoshis: 100000n };
     await provider.seedUtxo(binToHex(authorLock), prepFunding);
-    const make = (x: bigint) => StatefulContract.deployFrom({
+    const make = (x: bigint): DeployFrom => StatefulContract.deployFrom({
       provider,
       factory: deployed.contract,
       deployFunctionName: 'make',

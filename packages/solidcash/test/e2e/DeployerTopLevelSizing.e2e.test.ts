@@ -30,7 +30,9 @@ function largeContract(): string {
   return `${P} contract Big { int n; constructor() { n = 1; } ${functions} }`;
 }
 
-async function deployed(provider: MockNetworkProvider, source: string, txidByte: string, extra: object = {}) {
+async function deployed(
+  provider: MockNetworkProvider, source: string, txidByte: string, extra: object = {},
+): Promise<{ artifact: ReturnType<typeof compileString>; result: Awaited<ReturnType<typeof StatefulContract.deploy>> }> {
   const artifact = compileString(source, { deployer: true, messageBus: false });
   expect(artifact.deployer).toBeDefined();
   const fundingUtxo: Utxo = { txid: txidByte.repeat(32), vout: 0, satoshis: 2_000_000n };

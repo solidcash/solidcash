@@ -43,6 +43,7 @@ const aliceLock = encodeLockingBytecodeP2pkh(alicePkh);
 const alice = new SignatureTemplate(alicePriv);
 
 type Spend = { transaction: any; sourceOutputs: any[] };
+type DeployFrom = ReturnType<typeof StatefulContract.deployFrom>;
 
 /** Records every broadcast with the coins it spends, read from the ledger while they are still live. */
 function captureBroadcasts(provider: MockNetworkProvider): Spend[] {
@@ -255,7 +256,7 @@ describe('B8.8: a value the creating function takes as an argument', () => {
     });
     const prepFunding: Utxo = { txid: 'e7'.repeat(32), vout: 0, satoshis: 100_000n };
     await provider.seedUtxo(binToHex(aliceLock), prepFunding);
-    const call = (extra: Record<string, unknown>) => StatefulContract.deployFrom({
+    const call = (extra: Record<string, unknown>): DeployFrom => StatefulContract.deployFrom({
       provider, factory: deployed.contract, deployFunctionName: 'make', deployFunctionArgs: [7000n],
       childArtifact: artifacts.Pay, childInitialState: { n: 7000n }, fundingUtxo: prepFunding, funder,
       changeAddress: change.address, ...extra,
@@ -263,8 +264,9 @@ describe('B8.8: a value the creating function takes as an argument', () => {
 
     await expect(call({ childValue: 6000n })).rejects.toThrow(/childValue is 6000, but 'make' sends 'v', which is 7000/);
     const result = await call({});
-    expect(await (async () => (await provider.getUtxos(getSatoshiContainerAddress(result.child.inner, result.childCategoryId)))
-      .reduce((total, utxo) => total + utxo.satoshis, 0n))()).toBe(7000n);
+    expect(await (async () => (await provider.getUtxos(
+      getSatoshiContainerAddress(result.child.inner, result.childCategoryId),
+    )).reduce((total, utxo) => total + utxo.satoshis, 0n))()).toBe(7000n);
     expect((await result.child.getState() as { n?: bigint }).n).toBe(7000n);
   }, 600_000);
 

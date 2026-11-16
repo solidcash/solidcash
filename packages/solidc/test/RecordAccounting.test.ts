@@ -5,9 +5,8 @@
  * asserted on artifacts and on a transaction the mock chain evaluates under the production limits.
  */
 import { describe, expect, it } from 'vitest';
-import { eq } from '@bitauth/libauth';
 import {
-  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+  binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { applyCodeTail, CODE_MARKER_MAGIC, CodeTailError } from '../src/generation/CodeTail.js';
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';
@@ -73,10 +72,6 @@ describe('B6.4: the code tail (O4)', () => {
 });
 
 describe('B6.4: record-sound classification and the marker', () => {
-  const bytesOf = (source: string): number[] => scriptToBytecode(asmToScript(compileString(source, {
-    messageBus: false,
-  }).bytecode));
-
   it('a record-sound contract ends with the marker whose flag byte has bit 1', () => {
     const artifact = compileString(`${P} contract C { int s; function v(int x) { s = s + x; } }`, { messageBus: false });
     expect(artifact.recordSound).toBe(true);

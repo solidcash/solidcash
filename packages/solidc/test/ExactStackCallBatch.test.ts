@@ -62,7 +62,8 @@ describe('O8: a multi-call candidate checks its depth when it runs standalone', 
     const found = bodies.some((body) => {
       for (let i = 0; i + pattern.length + 3 <= body.length; i += 1) {
         if (pattern.every((opcode, k) => body[i + k] === opcode)
-          && body[i + pattern.length + 1] === Op.OP_NUMEQUALVERIFY && body[i + pattern.length + 2] === Op.OP_ENDIF) return true;
+          && body[i + pattern.length + 1] === Op.OP_NUMEQUALVERIFY
+          && body[i + pattern.length + 2] === Op.OP_ENDIF) return true;
       }
       return false;
     });

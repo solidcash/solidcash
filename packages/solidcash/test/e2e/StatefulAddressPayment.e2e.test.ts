@@ -10,14 +10,11 @@ import { describe, expect, it } from 'vitest';
 import { compileString, compileStringMulti } from '../direct-compile.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { alicePriv, alicePkh } from '../fixture/vars.js';
 import { Utxo } from '../../src/interfaces.js';
 import { encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { getSatoshiContainerAddress, getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
-import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
-import { Contract } from '../../src/index.js';
 
 const CHILD = `
 contract Child {
@@ -40,9 +37,6 @@ contract Factory {
 `;
 
 describe('a payment to a new result (B2.1)', () => {
-  const provider = createTestProvider();
-  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-
   it('the compiler routes a payment to a new result without an SDK build step (B2.2)', () => {
     // The SDK's deployFrom path for a routed payment is B9's work: the transaction that spends the deployer and
     // carries the transfer is rebuilt there. This asserts the compiler's half: the routed payment compiles and
@@ -262,7 +256,7 @@ pragma tokencontainer single;
 contract Child(bytes32 asset) { int x; constructor() { x = 1; }
   function spend(address to, int amount) { this.tokens[asset].transfer(to, amount); x = 2; } }
 contract Factory { int d; function make(bytes32 asset) { Child c = new Child(asset); d = 1; } }`,
-      { allowUnsafeOperations: true } as never);
+    { allowUnsafeOperations: true } as never);
     const deploymentFunding: Utxo = { txid: 'e1'.repeat(32), vout: 0, satoshis: 200000n };
     await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
     const deployed = await StatefulContract.deploy(artifacts.Factory, [], {

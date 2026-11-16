@@ -17,7 +17,9 @@ import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
 const P = 'pragma solidcash ^0.51.0;';
 
-async function deploy(source: string, args: unknown[], initialBalance: bigint, seed: string) {
+async function deploy(
+  source: string, args: unknown[], initialBalance: bigint, seed: string,
+): Promise<{ result: Awaited<ReturnType<typeof StatefulContract.deploy>>; provider: MockNetworkProvider }> {
   clearGenesisReservations();
   const provider = new MockNetworkProvider({ profile: 'production' });
   const artifact = compileString(source, { deployer: true, messageBus: false });

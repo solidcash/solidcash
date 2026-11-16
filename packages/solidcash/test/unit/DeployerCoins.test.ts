@@ -121,7 +121,7 @@ describe('B9.1: the prep chain', () => {
       expect(prep.deployerCoin.vout).toBe(0);
       expect(prep.authorCoin.vout).toBe(1);
     });
-    const [first, second, third] = preps.map(decodeDeployerPrep);
+    const [, second, third] = preps.map(decodeDeployerPrep);
     expect(second.inputs[0].outpointIndex).toBe(2);
     expect(Buffer.from(second.inputs[0].outpointTransactionHash).toString('hex'))
       .toBe(preps[0].category);
@@ -257,7 +257,10 @@ describe('B9.5: the trace binding', () => {
     { opcode: 0x57 }, { opcode: 0xc8 }, { opcode: 0x76 }, { opcode: 0x52 }, { opcode: 0x7e }, { opcode: 0x58 },
     { opcode: 0xd1 }, { opcode: 0x88 },
   ];
-  const state = (stack: Uint8Array[], controlStack: unknown[] = []) => ({
+  const state = (stack: Uint8Array[], controlStack: unknown[] = []): {
+    ip: number; instructions: typeof site; stack: Uint8Array[]; controlStack: unknown[];
+    functionTable: Record<string, Uint8Array>;
+  } => ({
     ip: 0, instructions: site, stack, controlStack, functionTable: { '03': Uint8Array.from([35, ...lock]) },
   });
 
@@ -289,14 +292,16 @@ describe('B9.5: the trace binding', () => {
     const bound = encodeDeployBinding(binding, deployer, 1);
     // Q = push(category) ‖ push(v) ‖ push(y); A = push(x) ‖ push(owner).
     expect(Buffer.from(bound).toString('hex'))
-      .toBe(`20${'c1'.repeat(32)}028813` + `0183` + `022c01` + `14${Buffer.from(alicePkh).toString('hex')}`);
+      .toBe(`20${'c1'.repeat(32)}028813` + '0183' + '022c01' + `14${Buffer.from(alicePkh).toString('hex')}`);
     expect(decodeDeployBinding(bound, deployer, 1)).toEqual(binding);
     expect(() => decodeDeployBinding(Uint8Array.from([...bound, 0x51]), deployer, 1)).toThrow(/more than create's/);
   });
 });
 
 describe('B9.3: the local run', () => {
-  const program = (unlockingBytecode: Uint8Array) => {
+  const program = (unlockingBytecode: Uint8Array): {
+    transaction: Parameters<typeof runDeployerInputsLocal>[1]; sourceOutputs: Parameters<typeof runDeployerInputsLocal>[2];
+  } => {
     const lock = Uint8Array.of(0x51);
     return {
       transaction: {

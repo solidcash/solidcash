@@ -127,7 +127,9 @@ const ASSET = 'a1b2c3d4e5f60718293a4b5c6d7e8f900123456789abcdef0011223344556677'
 const vm = createVirtualMachineBch2026(true);
 const aliceLock = encodeLockingBytecodeP2pkh(alicePkh);
 const bobLock = encodeLockingBytecodeP2pkh(bobPkh);
-const signers = new Map([[binToHex(aliceLock), new SignatureTemplate(alicePriv)], [binToHex(bobLock), new SignatureTemplate(bobPriv)]]);
+const signers = new Map([
+  [binToHex(aliceLock), new SignatureTemplate(alicePriv)], [binToHex(bobLock), new SignatureTemplate(bobPriv)],
+]);
 const lockFor = (fill: number): Uint8Array => Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(fill), 0x87]);
 
 type Spend = { transaction: any; sourceOutputs: any[] };
@@ -167,7 +169,10 @@ function verify(spend: Spend): true | string {
   return vm.verify(spend as never) as true | string;
 }
 
-/** The same `create` unlocking with one argument replaced: pushes are the selector, the arguments last first, then the redeem. */
+/**
+ * The same `create` unlocking with one argument replaced: pushes are the selector, the arguments last first, then the
+ * redeem.
+ */
 function withCreateArgument(unlocking: Uint8Array, deployer: DeployerAbi, name: string, value: Uint8Array): Uint8Array {
   const inputs = deployer.abi.find((entry) => entry.name === 'create')!.inputs;
   const position = 1 + (inputs.length - 1 - inputs.findIndex((input) => input.name === name));
@@ -176,8 +181,12 @@ function withCreateArgument(unlocking: Uint8Array, deployer: DeployerAbi, name: 
 }
 
 /** Where a creation's pieces sit: the deployer input, the author input, and the rows of the genesis range. */
-function layoutOf(spend: Spend, deployer: DeployerAbi) {
-  const deployerInput = spend.sourceOutputs.findIndex((output) => binToHex(output.lockingBytecode) === deployer.lockingBytecode);
+function layoutOf(
+  spend: Spend, deployer: DeployerAbi,
+): { deployerInput: number; authorInput: number; x: Uint8Array; outbase: number } {
+  const deployerInput = spend.sourceOutputs.findIndex(
+    (output) => binToHex(output.lockingBytecode) === deployer.lockingBytecode,
+  );
   const x = spend.transaction.inputs[deployerInput].outpointTransactionHash as Uint8Array;
   const outbase = spend.transaction.outputs.findIndex((output: any) => output.token?.nft?.capability === 'minting'
     && binToHex(output.token.category) === binToHex(x));
@@ -186,8 +195,11 @@ function layoutOf(spend: Spend, deployer: DeployerAbi) {
   return { deployerInput, authorInput, x, outbase };
 }
 
-const coin = (txid: string, vout: number) => ({
-  outpointTransactionHash: hexToBin(txid), outpointIndex: vout, sequenceNumber: 0xffffffff, unlockingBytecode: new Uint8Array(),
+const coin = (txid: string, vout: number): {
+  outpointTransactionHash: Uint8Array; outpointIndex: number; sequenceNumber: number; unlockingBytecode: Uint8Array;
+} => ({
+  outpointTransactionHash: hexToBin(txid), outpointIndex: vout, sequenceNumber: 0xffffffff,
+  unlockingBytecode: new Uint8Array(),
 });
 
 describe('Deploy<C> genesis pins, through a creator (stock libauth, standard)', () => {
@@ -239,7 +251,9 @@ describe('Deploy<C> genesis pins, through a creator (stock libauth, standard)', 
     it('refuses a coin of the builder in the author coin\'s place', () => {
       const spend = copy(honest);
       spend.transaction.inputs[layout.authorInput] = coin('cd'.repeat(32), 1);
-      spend.sourceOutputs[layout.authorInput] = { lockingBytecode: bobLock, valueSatoshis: spend.sourceOutputs[layout.authorInput].valueSatoshis };
+      spend.sourceOutputs[layout.authorInput] = {
+        lockingBytecode: bobLock, valueSatoshis: spend.sourceOutputs[layout.authorInput].valueSatoshis,
+      };
       expect(verify(spend)).not.toBe(true);
     });
 
@@ -257,7 +271,9 @@ describe('Deploy<C> genesis pins, through a creator (stock libauth, standard)', 
         const author = spend.transaction.inputs[layout.authorInput];
         const authorSource = spend.sourceOutputs[layout.authorInput];
         spend.transaction.inputs.splice(layout.authorInput, 1, coin('ee'.repeat(32), 0), author);
-        spend.sourceOutputs.splice(layout.authorInput, 1, { lockingBytecode: aliceLock, valueSatoshis: 5_000n }, authorSource);
+        spend.sourceOutputs.splice(
+          layout.authorInput, 1, { lockingBytecode: aliceLock, valueSatoshis: 5_000n }, authorSource,
+        );
         const deployerInput = spend.transaction.inputs[layout.deployerInput];
         deployerInput.unlockingBytecode = withCreateArgument(
           deployerInput.unlockingBytecode, deployer, '__internal__authorIndex', Uint8Array.of(authorIndex),
@@ -390,7 +406,9 @@ describe('Deploy<C> genesis pins, through a creator (stock libauth, standard)', 
   it('refuses the hijack of a deployer coin: no author coin, record and satoshi coin to the builder', () => {
     const spend = copy(honest);
     spend.transaction.inputs[layout.authorInput] = coin('cd'.repeat(32), 1);
-    spend.sourceOutputs[layout.authorInput] = { lockingBytecode: bobLock, valueSatoshis: spend.sourceOutputs[layout.authorInput].valueSatoshis };
+    spend.sourceOutputs[layout.authorInput] = {
+      lockingBytecode: bobLock, valueSatoshis: spend.sourceOutputs[layout.authorInput].valueSatoshis,
+    };
     spend.transaction.outputs[record()].lockingBytecode = bobLock;
     spend.transaction.outputs[satoshiRow()].lockingBytecode = bobLock;
     expect(verify(spend)).not.toBe(true);
@@ -407,7 +425,10 @@ describe('Deploy<C> genesis pins at top level (stock libauth, standard)', () => 
   async function deployCaptured(
     source: string, args: unknown[], txid: string, extra: Record<string, unknown> = {},
     seed?: (provider: MockNetworkProvider) => Promise<Record<string, unknown>>,
-  ) {
+  ): Promise<{
+      artifact: ReturnType<typeof compileString>; result: Awaited<ReturnType<typeof StatefulContract.deploy>>;
+      creation: Spend; provider: MockNetworkProvider; layout: ReturnType<typeof layoutOf>;
+    }> {
     clearGenesisReservations();
     const provider = new MockNetworkProvider({ profile: 'production' });
     const captured = captureBroadcasts(provider);
@@ -614,7 +635,9 @@ describe('Deploy<C> genesis pins at top level (stock libauth, standard)', () => 
 
 describe('Deploy<C> token rows through a creator (A14 item 11)', () => {
   /** A TokenPool-shaped child created through its creator, the paying wallet holding `units` of ASSET in one coin. */
-  async function createTokenPool(units: bigint, funding: (seed: Utxo, alice: Signer) => Record<string, unknown>) {
+  async function createTokenPool(
+    units: bigint, funding: (seed: Utxo, alice: Signer) => Record<string, unknown>,
+  ): Promise<{ honest: Spend; outbase: number; tokenRow: number; satoshiRow: number }> {
     clearGenesisReservations();
     const provider = new MockNetworkProvider({ profile: 'production' });
     const captured = captureBroadcasts(provider);

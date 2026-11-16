@@ -19,7 +19,7 @@ import type { Utxo } from '../../src/interfaces.js';
 
 const FEE = 20_000n;
 
-async function createWithAsk(satoshis: bigint) {
+async function createWithAsk(satoshis: bigint): Promise<{ atLock: bigint[]; fillers: bigint[]; paid: bigint }> {
   const provider = new MockNetworkProvider({ profile: 'production' });
   const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
   const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });

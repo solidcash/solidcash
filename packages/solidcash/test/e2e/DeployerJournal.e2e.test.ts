@@ -11,6 +11,7 @@ import {
   binToHex, createVirtualMachineBch2026, decodeTransaction, encodeLockingBytecodeP2pkh, hash256, hexToBin,
   lockingBytecodeToCashAddress, sha256,
 } from '@bitauth/libauth';
+import type { Transaction } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, Signer } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
@@ -36,7 +37,12 @@ function slotOf(key: bigint): Uint8Array {
   return hash;
 }
 
-async function createWith(source: string, seed: string, args: unknown[] = [], options: Record<string, unknown> = {}) {
+async function createWith(
+  source: string, seed: string, args: unknown[] = [], options: Record<string, unknown> = {},
+): Promise<{
+    result: any; transaction: Transaction; sourceOutputs: any[]; entryLock: (collection: string) => string;
+    provider: MockNetworkProvider; artifact: ReturnType<typeof compileString>;
+  }> {
   clearGenesisReservations();
   const provider = new MockNetworkProvider({ profile: 'production' });
   const artifact = compileString(source, { deployer: true, messageBus: false, ...options } as never);

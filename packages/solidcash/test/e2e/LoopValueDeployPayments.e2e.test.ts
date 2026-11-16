@@ -86,7 +86,7 @@ describe('a loop of `new C{value: v}()` beside a payment', () => {
     const change = lockingBytecodeToCashAddress({ bytecode: aliceLock, prefix: 'bchtest' });
     if (typeof change === 'string') throw new Error(change);
     const artifacts = compileStringMulti(`
-      pragma solidcash ^0.50.0;
+      pragma solidcash ^0.51.0;
       contract Pay { int n; constructor() payable { this.n = msg.value; } function pay(address payable to) public { to.transfer(1000); } }
       contract LoopFactory { int made;
         function makeTwo(bytes20 to) public {

@@ -25,7 +25,7 @@ import { encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '.
 
 const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface ISink { function ping(); }'
   + ' interface IEcho { function sum(int[5] a); }'
   + ' interface IRegistry { function dispatch(int id); }'

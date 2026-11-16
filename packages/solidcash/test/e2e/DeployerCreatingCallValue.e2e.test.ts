@@ -22,7 +22,7 @@ import { compileStringMulti } from '../direct-compile.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 
 const SOURCE = `
-pragma solidcash ^0.50.0;
+pragma solidcash ^0.51.0;
 contract Pay {
     int n;
     constructor() payable { this.n = msg.value; }
@@ -189,7 +189,7 @@ describe('B8.8: a value for each child of a loop', () => {
     if (typeof change === 'string') throw new Error(change);
     const funder = alice.unlockP2PKH();
     const artifacts = compileStringMulti(`
-      pragma solidcash ^0.50.0;
+      pragma solidcash ^0.51.0;
       contract Pay { int n; constructor() payable { this.n = msg.value; } function pay(address payable to) public { to.transfer(1000); } }
       contract LoopFactory { int made;
         function makeTwo() public {
@@ -242,7 +242,7 @@ describe('B8.8: a value the creating function takes as an argument', () => {
     if (typeof change === 'string') throw new Error(change);
     const funder = alice.unlockP2PKH();
     const artifacts = compileStringMulti(`
-      pragma solidcash ^0.50.0;
+      pragma solidcash ^0.51.0;
       contract Pay { int n; constructor() payable { this.n = msg.value; } function pay(address payable to) public { to.transfer(1000); } }
       contract ArgFactory { int made;
         function make(int v) public { new Pay{value: v}(); this.made = this.made + 1; }
@@ -276,7 +276,7 @@ describe('B8.8: a value the creating function takes as an argument', () => {
     if (typeof change === 'string') throw new Error(change);
     const funder = alice.unlockP2PKH();
     const artifacts = compileStringMulti(`
-      pragma solidcash ^0.50.0;
+      pragma solidcash ^0.51.0;
       contract Pay2(int a) { int n; int m;
         constructor(int b) payable { this.n = msg.value; this.m = a + b; }
         function pay(address payable to) public { to.transfer(1000); } }

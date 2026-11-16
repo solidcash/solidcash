@@ -22,7 +22,7 @@ import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const vm = createVirtualMachineBch2026();
 
 /** The slot the write path computes for an int key: sha256 of its minimal encoding, the top bit cleared. */

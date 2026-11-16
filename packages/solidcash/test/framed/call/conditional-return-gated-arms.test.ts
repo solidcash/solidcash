@@ -38,7 +38,7 @@ const CALL_TXID = category('4e');
 
 const SPENDER = 7n;
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface IToken { function approve(int spender, int amount) returns (bool); }'
   + ' contract Token {'
   + '   mapping(int => int) public _allowances;'

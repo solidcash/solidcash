@@ -19,7 +19,7 @@ import {
 } from '../../src/stateful/KernelEntryJournal.js';
 import { createTestProvider } from '../test-util.js';
 
-const SOURCE = `pragma solidcash ^0.50.0;
+const SOURCE = `pragma solidcash ^0.51.0;
 contract CarrierAuthorityFixture() {
   int stored;
   function set(int next) public { this.stored = next; require(true); }

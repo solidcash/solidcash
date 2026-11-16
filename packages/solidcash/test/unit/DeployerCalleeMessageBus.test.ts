@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '@solidcash/solidc';
 import { DeployerCalleeError, assertDeployerCallee } from '../../src/stateful/deployer.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 
 // A route admits `f`.
 const ROUTED = `${P} contract T { int calls;

@@ -188,7 +188,7 @@ co-spent input. A 32-byte category id is not a call target. Caller and callee ar
 failing callee fails the whole transaction.
 
 :::caution Experimental
-A call that changes the callee's state is composed external state mutation, which is experimental in 0.50.0.
+A call that changes the callee's state is composed external state mutation, which is experimental in 0.51.0.
 Calling the same contract twice in one transaction, or a call cycle, needs the
 [message bus](/docs/guides/message-bus), which is also experimental. External state reads, `.outState` reads and
 `.staticcall()` are not affected.

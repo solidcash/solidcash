@@ -49,7 +49,7 @@ const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'

@@ -19,7 +19,7 @@ import { compileString } from '../src/index.js';
 type Output = { lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any };
 type Input = { outpointIndex: number; outpointTransactionHash: Uint8Array; sequenceNumber: number; unlockingBytecode: Uint8Array };
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const EMPTY = new Uint8Array(0);
 const OP_TRUE = Uint8Array.of(0x51);
 const OUTBASE = 5;

@@ -61,7 +61,7 @@ const DEFAULT_TAIL = encodeChunkableValueTail(new Uint8Array());
 /** A title's value tail, which the shipped encoder length-prefixes before the value's own bytes. */
 const titleTail = (title: Uint8Array): Uint8Array => encodeChunkableValueTail(title);
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface ITags { function remove(string k); }'
   + ' contract Tags {'
   + '   mapping(string => string) tags;'

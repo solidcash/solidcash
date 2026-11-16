@@ -14,7 +14,7 @@ import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
 const changeAddress = (() => {
   const result = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });

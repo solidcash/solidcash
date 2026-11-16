@@ -15,7 +15,7 @@ import { alicePkh, alicePriv, bobPkh } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 
 async function deploy(source: string, args: unknown[], initialBalance: bigint, seed: string) {
   clearGenesisReservations();

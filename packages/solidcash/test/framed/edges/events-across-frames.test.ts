@@ -57,7 +57,7 @@ function acceptedInputs(verdicts: CompositionFeedback['verdicts']): string[] {
 }
 
 describe('the events one transaction carries', () => {
-  const SOURCE = 'pragma solidcash ^0.50.0;'
+  const SOURCE = 'pragma solidcash ^0.51.0;'
     + ' contract Log {'
     + '   event First(int x);'
     + '   event Second(int y);'
@@ -113,7 +113,7 @@ describe('the events one transaction carries', () => {
 describe('an event emitted by a nested frame', () => {
   const emitterAddress = seededAddress('nested event emitter');
   // The unit-level event survey marks every contract in a unit that contains an emit, so the root also emits.
-  const SOURCE = 'pragma solidcash ^0.50.0;'
+  const SOURCE = 'pragma solidcash ^0.51.0;'
     + ' interface IEmitter { function fire(); }'
     + ' contract Emitter { event Report(int a, int b, int c, int d, int e);'
     + '   function fire() {'

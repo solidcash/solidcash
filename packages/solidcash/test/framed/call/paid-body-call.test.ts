@@ -12,7 +12,7 @@ import {
  * the SDK learns what the paid body emits, writes and sends from the body's own program.
  */
 
-const PAID_BODIES_SOURCE = 'pragma solidcash ^0.50.0;'
+const PAID_BODIES_SOURCE = 'pragma solidcash ^0.51.0;'
   + ' contract Tipped {'
   + '   int public tips;'
   + '   event Tip(int amount);'
@@ -87,7 +87,7 @@ describe('a paid receive() that emits or writes a mapping', () => {
   });
 });
 
-const SENDING_BODIES_SOURCE = 'pragma solidcash ^0.50.0;'
+const SENDING_BODIES_SOURCE = 'pragma solidcash ^0.51.0;'
   + ' contract Splitter {'
   + '   bytes25 public first;'
   + '   bytes25 public second;'

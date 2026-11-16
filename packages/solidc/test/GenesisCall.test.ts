@@ -16,7 +16,7 @@ import { alicePub, alicePriv, alicePkh } from '../../solidcash/test/fixture/vars
 import { createTestProvider } from '../../solidcash/test/test-util.js';
 import p2pkhArtifact from '../../solidcash/test/fixture/p2pkh.artifact.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const SOURCE = `${P} contract C { int calls; function hit(int amount) { calls = calls + amount; } }`;
 
 type Provider = ReturnType<typeof createTestProvider>;

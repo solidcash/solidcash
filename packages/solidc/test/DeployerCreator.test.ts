@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const OPTIONS = { __deployerNew: true } as const;
 
 const compile = (source: string, options: Record<string, unknown> = {}): Artifact =>

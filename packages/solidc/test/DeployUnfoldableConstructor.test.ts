@@ -6,7 +6,7 @@ import { compileStringMulti } from './direct-compile.js';
 // instead, so the constructor runs inside the deployer at creation time and there is no folded genesis to refuse.
 // These cases now assert the deployer binding; the old refusal belongs to the removed fold path.
 
-const factory = (child: string): string => `pragma solidcash ^0.50.0;
+const factory = (child: string): string => `pragma solidcash ^0.51.0;
 ${child}
 contract Factory() {
     int created;

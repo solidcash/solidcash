@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringSplit } from './direct-compile.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const CHILD = 'contract Child { int n; constructor() payable { n = 1; } function f() public payable { n = n + 1; } }';
 const creator = (body: string, hook?: string): unknown => compileString(`${P} ${CHILD} contract F { int c; ${body} }`, {
   primaryContractName: 'F', allowUnsafeOperations: true, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),

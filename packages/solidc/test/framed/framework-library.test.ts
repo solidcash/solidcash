@@ -175,7 +175,7 @@ describe('the framework library', () => {
   });
 
   it('is what a per-entry master invokes, and no shard defines one of its identifiers', () => {
-    const bundle = compileStringSplit(`pragma solidcash ^0.50.0;
+    const bundle = compileStringSplit(`pragma solidcash ^0.51.0;
 contract Ledger {
   int total;
   mapping(int => int) seen;

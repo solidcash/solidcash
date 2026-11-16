@@ -92,7 +92,7 @@ export default {
   },
   compiler: {
     name: 'solidc',
-    version: '0.50.0',
+    version: '0.51.0',
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,

@@ -14,7 +14,7 @@ import { callerFields, edgeDeployment, settleEdge } from './edge-harness.js';
  * count the source does not fix. `claimFixed` is the control: the same guard and calls, without the loop.
  */
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' struct Escrow { int amount; string reference; }'
   + ' interface ILedger {'
   + '   function get(int id) view returns (Escrow);'

@@ -11,7 +11,7 @@ import { addressToLockScript } from '../../src/utils.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 type Deployed = ReturnType<typeof StatefulContract.deploy>;
 describe('A7: the genesis sender through the SDK', () => {
   it.each([

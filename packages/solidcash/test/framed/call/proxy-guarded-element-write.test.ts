@@ -17,7 +17,7 @@ import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
  * would then bind the wrong record. The shape is planned through the shipped entry point.
  */
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface IPing { function ping(int n); }'
   + ' contract Ping { int public seen; function ping(int n) { require(n >= this.seen); require(true); } }'
   + ' contract Ledger {'

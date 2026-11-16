@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const VOID_AND_RETURNING = `${P} contract C {
     int s;
     function v(int x) { s = s + x; }

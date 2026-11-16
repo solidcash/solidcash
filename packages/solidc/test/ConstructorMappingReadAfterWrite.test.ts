@@ -62,7 +62,7 @@ const ZERO_SLOT = new Uint8Array(32);
 const CATEGORY = distinctBytes(32, 0x29);
 const FUNDER_LOCK = Uint8Array.from([0x51]);
 const VALUE = 20_000n;
-const PRAGMA = 'pragma solidcash ^0.50.0;';
+const PRAGMA = 'pragma solidcash ^0.51.0;';
 
 /** The node a constructor's single write creates in the empty list. */
 interface Created {

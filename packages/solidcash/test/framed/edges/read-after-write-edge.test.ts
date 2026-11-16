@@ -17,7 +17,7 @@ import {
  * EVM reads after the write.
  */
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface IJournal { function log(int id, bytes32 kind) returns (int); }'
   + ' contract Journal {'
   + '   mapping(int => bytes32[]) logs;'

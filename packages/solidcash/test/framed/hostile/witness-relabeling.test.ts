@@ -55,7 +55,7 @@ const ANSWER = 7n;
 /** The value a relabelled block records in place of `ANSWER`. */
 const OTHER = 8n;
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface INote { function note() returns (int); }'
   + ' contract Ledger {'
   + '   int public count;'

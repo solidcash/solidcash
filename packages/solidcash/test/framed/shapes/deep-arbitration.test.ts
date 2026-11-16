@@ -123,7 +123,7 @@ function source(shares: readonly bigint[]): string {
   const total = totalOf(shares);
 
   return [
-    'pragma solidcash ^0.50.0;',
+    'pragma solidcash ^0.51.0;',
     'interface IStore { function write(int amount); }',
     `interface IRater { function enter(uint16[2] xs) returns (${type});`
       + ` function readFlag() view returns (int); function calc(${type} xs) pure returns (${type}); }`,

@@ -159,7 +159,7 @@ async function deployed(artifact: Artifact, poolCoins = 1): Promise<{
   };
 }
 
-const NATIVE = `pragma solidcash ^0.50.0;
+const NATIVE = `pragma solidcash ^0.51.0;
   contract G { int n;
     function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) {
       address who = ecrecoverEvm(h, v, r, s); require(who != address(0)); n = n + 1; return true; } }

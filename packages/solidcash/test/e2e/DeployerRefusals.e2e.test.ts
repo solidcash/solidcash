@@ -12,7 +12,7 @@ import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const C = `${P} contract C { int n; constructor() { n = 1; } function read() { require(n == 1); } }`;
 
 const authorLock = (): Uint8Array => encodeLockingBytecodeP2pkh(alicePkh);

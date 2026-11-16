@@ -9,7 +9,7 @@ import { compileStringMulti } from '../../src/compiler.js';
  * This is the framed syntax the Tornado token pool needs:
  *   contract TornadoTokenPool(int denom, bytes32 cat_)
  */
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' contract TornadoTokenPool(int denom, bytes32 cat_) {'
   + '   uint32 constant LEVELS = 20;'
   + '   bytes32 root; uint32 nextIndex; bytes32 nullifierState;'

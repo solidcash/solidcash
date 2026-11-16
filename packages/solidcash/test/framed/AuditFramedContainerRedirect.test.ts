@@ -26,7 +26,7 @@ import { callerOf, currentCaller, deploy } from './call/value-harness.js';
  * refused and the captured honest spend must settle. The call runs beside the validator that admits its root, which
  * settles the contract's containers with its records (V8), so the validator is the input that refuses the redirect.
  */
-const SOURCE = `pragma solidcash ^0.50.0;
+const SOURCE = `pragma solidcash ^0.51.0;
 contract Vault {
   int public count;
   function touch(int by) { this.count = this.count + by; require(true); }

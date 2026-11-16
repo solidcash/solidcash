@@ -1,6 +1,6 @@
 {
   "name": "@solidcash/solidcash",
-  "version": "0.50.1",
+  "version": "0.51.0",
   "description": "SolidCash SDK - easily write and interact with Bitcoin Cash contracts",
   "keywords": [
     "bitcoin cash",
@@ -127,7 +127,7 @@
     "@mem-cash/electrum": "^0.0.11",
     "@mem-cash/validation": "^0.0.11",
     "@mr-zwets/bchn-api-wrapper": "^1.0.1",
-    "@solidcash/utils": "^0.50.0",
+    "@solidcash/utils": "^0.51.0",
     "fflate": "^0.8.2",
     "semver": "^7.7.2",
     "@noble/hashes": "^2.0.0",

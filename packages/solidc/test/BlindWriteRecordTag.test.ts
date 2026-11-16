@@ -18,7 +18,7 @@ import { deployFramedMaster, masterSpendProgram, spent } from './framed/master/r
  * genuine record stays unspent beside it.
  */
 
-const SOURCE = `pragma solidcash ^0.50.0;
+const SOURCE = `pragma solidcash ^0.51.0;
 contract Ledger {
   uint8 x;
   uint8 y;

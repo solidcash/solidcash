@@ -88,7 +88,7 @@ function recoverySource(calls: readonly CallSpec[]): string {
     const builtin = call.evm ? 'ecrecoverEvm' : 'ecrecoverPubKey';
     return `require(${builtin}(h${index}, v${index}, r${index}, s${index}) == ${call.comparison});`;
   });
-  return 'pragma solidcash ^0.50.0;'
+  return 'pragma solidcash ^0.51.0;'
     + ' contract Auth {'
     + `   function check(${params.join(', ')}) { ${body.join(' ')} }`
     + '   function idle() { require(true); }'
@@ -242,7 +242,7 @@ describe('a composed framed recovery in a frame that runs on its caller\'s recor
     // A proxy delegates into an implementation entry that hashes and recovers: the frame's records are the proxy's,
     // and its recovery side-car, the projection's keccak side-car and its own keccak side-car follow its own input.
     const data = new TextEncoder().encode('proxied side-cars');
-    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.50.0;'
+    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.51.0;'
       + ' contract Impl {'
       + '   address public implementation;'
       + '   int public counter;'

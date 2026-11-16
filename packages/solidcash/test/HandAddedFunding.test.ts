@@ -12,14 +12,14 @@ import {
   StatefulContract, genesisOutpointKey, releaseGenesisOutpoint, reserveGenesisOutpoint,
 } from '../src/stateful/index.js';
 
-const SOURCE = `pragma solidcash ^0.50.0;
+const SOURCE = `pragma solidcash ^0.51.0;
 contract Counter() {
   uint32 n;
   constructor() { this.n = 0; }
   function bump() public { this.n = this.n + 1; }
 }`;
 
-const LOGGED = `pragma solidcash ^0.50.0;
+const LOGGED = `pragma solidcash ^0.51.0;
 contract Logged() {
   event Bumped(uint32 n);
   uint32 n;

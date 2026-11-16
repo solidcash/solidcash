@@ -34,7 +34,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** A state record's lock: the entry only requires input and output to agree, so any lock serves. */
 const STATE_LOCK = dataRecordLock(CATEGORY);
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' contract Counter {'
   + '   int public counter;'
   + '   function increment() {'

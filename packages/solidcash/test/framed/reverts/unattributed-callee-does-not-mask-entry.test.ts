@@ -33,7 +33,7 @@ const WEDGE_CATEGORY = id32('5b');
 const IMPL_CATEGORY = id32('5c');
 const PROXY_CATEGORY = id32('5d');
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface ILinker { function isReady() returns (bool); }'
   + ' interface IWedge { function wedge(); }'
   + ' contract Linker {'

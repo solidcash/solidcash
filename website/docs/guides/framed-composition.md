@@ -4,7 +4,7 @@ description: The experimental framed calling convention. Every entry into a cont
 ---
 
 :::caution Experimental
-The framed convention is experimental in 0.50.0. Composed external state mutation, a call that changes another
+The framed convention is experimental in 0.51.0. Composed external state mutation, a call that changes another
 contract's state, is outside the release's stability promise. The framed artifact fields, the SDK entry points and
 the source shapes the compiler accepts can change between releases. Do not put significant value behind a framed
 deployment without an independent review.
@@ -222,7 +222,7 @@ The examples below use this contract. Compiled with the defaults it is a direct 
 `composition: 'framed'` it is a framed one.
 
 ```solidity
-pragma solidcash ^0.50.0;
+pragma solidcash ^0.51.0;
 
 contract Tally {
     int public total;

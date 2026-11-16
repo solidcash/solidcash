@@ -13,7 +13,7 @@ import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const SOURCE = `${P} interface I { function f(int x) external returns (bool); }
   contract T { int calls; function f(int x) external returns (bool) { calls = calls + x; return true; }
     function total() external returns (int) { return calls; } }

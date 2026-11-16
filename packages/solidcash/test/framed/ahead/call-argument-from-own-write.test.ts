@@ -51,7 +51,7 @@ const BOB_LOCK = encodeLockingBytecodeP2pkh(bobPkh);
 const TITLE = 'Create a marketplace in solidity';
 
 const SOURCE = [
-  'pragma solidcash ^0.50.0;',
+  'pragma solidcash ^0.51.0;',
   'struct Note { uint8 kind; bytes who; bytes data; uint32 at; }',
   'struct Roles { address creator; address arbiter; address worker; }',
   'struct Task { int state; bool gated; Roles roles; string title; int amount; int owed; int escrow; bool disputed; }',

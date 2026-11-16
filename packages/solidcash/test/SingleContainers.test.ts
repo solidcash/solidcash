@@ -29,7 +29,7 @@ const ASSET = 'a1b2c3d4e5f60718293a4b5c6d7e8f900123456789abcdef0011223344556677'
 const SATOSHI_PRAGMA = 'pragma satoshicontainer single;\n';
 const TOKEN_PRAGMA = 'pragma tokencontainer single;\n';
 
-const SATOSHI_SOURCE = `pragma solidcash ^0.50.0;
+const SATOSHI_SOURCE = `pragma solidcash ^0.51.0;
 pragma satoshicontainer single;
 contract Tip() {
   int constant PAY = 100000;
@@ -42,7 +42,7 @@ contract Tip() {
   function poke() public { this.n = this.n + 1; this.payMinerFee(FEE); }
 }`;
 
-const TOKEN_SOURCE = `pragma solidcash ^0.50.0;
+const TOKEN_SOURCE = `pragma solidcash ^0.51.0;
 pragma tokencontainer single;
 contract Vault(bytes32 asset) {
   int constant TOKENS = 100;
@@ -596,7 +596,7 @@ describe('an upgrade that moves a satoshi container', () => {
   /** A contract whose one container is the satoshi one. Only the first version can be upgraded. */
   const vault = (
     name: string, pragmas: string, upgradeable: boolean,
-  ): ReturnType<typeof compileString> => compileString(`pragma solidcash ^0.50.0;
+  ): ReturnType<typeof compileString> => compileString(`pragma solidcash ^0.51.0;
 ${pragmas}contract ${name}(pubkey admin) {
   function pay(sig s, bytes20 recipient, int amount) {
     require(checkSig(s, admin));

@@ -344,7 +344,7 @@ describe('the genesis-shape transcript, decided by the on-chain program', () => 
   // facet reads that output and refuses a self that names another category.
   test('a forged minted-root self fails on chain and as V11 in the derivation', () => {
     const authorized = validatorAddress(categoryOf('audit-expected-authority'), PROGRAM);
-    const source = 'pragma solidcash ^0.50.0;'
+    const source = 'pragma solidcash ^0.51.0;'
       + ' contract Guarded {'
       + `   function act() { require(msg.sender == 0x${Buffer.from(authorized).toString('hex')}); }`
       + ' }';

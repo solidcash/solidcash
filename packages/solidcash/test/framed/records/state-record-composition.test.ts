@@ -59,7 +59,7 @@ const RECORD_INDEX = 4;
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 const VALUE = 20_000n;
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Ledger {'

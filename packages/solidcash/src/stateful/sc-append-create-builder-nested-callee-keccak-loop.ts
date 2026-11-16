@@ -89,14 +89,15 @@ const COUNTED_AFTER_LOOP: ReadonlySet<keyof AbiFunction> = new Set<keyof AbiFunc
  * side-cars; the side-cars cannot move. A keccak256 chain reads its FINAL side-car at master + blockSize + n/136 for an
  * n-byte value, after one side-car per full 136-byte block, and nothing else may use the band. A keccak256 loop reads
  * side-car k at master + blockSize + k when no mapping loop runs before it (`keccakLoopPrecedesTrailingUser`); a mapping
- * loop, per-turn payments or events then follow the side-cars and the chunks (COUNTED_AFTER_LOOP). A fixed sorted batch
- * rewrites its predecessors at the band's start and is laid out beside neither, nor is anything else of
- * TRAILING_BAND_USERS. A callee's loop lays out its read chunks the same way, in its own block, beside nothing else
+ * loop, per-turn payments or events then follow the side-cars and the chunks (COUNTED_AFTER_LOOP). A fixed write of a
+ * sorted mapping (`sortedBatchInfo`) keeps its target in its block slot, and the function finds the predecessor it
+ * spends and rewrites through its Proof and PredOut witnesses: the build places that rewrite after the side-cars and the
+ * chunks and names it there (refreshTopLevelPredOutWitnesses). Nothing else of TRAILING_BAND_USERS is laid out beside
+ * the side-cars. A callee's loop lays out its read chunks the same way, in its own block, beside nothing else
  * (appendCreateBuilderNestedCalleeKeccakLoop).
  */
 export function readChunksFollowKeccakSideCars(fn: AbiFunction): boolean {
-  if ((fn.dynamicReads?.length ?? 0) === 0 || !fn.inputs.some((parameter) => parameter.name === DYNAMIC_READ_BASE)
-    || (fn.sortedBatchInfo?.length ?? 0) > 0) {
+  if ((fn.dynamicReads?.length ?? 0) === 0 || !fn.inputs.some((parameter) => parameter.name === DYNAMIC_READ_BASE)) {
     return false;
   }
   const publishes = (field: keyof AbiFunction): boolean => {

@@ -69,13 +69,11 @@ warning for an intentionally permissionless entry.
 
 The `salt` call option is the BCH analogue of the EVM's `CREATE2`. `new C{salt: s}(...)` adds `s` to the
 child's redeem script as a `<s> OP_DROP` prefix, so the same code and constructor arguments give a different,
-deterministic address for each salt. EVM `CREATE2` address math does not apply. A stateful child's address also
-commits to its category, which comes from the funding outpoint.
+deterministic address for each salt. EVM `CREATE2` address math does not apply.
 
 ```solidity
 contract Child(pubkey owner) {
-    int counter;
-    function bump() public { this.counter += 1; }
+    function spend(sig s) public { require(checkSig(s, owner)); }
 }
 
 contract Factory(pubkey admin) {
@@ -92,9 +90,10 @@ contract Factory(pubkey admin) {
 The SDK reads a salt that the deploy function forwards from one of its parameters, or a literal salt. For a
 computed salt, pass `childSalt` to `StatefulContract.deployFrom()`.
 
-A deployer `new` refuses `salt`. The child's redeem script starts with its category pin, so its address already
-depends on its deployer coin. The example above compiles for a message-bus or framed creator, for example one
-compiled with `messageBus: true`. `salt` also works on the `new` of a stateless child.
+A stateful child's address also commits to its category, which comes from the funding outpoint. A deployer `new`,
+the direct convention's `new` of a stateful child, refuses `salt`: the child's redeem script starts with its
+category pin, so its address already depends on its deployer coin. A message-bus or framed creator, for example one
+compiled with `messageBus: true`, takes a salt on a stateful child too.
 
 ### Funding the child with `value`
 
@@ -105,6 +104,7 @@ stateful. If the child declares a `constructor` body, it must be `payable` to re
 ```solidity
 contract Child(pubkey owner) {
     int counter;
+    constructor() payable {}
     function bump() public { this.counter += 1; }
 }
 
@@ -123,8 +123,8 @@ With the SDK, pass the amount as `childValue` in the deploy options.
 
 On a deployer `new`, `value` moves `v` from the factory's satoshi container into the child's satoshi container
 before the child's constructor runs. `msg.value` is `v` there, and `v` must be 0 or at least RESERVE. The child
-must keep a satoshi container. The SDK reads the value from the factory's run; a `childValue`, when given, must
-equal it.
+must keep a satoshi container, which its `payable` constructor gives it here. The SDK reads the value from the
+factory's run; a `childValue`, when given, must equal it.
 
 ### Conditional and looped deploys
 

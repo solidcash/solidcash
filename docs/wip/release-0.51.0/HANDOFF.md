@@ -36,7 +36,25 @@ was run, what the user decided, and every item still open, with pointers. The sc
 
 ### Full run
 
-To be filled from `full-run.sh`'s reports.
+At `d0d7718b3`, once, on a snapshot worktree:
+
+- **solidc:** 527 files, 8,067 tests: 8,061 passed, 6 skipped, 0 failed (14 min).
+- **utils:** 580 tests, 579 passed. The failure was a stale expectation in `StateDecodeCanonical`: a one-byte `bytes`
+  value encodes as its minimal push since `0c21df4b2`. Fixed in `0fdd163bf`; the file then passed, 13 of 13.
+- **testing:** 165 of 165.
+- **solidhat:** 73 tests: 70 passed, 1 skipped, 2 failed in `init.test.ts`. Both failures come from the worktree
+  layout:
+  - `create-solidhat` had no build;
+  - the generated project's `node_modules` link lacked `vitest`, because worktrees reach third-party packages by the
+    upward lookup.
+
+  With both fixed, the file passed: 22 passed, 1 skipped. `mkwt.sh` and `full-run.sh` now handle both.
+- **solidcash:** the whole package including e2e. 1,781 files, 10,986 tests: 10,763 passed, 0 failed, 215 skipped,
+  8 todo (86 min). The skipped and todo counts are those of the 2026-11-12 release battery: 191 + 24 skipped,
+  5 + 3 todo.
+
+Every package suite is therefore green at the release candidate, apart from the stale utils expectation fixed in
+`0fdd163bf` and the two solidhat cases that need a full `node_modules`.
 
 ## SolidPool (bch-next) on 0.51.0
 
@@ -52,8 +70,35 @@ symlinks to the `deployer-coins` worktree, which has none of the fixes since 202
    and `contracts:check` fails today.
 4. Rebuild the browser bundles (`web:build`), re-measure the README's numbers, and run `npm test`. That covers
    `contracts:check`, `verifier:check`, the four contract test files, `wallet-signing`, `app-flows` and the service
-   tests. Only the two deployer test files (16 tests) ran against this line before the release.
+   tests.
+
+   Steps 2 to 4 were rehearsed on 2026-11-16 in a sandbox: a clone of bch-next's HEAD (`9e46da1`), its
+   `@solidcash/*` linked to `release/0.51.0`. The six pragma lines changed, `contracts:build` regenerated eight
+   artifacts, and every step of `npm test` passed:
+   - `contracts:check`: all six match their sources;
+   - both verifier checks;
+   - the contract tests: 23 passed, 1 skipped;
+   - `wallet-signing`;
+   - `app-flows`;
+   - `tamper` and `forge`.
+
+   `extract-vk.ts` resolves `Verifier.sol` as `../tornado-core` beside the repository. A clone placed elsewhere needs
+   the path as an argument.
 5. Redeploy: the pools' addresses change.
+
+**The independent review** ([CONFORMANCE-0.51.0.md](CONFORMANCE-0.51.0.md)) checked whether the code 0.51.0
+compiles for the pools and deployers enforces what their sources and docs state.
+
+- **Counts.** 70 rules: 67 enforced, 1 not enforced as worded, 2 unclear. No compiler defect was found.
+- **For SolidPool to settle:**
+  - **T9.** `TokenPool.deposit` checks only that an asset coin's lock is 25 bytes long (`TokenPool.scash` line 202),
+    while the README says a P2PKH. The reviewer found no consequence, and only a miner can make such a coin.
+  - **U1 and U2.** `withdraw` relies on the Groth16 verifier's coins for "the master is input 0" and for the
+    statement offset. The verifier is not compiled by SolidCash and was not reviewed.
+  - **README.** Three places under "Pool deployers" are stale against 0.51.0, all in the safe direction:
+    - creations the README says the chain takes are rejected now;
+    - an honest satoshi coin needs at least 1,200 sat;
+    - a token creation through `new` builds.
 
 Findings from committing bch-next's pending work on 2026-11-15. Not acted on; bch-next is not this line's to change:
 
@@ -188,7 +233,8 @@ Under `/Code/cashscript/.worktrees`:
 **Keep:**
 
 - `release-0.51.0`;
-- `deployer-spec`.
+- `deployer-spec`;
+- `release-review`, until the conformance review has been read: it holds the review's tests and their verdicts.
 
 **Remove when the release is out:**
 

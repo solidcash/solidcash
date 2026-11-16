@@ -8,7 +8,7 @@ import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js'
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import {
   decodePushdataValue,
-  encodePushdataValue,
+  encodeEventPushdataValue,
   peekPushdataEncodedLength,
   type Artifact,
   type ExternalResultEncoding,
@@ -211,7 +211,7 @@ export function isCanonicalMixedReturnBlob(
       } else if (encodings[row] === 'compact-pushdata-v1') {
         for (const type of typeGroups[row]) {
           const decoded = decodePushdataValue(vector, cursor, type, structs);
-          const canonical = encodePushdataValue(decoded.value, type, structs);
+          const canonical = encodeEventPushdataValue(decoded.value, type, structs);
           const valueStart = cursor;
           if (canonical.length !== decoded.bytesConsumed
             || canonical.some((byte, index) => byte !== vector[valueStart + index])) return false;
@@ -318,7 +318,8 @@ export function encodeExternalReturnValues(
   if (values.length !== types.length) {
     throw new Error(`Native result has ${values.length} values for ${types.length} declared types`);
   }
-  const parts = values.map((value, index) => encodePushdataValue(value, types[index], structs));
+  // A native result is pushed as the callee's return pushes it: an address of 20 zero bytes stays 20 bytes.
+  const parts = values.map((value, index) => encodeEventPushdataValue(value, types[index], structs));
   const encoded = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
   let offset = 0;
   for (const part of parts) { encoded.set(part, offset); offset += part.length; }

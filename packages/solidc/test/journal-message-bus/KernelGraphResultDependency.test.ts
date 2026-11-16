@@ -102,7 +102,7 @@ describe('kernel graph result dependencies', () => {
   });
 
   it('keeps a multi-result producer behind one invoke boundary when no later edge consumes it', () => {
-    const artifact = compileString(`pragma solidcash ^0.50.0;
+    const artifact = compileString(`pragma solidcash ^0.51.0;
       interface IReader {
         function read(bigint id) returns (bigint value, bool accepted);
       }

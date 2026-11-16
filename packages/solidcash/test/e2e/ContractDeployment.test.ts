@@ -652,7 +652,10 @@ describe('Stateful Child Deployment (deployFrom)', () => {
       });
 
       expect(result.tx.txid).toBeDefined();
-      expect(result.childCategoryId).toBe(fundingUtxo.txid);
+      // B10: a stateful `new` binds a deployer, so the child's category is the prep transaction's txid, not the
+      // call's funding coin.
+      expect(result.childCategoryId).not.toBe(fundingUtxo.txid);
+      expect(result.prepTransactions).toHaveLength(1);
       expect(result.child).toBeDefined();
 
       const txOutputs = getTxOutputs(result.tx);
@@ -670,13 +673,13 @@ describe('Stateful Child Deployment (deployFrom)', () => {
       // Child outputs: child master NFT + child data NFT
       // Child master should have minting capability with child category
       const childMasterOutput = txOutputs.find(
-        (o) => o.token?.category === fundingUtxo.txid && o.token?.nft?.capability === 'minting',
+        (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'minting',
       );
       expect(childMasterOutput).toBeDefined();
 
       // Child data NFT should have mutable capability with default state
       const childDataOutput = txOutputs.find(
-        (o) => o.token?.category === fundingUtxo.txid && o.token?.nft?.capability === 'mutable',
+        (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'mutable',
       );
       expect(childDataOutput).toBeDefined();
 

@@ -33,8 +33,11 @@ export interface MaterializeRuntimeLoopTrailingHost {
   readonly runtimeLoopEventOutputs: readonly RuntimeLoopEventOutput[];
   readonly runtimeLoopTransferOutputs: readonly RuntimeLoopTransferOutput[];
   readonly loopEntryCommitments: ReadonlyMap<string, readonly string[]>;
-  /** Dynamic keccak loop recreates that follow the mapping entry band when the mapping loop precedes them. */
-  readonly keccakLoopRecreates: readonly Output[];
+  /**
+   * Dynamic keccak loop recreates that follow the mapping entry band when the mapping loop precedes them, less those
+   * a callee block's padding already placed at their own indexes.
+   */
+  pendingKeccakLoopRecreates(builder: object): readonly Output[];
   readonly keccakLoopFollowsTrailingUser: boolean;
   readonly kernelJournalSettlementOutputPlan: readonly unknown[];
   readonly kernelJournalEagerOutputPlan: readonly unknown[];
@@ -49,6 +52,13 @@ export interface MaterializeRuntimeLoopTrailingHost {
   loopEntryTransitionSatoshis(variable: LoopEntryVar, commitment: string): bigint | undefined;
   getRequiredLoopEntryCount(collection: string): number;
   getLoopEntryOutputBase(): number;
+  /** First output of the runtime-loop event stream, as the covenant addresses it. */
+  getRuntimeLoopEventOutputBase(): number;
+  /**
+   * First output of a segmented effect stream the covenant reads apart from the entry band before it (a direct
+   * call's entries compact into the block's inactive returnEvent slot, its effects do not), else undefined.
+   */
+  detachedRuntimeLoopEffectOutputBase(): number | undefined;
 }
 
 /**
@@ -194,6 +204,15 @@ export function materializeRuntimeLoopTrailing(
         }
       }
     }
+    // A direct call's covenant mints the entry band from emitTrailingWriteOutputBase, compacted into the block's
+    // inactive returnEvent slot, and reads the effect stream from past the complete fixed block
+    // (emitRuntimeLoopEffectVerification). The slot then sits between the entries and the first event or payment:
+    // pad it there, at the coordinate this builder computes for the stream. Such a plan places no entry segment, so
+    // the band above is complete.
+    const detachedEffectBase = host.detachedRuntimeLoopEffectOutputBase();
+    while (detachedEffectBase !== undefined && builder.outputs.length < detachedEffectBase) {
+      builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+    }
     for (const segment of host.runtimeLoopTrailingSegments) {
       if (segment.kind === 'events') {
         for (let index = 0; index < segment.count; index++) {
@@ -242,7 +261,17 @@ export function materializeRuntimeLoopTrailing(
     // A mapping loop that precedes the keccak loop emits its entry outputs first; the keccak side-car recreates
     // follow that band (the compiler's shifted output coordinate adds the entry output width), before events.
     if (host.keccakLoopFollowsTrailingUser) {
-      for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
+      for (const rec of host.pendingKeccakLoopRecreates(builder)) builder.addOutput(rec);
+    }
+
+    // The covenant addresses the runtime event stream from past the complete fixed block and the entry band it
+    // follows (emitRuntimeLoopEventVerification), while a plain call compacts that entry band into the block's
+    // inactive returnEvent slot (emitTrailingWriteOutputBase). That slot then sits between the entries and the
+    // events: pad it there, at the coordinate this builder computes for the stream, so every event lands on the
+    // output its record is checked against.
+    if (host.runtimeLoopEventOutputs.length > 0) {
+      const eventBase = host.getRuntimeLoopEventOutputBase();
+      while (builder.outputs.length < eventBase) builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
     }
 
     // Runtime-loop events and their fixed peers are source-ordered records, independent of the permutation used

@@ -6,6 +6,7 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { Op } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import type { RuntimeLoopTransferOutput } from './external-call-utxo-group.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { decodeScriptNumber, extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
 import { extractRuntimeEffectStreamRuns, type RuntimeEffectStreamRun } from './runtime-effect-stream-trace.js';
@@ -50,12 +51,6 @@ export function deriveFullPhase2ApplyRuntimeLoop(
 ): DeriveFullPhase2RuntimeLoopResult {
   let { commitmentProgress } = params;
   const { probeBuilder2, fullTrace2, derivedFlags, phaseCheckpoint } = params;
-  const {
-    bytecodesDerived: runtimeLoopTransferBytecodesDerived,
-    amountsDerived: runtimeLoopTransferAmountsDerived,
-    commitmentsDerived: runtimeLoopTransferCommitmentsDerived,
-    capabilitiesDerived: runtimeLoopTransferCapabilitiesDerived,
-  } = derivedFlags;
 
   // Runtime-loop event outputs immediately follow the mapping-entry family. Their count and event
   // covenants are fixed before the first probe; only source-evaluated commitments need convergence.
@@ -96,13 +91,53 @@ export function deriveFullPhase2ApplyRuntimeLoop(
   // Runtime-loop BCH outputs are outside the fixed transfer block. Derive each coordinate directly from
   // the same OUTPUTBYTECODE/OUTPUTVALUE checks which authenticate it on-chain. A failing placeholder may
   // reveal only the bytecode in one probe and the amount in the next, so retain progress per field.
-  const runtimeLoopTransfers = stb.getRuntimeLoopTransferOutputs();
+  // Every runtime record check reads the output's lock and then picks the record's, so the expected lock is on top.
+  commitmentProgress += deriveRuntimeLoopTransfers(stb, fullTrace2, derivedFlags, host.parseNftCapability, true);
+
+  phaseCheckpoint('runtime-loop-transfers');
+
+  return { commitmentProgress };
+}
+
+/** The runtime-loop transfers a builder lays out: where each sits, and how a derived value is applied. */
+export interface RuntimeLoopTransferTarget {
+  getRuntimeLoopTransferOutputs(): ReadonlyArray<RuntimeLoopTransferOutput>;
+  getRuntimeLoopTransferOutputIndex(transferIndex: number): number;
+  setRuntimeLoopTransferOutput(index: number, lockingBytecode: Uint8Array, amount: bigint): unknown;
+  setRuntimeLoopNftTransferOutput(
+    index: number, lockingBytecode: Uint8Array, commitment: Uint8Array, capability: 'none' | 'mutable' | 'minting',
+  ): unknown;
+}
+
+/**
+ * Read each runtime-loop transfer's recipient and amount (an NFT's commitment and capability) from the checks that
+ * authenticate it in the trace, apply what differs, and mark what was derived. Returns how many transfers changed.
+ *
+ * `expectedLockOnTop`: the target's lock checks push the expected lock after reading the output's, as the runtime effect
+ * records do. A reduced probe trace keeps no state between the two, so only the caller knows that order. A target whose
+ * checks follow another order, such as a function's fixed transfer slots, leaves it false.
+ */
+export function deriveRuntimeLoopTransfers(
+  target: RuntimeLoopTransferTarget,
+  trace: AuthenticationProgramStateCommon[],
+  derivedFlags: DeriveFullPhase2RuntimeLoopDerivedFlags,
+  parseNftCapability: (catBytes: Uint8Array) => 'none' | 'mutable' | 'minting',
+  expectedLockOnTop = false,
+): number {
+  const {
+    bytecodesDerived: runtimeLoopTransferBytecodesDerived,
+    amountsDerived: runtimeLoopTransferAmountsDerived,
+    commitmentsDerived: runtimeLoopTransferCommitmentsDerived,
+    capabilitiesDerived: runtimeLoopTransferCapabilitiesDerived,
+  } = derivedFlags;
+  let progress = 0;
+  const runtimeLoopTransfers = target.getRuntimeLoopTransferOutputs();
   for (let transferIndex = 0; transferIndex < runtimeLoopTransfers.length; transferIndex += 1) {
-    const outputIndex = stb.getRuntimeLoopTransferOutputIndex(transferIndex);
+    const outputIndex = target.getRuntimeLoopTransferOutputIndex(transferIndex);
     const current = runtimeLoopTransfers[transferIndex];
     const bytecodes = extractVerifiedValuesFromTrace(
-      fullTrace2, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 },
-      false, true, true,
+      trace, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 },
+      false, true, true, expectedLockOnTop,
     );
     const lockingBytecode = bytecodes[0] ?? current.lockingBytecode;
     let changed = false;
@@ -112,16 +147,16 @@ export function deriveFullPhase2ApplyRuntimeLoop(
     }
     if (current.kind === 'nft') {
       const commitments = extractVerifiedValuesFromTrace(
-        fullTrace2, Op.OP_OUTPUTTOKENCOMMITMENT, { min: outputIndex, max: outputIndex + 1 },
+        trace, Op.OP_OUTPUTTOKENCOMMITMENT, { min: outputIndex, max: outputIndex + 1 },
         false, true, true,
       );
       const categories = extractVerifiedValuesFromTrace(
-        fullTrace2, Op.OP_OUTPUTTOKENCATEGORY, { min: outputIndex, max: outputIndex + 1 },
+        trace, Op.OP_OUTPUTTOKENCATEGORY, { min: outputIndex, max: outputIndex + 1 },
         false, true, true,
       );
       const commitment = commitments[0] ?? current.commitment ?? new Uint8Array();
       const capability = categories[0] === undefined
-        ? current.capability ?? 'none' : host.parseNftCapability(categories[0]);
+        ? current.capability ?? 'none' : parseNftCapability(categories[0]);
       if (commitments[0] !== undefined) {
         runtimeLoopTransferCommitmentsDerived[transferIndex] = true;
         if (binToHex(commitment) !== binToHex(current.commitment ?? new Uint8Array())) changed = true;
@@ -131,14 +166,14 @@ export function deriveFullPhase2ApplyRuntimeLoop(
         if (capability !== current.capability) changed = true;
       }
       if (changed) {
-        stb.setRuntimeLoopNftTransferOutput(
+        target.setRuntimeLoopNftTransferOutput(
           transferIndex, lockingBytecode, commitment, capability,
         );
-        commitmentProgress += 1;
+        progress += 1;
       }
     } else {
       const values = extractVerifiedValuesFromTrace(
-        fullTrace2, current.kind === 'token' ? Op.OP_OUTPUTTOKENAMOUNT : Op.OP_OUTPUTVALUE,
+        trace, current.kind === 'token' ? Op.OP_OUTPUTTOKENAMOUNT : Op.OP_OUTPUTVALUE,
         { min: outputIndex, max: outputIndex + 1 },
         false, true, true,
       );
@@ -148,13 +183,10 @@ export function deriveFullPhase2ApplyRuntimeLoop(
         if (amount !== current.amount) changed = true;
       }
       if (changed) {
-        stb.setRuntimeLoopTransferOutput(transferIndex, lockingBytecode, amount);
-        commitmentProgress += 1;
+        target.setRuntimeLoopTransferOutput(transferIndex, lockingBytecode, amount);
+        progress += 1;
       }
     }
   }
-
-  phaseCheckpoint('runtime-loop-transfers');
-
-  return { commitmentProgress };
+  return progress;
 }

@@ -35,11 +35,16 @@ import {
   StateAccessNode,
   BranchNode,
   BoolLiteralNode,
+  TransferStatementNode,
+  AddressTransferStatementNode,
+  AddressSendExpressionNode,
+  TokenContainerMethodStatementNode,
+  EmitStatementNode,
   exactArrayLength,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { MappingType, ArrayType, type Type } from '@solidcash/utils';
+import { AddressType, MappingType, ArrayType, type Type } from '@solidcash/utils';
 import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { type PointerTableExpansionMap, recordPointerTableExpansion } from './PointerTableBound.js';
@@ -55,9 +60,14 @@ const MAX_UNROLL = 64;
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
  * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, a contract
- * instantiation, or an indirect external function-pointer call (else unrolling is needless). A break/continue is
- * admitted only when substituting each fixed induction value makes every reached escape decision static; returns
- * and runtime-selected escapes remain rolled. Also requires
+ * instantiation, or an indirect external function-pointer call (else unrolling is needless). With `effects`, a
+ * payment, send, token transfer or event in the body fires it too: each such site has one output register, which
+ * every turn of a rolled loop would fill, so each unrolled turn takes a site of its own, pinned and counted as a
+ * hand-written one is, and a branch whose predicate the turn's literal decides keeps only the arm it takes. With
+ * `effects: 'only'` such a loop is the only one that unrolls. A body
+ * that assigns or redeclares the counter stays rolled, as no literal stands for it. A
+ * break/continue is admitted only when substituting each fixed induction value makes every reached escape decision
+ * static; returns and runtime-selected escapes remain rolled. Also requires
  * N <= MAX_UNROLL (avoid code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static
  * writes / keccak calls get their slots. A fixed-bound keccak256 loop unrolls to N syntactic calls (N compute
  * side-cars, each resolved by the complex-arg probe); a runtime-bound keccak loop stays flagged keccakInLoop.
@@ -78,17 +88,27 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   private currentFunction = '';
   private currentGraphRuntime = false;
+  // Names of the functions whose bodies make a payment, send, token transfer or event, directly or through a call.
+  private effectfulFunctionNames = new Set<string>();
 
   constructor(
     private readonly indirectCallsOnly = false,
     private readonly expansions?: PointerTableExpansionMap,
     private readonly fixedCollectionIterations = false,
+    // A fixed loop whose body makes an effect unrolls (see the class comment); `'only'` leaves every other loop to a
+    // later pass, for a legacy message-bus compile whose route admission runs between the two.
+    private readonly effects: boolean | 'only' = false,
   ) {
     super();
   }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.contractNames = new Set([node.contract.name, ...node.importedContracts.map((contract) => contract.name)]);
+    if (this.effects) {
+      this.effectfulFunctionNames = this.collectEffectfulFunctionNames(
+        [node.contract, ...node.importedContracts], node.freeFunctions,
+      );
+    }
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.importedContracts = node.importedContracts.map((c) => this.visit(c) as ContractNode);
     node.freeFunctions = node.freeFunctions.map((f) => this.visit(f) as FunctionDefinitionNode);
@@ -286,6 +306,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const bodyStmts = all.slice(0, all.length - k);
     const step = this.evalStep(all.slice(all.length - k), varName);
     if (step === undefined || step <= 0n) return undefined;
+    // An effect-only pass leaves a loop without an effect, a dead one included, to the pass after it.
+    if (this.effects === 'only' && !this.hasEffect(bodyStmts)) return undefined;
 
     // Enumerate the iteration values; bail if unbounded or larger than MAX_UNROLL.
     const values: bigint[] = [];
@@ -308,6 +330,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // source escape on the loop itself: the normalization necessarily replaces the raw ContinueNode/BreakNode,
     // but that must not make a later pass mistake the rewritten loop for an exactly-repeatable resource set.
     if (w.fixedUnrollForbidden) return undefined;
+    // Each turn reads the counter as one literal, which a body that assigns or redeclares it would contradict.
+    if (this.writesName(bodyStmts, varName)) return undefined;
 
     // Only unroll a NON-empty loop whose body writes a mapping, calls keccak256, or deploys a child (else
     // needless). A child deployment has the same fixed-resource requirement as a mapping write: each exact
@@ -321,11 +345,17 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
     // WHOLE table after the loop, and unrolling it into N single-element callsites changes the direct ABI
     // (per-element selector and master-index witnesses) that shipped broadcast callers use.
+    // A payment, send, token transfer or event (`effects` only) has the same need: its site owns one output
+    // register, so each turn must become a site of its own. A call to a function that makes one would still share
+    // that function's site between the turns, so such a body stays rolled and the generator's guard refuses it.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     const hasMappingWrite = this.hasMappingWrite(bodyStmts);
+    const effectSites = this.effects !== false && !this.indirectCallsOnly && this.hasEffect(bodyStmts)
+      && !this.callsEffectfulFunction(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall
-      : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
-        && !this.hasChildDeployment(bodyStmts))) return undefined;
+      : this.effects === 'only' ? !effectSites
+        : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
+          && !this.hasChildDeployment(bodyStmts) && !effectSites)) return undefined;
     const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
     // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
     // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
@@ -355,10 +385,13 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
         w.fixedUnrollForbidden = true;
         return undefined;
       }
+      // A turn's effect under a predicate the counter decides is made or absent outright, not left to a
+      // conditional site whose skipped output a builder would have to fill.
+      const statements = effectSites ? this.foldStaticBranches(replay.statements) : replay.statements;
       if (values.length === 1) {
-        for (const st of replay.statements) result.push(this.visit(st) as StatementNode);
+        for (const st of statements) result.push(this.visit(st) as StatementNode);
       } else {
-        const block = new BlockNode(replay.statements);
+        const block = new BlockNode(statements);
         block.location = w.block.location;
         result.push(this.visit(block) as StatementNode);
       }
@@ -408,6 +441,35 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       output.push(statement);
     }
     return { statements: output };
+  }
+
+  /**
+   * Keep only the arm a branch takes when its predicate became a compile-time boolean after substituting the turn's
+   * counter, in its own block; a runtime predicate keeps its branch, with its arms folded the same way.
+   */
+  private foldStaticBranches(statements: readonly StatementNode[]): StatementNode[] {
+    const output: StatementNode[] = [];
+    for (const statement of statements) {
+      if (statement instanceof BranchNode) {
+        const condition = this.staticValue(statement.condition);
+        if (typeof condition === 'boolean') {
+          const selected = condition ? statement.ifBlock : statement.elseBlock;
+          if (!selected) continue;
+          const block = new BlockNode(this.foldStaticBranches(selected.statements ?? []));
+          block.location = selected.location;
+          output.push(block);
+          continue;
+        }
+        statement.ifBlock.statements = this.foldStaticBranches(statement.ifBlock.statements ?? []);
+        if (statement.elseBlock) {
+          statement.elseBlock.statements = this.foldStaticBranches(statement.elseBlock.statements ?? []);
+        }
+      } else if (statement instanceof BlockNode) {
+        statement.statements = this.foldStaticBranches(statement.statements ?? []);
+      }
+      output.push(statement);
+    }
+    return output;
   }
 
   private staticValue(node: ExpressionNode): bigint | boolean | undefined {
@@ -508,6 +570,116 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private hasIndirectCall(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof IndirectCallNode
       || (n instanceof MethodCallNode && (n.selectorArrayVar !== undefined || n.pointerTableBroadcast)));
+  }
+
+  /**
+   * A payment (`this.transfer`), send, token transfer or event. A send on a plain name is still the dotted call
+   * `to.transfer(v)` or `to.send(v)` here, which the symbol pass turns into a send when the name is an address;
+   * `types` holds the types of the names in scope.
+   */
+  private isEffect(n: Node, types: ReadonlyMap<string, Type>): boolean {
+    if (n instanceof TransferStatementNode || n instanceof AddressTransferStatementNode
+      || n instanceof AddressSendExpressionNode || n instanceof TokenContainerMethodStatementNode
+      || n instanceof EmitStatementNode) return true;
+    if (!(n instanceof FunctionCallNode) || n.parameters.length !== 1) return false;
+    const [receiver, method, ...rest] = n.identifier.name.split('.');
+    const type = types.get(receiver);
+    return rest.length === 0 && (method === 'transfer' || method === 'send')
+      && type instanceof AddressType && type.interfaceName === undefined;
+  }
+
+  /** Whether `stmts` make an effect, with `types` the names in scope before them; declarations in them add theirs. */
+  private hasEffect(stmts: Node[], types: ReadonlyMap<string, Type> = this.typesInScope()): boolean {
+    const scope = new Map(types);
+    return this.someNode(stmts, (n) => {
+      if (n instanceof VariableDefinitionNode) scope.set(n.name, n.type);
+      return this.isEffect(n, scope);
+    });
+  }
+
+  private typesInScope(): Map<string, Type> {
+    return new Map([...this.stateVarTypes, ...this.varTypes]);
+  }
+
+  private callsEffectfulFunction(stmts: Node[]): boolean {
+    return this.someNode(stmts, (n) => n instanceof FunctionCallNode
+      && this.effectfulFunctionNames.has(n.identifier.name));
+  }
+
+  /**
+   * The names of the functions of `contracts` (and of `freeFunctions`) that make an effect or call a name that does,
+   * by name and to a fixed point.
+   */
+  private collectEffectfulFunctionNames(
+    contracts: readonly ContractNode[], freeFunctions: readonly FunctionDefinitionNode[],
+  ): Set<string> {
+    const names = new Set<string>();
+    const callees = new Map<string, Set<string>>();
+    const scan = (fn: FunctionDefinitionNode | undefined, stateTypes: ReadonlyMap<string, Type>): void => {
+      if (fn?.body === undefined) return;
+      const called = callees.get(fn.name) ?? new Set<string>();
+      callees.set(fn.name, called);
+      const types = new Map([...stateTypes, ...fn.parameters.map((p) => [p.name, p.type] as const)]);
+      this.someNode([fn.body], (n) => {
+        if (n instanceof FunctionCallNode) called.add(n.identifier.name);
+        return false;
+      }, false);
+      if (this.hasEffect([fn.body], types)) names.add(fn.name);
+    };
+    for (const contract of contracts) {
+      const stateTypes = new Map(contract.stateVariables.map((sv) => [sv.name, sv.type] as const));
+      for (const fn of [...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef]) {
+        scan(fn, stateTypes);
+      }
+    }
+    for (const fn of freeFunctions) scan(fn, new Map());
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [name, called] of callees) {
+        if (names.has(name) || ![...called].some((callee) => names.has(callee))) continue;
+        names.add(name);
+        changed = true;
+      }
+    }
+    return names;
+  }
+
+  /** True when `stmts` assign, step, delete or redeclare the local `name`. */
+  private writesName(stmts: Node[], name: string): boolean {
+    const steps = [UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.PREFIX_INCREMENT,
+      UnaryOperator.POSTFIX_DECREMENT, UnaryOperator.PREFIX_DECREMENT];
+    return this.someNode(stmts, (n) => (n instanceof AssignNode && n.identifier instanceof IdentifierNode
+        && n.identifier.name === name)
+      || (n instanceof VariableDefinitionNode && n.name === name)
+      || (n instanceof DeleteLocalNode && n.identifier.name === name)
+      || (n instanceof TupleAssignmentNode && n.elements.some((element) => !element.skip && element.name === name))
+      || (n instanceof UnaryOpNode && steps.includes(n.operator)
+        && n.expression instanceof IdentifierNode && n.expression.name === name));
+  }
+
+  /**
+   * Whether `pred` holds for a node under `roots`, each node seen once and cross-links (definitions, resolved
+   * callees, types) not followed. With `stop` false the walk visits every node, for a predicate that also collects.
+   */
+  private someNode(roots: Node[], pred: (n: Node) => boolean, stop = true): boolean {
+    const seen = new Set<Node>();
+    let found = false;
+    const walk = (n: Node): void => {
+      if (seen.has(n) || (found && stop)) return;
+      seen.add(n);
+      if (pred(n)) found = true;
+      for (const key in n) {
+        if (key === 'location' || key === 'definition' || key === 'resolvedFunction' || key === 'functionReference'
+          || key === 'symbolTable' || key === 'type' || key === 'eventDefinition' || key === 'eventCandidates'
+          || key === 'referencedContract' || key === 'collection' || key === 'stateVariable') continue;
+        const value = (n as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const element of value) if (element instanceof Node) walk(element);
+      }
+    };
+    for (const root of roots) walk(root);
+    return found;
   }
 
   private hasControlFlowEscape(stmts: Node[]): boolean {

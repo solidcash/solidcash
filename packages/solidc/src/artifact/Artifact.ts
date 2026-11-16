@@ -4191,10 +4191,10 @@ function buildFunctionAbiMetadata(
         dataNftCount: dt.dataNftCount,
         ...(dt.entryNftCount !== undefined && { entryNftCount: dt.entryNftCount }),
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
+        ...(dt.contractArgs && { contractArgs: dt.contractArgs }),
+        ...(dt.valueArg !== undefined && { valueArg: dt.valueArg }),
         ...(dt.salt && { salt: dt.salt }),
         ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
-        ...(dt.code && { code: dt.code }),
-        ...(dt.template && { template: dt.template }),
         ...(dt.hasFoldedChildCall && { hasFoldedChildCall: true }),
         ...(dt.childLayoutDigest && { childLayoutDigest: dt.childLayoutDigest }),
         ...(dt.genesisState && { genesisState: dt.genesisState }),
@@ -4262,6 +4262,7 @@ function buildFunctionAbiMetadata(
           ...(ec.callerIdentity !== undefined && { callerIdentity: ec.callerIdentity }),
           ...(ec.addressParam && { addressParam: ec.addressParam }),
           ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
+          ...(ec.targetWrittenBeforeCall && { targetWrittenBeforeCall: true as const }),
           ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),
           ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
           ...(ec.selectorArrayVar && { selectorArrayVar: ec.selectorArrayVar }),
@@ -4289,6 +4290,7 @@ function buildFunctionAbiMetadata(
           ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
           ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
           ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
+          ...(ec.rawReadsRecord && { rawReadsRecord: true }),
           // A low-level call returns its failure to the caller rather than reverting it, a typed call does not.
           ...((rawCall || (ec.callMode !== undefined && ec.callMode !== ExternalCallMode.REGULAR)) && (() => {
             const failedCallMessage = failedCallMessageOf(func.body, ec.sourceCallNode);
@@ -4367,6 +4369,7 @@ function buildFunctionAbiMetadata(
         ? func.ecrecoverEvmFlags : func.ecrecoverClosureEvmFlags,
     }),
     ...(func.ecrecoverLoopReads && { ecrecoverLoopReads: true }),
+    ...(func.ecrecoverTrailingLoop && { ecrecoverTrailingLoop: true }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc, index) => ({
@@ -4724,6 +4727,7 @@ export function generateArtifact(
     || contract.deploysWithValue
     || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
+  const directCompile = compilerOptions.composition !== 'framed';
   const abi: AbiFunction[] = abiFunctions.map((func) => ({
     name: func.name,
     ...(func.mappingArrayPagination && { mappingArrayPagination: func.mappingArrayPagination }),
@@ -5049,6 +5053,9 @@ export function generateArtifact(
     bytecode,
     source,
     debug,
+    ...(directCompile && isStateful && { callRecords: compilerOptions.callRecords ?? 'returning' as const }),
+    ...(directCompile && isStateful && { genesisCalls: compilerOptions.genesisCalls !== false }),
+    ...(contract.recordSound !== undefined && { recordSound: contract.recordSound }),
     ...(functionBodies && { functionBodies }),
     ...(fingerprint && { fingerprint }),
     ...(stateLayout && { stateLayout }),

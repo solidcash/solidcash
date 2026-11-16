@@ -18,7 +18,7 @@ import { deployFramedMaster, masterSpendProgram, spent } from './framed/master/r
  * genuine record stays unspent beside it.
  */
 
-const SOURCE = `pragma solidcash ^0.50.0;
+const SOURCE = `pragma solidcash ^0.51.0;
 contract Ledger {
   uint8 x;
   uint8 y;
@@ -133,7 +133,8 @@ describe('a blind write in a tagged layout', () => {
     expect(abiFunction.callBatchRow).toBe(true);
     // Outputs: the master, records 0 and 1, then the frame's call record at output 3.
     const args = abiFunction.inputs.map((input) => (input.name === 'v' ? 5n
-      : input.name === '__internal__returnOutputIdx' ? 3n : 0n));
+      : input.name === '__internal__returnOutputIdx' ? 3n
+        : input.name === '__internal__genesisCall' ? new Uint8Array() : 0n));
     const frames = [{ abiFunction, args }];
     const category = standalone.outputs[0]!.token!.category;
     const carrier: Output = {

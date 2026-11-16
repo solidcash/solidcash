@@ -5,7 +5,7 @@
  */
 
 import {
-  buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   parsePushdataCommitment,
   type AbiFunction,
   type FunctionBlockLayout,
@@ -80,6 +80,8 @@ export interface NestedOutputReassertHost {
    */
   readonly preserveOwnState?: boolean;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
+  /** The records each callee's run derived, by category: they spell its rebuilt records' unchanged values. */
+  readonly externalCallDerivedRecords: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly builderOptions: {
     provider: { consensusLimits?: { maximumNftCommitmentBytes?: number } };
@@ -461,7 +463,8 @@ export function reassertNestedSameIndexMutables(
  * Recreate every participant's fixed data-NFT state at the coordinate authenticated by its input outpoint.
  * Later entry/event/tail materializers can temporarily occupy those coordinates, but fixed state retains
  * structural ownership. Derive commitments from the owner's layout and updates; commitment bytes are opaque
- * state, so neither ownership nor preservation may depend on application-specific prefixes.
+ * state, so neither ownership nor preservation may depend on application-specific prefixes. A rebuilt record keeps,
+ * for each value it leaves as it was, the bytes the run derived or the input holds (`buildPushdataCommitmentKeeping`).
  */
 export function reassertFixedStateOutputs(
   host: NestedOutputReassertHost,
@@ -473,6 +476,8 @@ export function reassertFixedStateOutputs(
     dataNftUtxos: readonly UnlockableUtxo[];
     requiredDataNftIndices: readonly number[];
     rawCommitments: ReadonlyMap<number, string>;
+    /** The records a callee's run derived, which spell the values its rebuilt records leave as they were. */
+    derivedRecords?: ReadonlyMap<number, string>;
     updates?: ReadonlyMap<string, StateValue>;
     /** The commitments a multi-call spend's probe settled, by data record. */
     settled?: ReadonlyMap<number, string>;
@@ -484,6 +489,7 @@ export function reassertFixedStateOutputs(
     dataNftUtxos: group.dataNftUtxos,
     requiredDataNftIndices: group.requiredDataNftIndices,
     rawCommitments: host.externalCallStateRawCommitments.get(group.categoryId) ?? new Map(),
+    derivedRecords: host.externalCallDerivedRecords.get(group.categoryId),
     updates: host.externalCallStateUpdates.get(group.categoryId),
     ...(group.callBatch?.dataCommitments && {
       settled: new Map(group.callBatch.dataCommitments.map((commitment, ordinal) => [
@@ -510,6 +516,7 @@ export function reassertFixedStateOutputs(
     .map(groupOwner));
   owners.push(...host.lowLevelCallUtxoGroups.map(groupOwner));
 
+  const commitmentLimit = host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes;
   const seenOutpoints = new Set<string>();
   for (const owner of owners) {
     const currentState: Record<string, StateValue> = {};
@@ -533,17 +540,15 @@ export function reassertFixedStateOutputs(
       if (nftIndex === undefined) continue;
       const inputCommitment = input.token.nft.commitment;
       const hasUpdate = stateUpdatesTouchNft(owner.stateLayout, owner.updates, nftIndex);
-      const exactCommitment = owner.settled?.get(nftIndex)
-        ?? (hasUpdate ? undefined : owner.rawCommitments.get(nftIndex));
-      const commitment = exactCommitment
-        ?? (owner.preserveUntouched && !hasUpdate && inputCommitment
-          ? inputCommitment
-          : buildPushdataCommitment(
-            owner.stateLayout,
-            currentState,
-            nftIndex,
-            host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
-          ));
+      const rawCommitment = owner.rawCommitments.get(nftIndex);
+      // A rebuilt record spells each value it leaves as it was as the run derived it, else as the input holds it: the
+      // SDK's encoding can spell a value in other bytes than the covenant (an `address` of 20 zero bytes encodes as
+      // address(0)'s empty push). A record that holds every rebuilt value is published unchanged.
+      const commitment = owner.settled?.get(nftIndex)
+        ?? (hasUpdate ? undefined : rawCommitment)
+        ?? (owner.preserveUntouched && !hasUpdate && inputCommitment ? inputCommitment : undefined)
+        ?? buildPushdataCommitmentKeeping(owner.stateLayout, currentState, nftIndex,
+          [rawCommitment, owner.derivedRecords?.get(nftIndex), inputCommitment], commitmentLimit);
       builder.outputs[inputIndex] = {
         to: input.unlocker.generateLockingBytecode(),
         amount: input.satoshis,

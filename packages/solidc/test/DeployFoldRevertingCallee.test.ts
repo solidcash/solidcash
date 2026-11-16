@@ -8,7 +8,7 @@ import { compileString } from './direct-compile.js';
 // against its own source line in `debug.requires`, so the closed behaviour is asserted on that shipped signal
 // rather than on an opcode pattern the optimiser may rewrite.
 describe('deploy-time callee that cannot complete', () => {
-  const OPTS = { evmCompat: true };
+  const OPTS = { evmCompat: true, __legacyDeployFold: true } as never;
 
   const deployer = (callee: string): string => 'contract A {\n'
     + callee

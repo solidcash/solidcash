@@ -1,5 +1,5 @@
 import {
-  type Artifact, buildPushdataCommitment, type StateVariableInfo,
+  type Artifact, buildPushdataCommitmentKeeping, type StateVariableInfo,
 } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
 import type { Utxo } from '../interfaces.js';
@@ -155,8 +155,10 @@ async function syncFramedRegisters(
     for (const variable of touched) {
       if (variable.nftIndex === nftIndex) next[variable.name] = byRegister[variable.name]!;
     }
-    const commitment = buildPushdataCommitment(layout, next, nftIndex);
-    if (replaceMockNftCommitment(storage, onChain.records[nftIndex]!, commitment)) updated += 1;
+    // The registers change; every other value keeps the bytes the record holds.
+    const record = onChain.records[nftIndex]!;
+    const commitment = buildPushdataCommitmentKeeping(layout, next, nftIndex, [record.token?.nft?.commitment]);
+    if (replaceMockNftCommitment(storage, record, commitment)) updated += 1;
   }
   return updated;
 }
@@ -223,7 +225,7 @@ async function syncMockBlockOracleDeployments(
       for (const nftIndex of nftIndices) {
         const utxo = onChain.dataNftUtxos[nftIndex];
         if (!utxo?.token?.nft) continue;
-        const commitment = buildPushdataCommitment(layout, next, nftIndex);
+        const commitment = buildPushdataCommitmentKeeping(layout, next, nftIndex, [utxo.token.nft.commitment]);
         if (replaceMockNftCommitment(storage, utxo, commitment)) updated += 1;
       }
     }

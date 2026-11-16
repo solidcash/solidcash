@@ -3,7 +3,7 @@
  */
 
 import {
-  buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   parsePushdataCommitment,
   type FunctionBlockLayout,
   type StateValue,
@@ -22,6 +22,8 @@ export interface MaterializeLowLevelCallOutputsHost {
   readonly compilerRouteDelegateBlock: boolean;
   readonly externalCallStateUpdates: ReadonlyMap<string, Map<string, StateValue>>;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, Map<number, string>>;
+  /** The records each callee's run derived, by category: they spell its rebuilt records' unchanged values. */
+  readonly externalCallDerivedRecords: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly childDeploymentOutputs: ReadonlyMap<number, readonly Output[]>;
   readonly builderOptions: TransactionBuilderOptions;
 }
@@ -94,8 +96,9 @@ export function materializeLowLevelCallOutputs(
         : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
         ?? (nftIsImmutable && inputCommitment
           ? inputCommitment
-          : buildPushdataCommitment(
+          : buildPushdataCommitmentKeeping(
             group.stateLayout, bCurrentState, nftIdx,
+            [host.externalCallDerivedRecords.get(group.categoryId)?.get(nftIdx), inputCommitment],
             host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
           ));
       builder.addOutput({

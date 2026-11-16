@@ -39,6 +39,17 @@ export default class FullStackNetworkProvider implements NetworkProvider {
     return this.bchjs.Blockchain.getBlockCount();
   }
 
+  async getMedianTimePast(): Promise<number> {
+    const tip = await this.bchjs.Blockchain.getBlockCount();
+    const times: number[] = [];
+    for (let height = Math.max(0, tip - 10); height <= tip; height++) {
+      const header = await this.bchjs.Blockchain.getBlockHeader(height);
+      times.push(header.time);
+    }
+    times.sort((left, right) => left - right);
+    return times[Math.floor((times.length - 1) / 2)] ?? 0;
+  }
+
   async getRawTransaction(txid: string): Promise<string> {
     return this.bchjs.RawTransactions.getRawTransaction(txid);
   }
@@ -61,6 +72,7 @@ interface BCHJS {
   };
   Blockchain: {
     getBlockCount(): Promise<number>;
+    getBlockHeader(height: number): Promise<{ time: number }>;
   };
   RawTransactions: {
     getRawTransaction(txid: string): Promise<string>;

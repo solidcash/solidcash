@@ -629,6 +629,7 @@ export function deriveFullPhase1ReturnAndEvents(
           for (const [name, value] of Object.entries(state)) {
             stb.setExternalCallState(group.categoryId, name, value);
           }
+          stb.setExternalCallDerivedRecords(group.categoryId, [slot.nftIndex], [commitment]);
           learnedEntries.add(blockSlot);
           progressed = true;
           continue;

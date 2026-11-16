@@ -24,7 +24,7 @@ import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
 const FRAMED = { composition: 'framed' as const, suppressWarnings: true };
 const VALIDATOR = framedValidator.buildValidatorProgram();
-const SOURCE = `pragma solidcash ^0.50.0;
+const SOURCE = `pragma solidcash ^0.51.0;
 contract Ledger {
   int x;
   int y;

@@ -4,7 +4,7 @@ import type {
 import { bytecodeToAsm, Op, type Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
-  ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
+  ArrayType, BytesType, FixedType, IntType, parseType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
   canonicalSelectorType, INVALID_FUNCTION_POINTER_ID, type Type,
 } from './types.js';
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
@@ -563,6 +563,33 @@ export function encodePushdataValue(
   structs?: readonly StructDefinitionInfo[],
   _visited?: Set<string>,
 ): Uint8Array {
+  return encodePushdataFrame(value, type, structs, _visited, false);
+}
+
+/**
+ * Encode one event argument, or one value of a native call result (the record a return event carries), in the
+ * platform pushdata frame, as a covenant pushes it. An address given as bytes is pushed as those bytes, in a struct
+ * field or an array element too: 20 zero bytes, which a refused `ecrecoverEvm` answers, stay a 20-byte push.
+ * `encodePushdataValue`, which state records use, reads any all-zero address as `address(0)`, the empty push. Any other
+ * spelling of an address (a CashAddress, a hex string, ethers' zero address, an integer) is read as
+ * `encodePushdataValue` reads it.
+ */
+export function encodeEventPushdataValue(
+  value: StateValue,
+  type: string,
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  return encodePushdataFrame(value, type, structs, undefined, true);
+}
+
+/** `encodePushdataValue`, which keeps an address given as bytes as those bytes when `addressBytesAsPushed` is set. */
+function encodePushdataFrame(
+  value: StateValue,
+  type: string,
+  structs: readonly StructDefinitionInfo[] | undefined,
+  _visited: Set<string> | undefined,
+  addressBytesAsPushed: boolean,
+): Uint8Array {
   if (structs) {
     const structDef = structs.find((s) => s.name === type);
     if (structDef) {
@@ -579,7 +606,7 @@ export function encodePushdataValue(
       structDef.fields.forEach((field, i) => {
         const fieldValue = (positional ? tuple[i] : record[field.name])
           ?? getDefaultStateValue(field.type, structs);
-        parts.push(encodePushdataValue(fieldValue, field.type, structs, visited));
+        parts.push(encodePushdataFrame(fieldValue, field.type, structs, visited, addressBytesAsPushed));
       });
       const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
       const result = new Uint8Array(totalLen);
@@ -605,7 +632,7 @@ export function encodePushdataValue(
       parts.push(packFixedWidthArray(arr as PrimitiveStateValue[], arrInfo.elementType));
     } else {
       for (const elem of arr) {
-        parts.push(encodePushdataValue(elem, arrInfo.elementType, structs));
+        parts.push(encodePushdataFrame(elem, arrInfo.elementType, structs, undefined, addressBytesAsPushed));
       }
     }
     const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
@@ -661,9 +688,12 @@ export function encodePushdataValue(
     if (typeof primitiveValue === 'string' && /^(0x)?0*$/i.test(primitiveValue)) {
       primitiveValue = new Uint8Array(0);
     } else {
+      // An event argument given as bytes is the push its covenant made, so all-zero bytes stay as they are there.
+      const keepsBytes = addressBytesAsPushed && primitiveValue instanceof Uint8Array;
       primitiveValue = lockingBytecodeFromAddressValue(primitiveValue);
       if (
-        primitiveValue instanceof Uint8Array
+        !keepsBytes
+        && primitiveValue instanceof Uint8Array
         && primitiveValue.length > 0
         && primitiveValue.every((byte) => byte === 0)
       ) {
@@ -671,7 +701,11 @@ export function encodePushdataValue(
       }
     }
   }
-  if (isIntLikeType(type)) {
+  // An enum argument is spelled by its enum's name, which names no built-in type, and holds its member's ordinal, which
+  // a covenant pushes as an integer. A record spells an enum field `bigint`.
+  const enumOrdinal = (typeof primitiveValue === 'bigint' || typeof primitiveValue === 'number')
+    && /^[A-Za-z_]\w*$/.test(type) && parseType(type) === undefined;
+  if (isIntLikeType(type) || enumOrdinal) {
     // ethers-parity: accept a JS `number` for an integer state value by coercing a safe integer to bigint, so
     // `deploy({ initialState: { count: 1 } })` works like ethers (numbers for uint/int).
     if (typeof primitiveValue === 'number' && Number.isSafeInteger(primitiveValue)) {
@@ -693,7 +727,7 @@ export function encodePushdataValue(
         );
       }
     }
-    const scriptBytes = valueToScriptBytes(primitiveValue, type);
+    const scriptBytes = valueToScriptBytes(primitiveValue, enumOrdinal ? 'bigint' : type);
     return encodeGenericPushdataValue(scriptBytes, true);
   }
 
@@ -741,7 +775,7 @@ export function encodeEventParameter(
 ): Uint8Array {
   return parameter.notation === 'evm'
     ? encodeEvmNotationEventValue(value, parameter.type)
-    : encodePushdataValue(value, parameter.type, structs);
+    : encodeEventPushdataValue(value, parameter.type, structs);
 }
 
 /**
@@ -925,35 +959,16 @@ function encodeGenericPushdataValue(data: Uint8Array, isIntLike: boolean): Uint8
     return new Uint8Array([0x00]);
   }
 
-  if (isIntLike) {
-    // 1-byte value: check for OP_1NEGATE and OP_1-OP_16
-    if (data.length === 1) {
-      const byte = data[0];
-
-      // Check for 0x81 (-1 in script number) -> OP_1NEGATE (0x4f)
-      if (byte === 0x81) {
-        return new Uint8Array([0x4f]);
-      }
-
-      // Check for 1-16 -> OP_1-OP_16 (0x51-0x60)
-      // We need to interpret the byte as a script number first
-      const numResult = vmNumberToBigInt(data, { maximumVmNumberByteLength: VM_NUMBER_MAX_BYTE_LENGTH });
-      if (!isVmNumberError(numResult)) {
-        const num = numResult;
-        if (num >= 1n && num <= 16n) {
-          return new Uint8Array([0x50 + Number(num)]);
-        }
-      }
-
-      // Standard 1-byte pushdata: 0x01 <byte>
-      return new Uint8Array([0x01, byte]);
-    }
-
-    // Multi-byte: standard pushdata framing
-    return standardPushdataFrame(data);
+  // A9: a one-byte byte string has one minimal encoding, whatever its type: 0x81 is OP_1NEGATE, 0x01 to
+  // 0x10 are OP_1 to OP_16, and every other byte (0x00 and 0x80 included) takes the 0x01 frame. The compiler's
+  // emitPushdataEncode emits the same bytes, and a creator's binding compares them verbatim.
+  if (data.length === 1) {
+    const byte = data[0];
+    if (byte === 0x81) return new Uint8Array([0x4f]);
+    if (byte >= 0x01 && byte <= 0x10) return new Uint8Array([0x50 + byte]);
+    return new Uint8Array([0x01, byte]);
   }
-
-  // Non-int types: just standard pushdata framing (no special opcodes for small values)
+  void isIntLike;
   return standardPushdataFrame(data);
 }
 
@@ -1454,23 +1469,32 @@ export function buildPushdataCommitment(
   if (hasDataNftIndexTags(layout)) {
     parts.push(encodeNftIndexTag(nftIndex));
   }
-  for (const field of fieldsForNft) {
-    if (field.dynamic) {
-      // Dynamic var: the data-NFT field is a uint32 length header (A$len); the value lives in chunks.
-      // Use an explicit <name>$len (set during auto-derivation) if present, else compute it from the value.
-      // An absent value has no chunks yet: length 0, even for a bounded array whose default holds N elements.
-      const lenKey = dynamicLenKey(field.name);
-      const len = values[lenKey] !== undefined
-        ? Number(values[lenKey] as bigint)
-        : values[field.name] === undefined ? 0 : dynamicValueByteLength(values[field.name], field.type);
-      parts.push(encodePushdataValue(BigInt(len), DYNAMIC_LEN_TYPE));
-      continue;
-    }
-    const value = values[field.name] ?? getDefaultStateValue(field.type, layout.structs);
-    parts.push(encodePushdataValue(value, field.type, layout.structs));
-  }
+  for (const field of fieldsForNft) parts.push(encodeRecordField(layout, field, values));
+  return joinRecordParts(parts, nftIndex, commitmentLimit);
+}
 
-  // Concatenate all parts
+/** One field of a data-NFT record, as `buildPushdataCommitment` writes it from `values`. */
+function encodeRecordField(
+  layout: StateLayout,
+  field: StateVariableInfo,
+  values: Record<string, StateValue>,
+): Uint8Array {
+  if (field.dynamic) {
+    // Dynamic var: the data-NFT field is a uint32 length header (A$len); the value lives in chunks.
+    // Use an explicit <name>$len (set during auto-derivation) if present, else compute it from the value.
+    // An absent value has no chunks yet: length 0, even for a bounded array whose default holds N elements.
+    const lenKey = dynamicLenKey(field.name);
+    const len = values[lenKey] !== undefined
+      ? Number(values[lenKey] as bigint)
+      : values[field.name] === undefined ? 0 : dynamicValueByteLength(values[field.name], field.type);
+    return encodePushdataValue(BigInt(len), DYNAMIC_LEN_TYPE);
+  }
+  const value = values[field.name] ?? getDefaultStateValue(field.type, layout.structs);
+  return encodePushdataValue(value, field.type, layout.structs);
+}
+
+/** A record's parts joined, within the commitment limit. */
+function joinRecordParts(parts: readonly Uint8Array[], nftIndex: number, commitmentLimit: number | undefined): string {
   const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
   const result = new Uint8Array(totalLen);
   let offset = 0;
@@ -1487,6 +1511,75 @@ export function buildPushdataCommitment(
   }
 
   return binToHex(result);
+}
+
+/**
+ * Each field of a record of one data NFT: the bytes it holds, and the encoding of the value they decode to. Throws
+ * when the record is not one of that NFT's records.
+ */
+function recordFieldBytes(
+  layout: StateLayout,
+  fieldsForNft: readonly StateVariableInfo[],
+  nftIndex: number,
+  record: Uint8Array,
+): Map<string, { held: Uint8Array; encoded: string }> {
+  const fields = new Map<string, { held: Uint8Array; encoded: string }>();
+  let offset = 0;
+  if (hasDataNftIndexTags(layout)) {
+    const { value: tag, bytesConsumed } = decodePushdataValue(record, offset, 'bigint');
+    if (Number(tag) !== nftIndex) throw new Error(`recordFieldBytes: not a record of NFT index ${nftIndex}`);
+    offset += bytesConsumed;
+  }
+  for (const field of fieldsForNft) {
+    const type = field.dynamic ? DYNAMIC_LEN_TYPE : field.type;
+    const { value, bytesConsumed } = decodePushdataValue(record, offset, type, layout.structs);
+    fields.set(field.name, {
+      held: record.slice(offset, offset + bytesConsumed),
+      encoded: binToHex(encodePushdataValue(value, type, layout.structs)),
+    });
+    offset += bytesConsumed;
+  }
+  if (offset !== record.length) throw new Error(`recordFieldBytes: trailing bytes in a record of NFT index ${nftIndex}`);
+  return fields;
+}
+
+/**
+ * Build a record of one data NFT from `values`, as `buildPushdataCommitment` does, except that a field whose value is
+ * the one a record of `records` (hex, first match wins) holds keeps that record's bytes. The encoding is not
+ * one-to-one: an `address` of 20 zero bytes, which a refused EVM recovery answers, encodes as `address(0)`, the empty
+ * push, while the covenant that stored it wrote a 20-byte push. Rebuilt from parsed values with
+ * `buildPushdataCommitment`, such a record changes bytes although no value changed. A record that does not parse as
+ * one of the NFT's records is skipped.
+ */
+export function buildPushdataCommitmentKeeping(
+  layout: StateLayout,
+  values: Record<string, StateValue>,
+  nftIndex: number,
+  records: ReadonlyArray<string | undefined>,
+  commitmentLimit: number | undefined = layout.commitmentLimit,
+): string {
+  const fieldsForNft = layout.variables
+    .filter((v: StateVariableInfo) => v.nftIndex === nftIndex)
+    .sort((a, b) => a.fieldIndex - b.fieldIndex);
+  const held = records.flatMap((record) => {
+    if (record === undefined || record.length === 0) return [];
+    try {
+      return [recordFieldBytes(layout, fieldsForNft, nftIndex, hexToBin(record))];
+    } catch {
+      return [];
+    }
+  });
+  const parts: Uint8Array[] = [];
+  if (hasDataNftIndexTags(layout)) {
+    parts.push(encodeNftIndexTag(nftIndex));
+  }
+  for (const field of fieldsForNft) {
+    const encoded = encodeRecordField(layout, field, values);
+    const encodedHex = binToHex(encoded);
+    const kept = held.map((fields) => fields.get(field.name)).find((bytes) => bytes?.encoded === encodedHex);
+    parts.push(kept?.held ?? encoded);
+  }
+  return joinRecordParts(parts, nftIndex, commitmentLimit);
 }
 
 /**

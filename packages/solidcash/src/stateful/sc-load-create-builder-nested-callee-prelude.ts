@@ -77,6 +77,30 @@ export interface LoadCreateBuilderNestedCalleePreludeResult {
 }
 
 /**
+ * The old chunks of each dynamic variable in `written` that a callee's run consumes, in chunk order, after its block.
+ * Each unlocker names input 0 as the callee's master until the layout re-creates it at the master's index.
+ */
+export function writtenDynamicChunkInputs(
+  inner: any,
+  categoryId: string,
+  stateLayout: StateLayout,
+  written: ReadonlySet<string>,
+  chunkUtxos: Readonly<Record<string, readonly Utxo[]>> | undefined,
+): Array<{ name: string; type: string; utxo: UnlockableUtxo }> {
+  return stateLayout.variables
+    .filter((variable) => variable.dynamic && written.has(variable.name))
+    .flatMap((variable) => (chunkUtxos?.[variable.name] ?? [])
+      .filter((utxo) => utxo.token?.category === categoryId
+        && utxo.token.nft?.capability === 'mutable' && utxo.token.nft.commitment.length > 0)
+      .map((utxo) => ({ utxo, index: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex }))
+      .sort((a, b) => a.index - b.index)
+      .map(({ utxo }) => ({
+        name: variable.name, type: variable.type,
+        utxo: { ...utxo, unlocker: createDynamicChunkUnlocker(inner, 0, categoryId, variable.name, variable.type) },
+      })));
+}
+
+/**
  * Resolve one direct nested callee's compiler route, on-chain state, required data NFTs,
  * ABI/layout selection, pre-known chunkable values, and keccak side-cars — everything needed
  * before assembling that callee's full block inputs.
@@ -182,19 +206,9 @@ export async function loadCreateBuilderNestedCalleePrelude(
   const bAbiFunc = compilerRoute?.abiFunction ?? selectedConcreteAbi;
   const bBlockLayout = callBatchFrameLayout(bAbiFunc?.blockLayout, ec);
   const directDynamicWrites = new Set(compilerRoute ? [] : bAbiFunc?.dynamicWrites ?? []);
-  const bDynamicChunkInputs = bStatelayout.variables
-    .filter((variable) => variable.dynamic && directDynamicWrites.has(variable.name))
-    .flatMap((variable) => (bState.dynamicChunkUtxos?.[variable.name] ?? [])
-      .filter((utxo) => utxo.token?.category === externalCategoryId
-        && utxo.token.nft?.capability === 'mutable' && utxo.token.nft.commitment.length > 0)
-      .map((utxo) => ({ utxo, index: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex }))
-      .sort((a, b) => a.index - b.index)
-      .map(({ utxo }) => ({
-        name: variable.name, type: variable.type,
-        utxo: { ...utxo, unlocker: createDynamicChunkUnlocker(
-          callInfo.externalContract.inner as any, 0, externalCategoryId, variable.name, variable.type,
-        ) },
-      })));
+  const bDynamicChunkInputs = writtenDynamicChunkInputs(
+    callInfo.externalContract.inner, externalCategoryId, bStatelayout, directDynamicWrites, bState.dynamicChunkUtxos,
+  );
   const bHasLoop = (bAbiFunc?.sortedUpsertLoopInfo?.length ?? 0) > 0;
   // A whole chunkable value assigned from one published ABI parameter is known before VM derivation. Keep
   // this tied to the compiler's entry effect and valueParam metadata: selecting a merely type-compatible
@@ -217,10 +231,14 @@ export async function loadCreateBuilderNestedCalleePrelude(
     ? bDirectChunkValues[0].encoded : undefined;
   const bValueChunkOutputCount = bDirectChunkValue && bDirectChunkValue.length > VALUE_HEAD_SIZE
     ? Math.ceil((bDirectChunkValue.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE) : 0;
-  // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them.
-  const bKeccak = await host.resolveExternalKeccakSideCars(
-    bAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract,
-  );
+  // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them. A loop's side-cars
+  // ride the band after B's block instead, one per iteration, from the loop's own probe once the block is assembled
+  // (sc-append-create-builder-nested-callee-keccak-loop), as a function's own loop takes no fixed side-car either.
+  const bKeccak = !compilerRoute && bAbiFunc?.keccakLoopReads === true
+    ? { inputs: [], recreates: [] }
+    : await host.resolveExternalKeccakSideCars(
+      bAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract,
+    );
 
   return {
     externalCategoryId,

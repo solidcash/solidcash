@@ -14,7 +14,7 @@ import { compileString } from './direct-compile.js';
 // `test/libsolidity/semanticTests/functionCall/failed_create.sol` is the admitted shape: the tail-recursion
 // lowering turns `stack(depth)`'s self-call into a repeat loop whose only arm with the deploy exits the loop.
 describe('{value:} child deploy inside a loop', () => {
-  const OPTS = { evmCompat: true };
+  const OPTS = { evmCompat: true, __legacyDeployFold: true } as never;
   type Artifact = ReturnType<typeof compileString>;
   type AbiFunction = Artifact['abi'][number];
   const fn = (artifact: Artifact, name: string): AbiFunction =>

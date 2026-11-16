@@ -2,7 +2,6 @@
  * phase-boundary extract: SC lifecycle extract — constructor probe / derive deploy commitments.
  */
 
-import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, binsAreEqual, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
@@ -26,6 +25,7 @@ import {
   splitValueIntoChunks,
   splitValueIntoValueChunks,
   VALUE_INLINE_LIMIT,
+  encodePoolInfoCommitment,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
@@ -41,6 +41,8 @@ import {
   directConventionMasterLock,
   getDynamicChunkAddress,
   getEntryNftAddress,
+  getSatoshiContainerAddress,
+  getTokenContainerAddress,
   getValueChunkLockingBytecode,
 } from './covenant-helpers.js';
 import { reduceProbeTrace } from './faithful-probe-trace.js';
@@ -147,6 +149,19 @@ export async function deriveDeployCommitments<T extends Artifact>(
     stateLayout, options.initialState ?? {}, options.provider.consensusLimits?.maximumNftCommitmentBytes,
   );
 
+  // A contract without a constructor arm is born at its defaults: nothing runs, so there is nothing to probe.
+  if (constructorAbi === undefined) {
+    return {
+      stateCommitments: zeroCommitments,
+      entryCommitments: [],
+      trailingEntryCommitments: [],
+      eventCommitments: [],
+      dynamicChunkCommitments: {},
+      valueChunkOutputs: [],
+      transferOutputs: [],
+    };
+  }
+
   // Synthetic master UTXO (contract's locking script + minting NFT). It spends the category's genesis outpoint, as
   // the real genesis's input 0 does: the constructor arm runs only where input 0 spends `(category, 0)`.
   const syntheticMaster: Utxo = {
@@ -159,7 +174,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
 
   // Contract unlockers accept only user-visible arguments and fill compiler-internal witnesses themselves.
   const initArgs = [...(options.initArgs ?? [])];
-  const senderLockingBytecode = options.funder.generateLockingBytecode();
+  // A creator's child sees the creator's master as `msg.sender` (A4.3 step 8); anything else sees the wallet.
+  const senderLockingBytecode = options.genesisSender?.lockingBytecode ?? options.funder.generateLockingBytecode();
   const visibleInputs = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
   const { StatefulContract: SC } = await import('./StatefulContract.js');
   const constructorReplay = new SC(contract, categoryId) as any;
@@ -252,10 +268,25 @@ export async function deriveDeployCommitments<T extends Artifact>(
   const valueChunkTargets = [...constructorTargetSlots].map(([index, slot]) => ({
     collection: entryAccesses[index].collection, slot,
   }));
+  // A constructor's block.number/timestamp read is compiled in genesis mode from the creation's locktime, but the
+  // contract's own `__construct` arm (which this probe runs) reads a block-info oracle coin. Present one whose
+  // field equals the locktime, at the block layout's oracle slot.
+  const blockField = artifact.deployer?.constructorBlockField;
+  const blockOracleIndex = blockField === undefined ? -1 : 1 + stateLayout.dataNftCount;
+  let blockOracleRecreate: {
+    to: Uint8Array; amount: bigint;
+    token: { category: string; amount: bigint; nft: { capability: 'mutable'; commitment: string } };
+  } | undefined;
   const internalInitArgs: FunctionArgument[] = [];
   for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
-    if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
-    else if (input.name === '__internal__msgSenderAnchorIdx') internalInitArgs.push(-1n);
+    if (input.name === '__internal__msgSenderCategory') {
+      // The constructor arm's own resolution reads a non-zero category as "the input holding its minting NFT", so
+      // the creator's category and that input (added below) make it return the creator's master lock.
+      internalInitArgs.push(options.genesisSender === undefined
+        ? new Uint8Array(32) : hexToBin(options.genesisSender.categoryId).reverse());
+    } else if (input.name === '__internal__blockOracleInputIndex') {
+      internalInitArgs.push(blockOracleIndex < 0 ? -1n : BigInt(blockOracleIndex));
+    } else if (input.name === '__internal__msgSenderAnchorIdx') internalInitArgs.push(-1n);
     else if (input.name === '__internal__valueChunkOutputBase') internalInitArgs.push(-1n);
     else if (input.name.startsWith('__internal__valueWitness_')
       || input.name.startsWith('__internal__leadingPushValue_')) {
@@ -435,6 +466,86 @@ export async function deriveDeployCommitments<T extends Artifact>(
       (nft, i) => probeBuilder.addInput(nft, dataNftUnlockers[i]),
     );
 
+    const probeEcrecoverCount = artifact.deployer?.sidecars.ecrecover ?? 0;
+    const probeEcrecoverGroups: Array<Array<{ utxo: Utxo; unlocker: import('../interfaces.js').Unlocker; recreate: import('../interfaces.js').Output }>> = [];
+    if (probeEcrecoverCount > 0) {
+      const createAbi = artifact.deployer?.abi.find((entry) => entry.name === 'create');
+      const sidecarArgs: Record<string, FunctionArgument> = {};
+      const publicNames = (createAbi?.inputs ?? []).filter((input) => !input.name.startsWith('__internal__'))
+        .map((input) => input.name);
+      publicNames.forEach((name, index) => {
+        const contractIndex = artifact.constructorInputs.findIndex((input) => input.name === name);
+        const value = contractIndex >= 0
+          ? contract.constructorArgs[contractIndex]
+          : options.initArgs?.[index - artifact.constructorInputs.length];
+        if (value !== undefined) sidecarArgs[name] = value as FunctionArgument;
+      });
+      const { deployerEcrecoverGroups } = await import('./deployer.js');
+      probeEcrecoverGroups.push(...await deployerEcrecoverGroups({
+        createFn: createAbi as never, args: sidecarArgs, provider: options.provider, count: probeEcrecoverCount,
+      }));
+    }
+    for (const group of probeEcrecoverGroups) {
+      for (const step of group) probeBuilder.addInput(step.utxo, step.unlocker);
+    }
+
+    if (blockField !== undefined) {
+      // A constructor's block field is its creation's locktime (A5); the probe's oracle coin carries that value.
+      // Without a bound pool the coin's category is arbitrary to the constructor's read.
+      const pool = (contract as unknown as { oraclePool?: string }).oraclePool ?? '00'.repeat(32);
+      const value = BigInt(options.__deployerLocktime ?? 0);
+      const commitment = encodePoolInfoCommitment({
+        flags: 0,
+        owner: new Uint8Array(20),
+        number: blockField === 'number' ? value : 0n,
+        timestamp: blockField === 'timestamp' ? value : 0n,
+        difficulty: 0n, size: 0n, totalFees: 0n, coinbase: new Uint8Array(),
+      });
+      const infoLock = Uint8Array.of(0x51);
+      probeBuilder.addInput({
+        txid: `${'00'.repeat(31)}f0`, vout: 0, satoshis: 1200n, lockingBytecode: infoLock,
+        token: {
+          category: pool, amount: 0n,
+          nft: { capability: 'mutable' as const, commitment: binToHex(commitment) },
+        },
+      }, {
+        generateLockingBytecode: (): Uint8Array => infoLock,
+        generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+      });
+      blockOracleRecreate = {
+        to: infoLock, amount: 1200n,
+        token: {
+          category: pool, amount: 0n,
+          nft: { capability: 'mutable', commitment: binToHex(commitment) },
+        },
+      };
+    }
+
+    // A single satoshi container is an input slot too: the constructor's balance read, its sends and the genesis
+    // covenant's preservation check spend it. Present the probe's container at its block position, after the data
+    // NFTs; its output is the start balance less the constructor's sends.
+    const probeDeployer = artifact.deployer;
+    const constructorTransfers = constructorAbi?.transfers ?? [];
+    const transferredOut = constructorTransfers.reduce((sum, transfer) => {
+      const raw = (transfer.amountRecipe as { value?: string } | undefined)?.value
+        ?? (transfer.amount as { value?: string } | undefined)?.value;
+      return sum + (raw === undefined ? 0n : BigInt(raw));
+    }, 0n);
+    let probeSatoshiStart = 0n;
+    if (probeDeployer !== undefined && probeDeployer.satoshiContainer !== 'none') {
+      probeSatoshiStart = probeDeployer.satoshiContainer === 'required'
+        ? 1200n : (options.initialBalance ?? 0n);
+      if (probeSatoshiStart > 0n) {
+        const containerLock = addressToLockScript(getSatoshiContainerAddress(contract, categoryId));
+        probeBuilder.addInput({
+          txid: `${'00'.repeat(31)}ea`, vout: 0, satoshis: probeSatoshiStart, lockingBytecode: containerLock,
+        }, {
+          generateLockingBytecode: (): Uint8Array => containerLock,
+          generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+        });
+      }
+    }
+
     const constructorKeccakSidecars = syntheticKeccakUtxos.map((utxo, batch) => buildKeccakComputeSidecar(
       constructorKeccakPreimages.slice(batch * 3, batch * 3 + 3)
         .map((preimage) => preimage ?? new Uint8Array(0)),
@@ -509,6 +620,23 @@ export async function deriveDeployCommitments<T extends Artifact>(
     // the fixed constructor block so it supplies identity without shifting any positional covenant slots. The
     // master spends the funding coin's outpoint, so the funder keeps its lock and value at a probe-only one.
     probeBuilder.addInput({ ...options.fundingUtxo, txid: `${'00'.repeat(31)}ef`, vout: 0 }, options.funder);
+    if (options.genesisSender !== undefined) {
+      // The creator's master, holding its minting NFT: the probe-only input the sender resolution finds.
+      const creatorLock = options.genesisSender.lockingBytecode;
+      probeBuilder.addInput(
+        {
+          txid: `${'00'.repeat(31)}ee`, vout: 0, satoshis: 1200n,
+          token: {
+            category: options.genesisSender.categoryId, amount: 0n,
+            nft: { capability: 'minting', commitment: '' },
+          },
+        },
+        {
+          generateLockingBytecode: (): Uint8Array => creatorLock,
+          generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+        },
+      );
+    }
 
     // Output 0: master preserved
     probeBuilder.addOutput({
@@ -534,6 +662,9 @@ export async function deriveDeployCommitments<T extends Artifact>(
     });
 
     for (const sidecar of constructorKeccakSidecars) probeBuilder.addOutput(sidecar.recreate);
+    for (const group of probeEcrecoverGroups) {
+      for (const step of group) probeBuilder.addOutput(step.recreate);
+    }
 
     // Entry NFT outputs. Previously learned commitments are fed into the next probe iteration so a constructor
     // whose mapping write precedes scalar writes can progress past the entry equality checks.
@@ -562,12 +693,47 @@ export async function deriveDeployCommitments<T extends Artifact>(
       });
     }
 
-    // Transfer placeholder outputs
+    // Container rows (A4.4's order: after entries, before the transfers). A deployer creation's genesis pins the
+    // satoshi row's category, its value against the journal balance, and each single token row's category and
+    // amount; the probe must carry the same rows the real creation mints or those pins fail.
+    const deployerAbi = artifact.deployer;
+    if (deployerAbi !== undefined) {
+      if (deployerAbi.satoshiContainer !== 'none') {
+        const remaining = probeSatoshiStart > transferredOut ? probeSatoshiStart - transferredOut : 0n;
+        // An optional row with nothing left takes the plain filler the creation puts there (A14 item 11).
+        probeBuilder.addOutput(deployerAbi.satoshiContainer === 'optional' && remaining === 0n
+          ? { to: Uint8Array.of(0x51), amount: 1000n }
+          : { to: getSatoshiContainerAddress(contract, categoryId), amount: remaining });
+      }
+      for (const tokenRow of deployerAbi.tokenRows) {
+        const rowValue = contract.constructorArgs[tokenRow];
+        const rowCategory = rowValue instanceof Uint8Array ? binToHex(rowValue) : String(rowValue ?? '');
+        const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
+          && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
+        if (supplied === undefined) continue;
+        probeBuilder.addOutput({
+          to: getTokenContainerAddress(contract, categoryId, rowCategory),
+          amount: supplied.utxo.satoshis,
+          token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
+        });
+      }
+    }
+
+    // Transfer outputs: a constructor's send to `msg.sender` reaches the deploying wallet (tx.origin); a literal
+    // or forwarded address is resolved from the constructor arguments.
     for (let i = 0; i < transferCount; i++) {
-      probeBuilder.addOutput({
-        to: encodeLockingBytecodeP2pkh(new Uint8Array(20)),
-        amount: dataNftAmount,
-      });
+      const recipe = constructorTransfers[i];
+      const rawAmount = (recipe?.amountRecipe as { value?: string } | undefined)?.value
+        ?? (recipe?.amount as { value?: string } | undefined)?.value;
+      const amount = rawAmount === undefined ? dataNftAmount : BigInt(rawAmount);
+      let to: Uint8Array = options.funder.generateLockingBytecode();
+      const forwarded = recipe?.recipient?.kind === 'forward' ? recipe.recipient.paramIndex : undefined;
+      if (forwarded !== undefined) {
+        const input = visibleInputs[forwarded];
+        const value = input === undefined ? undefined : options.initArgs?.[forwarded];
+        if (value instanceof Uint8Array) to = value;
+      }
+      probeBuilder.addOutput({ to, amount });
     }
 
     // Event NFT placeholder outputs
@@ -672,6 +838,22 @@ export async function deriveDeployCommitments<T extends Artifact>(
           token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment } },
         });
       }
+    }
+
+    // The probe spends a mutable pool coin; recreate it so token conservation holds. It trails every fixed output,
+    // so the constructor's positional reads are unchanged.
+    if (blockOracleRecreate !== undefined) probeBuilder.addOutput(blockOracleRecreate);
+    if (options.genesisSender !== undefined) {
+      // The creator's probe-only input keeps its minting NFT; an output at the end returns it, after every
+      // positional slot the constructor's covenant reads.
+      probeBuilder.addOutput({
+        to: options.genesisSender.lockingBytecode,
+        amount: 1200n,
+        token: {
+          category: options.genesisSender.categoryId, amount: 0n,
+          nft: { capability: 'minting', commitment: '' },
+        },
+      });
     }
 
     // Run VM debug and extract commitments

@@ -27,6 +27,8 @@ export interface AutoWireLowLevelCallsHost {
   readonly functionName?: string;
   readonly functionArgs?: unknown[];
   readonly parentContract?: unknown;
+  /** The lock of the contract that calls this frame (`withCallerIdentity`): the frame's msg.sender. */
+  readonly callerLockingBytecode?: Uint8Array;
   readonly callInfos: unknown[];
   selectedAbiFunction(): AbiFunction | undefined;
 }
@@ -60,11 +62,12 @@ export async function autoWireLowLevelCalls(host: AutoWireLowLevelCallsHost): Pr
   const functionArgs = host.functionArgs as FunctionArgument[];
   // `address(this)` in a payload is the entry's public self, which the callee's pushes must repeat.
   const selfAddress = caller._ordinaryEntrySelfAddress?.(abiFunction) ?? hexToBin(caller.inner.lockingBytecode);
+  // An argument msg.sender gives is the frame's caller: the declared one, else the signer.
   const resolve = (
     sources: ArgSource[], state: Record<string, unknown>,
   ): FunctionArgument[] | undefined => caller._resolveExternalArgs(
     sources, functionArgs, caller.inner.artifact, state, abiFunction!.inputs,
-    undefined, 0, false, selfAddress,
+    undefined, 0, false, selfAddress, host.callerLockingBytecode,
   );
   const hydrationHost = {
     evaluateExternalExpression: (...args: unknown[]): unknown => caller._evaluateExternalExpression(...args),

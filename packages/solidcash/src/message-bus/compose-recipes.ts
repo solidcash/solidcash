@@ -10,7 +10,7 @@ import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js'
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  decodePushdataValue, encodePushdataValue,
+  decodePushdataValue, encodeEventPushdataValue, encodePushdataValue,
   bytecodeToScript, scriptToAsm,
   AddressType, BytesType, FixedType, IntType,
   parseArrayTypeString, parseTypeStrict, PrimitiveType,
@@ -813,7 +813,8 @@ export const canonicalNativeResultField = (
     const decoded = decodePushdataValue(vector, cursor, type, structs);
     return {
       bytesConsumed: decoded.bytesConsumed,
-      encoded: encodePushdataValue(decoded.value, type, structs),
+      // As the callee's return pushes it: an address of 20 zero bytes stays 20 bytes.
+      encoded: encodeEventPushdataValue(decoded.value, type, structs),
     };
   } catch (error) {
     // `encodeFunctionArgument` protects an empty top-level dynamic array count from an enclosing unlocking push by

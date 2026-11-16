@@ -44,7 +44,7 @@
   "fingerprint": "94e416504230dbd4ab77bfbe23a6518120a6575169e598e6ed4e864fa417f8e4",
   "compiler": {
     "name": "solidc",
-    "version": "0.50.0",
+    "version": "0.51.0",
     "options": {
       "enforceFunctionParameterTypes": true,
       "enforceLocktimeGuard": true,
@@ -54,7 +54,7 @@
       "messageBus": false
     }
   },
-  "updatedAt": "2026-11-06T20:18:19.180Z",
+  "updatedAt": "2026-11-13T05:42:19.043Z",
   "invocationAnalysis": {
     "version": 1,
     "protocolVersions": [

@@ -11,7 +11,7 @@ means minting, re-minting and burning those UTXOs. SolidCash exposes this throug
 A stateful contract can mint a child contract with `new`:
 
 ```solidity
-pragma solidcash ^0.50.0;
+pragma solidcash ^0.51.0;
 
 contract Child(pubkey owner) {
     int counter;
@@ -46,6 +46,18 @@ name elsewhere, so a function may still be called `deploy`.
 deploy function must be externally callable and cannot be combined with `pure`, `view`,
 `unsafe`, `upgrade`, `selfdestruct`, `split`, or `merge`.
 
+:::note
+In a direct creator, which is the default convention, `new` of a stateful child is a **deployer `new`**. It spends
+a one-shot coin of the child's generated `Deploy<C>` program, and that program runs the child's constructor on chain.
+See [Proof of birth](#proof-of-birth-deploying-through-deployc). Some rules below differ between the two paths, and
+each section says where:
+- `salt`;
+- a call on the new child in the same function;
+- the folding of the child's constructor.
+
+Message-bus and framed creators keep the older genesis that this page describes.
+:::
+
 :::danger
 A deploy entry needs an unconditional `require(checkSig(s, key))` where the caller cannot choose `key`: a
 constructor argument, a state variable, or a constant. A direct compile rejects a deploy, `upgrade`, `split`, or
@@ -57,13 +69,11 @@ warning for an intentionally permissionless entry.
 
 The `salt` call option is the BCH analogue of the EVM's `CREATE2`. `new C{salt: s}(...)` adds `s` to the
 child's redeem script as a `<s> OP_DROP` prefix, so the same code and constructor arguments give a different,
-deterministic address for each salt. EVM `CREATE2` address math does not apply. A stateful child's address also
-commits to its category, which comes from the funding outpoint.
+deterministic address for each salt. EVM `CREATE2` address math does not apply.
 
 ```solidity
 contract Child(pubkey owner) {
-    int counter;
-    function bump() public { this.counter += 1; }
+    function spend(sig s) public { require(checkSig(s, owner)); }
 }
 
 contract Factory(pubkey admin) {
@@ -80,6 +90,11 @@ contract Factory(pubkey admin) {
 The SDK reads a salt that the deploy function forwards from one of its parameters, or a literal salt. For a
 computed salt, pass `childSalt` to `StatefulContract.deployFrom()`.
 
+A stateful child's address also commits to its category, which comes from the funding outpoint. A deployer `new`,
+the direct convention's `new` of a stateful child, refuses `salt`: the child's redeem script starts with its
+category pin, so its address already depends on its deployer coin. A message-bus or framed creator, for example one
+compiled with `messageBus: true`, takes a salt on a stateful child too.
+
 ### Funding the child with `value`
 
 `new C{value: v}(...)` pays `v` satoshis to the child's address in the deploy transaction. The value comes from the
@@ -89,6 +104,7 @@ stateful. If the child declares a `constructor` body, it must be `payable` to re
 ```solidity
 contract Child(pubkey owner) {
     int counter;
+    constructor() payable {}
     function bump() public { this.counter += 1; }
 }
 
@@ -104,6 +120,11 @@ contract FundingFactory(pubkey admin) {
 ```
 
 With the SDK, pass the amount as `childValue` in the deploy options.
+
+On a deployer `new`, `value` moves `v` from the factory's satoshi container into the child's satoshi container
+before the child's constructor runs. `msg.value` is `v` there, and `v` must be 0 or at least RESERVE. The child
+must keep a satoshi container, which its `payable` constructor gives it here. The SDK reads the value from the
+factory's run; a `childValue`, when given, must equal it.
 
 ### Conditional and looped deploys
 
@@ -121,11 +142,20 @@ A loop deploy mints one child per iteration, and each child needs its own fundin
 `fundingUtxos` to `deployFrom()`. A conditional deploy whose branch is not taken is an ordinary call: `.send()` on
 the pending call sends it without minting a child.
 
+Through deployers each child's category is its own prep transaction's txid, so no funding input needs to sit at
+`vout: 0`. The SDK learns from the factory's run how many children are created, in which order and with which
+arguments. It then builds one prep per child, as a chain, before the creation: from the connected signer, or from
+`prepFunding`. A creating call that creates a different number of children than `deployments` says is refused.
+Different child contracts in the branches of one direct function are refused; use a message-bus creator for that.
+
 ### Deploy and configure in one transaction
 
-A newly created child is an output, so it cannot also be spent as an input in the same BCH transaction. SolidCash
-supports the common Solidity `new C(); c.initialize(...)` shape by **folding** a supported initializer into the
-child's genesis commitment:
+A newly created child is an output, so it cannot also be spent as an input in the same BCH transaction. A
+message-bus or framed creator supports the common Solidity `new C(); c.initialize(...)` shape by **folding** a
+supported initializer into the child's genesis commitment. Under automatic selection a creator that calls its new
+child compiles on the message bus. A direct creator refuses any call on a child its deployer `new` creates in the
+same function, with `DeployedChildCallError`: pass the values as constructor arguments, which the constructor
+runs on chain, or call the child in a later transaction. The fold:
 
 ```solidity
 contract Child() {
@@ -175,9 +205,18 @@ verified by the factory covenant.
 
 ### A child's constructor
 
-A factory does not run its child's constructor. It folds the constructor, state-variable initializers included, into
-its own covenant, which then verifies the child's first state. Constructor arguments, straight-line locals and writes
-fold, and so does a `require` over them, which the creating call enforces.
+A direct factory's deployer `new` runs the child's constructor on chain, in `Deploy<C>`. The constructor may emit,
+make payments, take `value`, read block fields and make calls:
+- block fields come from the transaction's locktime, which is a lower bound;
+- `msg.sender` is the factory;
+- a call goes to a callee compiled as a direct contract with `genesisCalls` (the default), whose call record proves
+  the call.
+
+See [Proof of birth](#proof-of-birth-deploying-through-deployc).
+
+A message-bus or framed factory does not run its child's constructor. It folds the constructor, state-variable
+initializers included, into its own covenant, which then verifies the child's first state. Constructor arguments,
+straight-line locals and writes fold, and so does a `require` over them, which the creating call enforces.
 
 A statement the fold cannot express is refused with `ChildGenesisFoldError`, naming the child and the statement, so a
 guard or a write is never dropped. A constructor whose fold fails without one such statement is refused with
@@ -211,62 +250,6 @@ contract Factory(pubkey admin) {
     }
 }
 ```
-
-### Deploying code by template
-
-`new C{code: c}(...)` creates a child that runs the bytes `c` instead of C's compiled body. The factory embeds no
-code: it requires `sha256(c)` to be the sha256 of C's compiled body, a 32-byte constant, and builds the child's
-address from `c`. A factory of a large child stays small, and its other functions no longer carry the child's code.
-The code still travels in the deploying transaction: as an argument it sits in the factory's own input, which BCH
-limits to 10,000 bytes, so a factory near that limit can read it from another input instead.
-
-```solidity
-contract Child(int limit) {
-    int counter;
-    function bump(int n) public { require(n < limit); this.counter = this.counter + n; }
-}
-
-contract Factory(pubkey admin) {
-    int created;
-
-    function create(int limit, bytes code, sig s) public {
-        require(checkSig(s, admin));
-        new Child{code: code}(limit);
-        this.created += 1;
-    }
-}
-```
-
-`new C{code: c, template: t}(...)` checks `c` against a template chosen at run time instead: `sha256(c)` must equal
-`t`. The child keeps C's interface (its constructor arguments, state layout and constructor fold) and runs whatever
-code hashes to `t`, so one factory can create children of several versions of C. A caller who chooses the template
-chooses the child's code, so the template must be a constant, a constructor argument or a state variable, or else a
-parameter that the function never reassigns and passes to an event it emits on every path:
-
-```solidity
-contract Child(int limit) {
-    int counter;
-    function bump(int n) public { require(n < limit); this.counter = this.counter + n; }
-}
-
-contract Registry(pubkey admin) {
-    int created;
-    event Created(bytes32 template, int limit);
-
-    function create(bytes32 template, int limit, bytes code, sig s) public {
-        require(checkSig(s, admin));
-        new Child{code: code, template: template}(limit);
-        emit Created(template, limit);
-        this.created += 1;
-    }
-}
-```
-
-`deployFrom()` builds the child from the code in the deploy arguments, and refuses code that does not hash to the
-template before anything is broadcast. The deploy covenant refuses it on chain either way.
-
-`code` and `template` apply to a stateful child created on the direct convention. A function that uses them is not
-admitted to the message-bus route, and the framed convention refuses them.
 
 ## Upgrading
 
@@ -436,3 +419,29 @@ every lifecycle function must be externally callable (not `internal` or `private
 - [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) - native migration and proxy security
 - [Contract Destruction](/docs/language/selfdestruct) - destination, fee, authorization, and batching rules
 - [Libraries & Using-For](/docs/language/libraries#deployed-delegate-libraries) - deployed delegate libraries
+
+## Proof of birth: deploying through `Deploy<C>`
+
+A stateful contract compiled with `deployer: true` carries a one-shot **`Deploy<C>`** program. When its artifact
+has one, the SDK deploys the instance through it, and the instance has a **proof of birth**: its category was
+created by spending the deployer coin at output 0 of a prep transaction, and that coin's program checked the
+constructor's outputs and calls. An artifact from a plain compile has no deployer and its top-level deployment
+is today's genesis, silently.
+
+- **The category** is the txid of the contract's own prep transaction, not `fundingUtxo.txid`. The funding
+  coin only pays for the prep and need not sit at vout 0. Code that needs a category or address before a
+  deployment builds the preps first and reads it from each result.
+- **The constructor's `msg.sender`** is `tx.origin`, the deploying wallet, as in Solidity. `block.number` and
+  `block.timestamp` come from the transaction's locktime, a lower bound rather than the mined block.
+- **Identity.** The creation keeps the category's identity output at output 0 as today's option says. It does
+  not mint a logical-identity anchor: the census forbids one at birth.
+- **Fallbacks.** A deployment that asks for anything the deployer does not build (an initial state the
+  constructor does not produce, a salt, another address type, several master threads, a non-P2PKH funder)
+  takes today's genesis with one warning, and has no proof of birth. `viaDeployer: true` turns the fallback
+  into an error that names it.
+- **Inside a creator**, `new C{args: (a1, a2), value: v}(c1, c2)` gives C's contract parameters in `args` and
+  the constructor arguments in the parentheses. A `new` of a stateful direct child compiles to a deployer
+  binding: the creator publishes its own category into the deployer's arguments, checks what the deployer
+  received, and the child's constructor can read `msg.sender` as the creator. See
+  [contract-creation.md in the compiler docs](https://github.com/solidcash/solidcash/blob/master/packages/solidc/docs/contract-creation.md)
+  for the transaction tables and the full interface.

@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 
 describe('which block reads make a contract stateful', () => {
   it('a blockhash read does', () => {

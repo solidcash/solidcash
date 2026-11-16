@@ -65,6 +65,8 @@ export type SolidcDiagnosticCode =
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
   // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
   | 'SIGNATURE_CHECK_IN_SUBROUTINE'
+  // A payment to a `new` result whose category cannot be read at the payment site (branch or loop).
+  | 'STATEFUL_PAYMENT_UNROUTABLE'
   // A contract's own code deploys that same contract, so its creation code would have to contain itself.
   | 'CIRCULAR_CONTRACT_REFERENCE'
   | 'INTERFACE_CONTRACT_BASE'
@@ -76,14 +78,20 @@ export type SolidcDiagnosticCode =
   | 'SPLIT_SIZE_REFUSES_FRAMED'
   // An event payload wider than one NFT commitment, emitted where its continuation chunks have no layout.
   | 'EVENT_PAYLOAD_EXCEEDS_COMMITMENT'
+  // Runtime-loop BCH payments that settle where the sum over every coin at the satoshi container lock cannot count them.
+  | 'RUNTIME_LOOP_PAYMENTS_UNCOUNTED'
   // A returning entry whose body consumed the value its result is bound with: no record or carrier would bind it.
   | 'RETURN_RESULT_UNBOUND'
   // A source function whose selector is the multi-call entry's reserved selector.
   | 'CALL_BATCH_RESERVED_SELECTOR_COLLISION'
   // A loop calling through a state array its function writes inside that loop, or both before and after it.
   | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
+  // A call through a collection entry its function writes before the call where the call cannot read the written entry.
+  | 'ENTRY_TARGET_WRITTEN_BEFORE_CALL'
   // An external call left in an invoked function body, where no entry point lays out or binds its callee.
   | 'EXTERNAL_CALL_IN_SUBROUTINE'
+  // A `{value: v}` call whose target no output the covenant checks can be built for, so the payment would drop.
+  | 'CALL_VALUE_RECIPIENT_UNBOUND'
   // F1: an entry reads a contract-caller msg.sender but its call digest is not in scope where the caller edge binds.
   | 'CALLER_EDGE_DIGEST_UNAVAILABLE'
   // A message-bus entry whose looped call only the route binds, where the route does not serve that entry.
@@ -466,12 +474,6 @@ export class UnfoldableChildConstructorError extends SolidCashError {
       + 'Only straight-line local and state assignments, branches over them and requires fold; a loop or a call '
       + 'to a function that is not inlined does not. Assign those fields from constants or constructor '
       + 'arguments, for example a precomputed constant in place of a value a loop builds');
-  }
-}
-
-export class DeployCodeError extends SolidCashError {
-  constructor(public node: InstantiationNode, message: string) {
-    super(node, message);
   }
 }
 
@@ -1298,6 +1300,206 @@ export class NamedArgumentError extends SolidCashError {}
 export class TransferArgumentTypeError extends TypeError {
   constructor(node: Node, argName: string, actual?: Type, expected?: Type) {
     super(node, actual, expected, `this.transfer() argument '${argName}' has type '${actual}' but expected '${expected}'`);
+  }
+}
+
+/** `new C{args: (…)}`: the contract parameters and the constructor's own, in the forms A3 gives. */
+export class DeployArgsRequiredError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `'${contractName}' has contract parameters and constructor parameters: pass the contract parameters `
+      + 'as `args: (...)` and the constructor arguments in the parentheses');
+  }
+}
+
+export class DeployArgsCountError extends SolidCashError {
+  constructor(node: Node, contractName: string, given: number, expected: number) {
+    super(node, `'${contractName}' takes ${expected} contract parameter(s) in \`args\`, but ${given} value(s) were given`);
+  }
+}
+
+export class DeployArgsUnexpectedError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `'${contractName}' has no contract parameters, so \`args\` has nothing to fill`);
+  }
+}
+
+export class DeployValueBelowReserveError extends SolidCashError {
+  constructor(node: Node, value: bigint) {
+    super(node, `a child's satoshi container cannot be opened with ${value} satoshis: pass 0, or at least 1200`);
+  }
+}
+
+export class DeployValueWithoutContainerError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `'${contractName}' has no satoshi container row in its deployer, so \`value\` has nowhere to go`);
+  }
+}
+
+export class DeploySaltError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, '`salt` is not available on a deployer `new`: the child\'s redeem starts with its category pin, so '
+      + 'its address already depends on the deployer coin');
+  }
+}
+
+export class DeployedChildCallError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `a call on the child returned by \`new ${contractName}\` cannot be bound at its creation: call the `
+      + 'child in a later transaction');
+  }
+}
+
+/** A `new` the deployer path cannot compile, or a child with no deployer. `reason` is an A4.1 identifier. */
+export class DeployerUnsupportedError extends SolidCashError {
+  constructor(node: Node, readonly reason: string, detail: string) {
+    super(node, `the deployer path refuses this \`new\` (${reason}): ${detail}`);
+  }
+}
+
+/** A contract whose code creates itself, directly or through another child. */
+export class DeployCycleError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `'${contractName}' creates itself, directly or through another child, so its creation cannot be built`);
+  }
+}
+
+/** A source name the compiler keeps for its own: anything starting with `__solidcash_`. */
+export class ReservedNameError extends SolidCashError {
+  constructor(node: Node, name: string) {
+    super(node, `'${name}' is reserved for compiler-generated names: the prefix \`__solidcash_\` is not available `
+      + 'to a source');
+  }
+}
+
+/** A constructor that uses a token container other than by reading `tokenAmount` (A3 rule 4). */
+export class CtorTokenContainerError extends SolidCashError {
+  constructor(node: Node, member: string) {
+    super(node, `a constructor may read a token container's \`tokenAmount\` only; \`${member}\` is not available `
+      + 'while it runs, because no tokens reach the contract before it is born');
+  }
+}
+
+/** `.category` on a contract value that is not a `new` result (A6). */
+export class ChildCategoryUnavailableError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, '`.category` is available on the result of `new C(...)`: an address alone does not carry the category');
+  }
+}
+
+/** A generator check of A16.2 failed: a defect in the compiler, never in the source. */
+export class DeployerInternalError extends SolidCashError {
+  constructor(node: Node | undefined, detail: string) {
+    super(node as Node, `internal deployer check failed: ${detail}`);
+  }
+}
+
+export class CallRecordsOptionError extends SolidCashError {
+  constructor(node: Node, convention: string) {
+    super(node, `callRecords: 'all' is not available on a ${convention} compile: that convention binds a callee's `
+      + 'result in its own way, and a void entry has no result to bind');
+  }
+}
+
+export class ReceiveShapeError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, 'a `receive` that reads `msg.sender` or block data cannot be reached: the dispatcher selects it by a '
+      + 'stack depth that leaves no room for the hidden parameter the read needs');
+  }
+}
+
+/** The compatibility rule of A3 rule 6 was applied: parentheses read as `args`. */
+export class DeployArgsPositionalWarning {
+  readonly message: string;
+
+  constructor(contractName: string) {
+    this.message = `Warning: \`new ${contractName}(…)\` fills its contract parameters; write `
+      + `\`new ${contractName}{args: (…)}()\` to say so, and put constructor arguments in the parentheses.`;
+  }
+}
+
+/** `deployer: true` was given and C cannot have a deployer; the message names the reason. */
+export class DeployerUnsupportedWarning {
+  readonly message: string;
+
+  constructor(contractName: string, reason: string, detail: string) {
+    this.message = `Warning: '${contractName}' has no deployer (${reason}): ${detail}`;
+  }
+}
+
+/** A payment to a stateful direct contract's address: it would land on the master lock and be unspendable. */
+export class StatefulAddressPaymentError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `a payment to '${contractName}' pays its address, which is the master lock; only a call of one of its `
+      + 'payable functions can credit it. Pay the child returned by `new` instead, or send through a call.');
+  }
+}
+
+/** A payment to a contract-typed address the compiler cannot classify; the satoshis may be unspendable. */
+export class StatefulAddressPaymentWarning {
+  readonly message: string;
+
+  constructor(message: string) {
+    this.message = message;
+  }
+}
+
+/**
+ * Which witness a `computed-call-target-unverified` warning names: the callee of a straight-line keccak256 target, the
+ * callee of a loop's per-turn keccak256 target the caller's arguments choose, or the answer of a view call through a
+ * loop local computed with keccak256, which is not made at all.
+ */
+export type ComputedCallTargetKind = 'straight-line' | 'per-turn' | 'view-answer';
+
+/**
+ * A call on a target computed with keccak256 takes its callee, or a view call through it its answer, from a witness the
+ * spender supplies, and nothing compares the two: a straight-line target such as `IPair(pairFor(factory, a, b))` (a
+ * CREATE2 address no BCH lock equals), a loop's per-turn target the caller chooses,
+ * `IPair(pairFor(factory, path[i], path[i + 1]))`, and the view calls through such a loop local. Every other target is
+ * checked where the call runs. The witnesses keep routers working; the warning tells the author that the callee and
+ * its answers are the spender's.
+ */
+export class ComputedCallTargetWarning {
+  static readonly code = 'computed-call-target-unverified';
+
+  readonly message: string;
+
+  /**
+   * `call` names the call (`the call IPair.swap`), `holders` the functions that hold it (`function 'f'`), and `at` is
+   * the diagnostic position (` at line 12`).
+   */
+  constructor(call: string, holders: string, at: string, kind: ComputedCallTargetKind) {
+    const head = `Warning: [${ComputedCallTargetWarning.code}] ${call} in ${holders}${at}`;
+    const advice = 'Before the contract relies on the callee\'s answers to release its own funds, call through an '
+      + 'address the contract stores (a registry lookup) instead of';
+    if (kind === 'straight-line') {
+      this.message = `${head} has a computed target (a keccak256 hash such as a CREATE2 address, which no BCH lock `
+        + 'equals), so the contract takes the callee from a witness the spender supplies and never compares it with '
+        + 'the computed value: the spender may name any contract as the callee, and its answers are the spender\'s. '
+        + `${advice} a computed one.`;
+    } else if (kind === 'per-turn') {
+      this.message = `${head} has a target computed with keccak256 on each loop turn (such as a CREATE2 address, which `
+        + 'no BCH lock equals), so the contract takes each turn\'s callee from a witness the spender supplies and never '
+        + 'compares it with that target: the spender may name any contract as the callee, and its answers are the '
+        + `spender's, as are the answers of view calls in such a loop. ${advice} a computed one.`;
+    } else {
+      this.message = `${head} is not made: its loop local's target is computed with keccak256, and one master input `
+        + 'runs one call per transaction, so the contract reads the answer from a witness the spender supplies, which '
+        + `nothing checks: the answer is the spender's. ${advice} a computed one.`;
+    }
+  }
+}
+
+/**
+ * Several calls through one loop local whose target is not computed with keccak256: a plain element of a parameter
+ * array, or a target computed without a hash. One master input runs one call per transaction, so the shape compiled
+ * only by reading the view calls' answers from witnesses the spender supplies, which nothing checked.
+ */
+export class LoopLocalRepeatedCallsError extends SolidCashError {
+  constructor(node: Node, functionName: string, localName: string, callCount: number) {
+    super(node, `function '${functionName}' makes ${callCount} calls through the loop local '${localName}', whose `
+      + 'target is not computed with keccak256. One master input runs one call per transaction, so these calls could '
+      + 'only read answers the spender supplies, which nothing would check. Call each callee once per loop turn, '
+      + 'through separate locals or targets, or read the callee\'s state instead');
   }
 }
 

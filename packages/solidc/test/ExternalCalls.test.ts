@@ -321,11 +321,13 @@ describe('state-backed external-call expected address', () => {
     const fn = artifact.abi.find((candidate) => candidate.name === 'f');
     expect(fn?.externalCalls?.[0]?.addressStateVar).toBe('data');
     expect(fn?.externalCalls?.[0]?.addressParam).toBe('__extaddr_data');
-    // The 20-byte identity path projects the co-spent master's locking bytecode; the empty legacy sentinel
-    // duplicates that already-authenticated bytecode. Neither path copies an unrelated master/anchor index.
+    // An empty expected address (address(0)) is refused (OP_SIZE OP_DUP OP_VERIFY), as a call to it reverts on the
+    // EVM; the 20-byte identity path then refuses an empty co-spent lock and projects the master's locking bytecode.
+    // The empty legacy sentinel, which compared the co-spent lock with itself, is gone. Neither path copies an
+    // unrelated master/anchor index.
     const bytecode = artifact.bytecode.replace(/\s+/g, '');
-    expect(bytecode).toContain('01149c637c82008763');
-    expect(bytecode).toContain('77009c63757668');
+    expect(bytecode).toContain('82766901149c637c8269');
+    expect(bytecode).not.toContain('77009c63757668');
   });
 });
 
@@ -1284,7 +1286,7 @@ describe('external call on a state-rooted access-chain target (ss[i].f.m(), ms[k
 // type's own method, while a bytes receiver in the same contract keeps the built-in.
 describe('an interface method named split is called as the interface method', () => {
   const IFACE = 'interface IScale { function split(address to, int amount) external returns (int); }';
-  const NATIVE = `pragma solidcash ^0.50.0;
+  const NATIVE = `pragma solidcash ^0.51.0;
     ${IFACE}
     contract Payer(address target) {
       function pay(address to, int amount) { int scaled = IScale(target).split(to, amount); require(scaled > 0); }
@@ -1316,7 +1318,7 @@ describe('an interface method named split is called as the interface method', ()
       'IScale scale = IScale(target); int r = scale.split(amount); require(r > 0);',
       'IScale(target).split(amount); require(amount > 0);',
     ]) {
-      const artifact = compileString(`pragma solidcash ^0.50.0;
+      const artifact = compileString(`pragma solidcash ^0.51.0;
         interface IScale { function split(int amount) external returns (int); }
         contract Payer(address target) { function pay(int amount) { ${body} } }`);
       expect(callsOf(artifact, 'pay')).toEqual(['IScale.split']);
@@ -1324,7 +1326,7 @@ describe('an interface method named split is called as the interface method', ()
   });
 
   it('calls a declared split through this rather than splitting the active bytecode', () => {
-    expect(compileString(`pragma solidcash ^0.50.0;
+    expect(compileString(`pragma solidcash ^0.51.0;
       contract Scale {
         function split(int amount) public returns (int) { return amount + 1; }
         function check(int amount) { require(this.split(amount) == amount + 1); }
@@ -1352,12 +1354,12 @@ const externalCallsOf = (artifact: ReturnType<typeof compileString>, name: strin
   .find((entry) => entry.name === name)?.externalCalls ?? []).map((call) => `${call.interfaceName}.${call.functionName}`);
 const SOLIDITY_COMPAT = { evmCompat: true };
 const payCalls = (iface: string, header: string, body: string): string[] => externalCallsOf(compileString(
-  `pragma solidcash ^0.50.0; ${iface} contract Payer(${header}) { function pay(int a) { ${body} } }`,
+  `pragma solidcash ^0.51.0; ${iface} contract Payer(${header}) { function pay(int a) { ${body} } }`,
 ), 'pay');
 
 describe('an interface method named slice is called as the interface method', () => {
   const IFACE = 'interface ISlicer { function slice(int from, int to) external returns (int); }';
-  const NATIVE = `pragma solidcash ^0.50.0;
+  const NATIVE = `pragma solidcash ^0.51.0;
     ${IFACE}
     contract Payer(address target) {
       function pay(int from, int to) { int r = ISlicer(target).slice(from, to); require(r > 0); }
@@ -1396,7 +1398,7 @@ describe('an interface method named slice is called as the interface method', ()
   });
 
   it('calls a declared slice through this rather than slicing the active bytecode', () => {
-    expect(compileString(`pragma solidcash ^0.50.0;
+    expect(compileString(`pragma solidcash ^0.51.0;
       contract Slicer {
         function slice(int from, int to) public returns (int) { return from + to; }
         function check(int a) { require(this.slice(a, a) == a + a); }
@@ -1413,7 +1415,7 @@ describe('an interface method named slice is called as the interface method', ()
 
 describe('an interface method named reverse is called as the interface method', () => {
   const IFACE = 'interface IFlip { function reverse() external returns (int); }';
-  const NATIVE = `pragma solidcash ^0.50.0;
+  const NATIVE = `pragma solidcash ^0.51.0;
     ${IFACE}
     contract Payer(address target) {
       function pay() { int r = IFlip(target).reverse(); require(r > 0); }
@@ -1444,7 +1446,7 @@ describe('an interface method named reverse is called as the interface method', 
   });
 
   it('calls a declared reverse through this rather than reversing the active bytecode', () => {
-    expect(compileString(`pragma solidcash ^0.50.0;
+    expect(compileString(`pragma solidcash ^0.51.0;
       contract Flip {
         function reverse() public returns (int) { return 1; }
         function check() { require(this.reverse() == 1); }
@@ -1461,7 +1463,7 @@ describe('an interface method named reverse is called as the interface method', 
 
 describe('interface methods named push, pop and delete are called as the interface methods', () => {
   const IFACE = 'interface IStack { function push(int v) external; function pop() external returns (int); }';
-  const NATIVE = `pragma solidcash ^0.50.0;
+  const NATIVE = `pragma solidcash ^0.51.0;
     ${IFACE}
     contract Keeper(IStack stack, address target) {
       function keep(int v) { stack.push(v); IStack(target).pop(); require(v > 0); }
@@ -1501,7 +1503,7 @@ describe('interface methods named push, pop and delete are called as the interfa
   });
 
   it('calls a declared push through this rather than pushing onto this', () => {
-    expect(compileString(`pragma solidcash ^0.50.0;
+    expect(compileString(`pragma solidcash ^0.51.0;
       contract Stack {
         function push(int v) public { require(v > 0); }
         function check(int v) { this.push(v); require(v > 1); }
@@ -1520,7 +1522,7 @@ describe('interface methods named push, pop and delete are called as the interfa
 
 describe('interface methods named send and transfer are called as the interface methods', () => {
   const IFACE = 'interface IVault { function transfer(int v) external; function send(int v) external returns (bool); }';
-  const NATIVE = `pragma solidcash ^0.50.0;
+  const NATIVE = `pragma solidcash ^0.51.0;
     ${IFACE}
     contract Payer(IVault vault, address target) {
       function pay(int v) { IVault(target).transfer(v); bool ok = vault.send(v); require(ok); }
@@ -1549,7 +1551,7 @@ describe('interface methods named send and transfer are called as the interface 
       .toEqual(['IVault.transfer']);
     expect(payCalls(IFACE, 'address target', 'IVault v = IVault(target); require(v.send(a));'))
       .toEqual(['IVault.send']);
-    const routed = compileString(`pragma solidcash ^0.50.0; ${IFACE}
+    const routed = compileString(`pragma solidcash ^0.51.0; ${IFACE}
       contract Payer(IVault vault) { int calls; function pay(int a) public { vault.transfer(a); calls = calls + 1; } }`,
     { messageBus: true });
     expect(routed.messageBus).toBeDefined();
@@ -1557,7 +1559,7 @@ describe('interface methods named send and transfer are called as the interface 
   });
 
   it('calls a declared send through this rather than sending to this', () => {
-    expect(compileString(`pragma solidcash ^0.50.0;
+    expect(compileString(`pragma solidcash ^0.51.0;
       contract Vault {
         function send(int v) public returns (bool) { return v > 0; }
         function check(int v) { require(this.send(v)); }
@@ -1579,7 +1581,7 @@ describe('interface methods named like the token and code members are called as 
     function tokenCategory() external returns (bytes32);
     function code() external returns (int);
   }`;
-  const NATIVE = `pragma solidcash ^0.50.0;
+  const NATIVE = `pragma solidcash ^0.51.0;
     ${IFACE}
     contract Reader(IToken token, address target, address other) {
       function read() {
@@ -1618,7 +1620,7 @@ describe('interface methods named like the token and code members are called as 
 
 describe('built-in member names on a contract receiver under the framed convention', () => {
   it('publishes each call site as the interface method', () => {
-    const composition = compileStringMulti(`pragma solidcash ^0.50.0;
+    const composition = compileStringMulti(`pragma solidcash ^0.51.0;
       interface IBox {
         function slice(int a, int b) external returns (int);
         function reverse() external returns (int);

@@ -905,8 +905,11 @@ describe('loop-body vars are not single-assign (Router02 per-iteration computed 
     const fn = art.abi.find((a) => a.name === 'f');
     expect(fn?.inputs.some((inp) => inp.name.startsWith('__internal__loopTargets'))).toBe(true);
   });
-  it('supports several calls through one per-iteration interface local', () => {
-    const art = compileString(`pragma solidity 0.6.12;
+  it('refuses several calls through one per-iteration interface local on a plain parameter element', () => {
+    // A BCH master UTXO cannot service several view methods in one transaction. These compiled only by reading each
+    // answer from a witness the spender supplies, which nothing checked, although `targets[i]` names a callee whose
+    // answers the contract could read: only a keccak256-computed target keeps such witnesses.
+    expect(() => compileString(`pragma solidity 0.6.12;
       interface IFoo { function a() external view returns (uint); function b() external view returns (uint);
         function label() external view returns (string memory); }
       contract C { function f(address[] memory targets) public view returns (uint[] memory out) {
@@ -914,11 +917,9 @@ describe('loop-body vars are not single-assign (Router02 per-iteration computed 
         for (uint i; i < targets.length; i++) { IFoo target = IFoo(targets[i]);
           string memory ignored = target.label(); string memory direct = IFoo(targets[i]).label();
           out[i] = target.a() + target.b() + bytes(ignored).length + bytes(direct).length; }
-      } }`, opts);
-    const fn = art.abi.find((a) => a.name === 'f');
-    // A BCH master UTXO cannot service several view methods in one transaction; the compatibility query receives
-    // one value-witness array per distinct return slot instead of attempting duplicate co-spends.
-    expect(fn?.inputs.filter((inp) => inp.name.startsWith('__internal__viewReturn'))).toHaveLength(3);
+      } }`, opts)).toThrow(
+      /function 'f' makes 3 calls through the loop local 'target', whose target is not computed with keccak256/,
+    );
   });
   it('dispatches an inlined loop-local receiver assigned from an external result', () => {
     expect(() => compileString(`pragma solidity 0.6.12;
@@ -952,13 +953,16 @@ describe('ecrecover(hash, v, r, s) alias maps to a recovery projection under the
   it("ecrecover:'evm' is byte-identical to ecrecoverEvm (20-byte keccak address)", () => {
     expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toBe(bc(mkB20('ecrecoverEvm'), {}));
   });
-  it('returns a zero-address sentinel for invalid v before reading recovery sidecars', () => {
-    // A zero uint8 can be encoded as Script's empty item. Test v before concatenating the argument blob, and
-    // enter the sidecar path only for Ethereum recovery IDs 27 and 28, for either address projection.
-    const guard = 'OP_2 OP_PICK OP_BIN2NUM 1b 1d OP_WITHIN OP_TOALTSTACK '
-      + 'OP_CAT OP_CAT OP_CAT OP_FROMALTSTACK OP_IF';
-    expect(bc(mkAddr('ecrecover'), { ecrecover: 'p2pkh' })).toContain(guard);
-    expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toContain(guard);
+  it('returns a zero-address sentinel for arguments the precompile refuses before reading recovery sidecars', () => {
+    // A zero uint8 can be encoded as Script's empty item. Test v, then r and s against n (2^256 less a constant,
+    // which the compiler may outline), before concatenating the argument blob, and enter the sidecar path only for
+    // a recovery id of 27 or 28 and an r and s in [1, n), for either address projection.
+    const guard = new RegExp('OP_2 OP_PICK OP_BIN2NUM 1b 1d OP_WITHIN OP_1 0001 OP_LSHIFTNUM \\S+ \\S+ '
+      + 'OP_2 OP_PICK 00 OP_CAT OP_BIN2NUM OP_1 OP_2 OP_PICK OP_WITHIN OP_ROT OP_BOOLAND '
+      + 'OP_3 OP_PICK 00 OP_CAT OP_BIN2NUM OP_1 OP_3 OP_PICK OP_WITHIN OP_BOOLAND OP_NIP '
+      + 'OP_TOALTSTACK OP_CAT OP_CAT OP_CAT OP_FROMALTSTACK OP_IF');
+    expect(bc(mkAddr('ecrecover'), { ecrecover: 'p2pkh' })).toMatch(guard);
+    expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toMatch(guard);
   });
   it('evmCompat defaults ecrecover to the exact EVM projection', () => {
     expect(bc(mkB20('ecrecover'), {})).toBe(bc(mkB20('ecrecover'), { ecrecover: 'evm' }));

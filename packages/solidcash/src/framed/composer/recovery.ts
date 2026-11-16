@@ -14,7 +14,9 @@
  * scalars and rebuilt over the ones the body binds. For scalars the EVM's precompile refuses by range (a `v`
  * outside 27/28, an `r` or `s` outside [1, n)) the body answers the zero address without reading its side-car, so a
  * placeholder side-car holds the place. So it does for an `r` no curve point has as its x-coordinate, where the
- * placeholder's pad holds the proof the body checks instead.
+ * placeholder's pad holds the proof the body checks instead. Scalars whose key is the point at infinity, which no
+ * side-car commits, take a side-car over the digest shifted by -2^128 r mod n, which commits the key plus 2^128 G:
+ * the body binds the shifted blob, reads 2^128 G and answers the zero address.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -28,6 +30,7 @@ import {
   sha256,
 } from '@solidcash/utils';
 import type { Output, Unlocker, Utxo } from '../../interfaces.js';
+import { ecrecoverRefusal } from '../../ecrecover/ecrecoverRecovery.js';
 import { buildEcrecoverVerifySidecar, computeEcrecoverVerifyWitness } from '../../ecrecover/ecrecoverVerifySidecar.js';
 import { buildKeccakComputeSidecar } from '../../keccak/keccakComputeSidecar.js';
 import type { DraftComputedWitness, DraftInput, DraftSettledInput, DraftSourceOutput } from './draft.js';
@@ -236,6 +239,15 @@ function bodyRecovers(scalars: RecoveryScalars): boolean {
   return inRange(scalars) && offCurveProof(scalars.r) === undefined;
 }
 
+/**
+ * The scalars the side-car of a call the body recovers from is built over: the call's own, or, when its key is the
+ * point at infinity, the call's with the digest shifted by -2^128 r mod n, the blob the body binds in that case.
+ */
+function boundScalars(scalars: RecoveryScalars): RecoveryScalars {
+  const refusal = ecrecoverRefusal(scalars.hash, scalars.v, scalars.r, scalars.s);
+  return refusal?.kind === 'atInfinity' ? { ...scalars, hash: refusal.shiftedHash } : scalars;
+}
+
 /** A 32-byte little-endian word, the form the recovery builtin reads its scalars in. */
 function littleEndianWord(value: bigint): Uint8Array {
   const word = new Uint8Array(32);
@@ -325,14 +337,15 @@ export function buildRecoverySideCars(
         placeholder: placeholder.argument,
         settle: (value) => {
           const scalars = recoveryScalarsOf(value);
-          return bodyRecovers(scalars) ? over(scalars) : unbound(scalars, `${master}/recovery-${index}/settled`);
+          return bodyRecovers(scalars)
+            ? over(boundScalars(scalars)) : unbound(scalars, `${master}/recovery-${index}/settled`);
         },
       });
       settled = placeholder.settled;
     } else if (!bodyRecovers(call)) {
       settled = unbound(call, `${master}/recovery-${index}`);
     } else {
-      settled = over(call);
+      settled = over(boundScalars(call));
     }
     for (const [id, input] of Object.entries(settled)) inputs[id] = { source: sources[id]!, ...input };
   });

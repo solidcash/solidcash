@@ -599,7 +599,8 @@ describe('Yul create2 deploy lowering (UniswapV2Factory createPair)', () => {
       + ' contract Factory { mapping(address => address) pairs;'
       + ' function make(address token, bytes32 salt) external returns (address pair) {'
       + ' bytes memory code = type(Child).creationCode;'
-      + ' assembly { pair := create2(0, add(code, 0x20), mload(code), salt) } pairs[token] = pair; } }', opts))
+      + ' assembly { pair := create2(0, add(code, 0x20), mload(code), salt) } pairs[token] = pair; } }',
+      { ...opts, __legacyDeployFold: true } as never))
       .not.toThrow();
   });
   it('lowers create2 over a runtime bytes-local to a salt-baked p2sh32 address (EIP-1167 clone factory)', () => {

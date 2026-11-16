@@ -79,13 +79,13 @@ describe('native pure/view mutability enforcement (Tier 1)', () => {
     expect(() => compile(src)).toThrow(DEPLOY_VALUE);
   });
 
-  it('T1-6 admits value-bearing deploy to an implicit-constructor child', () => {
-    // `contract Child(args)` has no `constructor` body to carry a `payable` modifier, and native SolidCash has no
-    // value gate on receiving value, so the deployment value is permitted (the child still receives it).
+  it('T1-6 refuses a value below RESERVE for an implicit-constructor child', () => {
+    // Since B10 the value opens the child's satoshi row, which cannot hold less than RESERVE (A14 item 11): a
+    // value of 1,000 is refused rather than silently opening a row the child's create would reject.
     const src = 'contract Child(bytes20 d) { bytes20 s; }'
       + ' contract F(pubkey admin) { int n; function c(sig s, bytes20 d) deploy {'
       + ' require(checkSig(s, admin)); Child child = new Child{value: 1000}(d); } }';
-    expect(compile(src).contractName).toBe('F');
+    expect(() => compile(src)).toThrow(/cannot be opened with 1000 satoshis|at least 1200/);
   });
 
   it('T1-7 rejects a view function creating a contract', () => {

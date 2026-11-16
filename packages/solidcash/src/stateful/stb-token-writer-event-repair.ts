@@ -11,6 +11,7 @@ import {
 } from '@solidcash/utils';
 import { binToHex, binsAreEqual, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { type FunctionArgument, eventValueOfArgument } from '../Argument.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
@@ -198,9 +199,12 @@ export function synthesizeTransferFromEventCommitments(
     try {
       out[ei] = {
         eventSignature: emitInfo.eventSignature,
+        // The addresses come from the call's arguments, so each is emitted as the call passes it.
         commitment: binToHex(encodeEventCommitment(
           params,
-          eventArgs as never[],
+          eventArgs.map((value, index) => eventValueOfArgument(
+            value as FunctionArgument, params[index]?.type ?? '',
+          )) as never[],
           structs,
         )),
         lockingBytecode,

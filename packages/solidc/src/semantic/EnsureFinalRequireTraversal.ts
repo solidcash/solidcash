@@ -15,6 +15,7 @@ import {
   StateAssignNode,
   DeleteStateNode,
   MappingAssignNode,
+  JournalAppendNode,
   MappingFieldAssignNode,
   MappingDeleteNode,
   EmitStatementNode,
@@ -529,7 +530,9 @@ function everyPathValidates(statement: StatementNode): boolean {
 }
 
 function isStatefulOp(s: StatementNode): boolean {
+  // A4.4: a constructor's journal append is its collection write, which the deployer's step 12 pins.
   return s instanceof StateAssignNode || s instanceof DeleteStateNode || s instanceof MappingAssignNode
+    || s instanceof JournalAppendNode
     || s instanceof MappingFieldAssignNode || s instanceof MappingDeleteNode || s instanceof EmitStatementNode
     || s instanceof TransferStatementNode || s instanceof AddressTransferStatementNode
     || s instanceof TokenContainerMethodStatementNode || s instanceof LowLevelCallStatementNode

@@ -130,9 +130,9 @@ export async function loadCreateBuilderTokenContainers(
           .filter((u) => u.token?.category === tokenContainerCategoryId);
         // Anyone can pay a coin to this address, so a contract keeping one coin takes the largest it can use. A coin
         // it cannot is what one paid in to stop every call would be, and the covenant keeps the deployment's coin usable.
-        containerUtxo = abiFunction?.blockLayout?.singleTokenContainer === true
-          ? largest(containerUtxos.filter((utxo) => usable(utxo, lockingBytecode))) ?? largest(containerUtxos)
-          : containerUtxos[0];
+        // The largest coin a call can use, with or without the single-container pragma: anyone may pay a small
+        // coin to this address, and a call spending it instead of the usable one would strand every later call.
+        containerUtxo = largest(containerUtxos.filter((utxo) => usable(utxo, lockingBytecode))) ?? largest(containerUtxos);
       } catch {
         // Container doesn't exist yet
       }

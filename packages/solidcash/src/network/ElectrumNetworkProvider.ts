@@ -182,6 +182,22 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
     return height;
   }
 
+  async getMedianTimePast(): Promise<number> {
+    const tip = await this.performRequest('blockchain.headers.get_tip') as BlockHeader;
+    const start = Math.max(0, tip.height - 10);
+    const page = await this.performRequest('blockchain.block.headers', start, 11) as { count: number; hex: string };
+    const timestamps: number[] = [];
+    const bytes = hexToBin(page.hex);
+    for (let at = 0; at + 80 <= bytes.length; at += 80) {
+      // A block header's time is the little-endian uint32 at offset 68.
+      timestamps.push(bytes[at + 68] | (bytes[at + 69] << 8) | (bytes[at + 70] << 16)
+        | (bytes[at + 71] << 24));
+    }
+    if (timestamps.length === 0) return 0;
+    timestamps.sort((left, right) => left - right);
+    return timestamps[Math.floor((timestamps.length - 1) / 2)];
+  }
+
   async getRawTransaction(txid: string): Promise<string> {
     const known = this.transactions.get(txid.toLowerCase());
     if (known !== undefined) return known;

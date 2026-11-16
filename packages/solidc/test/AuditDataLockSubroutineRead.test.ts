@@ -31,7 +31,7 @@ const vm = createVirtualMachineBch2026();
 
 const OWNER_HEX = Buffer.from(OWNER).toString('hex');
 // `p()` reaches `this.owner` through a pointer; no entry below names the record itself.
-const READERS = 'pragma solidcash ^0.50.0; contract C { bytes20 owner;'
+const READERS = 'pragma solidcash ^0.51.0; contract C { bytes20 owner;'
   + ' function ownerA() internal view returns (bytes20) { return this.owner; }'
   + ` function ownerB() internal view returns (bytes20) { return hex"${'00'.repeat(20)}"; }`;
 const POINTER_READ = 'function() internal view returns (bytes20) p = b ? ownerA : ownerB;'
@@ -40,7 +40,7 @@ const SOURCE = `${READERS} function go(bool b) { ${POINTER_READ} require(true); 
 const SPLIT = `${READERS} function fork(int n, bool b) split(n) { ${POINTER_READ} } }`;
 const MERGE = `${READERS} function join(int n, bool b) merge(n) { ${POINTER_READ} } }`;
 // A public getter called as `this.ownerOf()` is invoked, not inlined.
-const SELF_CALL_SPLIT = 'pragma solidcash ^0.50.0; contract C { bytes20 owner;'
+const SELF_CALL_SPLIT = 'pragma solidcash ^0.51.0; contract C { bytes20 owner;'
   + ' function ownerOf() public view returns (bytes20) { return this.owner; }'
   + ` function fork(int n) split(n) { require(this.ownerOf() == hex"${OWNER_HEX}"); } }`;
 // The lifecycle entries carry no signature, which only the unsafe-operations option admits.
@@ -75,10 +75,12 @@ function spend(artifact: Artifact, foreignLock?: Uint8Array, threads = 0): true 
   const readOnly = pushesOf([encodeIntegerValue(0n), encodeIntegerValue(0n), recordRedeem]);
   // The last argument is pushed first. Fix B appends __internal__returnOutputIdx to an ordinary void entry (not a
   // split/merge lifecycle entry), so when the spent entry carries it, its value (-1, a compacted standalone void
-  // record) is pushed first, then `b` = true, then `n`.
-  const carriesVoidRecord = artifact.abi.some((entry) =>
-    (entry.inputs ?? []).some((parameter) => parameter.name === '__internal__returnOutputIdx'));
-  const args = [...(carriesVoidRecord ? [encodeIntegerValue(-1n)] : []), encodeIntegerValue(1n),
+  // record) is pushed first, then the genesis call such an entry of a record-sound contract takes (A7, empty in a
+  // call no constructor makes), then `b` = true, then `n`.
+  const carries = (name: string): boolean => artifact.abi.some((entry) =>
+    (entry.inputs ?? []).some((parameter) => parameter.name === name));
+  const args = [...(carries('__internal__returnOutputIdx') ? [encodeIntegerValue(-1n)] : []),
+    ...(carries('__internal__genesisCall') ? [EMPTY] : []), encodeIntegerValue(1n),
     ...(threads > 0 ? [encodeIntegerValue(BigInt(threads))] : [])];
   const master = (): VmOutput => ({ lockingBytecode: lock, valueSatoshis: VALUE, token: token('minting', EMPTY) });
   const transaction: VmTransaction = {

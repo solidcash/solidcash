@@ -79,14 +79,15 @@ async function capture(provider: Provider, run: () => Promise<unknown>): Promise
 }
 
 /** A frame's call, and its result: none for a void call. */
-interface Frame { abiFunction: AbiFunction; args: bigint[]; result?: bigint }
+interface Frame { abiFunction: AbiFunction; args: (bigint | Uint8Array)[]; result?: bigint }
 
-/** A frame of `fn` with these named arguments; every other ABI input is 0. */
+/** A frame of `fn` with these named arguments; its genesis call is empty and every other ABI input is 0. */
 const frame = (
   fn: string, values: Record<string, bigint>, result?: bigint, source: CompiledArtifact = artifact(),
 ): Frame => ({
   abiFunction: abiOf(fn, source),
-  args: abiOf(fn, source).inputs.map((input) => values[input.name] ?? 0n),
+  args: abiOf(fn, source).inputs.map((input) => values[input.name]
+    ?? (input.name === '__internal__genesisCall' ? new Uint8Array() : 0n)),
   result,
 });
 
@@ -208,7 +209,8 @@ describe('multi-call entry', () => {
 
     // Frame 0 is pushed first: `<sel> [frame 0]..[frame K-1] <K>`, a frame its arguments last first, then its selector.
     const layout = [hexToBin(CALL_BATCH_SELECTOR), ...frames.flatMap((spec) => [
-      ...spec.args.map((arg) => bigIntToVmNumber(arg)).reverse(), hexToBin(spec.abiFunction.selector!),
+      ...spec.args.map((arg) => (typeof arg === 'bigint' ? bigIntToVmNumber(arg) : arg)).reverse(),
+      hexToBin(spec.abiFunction.selector!),
     ]), bigIntToVmNumber(BigInt(frames.length))].flatMap((push) => [...encodeDataPush(push)]);
     expect(binToHex(tx.inputs[master]!.unlockingBytecode.slice(0, layout.length)))
       .toBe(binToHex(Uint8Array.from(layout)));
@@ -260,9 +262,9 @@ describe('multi-call entry', () => {
 describe('multi-call entry with state-changing frames', () => {
   it('publishes its writers and its void entry as frames', () => {
     expect(counterArtifact().abi.filter((fn) => fn.callBatchRow).map((fn) => fn.name)).toEqual(['inc', 'add', 'get']);
-    // A void frame takes the witness its record is pinned at.
+    // A void frame takes the witness its record is pinned at, and the genesis call it requires empty as a frame.
     expect(abiOf('add', counterArtifact()).inputs.map((input) => input.name))
-      .toEqual(['value', '__internal__returnOutputIdx']);
+      .toEqual(['value', '__internal__genesisCall', '__internal__returnOutputIdx']);
     expect(compileString(COUNTER_SOURCE).bytecode).toBe(compileString(COUNTER_SOURCE, { callBatch: false }).bytecode);
   });
 
@@ -312,7 +314,8 @@ describe('multi-call entry with state-changing frames', () => {
     expect(binToHex(records[2]!.slice(31))).toBe('01');
 
     // `get` run before `add(5)` leaves the same state, but not the records of the calls as made.
-    const swapped = [frames[0]!, frames[1]!, { ...frames[3]!, args: [4n] }, { ...frames[2]!, args: [5n, 5n] }];
+    const swapped = [frames[0]!, frames[1]!, { ...frames[3]!, args: [new Uint8Array(), 4n] },
+      { ...frames[2]!, args: [5n, new Uint8Array(), 5n] }];
     expectScriptRejection(await outcomeOf(provider, encode(await spend(swapped, records))), master);
     // The record of `get` under the ordinal of the frame before it.
     const misnumbered = [...records.slice(0, 3), recordOf(frames[3]!, 2)];

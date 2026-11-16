@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { DeployedChildCallError } from '@solidcash/solidc';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
@@ -44,13 +45,18 @@ contract Factory {
 }
 `;
 
+// A call on the child a deployer `new` returns is refused (DeployedChildCallError), so the fold keeps the internal
+// escape.
 describe('folded deploy-then-call whose replay discards work (e2e)', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const factoryArtifact = compileString(FACTORY, {
-    evmCompat: true, enforceFinalRequire: false, allowUnsafeOperations: true,
-  });
+  const options = { evmCompat: true, enforceFinalRequire: false, allowUnsafeOperations: true } as const;
+  const factoryArtifact = compileString(FACTORY, { ...options, __legacyDeployFold: true } as never);
   const childArtifact = compileString(CHILD, { evmCompat: true, enforceFinalRequire: false });
+
+  it('a deployer new refuses the same-transaction calls on its child', () => {
+    expect(() => compileString(FACTORY, options)).toThrow(DeployedChildCallError);
+  });
 
   it('folds the real write and drops the inert statements, with the child genesis verified on chain', async () => {
     const factoryFunding: Utxo = { txid: 'd901'.repeat(16), vout: 0, satoshis: 200000n };

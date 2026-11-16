@@ -31,6 +31,8 @@ import { returnOutputIdxFromUnlocker } from './stb-delegate-loop-entries.js';
 
 export interface ResolveKeccakComputeCoSpendsHost {
   readonly categoryId: string;
+  /** A14 item 6: a shared-pool salt (all zeros for Deploy<C>) replaces the category-branded one. */
+  readonly sidecarSalt?: Uint8Array;
   readonly inner: {
     bytecode: string;
     /** The contract artifact, whose compiler options decide how `abi.encodePacked(address)` packs. */
@@ -153,7 +155,7 @@ export async function resolveKeccakComputeCoSpends(
   }
   // Branded to the contract's category. The covenant brand-checks the master's OP_UTXOTOKENCATEGORY, which
   // the VM returns in INTERNAL (reversed) byte order, so the baked salt must be the reversed category.
-  const salt = hexToBin(host.categoryId).slice().reverse();
+  const salt = host.sidecarSalt?.slice() ?? hexToBin(host.categoryId).slice().reverse();
   if (abiFunction.keccakChainReads) {
     const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
     const paramName = (abiFunction.keccakPreimageParams ?? [])[0];

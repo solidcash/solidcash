@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileStringMulti } from '../direct-compile.js';
+import { DeploySaltError } from '@solidcash/solidc';
 import type { ResolvedImport } from '@solidcash/solidc';
 import {
   Contract,
@@ -95,7 +96,9 @@ function solidityIdentity(lockingBytecode: Uint8Array): Uint8Array {
   return identity;
 }
 
-function compileFactory(src: string): { factory: any; child: any } {
+// A salted child address is the pre-B10 fold's composition (<salt> OP_DROP | self-pin | base), kept through the
+// internal escape; a deployer `new` has no place for a salt (A3 rule 5).
+function compileFactory(src: string, legacyFold = true): { factory: any; child: any } {
   const arts = compileStringMulti(src, {
     evmCompat: true,
     rootFileId: '/main.scash',
@@ -105,6 +108,7 @@ function compileFactory(src: string): { factory: any; child: any } {
       if (!resolved.endsWith('.scash')) resolved += '.scash';
       return resolved.endsWith('pair_child.scash') ? { source: childSrc, id: resolved } : undefined;
     },
+    ...(legacyFold ? { __legacyDeployFold: true } : {}),
   });
   const factory = Object.values(arts).find((a: any) => a.contractName?.startsWith('Factory')) as any;
   const child = arts.PairChild;
@@ -131,6 +135,12 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
     await provider.addUtxo(p2pkh.address, u);
     return u;
   }
+
+  it('a deployer new refuses the param, computed and createPair salts', () => {
+    for (const src of [factoryParamSalt, factoryComputedSalt, factoryFull]) {
+      expect(() => compileFactory(src, false)).toThrow(DeploySaltError);
+    }
+  });
 
   it('A: param salt deploy succeeds (baseline)', async () => {
     const { factory: factoryArt, child: childArt } = compileFactory(factoryParamSalt);

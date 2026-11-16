@@ -5,10 +5,14 @@
  * would drop. A child that reads the chain in its own calls later is an ordinary reader of its creator's pool.
  */
 import { describe, expect, it } from 'vitest';
-import { compileString } from './direct-compile.js';
+import { compileString as compileStringRaw } from './direct-compile.js';
+
+// These cases assert the pre-B10 inline fold's shape; the internal escape keeps that path reachable (B13.4).
+const compileString = (source: string): ReturnType<typeof compileStringRaw> =>
+  compileStringRaw(source, { __legacyDeployFold: true } as never);
 
 /** `child`, then a creator whose `make` runs `body` before its own write. */
-const creator = (child: string, body: string): string => `pragma solidcash ^0.50.0;
+const creator = (child: string, body: string): string => `pragma solidcash ^0.51.0;
 ${child}
 contract Maker {
   int made;

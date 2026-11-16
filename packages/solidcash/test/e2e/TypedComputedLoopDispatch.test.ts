@@ -25,7 +25,7 @@ contract C() {
 interface IFoo { function m(int x) external; }
 library L {
     function pairFor(address a, address b) internal pure returns (address) {
-        return address(uint160(uint256(uint160(a)) + uint256(uint160(b))));
+        return address(uint160(uint256(keccak256(abi.encodePacked(a, b)))));
     }
 }`;
 
@@ -56,7 +56,7 @@ contract C() {
 interface IPair { function swap(int a, int b) external; }
 library L {
     function pairFor(address a, address b) internal pure returns (address) {
-        return address(uint160(uint256(uint160(a)) + uint256(uint160(b))));
+        return address(uint160(uint256(keccak256(abi.encodePacked(a, b)))));
     }
 }`;
 
@@ -104,7 +104,7 @@ describe('computed-target loop rewrite - collect-phase robustness (compile + wit
 interface IFoo { function m(int x) external; }
 interface IPair { function swap(int a, int b) external; }
 library L { function pairFor(address a, address b) internal pure returns (address) {
-  return address(uint160(uint256(uint160(a)) + uint256(uint160(b)))); } }`;
+  return address(uint160(uint256(keccak256(abi.encodePacked(a, b))))); } }`;
   const witnesses = (src: string): string[] => {
     const art = compileString(src);
     return [...new Set(art.abi.flatMap((f) => (f.inputs ?? []).map((i) => i.name)

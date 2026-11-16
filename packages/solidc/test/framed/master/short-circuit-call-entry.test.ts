@@ -50,7 +50,7 @@ const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 const CALLEE = `IState(0x${toHex(ADDRESS_CALLEE)})`;
 const SOURCE = [
-  'pragma solidcash ^0.50.0;',
+  'pragma solidcash ^0.51.0;',
   'interface IState { function add(int x) returns (bool); }',
   'contract Callee { function add(int x) returns (bool) { require(x > 0); return true; } }',
   'contract Caller {',

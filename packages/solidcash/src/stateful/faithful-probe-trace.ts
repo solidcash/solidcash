@@ -172,29 +172,6 @@ function cachedFaithfulTraceVm(provider: NetworkProvider): CachedFaithfulTraceVm
   } as CachedFaithfulTraceVm;
   cached.vm = createFaithfulTraceVmForProvider(provider, (unknownState) => {
     cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
-    // The faithful recorder runs on its own VM instance, so the observer in `cachedVm` never sees the operations
-    // that actually fail here. Mirror the out-lined-subprogram dump for the trace that matters.
-    const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
-    const spanInstructions = Number(debugEnv?.SOLIDC_DEBUG_SPAN_INSTRUCTIONS ?? Number.NaN);
-    const state = unknownState as AuthenticationProgramStateCommon;
-    // Match `emitPreferLockingBytecode`'s exact body (`DUP SIZE NIP…` ending in `EQUALVERIFY`): other out-lined
-    // subprograms share the same instruction count.
-    // Never scan the whole program at every step for an optional diagnostic. A large route executes
-    // thousands of instructions, so even a disabled opcode projection otherwise makes tracing quadratic.
-    if (Number.isFinite(spanInstructions) && state.instructions.length === spanInstructions
-      && state.instructions.length === 15
-      && state.instructions[0].opcode === 118 && state.instructions[1].opcode === 130
-      && state.instructions[2].opcode === 119 && state.instructions[14].opcode === 136) {
-      console.error('derive-span-faithful', JSON.stringify({
-        ordinal: cached.trace.length - 1,
-        inputIndex: state.program.inputIndex,
-        ip: state.ip,
-        opcode: state.instructions[state.ip]?.opcode,
-        error: state.error === undefined ? undefined : String((state.error as { error?: unknown }).error
-          ?? state.error),
-        top: state.stack.slice(-4).map((item) => `${item.length}:${binToHex(item).slice(0, 80)}`),
-      }));
-    }
   }, (unknownState) => {
     cached.phaseExits += 1;
     cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));

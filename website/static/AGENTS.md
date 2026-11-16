@@ -1,7 +1,7 @@
 # SolidCash -- AI Agent Reference
 
 Reference for AI coding agents that write SolidCash contracts or port Solidity contracts to Bitcoin Cash. It
-covers SolidCash 0.50.0. This file is served at https://solidcash.org/AGENTS.md; the full documentation is
+covers SolidCash 0.51.0. This file is served at https://solidcash.org/AGENTS.md; the full documentation is
 at https://solidcash.org/docs.
 
 SolidCash is a smart-contract language for Bitcoin Cash (BCH) with Solidity syntax. The `solidc` compiler turns
@@ -31,7 +31,7 @@ it, so CashScript examples do not apply.
    a transaction is valid on mainnet. See "Limits and Costs".
 8. Experimental profiles are outside the stable promise: composed external state mutation, custom delegate
    forwarding beyond the built-in proxy, and message-bus kernel composition. Say so when a design depends on one.
-9. 0.50.0 is a beta and security hardening is ongoing. Do not advise putting significant value behind a contract
+9. 0.51.0 is a beta and security hardening is ongoing. Do not advise putting significant value behind a contract
    without an independent review.
 
 ## Key Differences from Solidity
@@ -64,7 +64,7 @@ There are two routes, and both target the same compiler.
   switches `abi.*`, selectors, `interfaceId` and event selectors to EVM encoding and keccak256. Without the flag,
   `pragma solidity` is a diagnostic that names the option. New SolidHat projects set `compiler: { evmCompat: true }`
   in `solidcash.config.ts`; it applies to `.scash` sources too, so remove it explicitly for native ABI and selectors.
-- **Rewrite as native `.scash`** with `pragma solidcash ^0.50.0;`. Native mode uses compact Script ABI framing and
+- **Rewrite as native `.scash`** with `pragma solidcash ^0.51.0;`. Native mode uses compact Script ABI framing and
   sha256-derived selectors, and gives the most control over bytecode size. Prefer it for new BCH-only contracts.
 
 Both modes accept bare state access (`balanceOf[a] += x`) as well as the explicit `this.balanceOf[a]` form.
@@ -122,7 +122,7 @@ __gap arrays                 omitted under evmCompat; they reserve nothing on BC
 
 ## Toolchain
 
-Six npm packages, all versioned 0.50.0. They ship as ESM only and target Node.js 22 or newer. The commands
+Six npm packages, all versioned 0.51.0. They ship as ESM only and target Node.js 22 or newer. The commands
 below resolve these names from npm; a 404 means that release is not published yet.
 
 ```text
@@ -218,7 +218,7 @@ modes never matches its callee, and the SDK refuses it by name (`MixedCompileMod
 ### Source File Structure
 
 ```solidity
-pragma solidcash ^0.50.0;                    // native: only `solidcash`; `pragma solidity` needs evmCompat
+pragma solidcash ^0.51.0;                    // native: only `solidcash`; `pragma solidity` needs evmCompat
 import "./Base.scash";                       // wildcard: every file-level declaration
 import "./Types.scash" as T;                 // namespace: qualified types (T.Point, T.Color.Red)
 import { Pair, helper } from "./Lib.scash";  // selective; an `as` rename resolves only for enums
@@ -439,6 +439,10 @@ try IRisky(target).compute() returns (int r) { this.last = r; } catch { this.las
 
 - Declared at file, contract, library or interface level; events can be overloaded. Each reached `emit` creates
   an immutable NFT output in the contract's category carrying the encoded arguments, not an EVM log.
+- An `emit` in a counter loop creates one output per run. So does an `emit` in a `for` with a literal bound of at most
+  64 runs: a direct or message-bus build unrolls that loop, and a framed body binds each `emit` where it makes it.
+  Some loops the compiler can neither count from the call nor unroll, for example one that also changes its counter in
+  the body. In those, each `emit` has a single output, and a call that runs such an `emit` twice fails.
 - Errors are ABI metadata only: a failed spend carries no revert data; the reason shows in preflight and debug.
 - `try` runs its block, but a failed BCH script aborts the whole transaction, so `catch` (also `catch Error(string
   memory r)` and `catch (bytes memory d)`) never runs (warned). evmCompat requires an external call or `new`.
@@ -564,6 +568,14 @@ require(this.outState.balance >= floor);     // satoshi-container outputs of thi
 
 - `this.balance` is the contract's own BCH (fund it at deploy with SDK `initialBalance`). `addr.balance` sums this
   transaction's inputs locked to `addr`, not a chain-wide balance; prefer `this.balance` to `address(this).balance`.
+- A stateful contract's master lock spends only its minting NFT, so a coin paid there can never be spent. The SDK
+  refuses to send a transaction that pays one, from a contract call, `deployFrom`, a composition or a plain
+  `TransactionBuilder`, a lock passed as `bytes` included (`StatefulMasterPaymentError`, which names the satoshi
+  container when the chain shows it); pay the container or call one of its payable functions.
+- A `this.transfer` or token transfer in a counter loop makes one output per run. So does any payment, `send`
+  included, in a `for` with a literal bound of at most 64 runs, which a direct or message-bus build unrolls. In another
+  loop, each payment has a single output, and a call that runs it twice fails. Examples are a loop that also changes its
+  counter in the body, and an `addr.send` in a counter loop.
 - `this.payMinerFee(FEE);` (a positive compile-time constant, once, at the top level of a public entry) lets the entry
   take `FEE` more out of the satoshi container with no output for it: the contract pays the miner by omission, and
   the caller needs no coin. Refused in framed composition.
@@ -709,10 +721,31 @@ require(ecrecoverEvm(digest, v, r, s) == signer);
 
 - Hash an address through `bytes(...)`: `hash160(bytes(msg.sender))`. NULLFAIL: a non-empty invalid signature
   aborts the script; pass `0x` to make a check return `false`.
-- `keccak256` and `ecrecover*` run in co-spent compute side-cars (recovery takes two inputs per call;
-  `ecrecoverEvm` adds a keccak side-car). The SDK co-spends them; a real network needs them provisioned, one per
-  call site. Prefer `checkDataSig` when the key is known. See https://solidcash.org/docs/language/cryptography
-  and https://solidcash.org/docs/language/computation-sidecars
+- `keccak256` and `ecrecover*` run in co-spent compute side-cars. Each recovery takes three inputs, A, a middle slot
+  and B. A width-0 signature reads A, M and B3. Otherwise no covenant reads the middle slot, and a stateful call fills
+  it with a coin of the call's signer, returned at its own index. `ecrecoverEvm` adds a keccak side-car. The SDK
+  co-spends them; a real network needs them provisioned. Prefer `checkDataSig` when the key is known. See
+  https://solidcash.org/docs/language/cryptography and https://solidcash.org/docs/language/computation-sidecars
+- A keccak256 loop cannot share a function with a collection walk or a dynamic-state write: each reads the inputs
+  after the function's block, so the compiler refuses the function (`keccak-loop-shares-trailing-band`).
+- Like the EVM precompile, `ecrecoverEvm` and `ecrecoverP2pkh` (and bare `ecrecover`) return the zero address for
+  any input the precompile refuses. That is 20 zero bytes, or the empty lock for `ecrecoverP2pkh`. The refused inputs
+  are a `v` other than 27 or 28, an `r` or `s` outside [1, n), an `r` with no curve point, and a key at infinity. As
+  in Solidity, the answer compares equal to `address(0)`: in a Solidity port, and in native code that calls
+  `ecrecoverEvm`, where `==` and `!=` between addresses treat 20 zero bytes as `address(0)`. So check
+  `!= address(0)` before comparing with a signer: a never-set `signer` equals a refused answer. Mapping keys, events,
+  `abi.encodePacked`, `keccak256` and `bytes(...)` keep the 20 bytes. `ecrecoverPubKey` aborts on them
+  instead. High-S signatures are accepted. A key at infinity whose R is ±G or ±φ(G) cannot be recovered, and the SDK
+  refuses it before sending.
+- A stateful function's loop that recovers keys reads three side-car inputs per call after the function's block. If
+  the function hashes an unbounded `bytes` parameter, those inputs come after the hash's keccak256 chain. A helper
+  that recovers in such a loop is inlined there. The compiler refuses the loop (`RecoveryLoopSideCarError`) next to:
+  - a recovery outside the loop, including one helper called both inside and outside it;
+  - a second recovery loop;
+  - another user of that region: a keccak256 loop, a collection walk, dynamic state, mapping writes, or payments or
+    events in a runtime loop.
+
+  Give the loop a function of its own.
 - Bare Solidity `ecrecover(hash, v, r, s)` exists only with compiler option `ecrecover: 'p2pkh'` or `'evm'`.
 
 ### ABI Encoding
@@ -803,28 +836,39 @@ contract Factory(pubkey admin) {
 
 ```solidity
 Child c = new Child(admin);                    // keep a typed handle
-new Child{salt: salt}(admin);                  // deterministic address (CREATE2 analogue)
-new Child{value: amount}(admin);               // fund the child with satoshis
-new Child{code: code}(admin);                  // the child runs `code`; sha256(code) must be Child's body hash
-new Child{code: code, template: t}(admin);     // any code hashing to t; t a constant, constructor arg, state, or a
-                                               // parameter never reassigned and emitted on every path
-c.initialize(amount, owner);                   // straight-line initializer right after `new`: folded into genesis
+new Kid{args: (a1, a2), value: v}(c1, c2);     // contract parameters in `args`, constructor arguments in (...)
+new Child{value: amount}(admin);               // move satoshis into the child's satoshi container
 bytes code = type(Child).creationCode;         // redeem script (runtimeCode alias); EVM CREATE2 math does not apply
 ```
 
 - `deploy`, `upgrade`, `split` and `merge` entries need an unconditional `require(checkSig(s, key))` with a key the
   caller cannot choose (constructor argument, state or constant); a direct compile rejects one without it
   (`UnauthorizedLifecycleError`).
-- `new` of a stateful child works only in a stateful contract's function. The child is an output, so the same
-  transaction cannot call it beyond a folded initializer (`DeployThenCallError`), and a `require` inside that
-  initializer does not run. Deploy sites in branches or loops must create the same child (`ConditionalDeployError`).
-- A direct creator folds a child's constructor, state-variable initializers included, into its own check instead of
-  running it. Arguments, straight-line locals, writes and a `require` over them fold. Anything else is refused by name
-  (`ChildGenesisFoldError`): reads of `tx.*`, `msg.value`, child state, signatures, `block.*` or `blockhash`, a nested
-  `new`, an `emit`, a transfer, or a branch the fold cannot join. Pass the value in as an argument, or set it later.
+- `new` of a stateful child works only in a stateful contract's function. In a direct creator it is a deployer
+  `new`. It spends a one-shot coin of the child's generated `Deploy<C>` program, which runs the child's constructor
+  on chain. The SDK builds each child's prep transaction first, and the child's category is that prep's txid.
+  - The constructor may emit, pay, take `value` (`msg.value`) and call contracts. A callee answers through its call
+    record, so it must be a direct build compiled with `genesisCalls` (the default). Under automatic selection, a
+    callee that makes external calls of its own compiles on the bus; compile it with `messageBus: false`. A callee may
+    pass `msg.sender` (the child) on to a contract it calls. Passing `tx.origin` on is refused.
+  - In a child's constructor, `msg.sender` is the creator, or the deploying wallet at top level. Block fields come
+    from the transaction's locktime, which is a lower bound.
+  - Contract parameters go in `args`. When the constructor takes none, `new C(a1, ...)` still means
+    `new C{args: (a1, ...)}()`, with a warning.
+  - A deployer `new` refuses `salt`, because the child's address already depends on its deployer coin. A call on the
+    new child in the same function is refused too (call it in a later transaction). So are different child contracts
+    created in the branches of one function.
+  - Branches and loops that create the same child work.
+- A message-bus or framed creator keeps the older genesis:
+  - the creator folds the child's constructor into its own check (`ChildGenesisFoldError` names what cannot fold);
+  - a straight-line call right after `new` (`c.initialize(x)`) folds into the genesis;
+  - `salt` gives a deterministic address, there and on the `new` of a stateless child.
+
+  Under automatic selection, a creator that calls its new child compiles on the bus.
 - SDK: `await factory.call.create(sig)` deploys with the connected signer; `.deploy({ fundingUtxo, funder,
-  changeAddress })` funds it explicitly (the vout-0 funding UTXO becomes the child's category); `.send()` takes the
-  non-deploying path. `StatefulContract.deployFrom({...})` is the static form.
+  changeAddress })` funds it explicitly; `.send()` takes the non-deploying path. `StatefulContract.deployFrom({...})`
+  is the static form. A top-level deployment of an artifact compiled with `deployer: true` also goes through its
+  deployer.
 
 ```solidity
 function destroy(sig s) public { require(checkSig(s, admin)); selfdestruct(beneficiary); }   // pins the payout
@@ -909,7 +953,7 @@ contract Forwarder(pubkey admin) {
   delegate's first push to be that exact four-byte selector. The built-in proxy publishes both and `deployProxy`
   fills them in. A forwarder with only `__proxyBlockSize` uses that one distance for every call.
 - Deployed libraries (`L.f(...)` on a library function touching library state) use the same delegate co-spend
-  (experimental). Not supported in 0.50.0: fallback-only transparent proxies, value or token movement in
+  (experimental). Not supported in 0.51.0: fallback-only transparent proxies, value or token movement in
   delegate mode.
 
 ### Cross-Contract Calls
@@ -936,7 +980,7 @@ uint256 r = ICounter(counter).add(5);                 // typed call (mutating th
 ICounter(counter).add.call(5);                        // explicit stateful mode, return not consumed
 ICounter(counter).ping.staticcall();                  // read-only: callee state must be preserved
 ICounter(counter).deposit{value: amount}();           // plus an authenticated BCH output to the callee
-(bool ok, bytes memory data) = target.call(payload);  // low-level: opaque bytes; ok is always true
+(bool ok, bytes memory data) = target.call(payload);  // low-level: a payload co-spends and runs target
 target.staticcall(payload);                           // low-level read-only; delegatecall: see proxies
 ```
 
@@ -944,14 +988,38 @@ target.staticcall(payload);                           // low-level read-only; de
   co-spent master has exactly that lock, and the callee's covenant bakes in its category, so one address names one
   instance; a 32-byte category id is not a call target. Targets come from a constructor or function parameter,
   state or a literal (`UnpinnedExternalCallTargetError`). Interface-typed handles work (`contract C(IERC20 token)`).
+- A call is bound to the value its target holds where the call runs, also when the function writes or reassigns
+  the target afterwards. When the function can write the target before the call, the SDK does not resolve the
+  callee itself (`ExternalCallTargetWrittenBeforeCallError`): pass it with `.withExternalCall(contract)`. A call
+  through a collection entry written before it in a branch, a loop or under another key does not compile
+  (`ENTRY_TARGET_WRITTEN_BEFORE_CALL`). A typed call through `address(0)` fails, as it reverts on the EVM.
+- A target computed with keccak256 (a CREATE2 address such as `pairFor(factory, a, b)`) is a witness the spender
+  chooses, since no BCH lock equals it, and the compiler warns (`computed-call-target-unverified`). In a loop that
+  calls such a target more than once, its view calls (`getReserves()`) take answers the spender supplies. Before
+  relying on such answers to release funds, call through an address the contract stores (a registry lookup). Any
+  other loop target, such as `targets[i]`, is checked like a straight-line one, and two or more calls through one
+  such loop local do not compile (`LoopLocalRepeatedCallsError`).
 - SDK: connect instances by category, `StatefulContract.withCategory(inner, categoryId, { externals: { ICounter:
   counterSc } })`, or per call with `.withExternalCall(counterSc)`. The SDK finds inputs; the covenants enforce
   target, selector and arguments.
 - A stateful callee returns values in a return-event NFT output, the record of the call it answers (a digest of the
   selector and arguments, then the result, or its hash past 96 bytes); the caller reads only its own call's record.
   Read off chain with `sc.call.f(args).staticCall()`.
-- Low-level calls bind the target and an opaque return, not the payload against the callee's invocation; prefer a
-  typed interface when dispatch identity matters. Void typed calls over an address array work in loops.
+- A low-level call binds its target and reads an opaque return. When its payload is an `abi.encodeWithSelector`,
+  `abi.encodeWithSignature` or `abi.encodeCall` expression (directly or through a once-written local), the caller
+  also binds the callee's selector and arguments to it; an opaque `bytes` payload binds neither. Prefer a typed
+  interface when dispatch identity matters. Void typed calls over an address array work in loops.
+- A low-level call with a non-empty payload co-spends its target, so the call runs; a payload through `address(0)`
+  fails. Only an empty payload (a plain send, `to.call{value: v}("")`) may co-spend nothing, and it answers
+  `(true, "")`. When the payload names an interface function that returns a value (`abi.encodeCall(token.transfer,
+  (to, v))`, `abi.encodeWithSelector(IERC20.transfer.selector, ...)`), the caller reads the callee's record, so a
+  token's `false` cannot be hidden. An opaque `bytes` payload or an `abi.encodeWithSignature` string does not: there
+  an empty answer does not prove the callee's function returned nothing.
+- `{value: v}` pays the target where the call site can read it again (a parameter, a local, a state variable, a
+  literal, `msg.sender`); any other target does not compile (`CALL_VALUE_RECIPIENT_UNBOUND`). Under `evmCompat`,
+  `{value:}`, `transfer` and `send` pay a 20-byte address's P2PKH lock. A payment to a co-spent contract would land
+  at its master lock, so the SDK refuses a typed call with value to one (`RawCallCalleeRequiredError`, reason
+  `value to a co-spent callee`), as it refuses any output paying a master lock.
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when
   no contract calls it. It is derived from the transaction's inputs, not a call frame: authorize with `checkSig`.
 
@@ -1296,8 +1364,11 @@ Minimum relay fee              1 sat/byte
 
 - SolidCash bytecode is larger than the equivalent EVM bytecode, because emulating EVM primitives and effects on
   the BCH VM costs bytes and operations. Check sizes with `solidc <file> --size`.
-- An oversized stateful contract can compile into a split bundle: a state-owning root plus delegate facets
-  (`compileFileSplit`, `solidc <file> --split size`).
+- A direct contract within 1,000 bytes of the input limit, on either side, gets an extra outlining pass that shares
+  more code across its functions. An oversized stateful contract can compile into a split bundle: a state-owning root
+  plus delegate facets (`compileFileSplit`, `solidc <file> --split size`). The SDK refuses to deploy a contract whose
+  script no input can carry (`UnspendableContractError`, measured against the provider's limits), since coins sent to
+  it could never move.
 - A loop-heavy function in a short script can run out of operation budget. The deploy-time `salt` option pads the
   script to buy budget.
 - A contract's state UTXO can be spent once, so concurrent users of one contract conflict. Use `split`/`merge`

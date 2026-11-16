@@ -1,3 +1,4 @@
+import { binToHex, hash256, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { ResolvedImport } from '@solidcash/utils';
 import {
@@ -80,7 +81,9 @@ describe('implied deploy from a non-stateful parent (forced stateful)', () => {
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
       changeAddress: p2pkh.address,
     });
-    expect(result.childCategoryId).toBe(fundingUtxo.txid);
+    // The child is born through its deployer: its category is the prep transaction's txid.
+    expect(result.prepTransactions).toHaveLength(1);
+    expect(result.childCategoryId).toBe(binToHex(hash256(hexToBin(result.prepTransactions![0]!)).reverse()));
     expect(result.child.categoryId).toBe(result.childCategoryId);
     expect(result.tx.txid).toBeDefined();
     // the child's genesis data NFT rides the tx

@@ -23471,7 +23471,7 @@
   ],
   "compiler": {
     "name": "solidc",
-    "version": "0.50.0",
+    "version": "0.51.0",
     "options": {
       "evmCompat": true,
       "enforceFunctionParameterTypes": true,
@@ -65717,7 +65717,7 @@
     ],
     "compiler": {
       "name": "solidc",
-      "version": "0.50.0",
+      "version": "0.51.0",
       "options": {
         "evmCompat": true,
         "enforceFunctionParameterTypes": true,

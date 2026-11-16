@@ -60,6 +60,12 @@ export function materializeCreateBuilderSyntheticArgs(
     finalArgs = materializeInternalFunctionArgument(
       finalArgs, abiFunction.inputs, '__internal__returnOutputIdx', BigInt(returnEmitOutputIndex),
     );
+    // B6.1/B6.5: an ordinary call answers no constructor, so the genesis call is empty.
+    if (abiFunction.inputs.some((input) => input.name === '__internal__genesisCall')) {
+      finalArgs = materializeInternalFunctionArgument(
+        finalArgs, abiFunction.inputs, '__internal__genesisCall', new Uint8Array(),
+      );
+    }
   }
 
   // C1/piece-3: a pinned delegatecall proxy takes a hidden __internal__delegateInputIndex - the input index of

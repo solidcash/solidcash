@@ -103,6 +103,70 @@ index `__internal__externalReturnOutputIdx[N]` via `OP_OUTPUTTOKENCOMMITMENT`, r
 decodes the pushdata-framed fields. Single value, multi-value tuple (destructured `(a, b) = IFoo(addr).f()`), and
 forward-looking opaque `bytes` are all supported; an opaque read checks no digest.
 
+### Calls made by a constructor (genesis calls)
+
+A constructor's external call is the same co-spend covenant with these additions. The callee's entry takes
+`__internal__genesisCall`: empty for an ordinary call; in a constructor's call, the tag `X ‖ slot` followed by
+g_in, the index of the input that spends the deployer coin `(X, 0)` (36 bytes), and for an entry that reads
+`msg.sender` five more fields: g_out and the byte ranges of the deployer's unlocking that hold the child's
+arguments A and its code (46 bytes). Every tagged entry requires input g_in to spend `(X, 0)`; an entry run as a
+frame of the multi-call entry (call context 0 or more) and an entry that creates a child require the parameter
+empty, so a constructor's call is answered by a standalone run, and a payable tagged entry requires `msg.value`
+to be 0. The record's digest covers `ff ff ‖ X ‖ slot ‖ selector ‖ arguments`.
+
+At each call site j, `create` checks that the callee input's lock is the call's target (a P2SH32 lock), that
+the code which ran there carries the code marker with the record-sound flag, and that slot j runs once (its
+bit in the executed-calls mask). Its epilogue checks the callee list and that the record's carrier, at the
+slot's return index, is the callee's own: its category with no capability, no fungible units, the lock `51`,
+at most 1,200 satoshis.
+
+A callee that both reads `msg.sender` and carries the tag resolves its caller through the **genesis step**:
+input g_in spends `(X, 0)`; output g_out carries `X‖02` and its lock is `P2SH32(pin(X) ‖ A ‖ code)` rebuilt
+from the deployer's unlocking; the code ends with the birth trailer `20 ‖ D ‖ 75`, whose `D` is the lock of
+the coin input g_in spends; and the callee list at byte 5 of that unlocking names this input at the tag's
+slot. `__internal__msgSenderCategory` is not read on that path.
+
+A call whose result the constructor discards is bound like any other when the callee publishes **void
+records**: compile the callee with `callRecords: 'all'` and its void entries settle a record too. The two
+options are `callRecords: 'returning' | 'all'` and `genesisCalls: true | false` (the latter is on by default;
+it is what adds the tag parameter and the genesis step). Under `'returning'`, a void entry still runs its
+settlement but does not advertise a record in the ABI; under `genesisCalls: false` a contract compiles
+exactly as before the deployer work.
+
+Every call that is not a constructor's passes the genesis call empty. That includes a direct call, a nested
+delegate callee's call and a call through a received external function pointer. The pointer's caller pins every push
+ahead of the arguments, so a pointer call never carries a tag (see array-external-calls.md). In the unlocking, the
+genesis call sits between the record witness and the arguments: `<selector> <record witness> <genesis call>
+<arguments> <redeem>`. A spend built by hand pushes `OP_0` there.
+
+The SDK lays out a constructor callee's block with an ordinary build of its call, using the child's lock as a
+stand-in caller (`standInCaller`). Every key, stored copy, chunk and commitment that comes from `msg.sender` is
+therefore the child's 35-byte lock, not a pad's. A callee that passes `msg.sender` on to a contract it calls, by a
+typed or a low-level call, passes the child: the SDK resolves a passed-on `msg.sender` from the frame's caller, and
+a passed-on `tx.origin` from the signer (the artifact names it, `senderOp: 'tx.origin'`). Two callees are refused
+before anything is sent (`DeployerCalleeError`):
+- one whose build would run on other arguments, such as a loop key array reordered to the sorted list;
+- one that passes `tx.origin` on: the build's `tx.origin` is a pad coin, while the creation's is the deploying
+  wallet.
+
+In an ordinary call A -> B -> C, B passes its own caller A on as `msg.sender`. The SDK also lays out C's regions:
+- C gets the block a direct callee gets;
+- then come, as C's function needs them, the walk its iteration reads, one shared side-car per turn of its keccak256
+  loop, or the old chunks its write consumes. A keccak256 loop never shares a function with a walk or a write: both
+  read the inputs after the block, and the compiler refuses that (`keccak-loop-shares-trailing-band`);
+- B's input base and record indexes for C, C's dynamic-chunk base and its old chunks' unlockers, and the master index
+  of each contract B calls, are read from the assembled transaction, so B may call two or more contracts in one
+  function;
+- a caller's record slot counts before its callees only when the caller publishes the record, that is, a returning
+  function sent with `emitReturn`.
+
+Each of B's calls takes its record, selector and call-edge witnesses by its callsite, so a conditional call B skips
+leaves the later calls' witnesses where they were.
+
+Each remaining shape is refused by name before anything is built: C's block shared with another call, B calling C in
+a loop or as a frame, C reading another region after its block, a called contract's own `blockhash(n)` read (no
+oracle slot is co-spent for it), and a called contract's low-level call (its callee is never discovered).
+
 ### What is compile-time vs runtime
 
 Compile-time today: the callee TYPE (interface or contract - resolved via `getCalleeFunctions`, which reads
@@ -147,7 +211,31 @@ no-option form parses as a namespaced function call; the `{value:}`/`{gas:}` for
 - `delegatecall`: no calldata verification (the delegate self-verifies via `_proxyMasterIndex`); returns a
   placeholder `(true, "")`.
 - `{value: sats}`: `emitValueTransfer` adds a satoshi-transfer output to the target - the BCH equivalent of
-  sending ether. Works on parameter, local, and state-variable addresses.
+  sending ether. It pays the target where the call site can read it again: a parameter, a local, a state variable,
+  a literal or `msg.sender`. Any other target is refused at compile time (`CALL_VALUE_RECIPIENT_UNBOUND`). Under
+  `evmCompat` a 20-byte address is paid at its P2PKH lock, and so are `transfer` and `send`.
+
+**The expression form and its answer (2026-11-15).** `(bool ok, bytes memory d) = addr.call(payload)` compiles
+to a raw external call (`__raw__`), checked after the body like a typed call; the statement form `addr.call(data);`
+stays the low-level call above. Its rules, set by the user's decisions (TARGET-5 in
+`docs/security/security-audit-2026-10-16.md`):
+- A non-empty payload co-spends its target, so the call runs, and a payload through `address(0)` fails. Only an
+  empty payload, a plain send, may name no callee, and it answers `(true, "")` only, as the EVM's call to an
+  address with no code does.
+- A payload that names an interface function declaring a result (`abi.encodeCall(I.f, (..))`,
+  `abi.encodeWithSelector(I.f.selector, ..)`, `x.f.selector`, through a local, a parameter or a state variable)
+  must read the callee's record, so a `false` cannot be hidden behind `(true, "")`. Such a call with a
+  `{value:}` or `{gas:}` option is compiled the same way. An opaque `bytes` payload, a selector literal or an
+  `abi.encodeWithSignature` string keeps the record-less answer for a void callee: there `(true, "")` does not
+  prove the callee's function is void.
+- The SDK refuses before building (`RawCallCalleeRequiredError`) a call it cannot lay out honestly: `no contract at
+  the target`, `no matching function`, `callee fails`, `no record to read`, `plain send to a contract`, and `value
+  to a co-spent callee` (the payment would land at the callee's master lock, which no contract can spend from).
+- In a direct build a low-level call beside a raw external call keeps its own pin; only a message-bus route
+  shares one.
+
+Before these rules, a raw call could claim `(true, "")` or `(false, "")` with nothing co-spent, and the expression
+form of a `{value:}` call had no transfer slot, so it paid nothing (OpenZeppelin's `Address.sendValue` included).
 
 ## 6. `delegatecall` (proxy + implementation)
 
@@ -166,7 +254,8 @@ logic. There is no source-level `delegate` modifier.
 
 ## 7. Call options `{value, gas, salt}`
 
-- `value`: a satoshi transfer to the call target (real; pre-scanned to a `valueTransferIndex`).
+- `value`: a satoshi transfer to the call target (real; pre-scanned to a `valueTransferIndex`, in the expression
+  form too since 2026-11-15; see section 5 for the recipients it pays).
 - `gas`: accepted for Solidity-source compatibility; BCH has no gas metering (cost is a per-tx op-budget), so
   it is a no-op.
 - `salt`: CREATE2/CREATE3-style deployment salt (used by `deployFrom` / deploy-modifier functions).
@@ -198,6 +287,21 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
   authorization (the caller pre-commits to a specific callee), use the transcript's M4 binding - see
   the website message-bus guide. Direct EOA calls take the `tx.origin` path (first native P2PKH input) instead.
 - **Script is sole arbiter:** unchecked == unconstrained.
+- **Genesis sender:** an entry that reads `msg.sender` and carries the genesis call resolves it to the
+  child's master lock, never to `tx.origin`, when the tag is non-empty. The checks above make the child's
+  lock a fresh P2SH32 of `pin(X)` and the deployer's own code. A child whose code has no birth trailer is
+  never a genesis sender, however it was born: its constructor makes no call.
+- **The callee list:** `Deploy<C>`'s unlocking carries, immediately after the `create` selector, a push of one
+  2-byte input index per call slot. `create` checks each slot against the call its constructor wrote, and the
+  callee checks its own entry, so a call can only answer a constructor slot it belongs to.
+- **The created-children list:** a marked creator (one that runs a deployer `new` of a sender-reading child)
+  publishes `sha256` of the categories it created at offset 5 of its own unlocking. A child's constructor that
+  reads `msg.sender` sees the creator, not the wallet that funded the transaction.
+- **What an unsound master costs its callers:** `recordSound` is false when any arm is an `unsafe`, `split`,
+  `merge` or `delegate` entry, a fallback, a message-bus route or a delegatecall forwarder. Such a master has
+  no deployer, its entries carry no genesis parameter, and no other contract's constructor can call it: the
+  call would have no record to bind.
+
 - **Co-spend liveness:** targets are real inputs, recreated for reads; the tx grows with N.
 
 ## 10. Forward design: generic (allowlist-free) dynamic dispatch
@@ -317,7 +421,9 @@ Shipped (generic dynamic dispatch, EVM-parity surface, VM-verified - e2e `CallRe
 (`OP_UTXOBYTECODE == addr`) co-spend whose `data` is read as a single opaque `bytes` blob from the
 integrity-bound return event (`success` is always true - integrity failures fail the spend). The statement
 form `addr.call(payload);` stays fire-and-forget (the existing low-level call). The callee, function and args
-are supplied at build time via `.withExternalCall(callee, fn, args)`. Verified e2e: real-return read,
+are supplied at build time via `.withExternalCall(callee, fn, args)`; for a payload the compiler decodes,
+`.withExternalCall(callee)` takes the function and arguments from the payload, and the caller binds the callee's
+selector and arguments to it (push for push natively, EVM words under `evmCompat`). Verified e2e: real-return read,
 genericity (the same caller dispatches to two unrelated callee types), the opaque result used in a covenant
 decision (`require`), target-substitution rejection, and the inline `abi.encodeWithSignature` surface
 compiling. MVP limitations:

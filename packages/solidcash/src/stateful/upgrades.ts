@@ -17,7 +17,7 @@ import {
 } from './StatefulContract.js';
 import Signer from '../Signer.js';
 import SignatureTemplate from '../SignatureTemplate.js';
-import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
+import { type ConstructorArgument, type FunctionArgument, eventValueOfArgument } from '../Argument.js';
 import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
@@ -609,7 +609,8 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
             const event = implArtifact.events?.find((item) => item.signature === emitted.eventSignature);
             if (!event) continue;
             const values = event.parameters.map((parameter) => {
-              if (byName.has(parameter.name)) return byName.get(parameter.name)!;
+              // The argument as the call passes it, which the body emits.
+              if (byName.has(parameter.name)) return eventValueOfArgument(byName.get(parameter.name)!, parameter.type);
               if (parameter.type === 'address' && target.runner instanceof Signer
                 && /^(?:addr|account|sender|from|previousOwner|oldOwner|owner)$/.test(parameter.name)) {
                 return addressToLockScript(target.runner.getAddress());

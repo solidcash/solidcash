@@ -14,9 +14,10 @@ import {
   type ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { RawCallCalleeRequiredError } from '../Errors.js';
 import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
-import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { assertCallSelectorScheme } from './call-record.js';
 import { calleeOutputSpan, calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
@@ -40,6 +41,7 @@ import {
 } from './ValueChunkProducerIdentity.js';
 import {
   expandResolveCreateBuilderExternalCalls as expandResolveCreateBuilderExternalCallsImpl,
+  rawCallName,
 } from './sc-expand-resolve-create-builder-external-calls.js';
 import {
   allocateCreateBuilderSharedFunders as allocateCreateBuilderSharedFundersImpl,
@@ -49,16 +51,28 @@ import {
 } from './sc-load-create-builder-nested-callee-prelude.js';
 import {
   assembleCreateBuilderNestedCalleeBlockInputs as assembleCreateBuilderNestedCalleeBlockInputsImpl,
+  type AssembleCreateBuilderNestedCalleeBlockHost,
 } from './sc-assemble-create-builder-nested-callee-block.js';
+import {
+  appendCreateBuilderTransitiveCalleeRegions as appendCreateBuilderTransitiveCalleeRegionsImpl,
+} from './sc-append-create-builder-transitive-callee-regions.js';
 import {
   appendCreateBuilderNestedCalleeLoopWrites as appendCreateBuilderNestedCalleeLoopWritesImpl,
 } from './sc-append-create-builder-nested-callee-loop-writes.js';
+import {
+  appendCreateBuilderNestedCalleeIterations as appendCreateBuilderNestedCalleeIterationsImpl,
+} from './sc-append-create-builder-nested-callee-iterations.js';
+import {
+  appendCreateBuilderNestedCalleeKeccakLoop as appendCreateBuilderNestedCalleeKeccakLoopImpl,
+} from './sc-append-create-builder-nested-callee-keccak-loop.js';
 import {
   pushCreateBuilderDirectExternalCallGroup as pushCreateBuilderDirectExternalCallGroupImpl,
 } from './sc-push-create-builder-direct-external-call-group.js';
 import {
   discoverCreateBuilderTransitiveExternalCalls as discoverCreateBuilderTransitiveExternalCallsImpl,
 } from './sc-discover-create-builder-transitive-external-calls.js';
+import { refuseCreateBuilderNestedBlockhashReads } from './sc-refuse-create-builder-nested-blockhash-reads.js';
+import { refuseCreateBuilderNestedLowLevelCalls } from './sc-refuse-create-builder-nested-low-level-calls.js';
 import { buildSharedMethodExternalBatch } from './sc-build-shared-method-external-batch.js';
 import {
   finalizeCreateBuilderNestedBasesUnlockers as finalizeCreateBuilderNestedBasesUnlockersImpl,
@@ -535,11 +549,42 @@ export async function orchestrateCreateBuilderExternalCalls(
       sharedFunderSnapshot = allocated.sharedFunderSnapshot;
     }
 
+    // The host a callee's block is assembled with: its funders come from the shared pool.
+    const nestedBlockHost: AssembleCreateBuilderNestedCalleeBlockHost = {
+      getUtxos: (address: string) => host.inner.provider.getUtxos(address),
+      keysMatch: (...a: any[]) => host.keysMatch(...a),
+      encodeStoredElementSource: (...a: any[]) => host.callerContract._encodeStoredElementSource(...a),
+      sharedBlockOraclePools,
+      hasSigner: Boolean(host.signer),
+      hasSharedFunder: () => Boolean(sharedFunderPool && sharedFunderPool.length > 0),
+      shiftSharedFunder: () => sharedFunderPool?.shift(),
+      markSharedFunder: (utxo: UnlockableUtxo) => markSharedFunder(utxo),
+      addUtxo: (lockingBytecodeHex: string, utxo: Utxo) => {
+        if ((host.inner.provider as any).addUtxo) {
+          return (host.inner.provider as any).addUtxo(lockingBytecodeHex, utxo);
+        }
+      },
+      currentGroupCount: () => externalCallUtxoGroups.length,
+      dummyFunderLockingBytecode: DUMMY_FUNDER_LOCKING_BYTECODE,
+      dummyFunderUnlockingBytecode: DUMMY_FUNDER_UNLOCKING_BYTECODE,
+    };
+
     // One direct callee's block and group.
     const materializeDirectCalleeGroup = async (
       slotIndex: number, ec: ExternalCallAbi, callInfo: ExternalCallInfo,
     ): Promise<void> => {
       if (callInfo) assertCallSelectorScheme(ec, host.inner.artifact, callInfo.externalContract.inner.artifact);
+      // A raw call's `{value:}` pays the call's target address, the co-spent callee's master lock, where the coin is
+      // stuck, and the callee reads msg.value from its satoshi container, which the payment never reaches. Refuse it
+      // before a layout is planned. A message-bus participant settles its value edge in its route; a send of that one
+      // refuses the master-lock output itself.
+      if (callInfo && ec.interfaceName === '__raw__' && ec.callValueEffect === true
+        && host.inner.artifact.messageBus === undefined) {
+        const callee = callInfo.externalContract.inner.artifact.contractName;
+        throw new RawCallCalleeRequiredError(
+          'value to a co-spent callee', rawCallName(ec), `${callee}.${callInfo.functionName}`,
+        );
+      }
 
       const nestedPrelude = await loadCreateBuilderNestedCalleePreludeImpl(
         {
@@ -621,27 +666,7 @@ export async function orchestrateCreateBuilderExternalCalls(
           loopIdxRanges,
           publicSelfIdentity,
         };
-        await assembleCreateBuilderNestedCalleeBlockInputsImpl(
-          {
-            getUtxos: (address: string) => host.inner.provider.getUtxos(address),
-            keysMatch: (...a: any[]) => host.keysMatch(...a),
-            encodeStoredElementSource: (...a: any[]) => host.callerContract._encodeStoredElementSource(...a),
-            sharedBlockOraclePools,
-            hasSigner: Boolean(host.signer),
-            hasSharedFunder: () => Boolean(sharedFunderPool && sharedFunderPool.length > 0),
-            shiftSharedFunder: () => sharedFunderPool?.shift(),
-            markSharedFunder: (utxo: UnlockableUtxo) => markSharedFunder(utxo),
-            addUtxo: (lockingBytecodeHex: string, utxo: Utxo) => {
-              if ((host.inner.provider as any).addUtxo) {
-                return (host.inner.provider as any).addUtxo(lockingBytecodeHex, utxo);
-              }
-            },
-            currentGroupCount: () => externalCallUtxoGroups.length,
-            dummyFunderLockingBytecode: DUMMY_FUNDER_LOCKING_BYTECODE,
-            dummyFunderUnlockingBytecode: DUMMY_FUNDER_UNLOCKING_BYTECODE,
-          },
-          nestedBlockCtx as any,
-        );
+        await assembleCreateBuilderNestedCalleeBlockInputsImpl(nestedBlockHost, nestedBlockCtx as any);
         bBlockInputs = nestedBlockCtx.bBlockInputs;
         bReturnEventInBlock = nestedBlockCtx.bReturnEventInBlock;
         bStreamedEventPlan = nestedBlockCtx.bStreamedEventPlan;
@@ -649,10 +674,27 @@ export async function orchestrateCreateBuilderExternalCalls(
         bValueChunkOutputCount = nestedBlockCtx.bValueChunkOutputCount;
       }
 
+      // A direct callee that iterates a collection reads the walk right after its block, before any dynamic state
+      // it reads: co-spend the walk there, each entry kept at its own index.
+      if (bAbiFunc !== undefined && compilerRoute === undefined && bSc && callInfo
+        && (bAbiFunc.collectionIterations?.length ?? 0) > 0) {
+        bBlockInputs = await appendCreateBuilderNestedCalleeIterationsImpl({
+          bBlockInputs,
+          bAbiFunc,
+          bStatelayout,
+          bSc,
+          externalCategoryId,
+          // The callee's run publishes its record for a caller that reads it, and always for a function that returns.
+          publishesRecord: ec.hasReturnValues === true || (bAbiFunc.outputs?.length ?? 0) > 0,
+          bCompilerInternalArgs,
+          functionLabel: `${callInfo.externalContract.inner.artifact.contractName}.${bAbiFunc.name}`,
+        });
+      }
+
       // A direct view callee must co-spend the chunks it reads after its published block. The
       // callee covenant authenticates their address and order; omitting them leaves its hidden
       // dynamic-input base pointing into another participant's inputs.
-      const bDynamicChunkResources: NonNullable<ExternalCallUtxoGroup['dynamicChunkResources']> = [];
+      const bReadChunks: Array<{ input: UnlockableUtxo; name: string; type: string }> = [];
       if (bBlockInputs !== undefined && bAbiFunc !== undefined && compilerRoute === undefined) {
         const written = new Set(bAbiFunc.dynamicWrites ?? []);
         for (const name of bAbiFunc.dynamicReads ?? []) {
@@ -671,16 +713,44 @@ export async function orchestrateCreateBuilderExternalCalls(
             }))
             .sort((left: { index: number }, right: { index: number }) => left.index - right.index);
           for (const { utxo } of chunks) {
-            bBlockInputs.push({
-              ...utxo,
-              unlocker: createReadOnlyDynamicChunkUnlocker(
-                callInfo!.externalContract.inner, 0, externalCategoryId, name, variable.type,
-              ),
-            });
-            bDynamicChunkResources.push({
-              blockSlot: bBlockInputs.length - 1, name, type: variable.type, write: false,
+            bReadChunks.push({
+              input: {
+                ...utxo,
+                unlocker: createReadOnlyDynamicChunkUnlocker(
+                  callInfo!.externalContract.inner, 0, externalCategoryId, name, variable.type,
+                ),
+              },
+              name,
+              type: variable.type,
             });
           }
+        }
+      }
+
+      // A direct callee's keccak256 loop reads one shared side-car per iteration right after its block; the chunks it
+      // reads follow them, found through the witness that names the first chunk's input.
+      let bKeccakLoop: { start: number; recreates: Output[] } | undefined;
+      if (bBlockInputs !== undefined && bAbiFunc?.keccakLoopReads === true && compilerRoute === undefined && bSc) {
+        const label = `${callInfo!.externalContract.inner.artifact.contractName}.${bAbiFunc.name}`;
+        const spent = [
+          ...externalCallUtxoGroups.flatMap((group) => [...(group.blockInputs ?? []), ...(group.keccakInputs ?? [])]),
+          ...bBlockInputs,
+        ];
+        const loop = await appendCreateBuilderNestedCalleeKeccakLoopImpl({
+          bBlockInputs, bAbiFunc, bSc, masterUtxo: bState.masterUtxo, bDataNfts, args: callInfo!.args, spent,
+          ...(overrides?.sharedSidecarPool !== undefined && { sharedPool: overrides.sharedSidecarPool }),
+          trailingReads: bReadChunks.map((chunk) => chunk.input),
+          functionLabel: label,
+        });
+        bBlockInputs = loop.bBlockInputs;
+        bKeccakLoop = { start: loop.start, recreates: loop.recreates };
+      }
+
+      const bDynamicChunkResources: NonNullable<ExternalCallUtxoGroup['dynamicChunkResources']> = [];
+      if (bBlockInputs !== undefined) {
+        for (const { input, name, type } of bReadChunks) {
+          bBlockInputs.push(input);
+          bDynamicChunkResources.push({ blockSlot: bBlockInputs.length - 1, name, type, write: false });
         }
       }
 
@@ -798,6 +868,16 @@ export async function orchestrateCreateBuilderExternalCalls(
         if (bBatchEntryLockingBytecodes.size > 0 && blockOwner?.blockInputs === bBlockInputs) {
           blockOwner.batchEntryLockingBytecodes = bBatchEntryLockingBytecodes;
         }
+        if (bKeccakLoop !== undefined) {
+          // Its side-cars ride this block's own inputs, which a second callsite of the same callee does not own.
+          if (blockOwner !== materializedGroup || materializedGroup.blockInputs !== bBlockInputs) {
+            throw new Error(`The call of ${materializedGroup.externalContract.inner.artifact.contractName}.`
+              + `${bAbiFunc!.name} cannot be laid out: another call of the same contract in this transaction owns `
+              + 'its block, so its keccak256 loop has no side-cars of its own');
+          }
+          materializedGroup.keccakLoopStart = bKeccakLoop.start;
+          materializedGroup.keccakLoopRecreates = bKeccakLoop.recreates;
+        }
         if (bDynamicChunkResources.length > 0 && bBlockInputs !== undefined) {
           const first = [...bDynamicChunkResources].sort((left, right) => left.blockSlot - right.blockSlot)[0]!;
           pendingDynamicChunkInputFills.push({
@@ -870,6 +950,22 @@ export async function orchestrateCreateBuilderExternalCalls(
         },
       ),
     );
+    // No called contract's own blockhash(n) read gets a slot of its oracle pool, only a plain coin at its block-hash
+    // slot: refuse the call by name before a transitive callee's region is laid out or the transaction is derived.
+    refuseCreateBuilderNestedBlockhashReads(externalCallUtxoGroups);
+    // Nor is the callee of a called contract's low-level call ever discovered: refuse that call by name as well.
+    await refuseCreateBuilderNestedLowLevelCalls(externalCallUtxoGroups);
+    // A transitive callee whose run reads a region right after its block (a walk, loop side-cars, the chunks it writes)
+    // gets the block a direct callee gets, with the region after it. A return probe runs only this function's input.
+    if (overrides?.returnProbeOnly !== true) {
+      await appendCreateBuilderTransitiveCalleeRegionsImpl(
+        {
+          block: nestedBlockHost,
+          ...(overrides?.sharedSidecarPool !== undefined && { sharedSidecarPool: overrides.sharedSidecarPool }),
+        },
+        externalCallUtxoGroups, groupMetas, directGroupCount,
+      );
+    }
 
     // A compat call's callee follows every typed group and fills no caller ABI slot; the caller reads it through its
     // call-input witness. Its msg.sender is the caller a typed call presents.
@@ -1036,11 +1132,13 @@ export async function orchestrateCreateBuilderExternalCalls(
       // side-car recreation, an ecrecover side-car, and the caller's own return event. The master + data-NFT
       // prefix below does not count them, so a caller that hashes before its external calls used to place the
       // callee blocks - and the planned return-event index - early enough to collide with a callee's data NFT.
-      // A void entry's returnEvent slot is its call record, which a plain send compacts.
+      // The returnEvent slot holds the caller's call record only when its run publishes one: a returning function
+      // sent with `emitReturn`. A plain send, and every void entry, compacts the slot (its record index is -1).
       const returnsValues = (abiFunction?.outputs?.length ?? 0) > 0;
+      const publishesOwnRecord = returnsValues && overrides?.emitReturn === true;
       const fixedExtraBlockSlotCount = (abiFunction?.blockLayout?.slots ?? []).filter((slot) => (
         slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
-        || (slot.kind === 'returnEvent' && returnsValues)
+        || (slot.kind === 'returnEvent' && publishesOwnRecord)
       )).length;
       const baseOutputOffset = 1 + requiredNftIndices.length
       + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount
@@ -1076,9 +1174,17 @@ export async function orchestrateCreateBuilderExternalCalls(
         } else if (groupMetas[i].ecSlot.hasReturnValues) {
           // A callee that pins no record carries none, even though a raw call's slot declares
           // `(bool, bytes)`. State the absent coordinate so the caller reads empty returndata; it must not claim
-          // a tail slot another group's carrier occupies.
-          if (calleePinsNoRecord(g)) returnEventIndexMap.set(i, -1);
-          else {
+          // a tail slot another group's carrier occupies. A raw call whose payload names a function that declares a
+          // result reads its callee's record and has no absent coordinate: refuse it before building.
+          if (calleePinsNoRecord(g)) {
+            const ecSlot = groupMetas[i].ecSlot;
+            if (ecSlot.rawReadsRecord === true) {
+              const call = ecSlot.rawFunctionName !== undefined ? `'${ecSlot.rawFunctionName}'`
+                : `with selector 0x${ecSlot.rawSelector ?? ''}`;
+              throw new RawCallCalleeRequiredError('no record to read', call, `'${g.functionName}' returns nothing`);
+            }
+            returnEventIndexMap.set(i, -1);
+          } else {
             returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
               ? cursor + offset
               : returnEventOutputBase + tailRank++);
@@ -1153,7 +1259,6 @@ export async function orchestrateCreateBuilderExternalCalls(
         topLevelAnchorFillPositions,
         topLevelReturnWitnessPlan,
         topLevelReturnWitnessGroups,
-        absentCalleeSlots,
       },
     );
   }
@@ -1182,9 +1287,10 @@ export async function orchestrateCreateBuilderExternalCalls(
 
 
   // F1: tag each co-spent call with its caller and the slot it occupies in that caller, so the builder pins each
-  // caller's edge in the caller's own category. A top-level call's slot is its published callsite: a skipped
-  // conditional call or a loop's reached calls part groups from slots. A nested call's slot is its position among
-  // its parent's co-spent callees. A compat call's edge is its low-level call's.
+  // caller's edge in the caller's own category. A call's slot is its published callsite (the slot index its caller's
+  // edge witness is named by): a skipped conditional call or a loop's reached calls part groups from slots, at the top
+  // level as in a nested caller. A nested call of an artifact that publishes no callsite takes its position among its
+  // parent's co-spent callees. A compat call's edge is its low-level call's.
   {
     const siblingSlot = new Map<number, number>();
     for (let i = 0; i < externalCallUtxoGroups.length; i++) {
@@ -1195,7 +1301,8 @@ export async function orchestrateCreateBuilderExternalCalls(
         externalCallUtxoGroups[i].edgeEcSlot = externalCallUtxoGroups[i].sourceCallsiteId ?? i;
       } else {
         const next = siblingSlot.get(parent) ?? 0;
-        externalCallUtxoGroups[i].edgeEcSlot = next;
+        const callsite = (allGroupEcSlots[i] as { callsiteId?: number } | undefined)?.callsiteId;
+        externalCallUtxoGroups[i].edgeEcSlot = callsite ?? next;
         siblingSlot.set(parent, next + 1);
       }
     }

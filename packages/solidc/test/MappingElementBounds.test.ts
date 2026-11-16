@@ -43,7 +43,7 @@ const tail = (kinds: readonly Uint8Array[]): Uint8Array =>
 const MEMBERS = ' mapping(uint => bytes4[]) logs;'
   + ' function at(uint id, uint i, bytes4 e) { require(this.logs[id][i] == e); }'
   + ' function pushAt(uint id, bytes4 k, uint i, bytes4 e) { this.logs[id].push(k); require(this.logs[id][i] == e); }';
-const SOURCE = `pragma solidcash ^0.50.0; contract Bounds {${MEMBERS} }`;
+const SOURCE = `pragma solidcash ^0.51.0; contract Bounds {${MEMBERS} }`;
 
 /** The ABI witnesses of a write that updates the node at `SLOT` in place. */
 function updateWitness(name: string): Uint8Array | undefined {
@@ -56,6 +56,8 @@ function updateWitness(name: string): Uint8Array | undefined {
   // Fix B: an ordinary void entry carries a universal void call record at this witness; a standalone VM spend
   // compacts it and names no output (witness -1).
   if (name === '__internal__returnOutputIdx') return encodeIntegerValue(-1n);
+  // B6.5: an ordinary spend's genesis call is empty.
+  if (name === '__internal__genesisCall') return EMPTY;
   return undefined;
 }
 

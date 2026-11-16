@@ -424,25 +424,44 @@ export function constructCreateBuilderTransactionBuilder(
     }
     return changed;
   };
-  // An ordinary low-level call reads its callee at `__internal__callInputIndex[<i>]`. The plan counts dense bands,
-  // but the callee band follows the caller's complete block and trailing run, so rebind it from the assembly. A compat
-  // call whose callee runs as a direct external group is read where that group's master landed.
+  // `__internal__callInputIndex<i>` names the input whose lock the covenant pins to the target of the function's i-th
+  // low-level call. The plan counts dense bands, which holds only while the caller's inputs keep that order: a
+  // payment's satoshi container, or any other slot that makes the builder place the caller's block densely, puts the
+  // callee band after the caller's complete block and trailing run, and a raw `.withCall(utxo)` co-spend had no planned
+  // value at all. Rebind each witness from the assembly on every pass, to where its co-spend landed: the master of
+  // the group that answers the call (a stateful low-level callee, or a compat call's callee that runs as a direct
+  // external group), else the raw coin `.withCall()` supplied for it (`overrides.calls[i]`). A call with no co-spend
+  // keeps its planned value.
+  const lowLevelCallRows = abiFunction?.lowLevelCalls ?? [];
+  const suppliedLowLevelCalls = (overrides?.calls ?? []) as readonly ({
+    type?: string;
+    utxo?: Pick<Utxo, 'txid' | 'vout'>;
+  } | undefined)[];
   const refreshTopLevelLowLevelCallInputIndices = abiFunction === undefined
     || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (!abiFunction) return;
+      const coSpends = new Map<number, Pick<Utxo, 'txid' | 'vout'>>();
       for (const group of [...lowLevelCallUtxoGroups, ...externalCallUtxoGroups]) {
         const callIndex = group.edgeLowLevelCallIndex;
-        const master = group.masterUtxo;
-        if (group.callMode === 'delegatecall' || callIndex === undefined) continue;
-        const position = abiFunction.inputs.findIndex((input) => input.name === `__internal__callInputIndex${callIndex}`
-          || (callIndex === 0 && input.name === '__internal__callInputIndex'));
-        if (position < 0 || position >= finalArgs.length) continue;
+        if (group.callMode === 'delegatecall' || callIndex === undefined || coSpends.has(callIndex)) continue;
+        coSpends.set(callIndex, group.masterUtxo);
+      }
+      for (const [callIndex, call] of suppliedLowLevelCalls.entries()) {
+        if (coSpends.has(callIndex) || lowLevelCallRows[callIndex]?.callMode === 'delegatecall') continue;
+        if (call?.type === 'raw' && call.utxo !== undefined) coSpends.set(callIndex, call.utxo);
+      }
+      for (const [position, input] of abiFunction.inputs.entries()) {
+        if (position >= finalArgs.length) break;
+        const witness = /^__internal__callInputIndex(\d*)$/.exec(input.name);
+        if (witness === null) continue;
+        const target = coSpends.get(witness[1] === '' ? 0 : Number(witness[1]));
+        if (target === undefined) continue;
         const localIndex = materialized
-          ? materialized.inputs.findIndex((input) => input.txid.toLowerCase() === master.txid.toLowerCase()
-            && input.vout === master.vout)
-          : builder.findInputIndexByOutpoint(master);
+          ? materialized.inputs.findIndex((candidate) => candidate.txid.toLowerCase() === target.txid.toLowerCase()
+            && candidate.vout === target.vout)
+          : builder.findInputIndexByOutpoint(target);
         if (localIndex >= 0) finalArgs[position] = BigInt(localIndex + (overrides?.blockBase ?? 0));
       }
     };

@@ -1,6 +1,9 @@
 import { describe, expect, it, beforeAll } from 'vitest';
 import { layoutWithFacets } from '../shapes/harness.js';
-import { binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, decodeAuthenticationInstructions, encodeLockingBytecodeP2sh32, hash256, hexToBin,
+} from '@bitauth/libauth';
+import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   FrameKind, asmToScript, buildPushdataCommitment, encodeIntegerValue, scriptToBytecode, sha256,
@@ -9,6 +12,7 @@ import {
 import { ethers } from 'ethers';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
+import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory,
 } from '../../../../solidc/test/framed/master/validator-input.js';
@@ -84,7 +88,7 @@ function recoverySource(calls: readonly CallSpec[]): string {
     const builtin = call.evm ? 'ecrecoverEvm' : 'ecrecoverPubKey';
     return `require(${builtin}(h${index}, v${index}, r${index}, s${index}) == ${call.comparison});`;
   });
-  return 'pragma solidcash ^0.50.0;'
+  return 'pragma solidcash ^0.51.0;'
     + ' contract Auth {'
     + `   function check(${params.join(', ')}) { ${body.join(' ')} }`
     + '   function idle() { require(true); }'
@@ -238,7 +242,7 @@ describe('a composed framed recovery in a frame that runs on its caller\'s recor
     // A proxy delegates into an implementation entry that hashes and recovers: the frame's records are the proxy's,
     // and its recovery side-car, the projection's keccak side-car and its own keccak side-car follow its own input.
     const data = new TextEncoder().encode('proxied side-cars');
-    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.50.0;'
+    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.51.0;'
       + ' contract Impl {'
       + '   address public implementation;'
       + '   int public counter;'
@@ -331,6 +335,99 @@ describe('a composed framed recovery in a frame that runs on its caller\'s recor
     expect(outcome.verdicts.map((verdict) => verdict.participant)).toStrictEqual(
       ['proxy-1', 'validator', 'validator/1', 'validator/2', 'record', 'impl-1', ...ids]);
   }, 120_000);
+});
+
+/** secp256k1's group order. */
+const ORDER = secp256k1.CURVE.n;
+
+/** A 32-byte little-endian word. */
+const leWord = (value: bigint): Uint8Array =>
+  Uint8Array.from({ length: 32 }, (_unused, index) => Number((value >> BigInt(8 * index)) & 0xffn));
+
+/** A little-endian word read as an unsigned number. */
+const unsignedOf = (word: Uint8Array): bigint => word.reduceRight((value, byte) => (value << 8n) | BigInt(byte), 0n);
+
+/** k^-1 mod n, for a k in [1, n). */
+function inverseModOrder(k: bigint): bigint {
+  let result = 1n;
+  for (let base = k % ORDER, exponent = ORDER - 2n; exponent > 0n; base = (base * base) % ORDER, exponent >>= 1n) {
+    if ((exponent & 1n) === 1n) result = (result * base) % ORDER;
+  }
+  return result;
+}
+
+/** The scalars the builtin recovers from, little-endian. */
+interface Scalars {
+  readonly h: Uint8Array;
+  readonly v: number;
+  readonly r: Uint8Array;
+  readonly s: Uint8Array;
+}
+
+/**
+ * Scalars whose key is the point at infinity: R = (z/s) G, so that s R = z G and (s R - z G) / r is no point. A draw
+ * whose R has an x-coordinate of n or more, which `r` cannot name, is redrawn.
+ */
+function infinityScalars(): Scalars {
+  for (let draw = 0; ; draw += 1) {
+    const drawn = (part: string): bigint =>
+      BigInt(`0x${binToHex(sha256(new TextEncoder().encode(`composer recovery at infinity ${part} ${draw}`)))}`) % ORDER;
+    const z = drawn('z') || 1n;
+    const s = drawn('s') || 1n;
+    const point = secp256k1.ProjectivePoint.BASE.multiply((z * inverseModOrder(s)) % ORDER).toAffine();
+    if (point.x < ORDER) return { h: leWord(z), v: 27 + Number(point.y & 1n), r: leWord(point.x), s: leWord(s) };
+  }
+}
+
+/** The blob the side-car of a key at infinity recovers from: the digest shifted to z - 2^128 r mod n, then v, r, s. */
+const shiftedBlob = (scalars: Scalars): Uint8Array => Uint8Array.from([
+  ...leWord((((unsignedOf(scalars.h) - (unsignedOf(scalars.r) << 128n)) % ORDER) + ORDER) % ORDER),
+  scalars.v, ...scalars.r, ...scalars.s,
+]);
+
+/** The blob a side-car's unlocking pushes after its pad: the one it recovers from. */
+const sideCarBlob = (unlockingBytecode: Uint8Array): Uint8Array =>
+  (decodeAuthenticationInstructions(unlockingBytecode)[1] as { readonly data: Uint8Array }).data;
+
+/** 2^128 G as a standard compressed key. */
+const SHIFT_POINT = secp256k1.ProjectivePoint.BASE.multiply(1n << 128n).toRawBytes(true);
+
+describe('a composed framed recovery at infinity', () => {
+  it('co-spends a side-car over the shifted digest, which commits 2^128 G, and the body answers the zero address', () => {
+    const atInfinity = infinityScalars();
+    const test = recoveryCase(atInfinity, 'pubkey(0x)', 'pubkey');
+    const input = test.plan.inputs[`${MASTER_ID}/recovery-V0`]!;
+    expect(binToHex(sideCarBlob(input.unlockingBytecode!))).toBe(binToHex(shiftedBlob(atInfinity)));
+    // The commitment is parity || Qx as a 33-byte little-endian number.
+    const commitment = input.output!.token!.nft!.commitment;
+    expect(binToHex(Uint8Array.from([commitment[0]!, ...commitment.slice(1, 33).reverse()]))).toBe(binToHex(SHIFT_POINT));
+    const verdicts = verdictsOf(test);
+    expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
+    for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
+  });
+
+  it('settles a side-car the body computes over the shifted digest, learning the arguments from the body\'s bind', () => {
+    // The call is handed to the composer as computed, so it co-spends a placeholder side-car, which the body's bind
+    // refuses with the body's own blob under the placeholder's: the close the derivation learns the blob from.
+    const atInfinity = infinityScalars();
+    const calls = [{ scalars: atInfinity, comparison: 'pubkey(0x)', evm: false }];
+    const { artifacts, program, abiFunction } = compiled(recoverySource(calls));
+    const pushes = argumentPushes(hexToBin(abiFunction.selector!), calls);
+    const test = caseOf(artifacts, program, pushes, buildRecoverySideCars(MASTER_ID, [{ computed: true, evm: false }]));
+    const draft = composeDraft(test.plan, { vm: compositionMachine() });
+    draft.learnUnstatedViews();
+    const built = draft.programFor(MASTER_ID);
+    const sideCar = participant(draft.layout, `${MASTER_ID}/recovery-V0`).index;
+    expect(binToHex(sideCarBlob(built.transaction.inputs[sideCar]!.unlockingBytecode)))
+      .toBe(binToHex(shiftedBlob(atInfinity)));
+    const vm = compositionMachine();
+    for (const placed of draft.layout.participants) {
+      const state = vm.evaluate({
+        inputIndex: placed.index, sourceOutputs: built.sourceOutputs, transaction: built.transaction,
+      });
+      expect(vm.stateSuccess(state), placed.id).toBe(true);
+    }
+  });
 });
 
 // One side-car per call, right after the master: the two-recovery case above and `layout.test.ts`.

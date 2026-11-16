@@ -4,8 +4,11 @@
 // VM-probes the two covenants' real op-cost and picks the split where both inputs fit their ~8M budget (a liveness
 // parameter, so a probe can only land on a valid split). Mirrors the keccak compute side-car; see docs/ecrecover.md.
 import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
+import { secp256k1 } from '@noble/curves/secp256k1';
 import {
   buildEcrecoverComputeRedeem, ecrecoverComputeLockingBytecode, ecrecoverComputeResultCommitment,
   SHARED_LIBRARY_SALT,
@@ -377,6 +380,58 @@ export function probeEcrecoverSplit3(
       + 'Re-sign to obtain a different decomposition.');
   }
   return best;
+}
+
+let placeholder: { witness: EcrecoverWitness; chunkA: number } | undefined;
+
+/**
+ * A fixed recovery a side-car pair always runs: a signature by a key drawn from a fixed phrase, whose ladder splits over
+ * two covenants. It is no call's own, so a side-car over it holds a slot whose recovery the call does not read, and its
+ * A's pad carries an off-curve proof. Drawn once per process; every draw is deterministic.
+ */
+export function ecrecoverPlaceholder(): { witness: EcrecoverWitness; chunkA: number } {
+  if (placeholder !== undefined) return placeholder;
+  const order = secp256k1.CURVE.n;
+  const probeCoin = (txid: string): Utxo => ({
+    txid, vout: 0, satoshis: 100_000n,
+    token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  });
+  const littleEndian = (value: bigint): Uint8Array => {
+    const word = new Uint8Array(32);
+    for (let i = 0, x = value; i < 32; i++, x >>= 8n) word[i] = Number(x & 0xffn);
+    return word;
+  };
+  let refusal: unknown;
+  for (let draw = 0; draw < 16; draw += 1) {
+    const drawn = (part: string): Uint8Array => sha256.hash(utf8ToBin(`SolidCash recovery placeholder\0${part}\0${draw}`));
+    const key = BigInt(`0x${binToHex(drawn('key'))}`) % order || 1n;
+    const digest = drawn('digest');
+    const signature = secp256k1.sign(digest, key);
+    const witness = computeEcrecoverWitness(
+      Uint8Array.from(digest).reverse(), 27 + signature.recovery, littleEndian(signature.r), littleEndian(signature.s),
+    );
+    try {
+      const chunkA = probeEcrecoverSplit(
+        witness, SHARED_LIBRARY_SALT, probeCoin('aa'.repeat(32)), probeCoin('bb'.repeat(32)),
+      );
+      return (placeholder = { witness, chunkA });
+    } catch (error) {
+      refusal = error;
+    }
+  }
+  throw new Error(`ecrecover: no placeholder recovery splits over two covenants: ${String(refusal)}`);
+}
+
+/**
+ * The A and B side-cars over the placeholder recovery (`ecrecoverPlaceholder`), A's pad opening with `padPrefix` when
+ * it carries an off-curve proof. Each validates on its own input; a call that does not read its slots, or reads only
+ * A's pad, takes them to hold its place.
+ */
+export function buildEcrecoverPlaceholderSidecars(
+  salt: Uint8Array, sidecarA: Utxo, sidecarB: Utxo, padPrefix?: Uint8Array, bRole: 'B' | 'B2' = 'B',
+): { unlockerA: Unlocker; recreateA: Output; unlockerB: Unlocker; recreateB: Output } {
+  const { witness, chunkA } = ecrecoverPlaceholder();
+  return buildEcrecoverComputeSidecars(witness, chunkA, salt, sidecarA, sidecarB, padPrefix, bRole);
 }
 
 export { computeEcrecoverWitness };

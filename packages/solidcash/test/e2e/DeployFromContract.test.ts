@@ -192,7 +192,8 @@ describe('StatefulContract.deployFrom()', () => {
         changeAddress: p2pkh.address,
       });
 
-      expect(result.childCategoryId).toBe(childFundingUtxo.txid);
+      expect(result.childCategoryId).toBe(result.child.categoryId);
+      expect(result.childCategoryId).not.toBe(childFundingUtxo.txid);
       expect(result.child).toBeDefined();
       expect(result.child.categoryId).toBe(result.childCategoryId);
       expect(result.tx.txid).toBeDefined();
@@ -257,7 +258,8 @@ describe('StatefulContract.deployFrom()', () => {
       });
 
       // Different funding UTXO -> different categoryId
-      expect(result.childCategoryId).toBe(childFundingUtxo2.txid);
+      expect(result.childCategoryId).toBe(result.child.categoryId);
+      expect(result.childCategoryId).not.toBe(childFundingUtxo2.txid);
       expect(result.childCategoryId).not.toBe('c2cd'.repeat(16));
 
       // Factory childCount should be 2
@@ -322,7 +324,7 @@ describe('StatefulContract.deployFrom()', () => {
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-      expect(result.child.categoryId).toBe(childFundingUtxo.txid);
+      expect(result.child.categoryId).toBe(result.childCategoryId);
       expect(result.tx.txid).toBeDefined();
       const childState = await result.child.getState();
       expect(childState.counter).toBe(0n);
@@ -366,7 +368,7 @@ describe('StatefulContract.deployFrom()', () => {
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-      expect(result.child.categoryId).toBe(childFundingUtxo.txid);
+      expect(result.child.categoryId).toBe(result.childCategoryId);
       expect(result.tx.txid).toBeDefined();
     });
 
@@ -387,7 +389,7 @@ describe('StatefulContract.deployFrom()', () => {
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-      expect(result.child.categoryId).toBe(childFundingUtxo.txid);
+      expect(result.child.categoryId).toBe(result.childCategoryId);
       expect(result.tx.txid).toBeDefined();
     });
   });
@@ -429,18 +431,6 @@ describe('StatefulContract.deployFrom()', () => {
       };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
-      // --- Predict address BEFORE deployment ---
-      // The child's categoryId will be the funding UTXO's txid. Constructing a Contract with the same artifact,
-      // args, and category (the SDK self-pin) gives the same address the create2-deployed child will have -
-      // demonstrating SDK-direct and create2 use the identical self-pin mechanism.
-      const predictedCategoryId = childFundingUtxo.txid;
-      const predictedChild = new Contract(childArtifact, [alicePkh], {
-        provider,
-        category: hexToBin(predictedCategoryId),
-      });
-      const predictedAddress = predictedChild.address;
-      const predictedTokenAddress = predictedChild.tokenAddress;
-
       // --- Deploy the child ---
       const result = await StatefulContract.deployFrom({
         provider,
@@ -456,10 +446,12 @@ describe('StatefulContract.deployFrom()', () => {
         changeAddress: p2pkh.address,
       });
 
-      // --- Verify prediction matches actual ---
-      expect(result.child.inner.address).toBe(predictedAddress);
-      expect(result.child.inner.tokenAddress).toBe(predictedTokenAddress);
-      expect(result.childCategoryId).toBe(predictedCategoryId);
+      // The category is the prep txid; a Contract built with it and the same args has the born address.
+      const predictedChild = new Contract(childArtifact, [alicePkh], {
+        provider, category: hexToBin(result.childCategoryId),
+      });
+      expect(result.child.inner.address).toBe(predictedChild.address);
+      expect(result.child.inner.tokenAddress).toBe(predictedChild.tokenAddress);
 
       factory = result.factory;
     });
@@ -605,16 +597,15 @@ describe('StatefulContract.deployFrom()', () => {
       })).rejects.toThrow('not found');
     });
 
-    it('should reject deployFrom if funding UTXO vout is not 0', async () => {
+    it('accepts prep funding at any vout (A14 item 3)', async () => {
       const childFunding: Utxo = {
         txid: 'e5cd'.repeat(16),
-        vout: 1, // invalid - must be 0
+        vout: 1,
         satoshis: 100000n,
       };
-      // No addUtxo: deployFrom validates fundingUtxo.vout before any node use, and on regtest
-      // addUtxo would back-fill vout to 0, masking the rejection this test asserts.
+      await provider.addUtxo(p2pkh.address, childFunding);
 
-      await expect(StatefulContract.deployFrom({
+      const result = await StatefulContract.deployFrom({
         provider,
         factory: deployedFactory,
         deployFunctionName: 'createChild',
@@ -624,7 +615,8 @@ describe('StatefulContract.deployFrom()', () => {
         fundingUtxo: childFunding,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
-      })).rejects.toThrow('vout 0');
+      });
+      expect(result.childCategoryId).not.toBe(childFunding.txid);
     });
   });
 });

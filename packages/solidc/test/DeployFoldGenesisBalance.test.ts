@@ -30,7 +30,7 @@ contract A {
 `;
 
 describe('folded callee that reads the child\'s own balance', () => {
-  const OPTS = { evmCompat: true };
+  const OPTS = { evmCompat: true, __legacyDeployFold: true } as never;
 
   const callee = (body: string): string => 'contract B {\n'
     + '    uint x;\n'

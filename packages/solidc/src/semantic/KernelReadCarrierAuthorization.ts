@@ -345,8 +345,8 @@ const sortedUpsertLoopAbiFields = Object.freeze({
   sameIterationMutableSelectionReplay: true, keyDecodeTupleIndex: true, keyDecodeTupleTypes: true,
   predicateArrayParam: true, predicateEquals: true, valueArrayParam: true, valueArrayIndexParam: true,
   valueArrayOffset: true, valueScalarParam: true, valueConst: true, valueBool: true, valueRuntimeLocal: true,
-  valueRuntimeExpression: true, readsWrittenEntry: true, siblingEffect: true, valueTraceWitnessParam: true,
-  valueTraceLocal: true,
+  valueRuntimeExpression: true, readsWrittenEntry: true, siblingEffect: true, pairwise: true, senderDebit: true,
+  valueTraceWitnessParam: true, valueTraceLocal: true,
   valueTraceInitial: true, valueTraceUpdates: true, valueTraceAfterUpdates: true,
   prefixCountWitnessParam: true, prefixCountCondition: true, mutation: true,
   mutationValueArrayParam: true, mutationValueArrayIndexParam: true, mutationValueScalarParam: true,
@@ -438,9 +438,11 @@ const genericJournalStreamDigest = (
   };
   const normalized: Record<string, unknown> = { collectionHash: access.collectionHash.toLowerCase() };
   for (const key of Object.keys(access).sort()) {
-    // `readsWrittenEntry` and `siblingEffect` only tell the SDK not to merge a repeated key; not stream semantics.
+    // `readsWrittenEntry`, `siblingEffect`, `pairwise` and `senderDebit` only tell the SDK which rewrites of a call keep
+    // its meaning; they are not stream semantics.
     if (key === 'collectionHash' || key === 'collection' || key === 'fixedKeyParams'
-      || key === 'iterationCounter' || key === 'readsWrittenEntry' || key === 'siblingEffect') continue;
+      || key === 'iterationCounter' || key === 'readsWrittenEntry' || key === 'siblingEffect'
+      || key === 'pairwise' || key === 'senderDebit') continue;
     const raw = (access as unknown as Record<string, unknown>)[key];
     // AST-backed descriptors can retain own-properties whose value is undefined while their serialized ABI
     // counterpart omits those fields. Both mean the same absent semantic property.

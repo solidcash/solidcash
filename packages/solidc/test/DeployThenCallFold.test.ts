@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from './direct-compile.js';
+import { compileString as compileDirect } from './direct-compile.js';
+const compileString = (source: string, options: Record<string, unknown> = {}) =>
+  compileDirect(source, { ...options, __legacyDeployFold: true });
 
 // A direct-setter call on a freshly-deployed local is FOLDED into the deploy genesis: the child is deployed
 // already-configured, in one transaction, with no co-spend of the child. See docs/deploy-then-call-fold.md.

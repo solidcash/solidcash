@@ -28,6 +28,18 @@ export class MixedCompileModeCallError extends Error {
   }
 }
 
+/**
+ * A call whose target the function writes before the call runs on a callee the caller's current state and the
+ * call's arguments do not name (ABI `targetWrittenBeforeCall`), so the builder cannot resolve it from them.
+ */
+export class ExternalCallTargetWrittenBeforeCallError extends Error {
+  constructor(functionName: string, interfaceName: string, methodName: string) {
+    super(`'${functionName}' writes the target of its call to ${interfaceName}.${methodName} before the call, so the `
+      + 'call runs on a callee the contract\'s current state and the call\'s arguments do not name. Pass the callee '
+      + 'the call runs on with withExternalCall(contract).');
+  }
+}
+
 export class UndefinedInputError extends Error {
   constructor() {
     super('Input is undefined');
@@ -282,6 +294,99 @@ export class TransactionFeePerByteTooHighError extends Error {
       `Transaction fee per byte of ${feePerByte} is higher than max fee per byte of ${maximumFeePerByte}. `
       + 'This may indicate a missing change output. Set maximumFeeSatsPerByte to override.',
     );
+  }
+}
+
+/** Which limit makes a lock unspendable: the push of its redeem script, the script as one stack item, a P2S script. */
+export type UnspendableContractLimit = 'unlocking bytecode' | 'stack item' | 'locking bytecode';
+
+/**
+ * A deployment refused before it broadcast anything: no input could ever spend the lock it would put coins at, because
+ * the contract's code is over a per-input limit of the network its provider enforces.
+ */
+export class UnspendableContractError extends Error {
+  constructor(
+    public readonly contractName: string,
+    /** The bytes of the code the lock commits to. */
+    public readonly codeBytes: number,
+    /** The fewest bytes a spend needs under `limitKind`: the redeem script's push, or the code itself. */
+    public readonly requiredBytes: number,
+    /** The network's limit, from its provider's `consensusLimits` or BCH's 10,000 bytes when it publishes none. */
+    public readonly limit: number,
+    public readonly limitKind: UnspendableContractLimit,
+  ) {
+    const reason = limitKind === 'unlocking bytecode'
+      ? `a spend pushes its ${codeBytes}-byte redeem script in ${requiredBytes} unlocking bytecode bytes, `
+        + `${requiredBytes - limit} over the network's ${limit}-byte per-input limit`
+      : limitKind === 'stack item'
+        ? `a spend pushes its ${codeBytes}-byte redeem script as one stack item, ${codeBytes - limit} over the `
+          + `network's ${limit}-byte stack item limit`
+        : `its ${codeBytes}-byte script is its locking bytecode, ${codeBytes - limit} over the network's `
+          + `${limit}-byte bytecode limit`;
+    super(`Contract '${contractName}' cannot be deployed: no input can spend its lock, as ${reason}. Nothing was `
+      + 'broadcast. Split the contract (compileFileSplit / compileStringSplit) or reduce it.');
+    this.name = 'UnspendableContractError';
+  }
+}
+
+/**
+ * Why a raw call cannot be built. A payload with bytes: no deployment is at the target (a wallet, or address(0)), none of
+ * its functions takes the payload, the one that does fails, or it names a function that declares a result and the
+ * callee's run pins no record to read. An empty payload: the target is a contract deployment, which a plain send that
+ * co-spends no callee cannot answer for. A payload with bytes sent with a `{value:}` to its co-spent callee: a direct
+ * build has nowhere to pay it that the callee would see.
+ */
+export type RawCallCalleeRequiredReason = 'no contract at the target' | 'no matching function' | 'callee fails'
+| 'no record to read' | 'plain send to a contract' | 'value to a co-spent callee';
+
+/** The sentence a refusal of `reason` gives after the call's name. */
+function rawCallRefusal(reason: RawCallCalleeRequiredReason, detail: string | undefined): string {
+  const runs = 'its payload is not empty, so its target must be co-spent and run the call';
+  const plainSend = 'Only an empty-payload call, a plain send, is answered without a callee.';
+  switch (reason) {
+    case 'no contract at the target':
+      return `${runs}, and no contract deployment is at the target. ${plainSend}`;
+    case 'no matching function':
+      return `${runs}, and the target deployment has no function for the payload. ${plainSend}`;
+    case 'callee fails':
+      return `${runs}, and the target fails the call${detail === undefined ? '' : ` (${detail})`}. ${plainSend}`;
+    case 'no record to read':
+      return 'its payload names a function that declares a result, so the caller reads its callee\'s record, and '
+        + `the callee's run pins none${detail === undefined ? '' : ` (${detail})`}.`;
+    case 'value to a co-spent callee':
+      return `its payload is not empty, so its target is co-spent and runs the call${detail === undefined ? ''
+        : ` (${detail})`}, and it sends {value:}. A direct build pays that value to the call's target address, which `
+        + 'names the callee\'s master, not its satoshi container: the master spends only a coin that carries its '
+        + 'minting NFT, so the payment could never be spent (a send refuses such an output, '
+        + 'StatefulMasterPaymentError), and the callee reads msg.value from its satoshi container, so it would run '
+        + 'as if sent nothing. Pay the callee\'s satoshi container with a transfer of its own, or call without '
+        + '{value:}.';
+    case 'plain send to a contract':
+    default:
+      return 'its payload is empty and its target is a contract deployment. A call that co-spends no callee answers '
+        + '`(true, "")` only, as an account with no code does; the EVM would run the contract\'s receive or fallback, '
+        + 'or answer `(false, "")`, and no spend states either.';
+  }
+}
+
+/**
+ * A raw low-level call refused before anything is built. A payload with bytes must run on its co-spent target, and a
+ * payload naming a function that declares a result is answered from the callee's record; the planner has no callee
+ * that does so. A call that co-spends no callee is a plain send, answered `(true, "")` only.
+ */
+export class RawCallCalleeRequiredError extends Error {
+  constructor(
+    public readonly reason: RawCallCalleeRequiredReason,
+    /** The call as its caller's ABI publishes it: the payload's function or selector, when the source names one. */
+    public readonly call: string,
+    /**
+     * The callee's own failure for `callee fails`, the callee's function for `no record to read`, the callee and its
+     * function for `value to a co-spent callee`.
+     */
+    public readonly calleeError?: string,
+  ) {
+    super(`Raw call ${call} cannot be built: ${rawCallRefusal(reason, calleeError)}`);
+    this.name = 'RawCallCalleeRequiredError';
   }
 }
 

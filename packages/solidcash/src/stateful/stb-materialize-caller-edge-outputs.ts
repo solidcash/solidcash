@@ -11,13 +11,75 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, Artifact } from '@solidcash/utils';
-import type { Output, Unlocker } from '../interfaces.js';
+import type { FunctionArgument } from '../Argument.js';
+import type { Output, UnlockableUtxo, Unlocker } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { callRecordDigest } from './call-record.js';
 
 /** Edge form byte (distinct from result-record forms 0x01/0x02) and carrier lock (OP_1 OP_NOP). */
 const CALL_EDGE_FORM = 0x03;
 const CALL_EDGE_CARRIER_LOCK = Uint8Array.of(0x51, 0x61);
+
+/**
+ * A contract caller that a build's transaction does not hold, for a call whose block runs in another transaction (a
+ * constructor's callee block, A7). Its coin holds a minting NFT of the caller's category at the caller's lock; each
+ * build spends it and carries the edge record that caller pins for the call (F1). With both the callee's run resolves
+ * `msg.sender` to that lock, as it does when the caller itself is co-spent, so what the build derives from the sender
+ * (keys, stored values and their sizes) is the caller's.
+ */
+export interface StandInCaller {
+  readonly identity: UnlockableUtxo;
+}
+
+/**
+ * Spend a stand-in caller's coin after every input, and after every output recreate it and append the edge record it
+ * pins for the call input 0 makes, of the frame as it stands; each once. None takes an index of a block. A frame with no
+ * call digest gets no record, and its run refuses the caller.
+ */
+export function appendStandInCaller(
+  caller: StandInCaller, builder: { inputs: UnlockableUtxo[]; outputs: Output[] },
+): void {
+  const { identity } = caller;
+  const category = identity.token?.category;
+  const lock = identity.unlocker.generateLockingBytecode();
+  if (!builder.inputs.some((input) => input.txid === identity.txid && input.vout === identity.vout)) {
+    builder.inputs.push(identity);
+  }
+  const recreated = builder.outputs.some((output) => output.to instanceof Uint8Array
+    && binToHex(output.to) === binToHex(lock) && output.token?.category === category
+    && output.token?.nft?.capability === identity.token?.nft?.capability);
+  if (!recreated && identity.token !== undefined) {
+    builder.outputs.push({
+      to: lock, amount: identity.satoshis,
+      token: {
+        category: identity.token.category, amount: identity.token.amount,
+        ...(identity.token.nft === undefined ? {} : { nft: { ...identity.token.nft } }),
+      },
+    });
+  }
+  const master = contractUnlockerOrUndefined(builder.inputs[0]?.unlocker);
+  if (master === undefined || category === undefined) return;
+  const artifact = (master as { contract?: { artifact?: Artifact } }).contract?.artifact;
+  let digest: Uint8Array | undefined;
+  try {
+    digest = callRecordDigest(master.abiFunction as AbiFunction, master.params as FunctionArgument[], {
+      structs: artifact?.structs ?? artifact?.stateLayout?.structs, enums: artifact?.enums,
+    });
+  } catch {
+    digest = undefined;
+  }
+  if (digest === undefined) return;
+  const commitment = binToHex(Uint8Array.of(...digest, CALL_EDGE_FORM));
+  const pinned = builder.outputs.some((output) => output.to instanceof Uint8Array
+    && binToHex(output.to) === binToHex(CALL_EDGE_CARRIER_LOCK) && output.token?.category === category
+    && output.token.nft?.commitment === commitment);
+  if (!pinned) {
+    builder.outputs.push({
+      to: CALL_EDGE_CARRIER_LOCK, amount: 1200n,
+      token: { category, amount: 0n, nft: { capability: 'none', commitment } },
+    });
+  }
+}
 
 interface EdgeGroup {
   readonly functionName: string;

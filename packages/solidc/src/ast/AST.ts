@@ -171,6 +171,14 @@ export class ContractNode extends Node implements Named {
   singleSatoshiContainer: boolean = false;
   // `pragma tokencontainer single;`: a call keeps each token container in one coin and opens no other.
   singleTokenContainer: boolean = false;
+  /** Set by code generation: the contract was compiled as record-sound (A7, B6.4). */
+  recordSound?: boolean;
+  /** Set by code generation: the flag byte of the code marker, 0 when the contract carries none. */
+  codeMarkerFlags?: number;
+  /** O4: the generator gave this direct master its code tail (`applyCodeTail`), which the compiler verifies at the end. */
+  codeTailApplied?: boolean;
+  /** Set by code generation: this contract creates a sender-reading child, so it is a marked creator (A6). */
+  createsSenderReadingChildren?: boolean;
   isAbstract: boolean = false;
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.
@@ -197,6 +205,9 @@ export class ContractNode extends Node implements Named {
   usesBlockOracle: boolean = false;
   // Set on a contract another one embeds: the pool coin kinds it and the bound contracts it creates read.
   poolTreeReads?: { readonly blockInfo?: true; readonly blockhash?: true };
+  // The deployer program's create keeps C's `__oraclePool` binding in its argument band even though its genesis
+  // block reads use the locktime: the binding is part of C's master lock, so the pin must commit to it.
+  oraclePoolBindingForGenesis?: boolean;
   // Set by SynthesizeBlockOracle when anything reads blockhash(n). The mark stays once set: a re-run on a split root
   // sees forwarders, not the reads.
   blockhashReadMarked: boolean = false;
@@ -619,9 +630,12 @@ export class FunctionDefinitionNode extends Node implements Named {
     // Redeem-script body (hex) Instantiation embeds when computing the child P2SH address. Must match the
     // SDK's child Contract body exactly; a standalone child artifact can differ (referenced-compile size).
     creationBytecode?: string;
-    // `new C{code: c}`: where the child's code comes from and the sha256 it must have.
-    code?: import('@solidcash/utils').DeployCodeSourceAbi;
-    template?: import('@solidcash/utils').DeployTemplateAbi;
+    /** B8.5: a deployer child's site reserves w_out(C) − 1 output-only slots after its deploy slot. */
+    deployerGenesisOutputs?: number;
+    /** Per contract argument of a deployer `new`: the creating function's parameter it forwards, or null. */
+    contractArgs?: (string | null)[];
+    /** The creating function's parameter a deployer `new`'s `value` comes from, or null. */
+    valueArg?: string | null;
     // True when a same-transaction child call is folded into the authenticated child genesis.
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
@@ -698,6 +712,10 @@ export class FunctionDefinitionNode extends Node implements Named {
     readsWrittenEntry?: boolean;
     /** The loop body has a per-turn effect besides this write (event, require, another write), so no repeat can merge. */
     siblingEffect?: boolean;
+    /** Each turn is fixed by its own (key, value) pair, so the SDK may reorder or merge the call's arrays. */
+    pairwise?: boolean;
+    /** With `pairwise`: each turn first debits msg.sender, and only it, by the value it credits; a self-credit nets out. */
+    senderDebit?: boolean;
     /** Source-ordered values for a loop-carried expression, authenticated in the executable source loop. */
     valueTraceWitnessParam?: string;
     valueTraceLocal?: string;
@@ -1070,6 +1088,12 @@ export class FunctionDefinitionNode extends Node implements Named {
    * is supplied as an authenticated transaction coordinate because compact delegate layouts need not preserve
    * the function's maximum block width. */
   usesDynamicChunkInputBase?: boolean;
+  /** A body of Deploy<C> compiled in genesis mode (A5): its create arm and every body the program keeps. */
+  genesisMode?: boolean;
+  /** In Deploy<C>'s create, the contract parameters, moved from the contract's own list (A4.2 item 8). */
+  deployerContractParameters?: ParameterNode[];
+  /** In Deploy<C>'s create, sha256 of C's body, which the pushed code must equal (A4.3 step 2). */
+  deployerTemplate?: Uint8Array;
   /** Per-call: the value-witness slots the body reads, recorded when the head takes over their parameters. */
   framedValueWitnessSlots?: number;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
@@ -1110,8 +1134,16 @@ export class FunctionDefinitionNode extends Node implements Named {
   // order, so its side-cars occupy the front of the shared trailing band
   keccakChainReads?: boolean;   // a direct, unbounded preimage routes through the chained START/CONT/FINAL side-cars
   // in the trailing region; the SDK co-spends one side-car per 136-byte block + the FINAL digest carrier
+  /** The parameter a chained keccak256 hashes: a recovery loop beside it counts the chain's side-cars from its length. */
+  keccakChainParam?: string;
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery TRIPLE per iteration from the
-  // forward region [master+1+3k]; the SDK co-spends N triples (N = the sig-array length)
+  // forward region [master+1+3k] (a stateful entry's after its block); the SDK co-spends one triple per iteration
+  /**
+   * A stateful entry whose every recovery is a direct call inside a runtime loop. Its block reserves no recovery
+   * slot: iteration k reads its triple at master + blockSize + 3k, the region after the block, as a keccak256 loop
+   * reads its side-cars.
+   */
+  ecrecoverTrailingLoop?: boolean;
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK
   // auto-co-spends them and the contract reads the recovered pubkey from B's output
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
@@ -1173,6 +1205,8 @@ export class ParameterNode extends Node implements Named, Typed {
    * uniform. This operand belongs to the generated route, not to the source entry point's published ABI.
    */
   kernelJournalForwardedContext = false;
+  /** A contract parameter of a deployer `create`: part of C's redeem arguments A (A4.2), not a constructor arg. */
+  deployerContractParameter = false;
 
   constructor(
     public type: Type,
@@ -1228,6 +1262,11 @@ export class StateVariableNode extends Node implements Named, Typed {
 export abstract class StatementNode extends Node {
   /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
   messageBusFixedChunkableWriteGuard?: string;
+  /**
+   * Set by the parser on the statements it lowers a state initialiser into (the variable or collection named):
+   * A4.1's `ctor-construction-order` tells a contract's initialisers from its constructor body by it.
+   */
+  stateInitializerOf?: string;
   /** Base contract that wrote this statement when its constructor is inlined into a derived one (`super` scope). */
   baseConstructorOf?: string;
   /** A top-level statement of the read-modify-write whose keys carry this `LvalueKeyTag.unit` (BindLvalueKeyEffects). */
@@ -1377,6 +1416,8 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // Synthesized binding that may legitimately go unused (e.g. a desugared `for..of` loop var);
   // suppresses the unused-variable check.
   allowUnused?: boolean;
+  /** Compiler-generated name (e.g. `__solidcash_created`): exempt from the reserved-name check. */
+  compilerGenerated?: boolean;
   // The init of a C-style `for` loop. Block-scoped in Solidity but the for desugars to a flattened
   // `{ init; while }`, so a sequential loop reusing the same name may re-declare (overwrite) it.
   isLoopVariable?: boolean;
@@ -1767,6 +1808,18 @@ export abstract class ExpressionNode extends Node {
   lvalueKey?: LvalueKeyTag;
 }
 
+/**
+ * A4.1: the keys, other than literals, of `T storage x = c[k]` bindings. The parser drops a binding and clones its keys
+ * into each use of x, where Solidity evaluates them once at the binding; `cloneNode` adds each clone of a key here.
+ */
+export const storageAliasKeys = new WeakSet<Node>();
+
+/**
+ * A4.1: the locals modifier expansion declares for a `storage` parameter whose argument is not a bare identifier. Such
+ * a local holds a copy, so the modifier's writes through the parameter are lost; `cloneNode` adds each clone here.
+ */
+export const storageParameterCopies = new WeakSet<Node>();
+
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value
 // (Solidity's assignment-as-expression, e.g. `while ((n >>= 1) > 0)`). Wraps the desugared AssignNode.
 export class AssignmentExpressionNode extends ExpressionNode {
@@ -2079,6 +2132,12 @@ export class IndirectCallNode extends ExpressionNode {
 export class InstantiationNode extends ExpressionNode {
   referencedContract?: ContractNode;
   callOptions?: CallOptions;
+  /** B8.1: this `new` creates a stateful direct child through its deployer (A3, A6). */
+  isDeployerNew?: boolean;
+  /** B8.3: the child's deployer, when it has one; its `create` ABI and constants drive the site's binding. */
+  deployerAbi?: import('@solidcash/utils').DeployerAbi;
+  /** B8.7: the child reads `msg.sender`, so this site appends X to the creator's created-children list. */
+  createsSenderReadingChild?: boolean;
   transferIndex: number = 0;
   isStatefulDeploy: boolean = false;
   deployedDataNftCount: number = 0;
@@ -2582,6 +2641,9 @@ export class HexLiteralNode extends LiteralNode<Uint8Array> {
   // runtime length): it type-checks as bytes so a NON-primary contract using it does not fail the file, but
   // codegen throws this message if a compiled contract actually reaches it. See visitHexLiteral.
   codegenError?: string;
+  // Set on the folded `I.f.selector` / `x.f.selector` of a function that declares a result: a raw call whose
+  // payload carries it reads its callee's record.
+  selectorOfReturningFunction?: true;
 
   constructor(
     public value: Uint8Array,
@@ -2654,6 +2716,7 @@ export class AbiEncodeWithSignatureNode extends ExpressionNode {
 export class AbiEncodeCallNode extends ExpressionNode {
   computedSelector?: Uint8Array; // set during semantic analysis
   resolvedParamTypes?: Type[];   // from interface function definition
+  namesReturningFunction?: true; // set during semantic analysis: the named function declares a result
   constructor(
     public interfaceName: string,
     public functionName: string,
@@ -3001,13 +3064,8 @@ export interface CallOptions {
   value?: ExpressionNode;
   gas?: ExpressionNode;
   salt?: ExpressionNode;
-  /**
-   * `new C{code: c}(...)`: the child's code is the bytes `c` rather than C's compiled body embedded in the creator.
-   * The creator requires `sha256(c)` to equal `template`, or C's own compiled code when no template is named.
-   */
-  code?: ExpressionNode;
-  /** `new C{code: c, template: t}(...)`: the sha256 of the code the child runs, chosen at run time. */
-  template?: ExpressionNode;
+  /** `new C{args: (...)}`: the child's contract parameters, in declaration order (A3). */
+  args?: ExpressionNode[];
 }
 
 export class ExternalFunctionCallNode extends ExpressionNode {
@@ -3091,6 +3149,8 @@ export interface ExternalCallArgSource {
   expression?: ExternalCallExpression;
   /** Source-level `address(this)`, distinct from physical active-input bytecode introspection. */
   logicalIdentity?: boolean;
+  /** For `msgSender`: 'tx.origin' when the source is `tx.origin`, which a nested frame's `msg.sender` is not. */
+  senderOp?: 'msg.sender' | 'tx.origin';
 }
 
 export interface ExternalCallExpression {
@@ -3162,6 +3222,9 @@ export interface ExternalCallSlot {
   };
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state)
+  // The function can write the target before the call (code generation, collectCallSiteTargets): the callee the
+  // call runs on is not the one the caller's state and arguments name before the run.
+  targetWrittenBeforeCall?: boolean;
   // Code-baked address literal target `IFoo(0x..).m()` (hex): the covenant pushes this constant as the
   // expected address instead of reading a param/state - caller-independent. A non-locking-bytecode literal
   // (e.g. a 20-byte ETH address) makes the identity check un-satisfiable (fails closed). Never a caller input.
@@ -3248,6 +3311,11 @@ export interface ExternalCallSlot {
   rawParameterTypes?: Type[];
   rawSelector?: Uint8Array;
   rawInterfaceName?: string;
+  /**
+   * A raw call whose payload names an interface function that declares a result: the caller reads its co-spent
+   * callee's record, so the call has no record-less answer and a returned `false` cannot be hidden.
+   */
+  rawReadsRecord?: boolean;
   /** The source call carries an effective `{ value: ... }` transfer. Retained independently of cloned AST nodes. */
   callValueEffect?: boolean;
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
@@ -3553,6 +3621,8 @@ export class EmitStatementNode extends StatementNode {
 
 export class TransferStatementNode extends StatementNode {
   transferIndex: number = 0;
+  /** Set when the destination is a `new` result (A6); its payment is routed to the child's satoshi container. */
+  paymentTarget?: InstantiationNode;
   /** Fixed-effect replay proof captured before helper/value lowering rewrites this operand. */
   sourceEffectRecipeProvenanceSafe?: boolean;
   /** Runtime transfer site within a lowered counter-keyed mapping loop; excluded from fixed transfer slots. */
@@ -3591,6 +3661,51 @@ export class MinerFeeStatementNode extends StatementNode {
 
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitMinerFeeStatement(this);
+  }
+}
+
+/**
+ * A4.4: an append to a constructor's collection journal. The deployer program's rewrite turns a constructor's write
+ * `m[k] = v` into one. It appends the record slot ‖ size ‖ value: the key's slot as the ordinary write path computes it,
+ * the value's size in two bytes, and the value as that path stores it (an int minimal, a struct its encoded fields).
+ * A field write `m[k].f = v` (`m[k].a.b = v`) sets `field` to the member path: the append takes the key's last value
+ * in the journal, or the default, replaces that field with `value`, and appends the whole struct.
+ */
+export class JournalAppendNode extends StatementNode {
+  collection?: CollectionNode;
+
+  constructor(
+    public journal: string,
+    public collectionName: string,
+    public keys: ExpressionNode[],
+    public value: ExpressionNode,
+    public field?: string[],
+  ) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitJournalAppend(this);
+  }
+}
+
+/**
+ * A4.4: a look into a constructor's collection journal, the rewrite of a read `m[k]`: the value of the last record
+ * whose slot is the key's, decoded, or the value type's default when there is none.
+ */
+export class JournalLookNode extends ExpressionNode {
+  collection?: CollectionNode;
+
+  constructor(
+    public journal: string,
+    public collectionName: string,
+    public keys: ExpressionNode[],
+  ) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitJournalLook(this);
   }
 }
 
@@ -3687,6 +3802,8 @@ export class TypeIntrospectionNode extends ExpressionNode {
 
 export class TokenContainerMethodStatementNode extends StatementNode {
   tokenContainerSlotIndex: number = 0;
+  /** Set when arg 0 is a `new` result (A6); its payment is routed to the child's token container. */
+  tokenPaymentTarget?: InstantiationNode;
   transferIndex: number = 0;
   /** Runtime counter-loop effect stream ownership for fungible-token or NFT transfer sites. */
   runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };

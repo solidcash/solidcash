@@ -25,7 +25,7 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 type SourceOutputs = NonNullable<VmProgram['sourceOutputs']>;
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 const CATEGORY = Uint8Array.from({ length: 32 }, (_, i) => (0x29 + i * 17) & 0xff);
 const VALUE = 20_000n;
 const vm = createVirtualMachineBch2026();
@@ -62,10 +62,10 @@ function redeemUnlock(
 ): Uint8Array {
   const args = fn.inputs.map((entry) => {
     // Fix B void record (returnOutputIdx) and F1 call edge (callEdgeOutputIdx<n>) default to a standalone compact
-    // spend (-1): no output named, nothing pinned.
+    // spend (-1): no output named, nothing pinned. An ordinary spend's genesis call is empty (B6.5).
     const value = values[entry.name] ?? (
       entry.name === '__internal__returnOutputIdx' || /^__internal__callEdgeOutputIdx\d+$/.test(entry.name)
-        ? num(-1n) : undefined);
+        ? num(-1n) : entry.name === '__internal__genesisCall' ? new Uint8Array() : undefined);
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);
     return value;
   }).reverse();

@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
 
-const contract = (body: string, members = ''): string => `pragma solidcash ^0.50.0;
+const contract = (body: string, members = ''): string => `pragma solidcash ^0.51.0;
 contract C(int amount) {
   int constant FEE = 2000;
   uint32 n;

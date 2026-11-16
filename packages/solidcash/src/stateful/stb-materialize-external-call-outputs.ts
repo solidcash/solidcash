@@ -9,7 +9,7 @@ import {
   buildChunkCommitment,
   buildEntryNftCovenantScript,
   buildEventNftCovenantScript,
-  buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   computeCollectionHash,
   computeEventNameHash,
   dynamicChunkSignature,
@@ -50,6 +50,8 @@ export interface MaterializeExternalCallOutputsHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
+  /** The records each callee's run derived, by category: they spell its rebuilt records' unchanged values. */
+  readonly externalCallDerivedRecords: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly externalCallEntryInserts: ReadonlyArray<{ categoryId: string; to: Uint8Array; commitment: string }>;
   readonly externalCallEntryOutputs: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly allInputs: readonly UnlockableUtxo[];
@@ -252,8 +254,9 @@ export function materializeExternalCallOutputs(
       const commitment = group.callBatch?.dataCommitments?.[i] ?? (nftHasUpdate ? undefined
         : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
       ?? (nftHasUpdate || !inputCommitment
-        ? buildPushdataCommitment(
+        ? buildPushdataCommitmentKeeping(
           group.stateLayout, bCurrentState, nftIdx,
+          [host.externalCallDerivedRecords.get(group.categoryId)?.get(nftIdx), inputCommitment],
           host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
         )
         : inputCommitment);
@@ -466,6 +469,14 @@ export function materializeExternalCallOutputs(
               },
             }
             : { to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: cloneToken(input.token) });
+          continue;
+        }
+
+        // A direct callee's keccak256 loop side-car: its recreation, at its own index, commits the digest.
+        const loopRecreate = group.keccakLoopStart === undefined || si < group.keccakLoopStart
+          ? undefined : group.keccakLoopRecreates?.[si - group.keccakLoopStart];
+        if (loopRecreate !== undefined) {
+          builder.addOutput(loopRecreate);
           continue;
         }
 

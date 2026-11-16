@@ -41,6 +41,31 @@ export function normalizeSolidityBytesArgument(arg: FunctionArgument, type: stri
   return lock ? lockingBytecodeToSolidityAddressPayload(lock) ?? arg : arg;
 }
 
+/**
+ * A call argument an event of the call emits, as the call passes it to the body: an `address` given as all-zero bytes
+ * is address(0), the empty value (`encodeFunctionArgument`). An event record keeps an address given as bytes, as a body
+ * pushes it, so a record built from call arguments takes them through this first.
+ */
+export function eventValueOfArgument(arg: FunctionArgument, type: string): FunctionArgument {
+  const zeroBytes = arg instanceof Uint8Array && arg.length > 0 && arg.every((byte) => byte === 0);
+  return zeroBytes && (type === 'address' || type === 'address payable') ? new Uint8Array(0) : arg;
+}
+
+/**
+ * A runtime event argument as the body emits it. A value the call passes in (a forwarded argument, an element of one,
+ * a constructor argument) is that argument as the call passes it (`eventValueOfArgument`); any other value is the
+ * body's own and stays as it is.
+ */
+export function eventValueOfSource(
+  expression: { readonly kind: string; readonly source?: { readonly kind: string } },
+  value: FunctionArgument,
+  type: string,
+): FunctionArgument {
+  const passedIn = expression.kind === 'source'
+    && ['forward', 'arrayElement', 'constructorArg'].includes(expression.source?.kind ?? '');
+  return passedIn ? eventValueOfArgument(value, type) : value;
+}
+
 /** Coerce ethers BigNumber, the testing shim, BN.js, and equivalent numeric objects to bigint. */
 function coerceNumericObject(value: object): bigint | undefined {
   const numeric = value as {

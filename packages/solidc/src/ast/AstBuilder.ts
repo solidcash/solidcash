@@ -125,6 +125,7 @@ import {
   type UsingForBinding,
   type LvalueKeyTag,
   exactArrayBounds,
+  storageAliasKeys,
 } from './AST.js';
 import { cloneNode } from './clone.js';
 import { createDefaultValueExpression } from './defaults.js';
@@ -2177,6 +2178,7 @@ export default class AstBuilder
       sv.initializer = undefined;
       const statements = [...sv.initializerPrelude, assign];
       sv.initializerPrelude = [];
+      for (const statement of statements) statement.stateInitializerOf = sv.name;
       return statements;
     };
     const orderOf = (node: Node): number => declarationOrder.get(node) ?? Number.MAX_SAFE_INTEGER;
@@ -2191,6 +2193,7 @@ export default class AstBuilder
               collection, this.collectionInitializers.get(collection)!,
             );
             statements.forEach(markInitializerContext);
+            for (const statement of statements) statement.stateInitializerOf = collection.name;
             return statements;
           },
         })),
@@ -2262,6 +2265,8 @@ export default class AstBuilder
     block.location = Location.fromCtx(ctx);
 
     // Parse parent invocations
+    // `Name(args)` items stay parent invocations here: whether Name is a base's constructor or a modifier is decided
+    // once the inheritance is known (InheritanceExpansionTransformation).
     const piCtxList = ctx.parentInvocation_list();
     if (piCtxList && piCtxList.length > 0) {
       this.pendingParentInvocations = piCtxList.map(
@@ -3219,6 +3224,7 @@ export default class AstBuilder
     if (modifiers.includes(Modifier.STORAGE) && expression) {
       const path = this.extractStorageAccessPath(expression as ExpressionNode);
       if (path) {
+        for (const key of path.keys) if (!(key instanceof LiteralNode)) storageAliasKeys.add(key);
         this.storageAliases.set(name, { ...path, access: expression as ExpressionNode });
         const dropped = new BlockNode([]);
         dropped.location = Location.fromCtx(ctx);
@@ -8251,7 +8257,6 @@ export default class AstBuilder
     return node;
   }
 
-  /** `instantiation` admits `code` and `template`, which name the code a `new` child runs. */
   private parseCallOptions(ctx: CallOptionsContext | undefined, instantiation = false): CallOptions | undefined {
     if (!ctx) return undefined;
     const options: CallOptions = {};
@@ -8262,34 +8267,37 @@ export default class AstBuilder
         throw new ParseError(`Duplicate call option '${name}'`, Location.fromCtx(opt));
       }
       seen.add(name);
-      const expr = this.visit(opt.expression()) as ExpressionNode;
-      if ((name === 'code' || name === 'template') && !instantiation) {
-        throw new ParseError(
-          `Call option '${name}' names the code a contract created with 'new' runs, and applies only to 'new'`,
-          Location.fromCtx(opt),
-        );
+      if (name === 'args') {
+        if (!instantiation) {
+          throw new ParseError(
+            'Unknown call option \'args\'. Only \'value\', \'salt\', and \'gas\' are supported',
+            Location.fromCtx(opt),
+          );
+        }
+        // `(a, b)` is a parenthesized tuple, which is only a value list here; visiting it as one would throw.
+        const inner = unwrapParens(opt.expression());
+        options.args = inner instanceof TupleExpressionContext
+          ? inner.expression_list().map((element) => this.visit(element) as ExpressionNode)
+          : [this.visit(opt.expression()) as ExpressionNode];
+        continue;
       }
+      const expr = this.visit(opt.expression()) as ExpressionNode;
       if (name === 'value') {
         options.value = expr;
       } else if (name === 'salt') {
         options.salt = expr;
-      } else if (name === 'code') {
-        options.code = expr;
-      } else if (name === 'template') {
-        options.template = expr;
       } else if (name === 'gas') {
         options.gas = expr;
         const line = this.diagLine(opt.start?.line);
         emitCompilerWarning(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
       } else {
         throw new ParseError(
-          `Unknown call option '${name}'. Only 'value', 'salt', and 'gas' are supported`
-            + (instantiation ? ', and on new also \'code\' and \'template\'' : ''),
+          `Unknown call option '${name}'. Only 'value', 'salt', and 'gas' are supported`,
           Location.fromCtx(opt),
         );
       }
     }
-    return (options.value || options.gas || options.salt || options.code || options.template) ? options : undefined;
+    return (options.value || options.gas || options.salt || options.args) ? options : undefined;
   }
 
   // Legacy 0.6.x low-level-call option syntax `target.call.value(v)(data)` / `.call.gas(g)(data)`. Desugar to the

@@ -10,6 +10,7 @@ import type { PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityRecord } from '../bcmr/identity.js';
 import type { SplitFacets } from './stateful-lifecycle-types.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
+import { assertDeploymentSpendable, assertSpendableContract } from './spendable-code.js';
 
 // Heavy value imports are deferred to method/helper bodies so that loading this
 // module (the `@solidcash/solidcash/contract-factory` entry) does not evaluate the
@@ -49,6 +50,10 @@ export interface DeployContractOptions {
    * creates states its creator's, which is the `factory` a pair records.
    */
   senderLockingBytecode?: Uint8Array;
+  /** Deploy through the artifact's Deploy<C>; an artifact without one refuses (A12). */
+  viaDeployer?: boolean;
+  /** A prep built beforehand, whose deployer coin this deployment spends. */
+  deployerPrep?: import('./deployer.js').DeployerPrep;
   /** `split: 'func'` bundle. Genesis mints a master pool at each shard lock, and funding counts those pools. */
   functionSplit?: FunctionSplitBundle;
   /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
@@ -358,6 +363,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = overrides.provider
       ?? (signer ? signer.provider : (this.runner as NetworkProvider));
+    // Code no input could spend is refused before a pool is minted or a funding coin is fanned out.
+    assertDeploymentSpendable(this.artifact, provider, overrides);
     // A pool the deployment mints goes first, in transactions of its own, so the constructor can read it.
     const { resolveDeploymentOraclePool } = await import('../oracle/pool/deployment.js');
     const masters = !this.artifact.stateLayout ? 1 : this.artifact.composition?.convention === 'framed'
@@ -395,7 +402,14 @@ export class ContractFactory<T extends Artifact = Artifact> {
         },
       } as T
       : this.artifact;
-
+    // The master's whole redeem script, before a funding coin is fanned out. Its category pin is as long for any
+    // category, and the category is the funding coin's txid. A framed master's filled program is measured where it is
+    // filled.
+    if (deployArtifact.composition?.convention !== 'framed') {
+      assertSpendableContract(new Contract(deployArtifact, constructorArgs as never, {
+        provider, addressType: overrides.addressType, category: new Uint8Array(32), salt: overrides.salt,
+      }));
+    }
     let { fundingUtxo, funder, changeAddress } = overrides;
     if (!fundingUtxo) {
       if (!signer) {
@@ -434,17 +448,25 @@ export class ContractFactory<T extends Artifact = Artifact> {
       throw new Error('ContractFactory.deploy needs a funder + changeAddress (from a Signer runner or overrides).');
     }
 
+    // A12: only the deployer path omits the logical-identity anchor; a fallback case keeps today's genesis, anchor
+    // included.
+    const { decideDeployerPath } = await import('./deployer.js');
+    const deployerPath = this.artifact.deployer !== undefined && overrides.viaDeployer !== false
+      ? decideDeployerPath(this.artifact, { ...overrides, funder, fundingUtxo })
+      : undefined;
+    const deployerArtifact = deployerPath?.path === 'deployer';
+
     if (signer) await signer.provider.prepareSigner?.(signer);
-    const nonceReservation = signer && overrides.logicalNonce !== false
+    const nonceReservation = signer && !deployerArtifact && overrides.logicalNonce !== false
       ? signer.reserveTransactionNonce() : undefined;
-    const logicalIdentity = nonceReservation ? {
+    const logicalIdentity = deployerArtifact ? undefined : nonceReservation ? {
       deployer: signer!.getAddress(), nonce: nonceReservation.nonce,
       address: deriveLogicalCreateAddress(signer!.getAddress(), nonceReservation.nonce),
     } : overrides.logicalIdentity;
     const logicalAddress = logicalIdentity?.address;
     let result: Awaited<ReturnType<typeof SC.deploy<T>>>;
     try {
-      const identityAnchors = overrides.identityAnchors ?? (logicalAddress ? [{
+      const identityAnchors = deployerArtifact ? undefined : overrides.identityAnchors ?? (logicalAddress ? [{
         to: logicalAddress,
         commitment: buildLogicalIdentityCommitment(
           logicalIdentity!.deployer, logicalIdentity!.nonce,
@@ -480,7 +502,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
-        identityAnchors,
+        ...(identityAnchors === undefined ? {} : { identityAnchors }),
+        ...(overrides.viaDeployer === undefined ? {} : { viaDeployer: overrides.viaDeployer }),
+        ...(overrides.deployerPrep === undefined ? {} : { deployerPrep: overrides.deployerPrep }),
         ...(overrides.identity === undefined ? {} : { identity: overrides.identity }),
         ...(overrides.bcmr === undefined ? {} : { bcmr: overrides.bcmr }),
         ...(overrides.nativeToken === undefined ? {} : { nativeToken: overrides.nativeToken }),

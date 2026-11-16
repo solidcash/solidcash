@@ -84,8 +84,25 @@ describe('loop-carried delta scalar-state event recurrences', () => {
     const maximum = (1n << 255n) - 1n;
     await fund();
     const safeIncrement = (3n * maximum) / 4n;
-    await expect(contract.checkedOverflow(-maximum, safeIncrement, alicePub, signature).send())
-      .resolves.toBeDefined();
+    const overflowCall = contract.checkedOverflow(-maximum, safeIncrement, alicePub, signature).send();
+    await expect(overflowCall).resolves.toBeDefined();
+    // The literal-bound loop takes an event per turn, each the total that turn reached from the 15 `accumulate` left.
+    const firstTurn = 15n + (-maximum + safeIncrement);
+    const secondTurn = firstTurn + (-maximum + 2n * safeIncrement);
+    const overflowReceipt = await (await overflowCall).wait!();
+    expect(overflowReceipt.events?.map((event) => event.args.value)).toEqual([firstTurn, secondTurn]);
+    expect(((await contract.getState()) as { total?: bigint }).total).toBe(secondTurn);
+
+    // A turn's event output with a forged commitment is refused by the script.
+    const turns = await contract.checkedOverflow(5n, 3n, alicePub, signature).build();
+    const turnsFunder = await createFeeFunder(provider, 100_000n);
+    turns.addInput(turnsFunder.utxo, turnsFunder.unlocker);
+    const turnEvent = turns.outputs.find((output) => output.token?.nft?.capability === 'none');
+    expect(turnEvent).toBeDefined();
+    turnEvent!.token!.nft!.commitment = '0101';
+    const forgedTurns = binToHex(encodeTransaction(turns.buildLibauthTransaction()));
+    expectScriptRejection(await provider.sendRawTransaction(forgedTurns)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message), 0);
 
     // The exact fallback replays this bounded local without regrouping; the original checked update remains
     // on-chain and rejects on the same source operation.

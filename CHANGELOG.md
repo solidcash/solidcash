@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.51.0
+
+All six packages move to 0.51.0 together. Source files need `pragma solidcash ^0.51.0`: a caret range on 0.x pins the
+minor version, so the compiler refuses `^0.50.0`. Like 0.50, this is a beta; it has had no outside audit.
+
+Every stateful contract on the direct convention compiles to new bytecode, so its address changes: deploy a new
+category. Measured against 0.50.1, a minimal counter grows from 1,231 to 1,416 bytes and a Solidity ERC20 from 4,880 to
+5,184. Stateless contracts (the repository's examples) and a framed contract without key recovery keep their bytes.
+
+### New
+
+- `new` of a stateful contract on the direct convention goes through a one-shot deployer coin, `Deploy<C>`, which pins
+  the child's code, constructor arguments, records and value. A constructor can call other contracts, write mappings
+  and arrays, emit events, publish BCMR metadata, read block fields and its token container, and receive value; a
+  `new` can sit in a branch or a loop, within limits the compiler names. See
+  [Contract creation](https://solidcash.org/docs/language/contract-creation).
+- `pragma satoshicontainer single` keeps a contract's satoshis in one coin and `pragma tokencontainer single` each token
+  container in one coin, so a call has one shape however much the contract holds. `this.payMinerFee` lets a container
+  pay the fee by omission, with no owner or relayer.
+- A constant-bound loop whose turns pay or emit is unrolled, so each turn has its own output.
+- A direct program within 1,000 bytes of the input limit gets an outlining pass that shares its repeated spans: the
+  NativeUsdt and OpenZeppelin ERC20 test ports, whose spending inputs were over the 10,000-byte limit, now fit.
+- A default compile takes the direct build when the message-bus build is over the input limit, and the SDK refuses to
+  deploy code that no input can spend.
+
+### Changed
+
+- Every arm of a direct stateful contract opens with an exact-stack check, and a contract whose records are sound
+  carries a genesis-call marker (`genesisCalls` is on by default; a message-bus compile takes none).
+- A raw call with a payload must co-spend its target, which runs the call; a payload naming a returning function
+  (`abi.encodeCall`, `abi.encodeWithSelector(I.f.selector, ...)`) also reads the callee's record, so the caller sees a
+  `false`. A plain send, with an empty payload, answers `(true, "")` only. An opaque `bytes` payload or
+  `abi.encodeWithSignature` still reads no record.
+- `x.call{value: v}(...)` pays its target, or is refused by name; before, the expression form paid nothing. Under
+  `evmCompat`, `transfer` and `send` pay the P2PKH lock of a 20-byte address rather than a lock of the raw bytes.
+- A call to a target the contract computes (a CREATE2 address, a keccak256 result) still takes the spender's witness for
+  its callee, and now compiles with a `[computed-call-target-unverified]` warning.
+- `ecrecoverEvm` answers `address(0)` where the EVM's precompile does (an r or s outside [1, n), an off-curve r, a key
+  at infinity, an invalid v), and a refused recovery compares equal to `address(0)`.
+- `new C{code, template}`, unreleased since 0.50.1, is gone: a direct `new` goes through `Deploy<C>`.
+
+### Fixed
+
+Each fix has a hostile test; `docs/security/security-audit-2026-10-16.md` lists them with their commits.
+
+- A call through a target holding `address(0)` accepted whatever contract the spender co-spent. It fails now, as it
+  reverts on the EVM.
+- A call was bound to its target's final value, so a function that rewrote its target after the call let the spender
+  choose the callee. A call is bound where it runs.
+- In a loop, the callee witness of a parameter-array element and a view call's answer were the spender's to choose.
+  Only a keccak256-computed loop target keeps them, with the warning above; other targets are checked or refused.
+- A payment from a runtime loop, and a message-bus kernel route's payment, did not count every coin at the satoshi
+  container, so a spender could drain a second container coin.
+- A callee's `msg.sender` could name any contract co-spent beside it; it now names a caller whose run made the call,
+  through an edge the caller pins. A direct call's arguments, and the method of a call through a single-function
+  interface, are bound to the callee's run.
+- A record written blind (every field written, none read) left its tag unchecked, so a sibling record could be
+  duplicated.
+- `m[k] = m[7] + 1` in a sorted-loop write compiled as `m[k] += 1`.
+- A Solidity-compat call to a stateful callee co-spends the callee's whole block (MasterChef's deposit goes through).
+- The direct path asks an external wallet to sign: preflight had skipped such inputs, so a wrong-key signature passed
+  on the mock.
+- A payment to a framed contract's validator address, or to a stateful master's lock, where the coin would be stuck,
+  is refused.
+
+### Known issues
+
+- Carried from 0.50.0 and not re-checked: on the direct convention, a nested callee's external call under a false guard
+  on `block.number` or `block.timestamp` spends the callee anyway, and `block.number` in a nested callee's external-call
+  arguments is unresolved.
+- A raw value-only send after a write of its target pays the value the target had when the function started; the SDK
+  refuses to fill that callee in and asks for `withExternalCall`.
+- A keccak256 chain beside a collection walk or a dynamic-state write cannot be spent, and the compiler does not refuse
+  it yet.
+- Refused by name rather than built: a constructor that writes its call target after the call, two calls through one
+  variable reassigned between them, a payment from a direct-only message-bus participant, and a typed `{value:}` call to
+  a co-spent callee.
+
 ## 0.50.1
 
 `@solidcash/solidcash` only; the other packages stay at 0.50.0, whose `^0.50.0` ranges take it.

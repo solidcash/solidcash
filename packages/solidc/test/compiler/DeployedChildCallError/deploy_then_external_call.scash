@@ -1,5 +1,5 @@
 // Non-foldable variant: the called child method itself makes an external call, so it can never be folded
-// into the deploy genesis - it must be a separate transaction. Still rejected with DeployThenCallError.
+// into the deploy genesis - it must be a separate transaction. Still rejected: a call on a `new` result is refused at its creation (DeployedChildCallError).
 pragma solidcash >=0.8.0;
 
 interface IThing {

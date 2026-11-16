@@ -134,6 +134,7 @@ export async function refreshProjectedExternalReturns(
           ? [...projectedCategoryUtxos] : baseProvider.getUtxosByTokenCategory!(categoryId)),
       }),
       getBlockHeight: () => baseProvider.getBlockHeight(),
+      getMedianTimePast: () => baseProvider.getMedianTimePast(),
       getRawTransaction: (txid) => baseProvider.getRawTransaction(txid),
       sendRawTransaction: (txHex) => baseProvider.sendRawTransaction(txHex),
       ...(baseProvider.sendPreparedTransaction && {

@@ -20,7 +20,7 @@ import {
  * does.
  */
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' contract Note {'
   + '   string public text;'
   + '   function set(string value) { this.text = value; }'

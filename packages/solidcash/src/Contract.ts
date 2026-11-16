@@ -869,15 +869,21 @@ export class Contract<
         });
 
         // Fill the synthesized pool co-spend indices (locate the pool's coins among the spent inputs);
-        // composition-safe - the reader does not assume the last input. Appended after the visible args.
+        // composition-safe - the reader does not assume the last input. Appended after the visible args, in ABI order.
         // Skipped when the caller already provided the full arg list (stateful orchestrator).
-        const synthArgs = internalsProvided ? [] : [
-          ...this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs),
-          ...this.resolveBlockOracleIndexArgs(abiFunction, sourceOutputs),
+        const synthArgs = internalsProvided ? [] : abiFunction.inputs.flatMap((input): Uint8Array[] => {
+          if (input.name === '__internal__blockhashInputIndex') {
+            return this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs);
+          }
+          if (input.name === '__internal__blockOracleInputIndex') {
+            return this.resolveBlockOracleIndexArgs(abiFunction, sourceOutputs);
+          }
           // A spend no caller made names no record.
-          ...(abiFunction.inputs.some((input) => input.name === '__internal__returnOutputIdx')
-            ? [bigIntToVmNumber(-1n)] : []),
-        ];
+          if (input.name === '__internal__returnOutputIdx') return [bigIntToVmNumber(-1n)];
+          // An ordinary call does not answer a constructor's genesis call.
+          if (input.name === '__internal__genesisCall') return [new Uint8Array()];
+          return [];
+        });
 
         // External-library contracts get a budget pad pushed on top (dropped by the redeem's OP_DROP),
         // sizing the per-input op budget to the keccak computation.

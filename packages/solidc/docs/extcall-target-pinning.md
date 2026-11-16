@@ -1,6 +1,8 @@
 # Sound external-call target pinning (state-var & constant targets)
 
-Status: DESIGN (not implemented). Supersedes the reverted Phase-1 forgery attempt (commit `a6cf8435`).
+Status: built. Supersedes the reverted Phase-1 forgery attempt (commit `a6cf8435`). Sections 1 to 11 are the
+design as written; section 12 records how the built check binds each target form, and the holes found and fixed
+on 2026-11-15.
 
 ## 1. Problem
 
@@ -186,6 +188,8 @@ choice; the on-chain script is byte-identical to production. No forgery is intro
 - **Literal/constant:** the expected address is a code-baked constant; caller-independent by construction.
   Un-satisfiable for a non-BCH-locking-bytecode value → fails closed. A genuine locking-bytecode literal
   is called for real.
+- **Every form, as built (§12):** the call is bound to the value its target holds where the call runs, and a
+  target holding `address(0)` fails. Before 2026-11-15 neither held: see §12.
 
 The forgery vector (caller-chosen target) is structurally absent: no framed caller input feeds the
 identity check in any of the three sound forms.
@@ -264,7 +268,8 @@ reasoning is not enough).
 
 ### Verdict
 
-**Fundamentally sound.** The forgery vector — a framed value the *caller* chooses at spend time feeding
+**Fundamentally sound** as designed; the built check had two holes this pass missed, fixed on 2026-11-15 (§12:
+a target rewritten after its call, and `address(0)`). The forgery vector — a framed value the *caller* chooses at spend time feeding
 the identity check — is structurally absent in all three sound forms:
 
 - parameter: the caller choosing the target *is* the semantics of `IFoo(paramAddr).m()`;
@@ -298,7 +303,8 @@ No new value that the caller controls at spend time is admitted into `emitExtern
 6. **Debug seed leaking to production:** there is no debug-only covenant (§5). A genesis seed is a
    deploy-time deployer choice; the script is identical to production. Nothing to leak.
 7. **Reentrancy / cross-call state consistency:** BCH scripts are flat and atomic (no temporal invoke), so
-   the EVM reentrancy class is structurally absent; the external call reads the *input* (pre-tx) `sv`.
+   the EVM reentrancy class is structurally absent. The call is bound to the value `sv` holds where the call
+   runs: the input value, or the value the function wrote before the call (§12).
 
 ### ABI-shape trust is INHERITED, not introduced
 
@@ -334,10 +340,67 @@ These are not design weaknesses but MUST be enforced or they reintroduce risk:
   (`if (false) IFoo(0xLit).m();`). This differs from EVM (dead code does not run) but fails **closed**, so
   it is a completeness gap, not a soundness one. Consider a compile-time diagnostic when a function
   contains a provably-un-satisfiable literal call.
-- **Same-tx read of `sv`.** The external call uses the input (old) `sv`, not a value written earlier in the
-  same tx — a known same-tx-read limitation, not specific to this feature.
+- **Same-tx read of `sv`.** The call is bound to the value `sv` holds where it runs, a value written earlier in
+  the function included (§12). A chain through a collection entry is read again at the call, or the function is
+  refused (§12).
 
 ### Merge gate
 
 Ship only behind the §8 adversarial matrix (attacks 1, 3, 5 above are the load-bearing negatives), plus a
 byte-identical-bytecode regression for the untouched param / interface-typed-state-var paths.
+
+## 12. As built: where each form is bound, and the 2026-11-15 fixes
+
+The check runs after the body. Each form gives it the expected address as follows:
+- a parameter, a local or a branch capture: picked off the stack by name;
+- a literal: a baked push;
+- a state variable: read from the contract's own state;
+- a computed target with a keccak256 hash: a witness the spender supplies (below).
+
+**Bound where the call runs.** A target that can change after its call reads a register its call site fills:
+- a state variable the function writes, itself, through the functions it calls by name, through every function
+  when it calls through a function value, or through the journal slots its handlers write; assembly counts as
+  writing every field;
+- a local, a parameter or a branch capture written after the call, or written in a loop that also holds the call;
+- a runtime ternary target with such an operand;
+- a stored function pointer's runtime selector that reads such a variable.
+
+A variable that is never written, or written only before the call, keeps its read after the body, and its bytes.
+Before `f2d0b2b3b` and `6669a5a89` the check read the final value, so `last = IOracle(oracle).price(); oracle = o;`
+let the spender pick the callee through `o` (TARGET-2 in `docs/security/security-audit-2026-10-16.md`).
+
+A chain target is read into a compiler local at the top of the body. When the function writes what the chain reads
+before the call (`feed = Feed(IOracle(s), 2); feed.source.price();`), the call site reads the chain again into a
+register (`e675d87e9`), so the call goes where the EVM's would. A chain through a collection entry
+(`IOracle(feeds[k]).price()`) is read again at the call when every write before it is a straight-line write of that
+same entry. Any other write before the call, in a branch or a loop, of another key or through a function it calls,
+is refused at compile time, `ENTRY_TARGET_WRITTEN_BEFORE_CALL` (`842860db9`): there the read would take the
+entry from before the write.
+
+The artifact marks each call whose target the function can write before it (`externalCalls[i].targetWrittenBeforeCall`).
+The SDK resolves a stored callee from the caller's input state, so it refuses to resolve such a callee itself,
+`ExternalCallTargetWrittenBeforeCallError`: pass it with `withExternalCall(contract)`. The flag is static, so a call
+whose earlier write sits in a branch needs the callee passed even on a run that skips the write.
+
+**`address(0)` fails.** The check refuses an empty expected address, and an empty candidate lock on the 20-byte
+path, as the EVM's call reverts. Before `4030a5bc2` an empty target was taken for a delegate's legacy sentinel, and
+the check compared the co-spent lock with itself, so any callee passed (TARGET-1).
+
+**Computed targets are the spender's choice.** `IPair(pairFor(factory, a, b)).swap(...)` names a CREATE2 address,
+which no BCH lock equals. The contract takes the callee from a witness (`__internal__computedCallTarget<N>`, or
+`__internal__loopTargets<n>` in a loop) and never compares it with the computed value, so routers work and the
+spender may name any contract. In a loop that calls such a target more than once, its view calls take answers the
+spender supplies (`__internal__viewReturn<n>`), which nothing checks. Each such call, and each such view call,
+warns, `[computed-call-target-unverified]` (TARGET-3): before relying on the callee's answers to release funds, call
+through an address the contract stores (a registry lookup) instead of a computed one. Only a target computed with
+keccak256 is taken this way. Any other loop target, a plain element of a parameter array included, is checked
+against the witness, and two or more calls through one such loop local are refused at compile time,
+`LoopLocalRepeatedCallsError` (TARGET-4).
+
+**Low-level calls** pin their target the same way, and refuse an empty one. Whether a raw call must co-spend its
+target, read its callee's record, or may answer with nothing co-spent is set in `call-model.md` section 5
+(TARGET-5).
+
+Tests: `ZeroAddressCallTarget.e2e.test.ts`, `StateTargetCallSite.e2e.test.ts` (state, local, parameter, branch,
+ternary, pointer-selector, stored-chain and collection-entry targets), `ComputedCallTargetWarning.test.ts` and
+`LoopTargetProvenance.test.ts` (a plain element checked against a registry).

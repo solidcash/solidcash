@@ -11,6 +11,12 @@ import {
   ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import {
+  CODE_MARKER_MARKED_CREATOR, CODE_MARKER_RECORD_SOUND, CodeTailError, verifyCodeTail,
+} from './generation/CodeTail.js';
+import { ArmHeadError, verifyArmHeads } from './generation/ArmHeads.js';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { sha256 as sha256Bytes } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
@@ -41,6 +47,7 @@ import {
   scriptToBytecode, bytecodeToScript, asmToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   type AbiFunction, type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle,
+  type DeployerAbi, type FunctionBlockLayout, type BlockSlotKind,
   type SplitStateFootprint, StructType, TupleType,
   type Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
@@ -111,6 +118,7 @@ import {
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, InterfaceFunctionNode, InterfaceNode,
   ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
+  ExpressionStatementNode,
   IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayNode, NewArrayNode,
@@ -126,16 +134,19 @@ import {
   SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
-  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
+  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, MinerFeeStatementNode,
   WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
   type ExternalCallExpression,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
-  exactArrayLength,
+  exactArrayLength, TimeOpNode, type CustomModifierInvocation,
 } from './ast/AST.js';
+import { YulFunctionCallNode } from './ast/YulAST.js';
 import AstBuilder, { lvalueKeyUnitsBuilt } from './ast/AstBuilder.js';
-import { Class, GlobalFunction } from './ast/Globals.js';
+import { Class, GlobalFunction, TimeOp } from './ast/Globals.js';
 import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
-import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
+import GenerateTargetTraversal, {
+  assertKeccakLoopBand, assertRecoveryLoopBand,
+} from './generation/GenerateTargetTraversal.js';
 import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
@@ -265,6 +276,9 @@ import ReuseEntryLocalForWriteback from './semantic/ReuseEntryLocalForWriteback.
 import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers, { validateModifierDefinitions } from './semantic/ModifierExpansionTransformation.js';
+import {
+  checkConstructorCollectionShapes, constructorReachesCollections, journalAppendSites, rewriteConstructorJournals,
+} from './semantic/RewriteConstructorJournals.js';
 import FoldHashLiterals from './semantic/FoldHashLiterals.js';
 import LowerRuntimeSignatureSelectors from './semantic/LowerRuntimeSignatureSelectors.js';
 import FoldConstantBoolBranches from './semantic/FoldConstantBoolBranches.js';
@@ -282,14 +296,19 @@ import { ImportResolver } from './ImportResolver.js';
 import { createMapResolver } from './createMapResolver.js';
 import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
 import { compileFunctionSplit } from './split/function-split.js';
+import { DEPLOYER_SELECTOR_CREATE, DEPLOYER_SELECTOR_SWEEP, deployerConstantsOf } from './generation/deployerConstants.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
   UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
-  ChildGenesisFoldError,
+  ChildGenesisFoldError, DeployerUnsupportedWarning, DeployerUnsupportedError, DeployerInternalError,
+  DeployCycleError,
 } from './Errors.js';
+import {
+  compilesInDirectConvention, type DeployerChild,
+} from './generation/deployerChildren.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
@@ -612,6 +631,1031 @@ type CaughtCompilerAttempt = {
   internalCodegen: boolean;
 };
 type InternalAttemptFailureState = { firstError?: unknown };
+/** Facts the B7.3 deployer program publishes for the artifact B7.14 writes. */
+interface DeployerProgramBox {
+  callSlots?: number;
+  /** The child's master lock commits to `__oraclePool`; create must pin it even though genesis reads the locktime. */
+  oraclePoolBinding?: boolean;
+  constructorReadsSender?: boolean;
+  readsBlockData?: boolean;
+  constructorBlockField?: 'number' | 'timestamp';
+  sidecars?: { keccak: number; ecrecover: number };
+  satoshiContainer?: 'none' | 'optional' | 'required';
+  genesisOutputs?: number;
+  collectionRows?: { collection: string; appendSites: number }[];
+  /** A4.4: each written collection's journal, as a depth from the bottom of `create`'s stack at step 12. */
+  journalDepths?: Record<string, number>;
+  /** Set when a `ctor-…` reason ends the deployer build. */
+  reason?: string;
+  /** Test hook: raise this `ctor-…` reason, for a reason with no known source shape. */
+  forceReason?: string;
+  /** The dispatched arms the finished program carries, by internal name. */
+  arms?: string[];
+  /** Contract parameter names, the band of A4.2's A in `create`'s inputs. */
+  contractParameterNames?: string[];
+}
+
+/** The two protocol selectors of A4.2, independent of `evmCompat`. */
+
+/** B7.14: the smallest `create` unlocking, with every unbounded parameter at length 0. */
+function smallestCreateUnlockingSize(
+  inputs: readonly { name: string; type: string }[], codeLength: number, redeemLength: number,
+  callSlots: number,
+): number {
+  const pushHeader = (length: number): number =>
+    length < 0x4c ? 1 : length <= 0xff ? 2 : length <= 0xffff ? 3 : 5;
+  const argumentSize = (input: { name: string; type: string }): number => {
+    if (input.name === '__internal__code') return pushHeader(codeLength) + codeLength;
+    const fixed = /^bytes([0-9]+)$/.exec(input.type);
+    if (fixed !== null) return 1 + Number(fixed[1]);
+    if (input.type === 'address' || input.type === 'address payable') return 21;
+    return 1;
+  };
+  const calleeList = callSlots === 0 ? 1 : 1 + 2 * callSlots;
+  return 5 + calleeList + inputs.reduce((total, input) => total + argumentSize(input), 0)
+    + pushHeader(redeemLength) + redeemLength;
+}
+
+/** B7.15: the serialized size of a sweep at 1 sat/B, from its unlocking: selector, redeem push, one P2PKH output. */
+function sweepTransactionSize(redeemLength: number): number {
+  const pushHeader = redeemLength < 0x4c ? 1 : redeemLength <= 0xff ? 2 : redeemLength <= 0xffff ? 3 : 5;
+  const unlockingLength = 5 + pushHeader + redeemLength;
+  const varint = unlockingLength < 0xfd ? 1 : unlockingLength <= 0xffff ? 3 : 5;
+  return 4 + 1 + 36 + varint + unlockingLength + 4 + 1 + 8 + 1 + 25 + 4;
+}
+
+/**
+ * B7.3: rename the constructor `create` and add `sweep`. The constructor keeps the internal name `__construct`
+ * so every constructor-keyed rule (genesis reads, the delete refusal, the token-container rules, and the
+ * constructor branch of code generation) applies to its body.
+ */
+function prepareDeployerContract(ast: Ast, options: InternalCompilerOptions): void {
+  const contract = ast.contract;
+  const location = contract.location;
+  const create = contract.constructorDef ?? new FunctionDefinitionNode(
+    '__construct', [],
+    (() => {
+      const body = new BlockNode([]);
+      body.location = location;
+      return body;
+    })(),
+  );
+  create.name = '__construct';
+  create.location = location;
+  create.functionSelector = DEPLOYER_SELECTOR_CREATE;
+  if (options.__deployerProgram !== undefined) {
+    create.deployerTemplate = sha256Bytes.hash(options.__deployerProgram.constants.code);
+  }
+
+  // Keep exactly the functions the constructor reaches. Every other body would either become an arm or fail in
+  // genesis mode for a reason the source never asked about.
+  const functionsByName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of contract.functions) {
+    const group = functionsByName.get(fn.name) ?? [];
+    group.push(fn);
+    functionsByName.set(fn.name, group);
+  }
+  const reached = new Set<FunctionDefinitionNode>();
+  const queue = [create];
+  while (queue.length > 0) {
+    const fn = queue.pop()!;
+    if (reached.has(fn)) continue;
+    reached.add(fn);
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof FunctionCallNode) {
+        for (const callee of functionsByName.get(node.identifier.name) ?? []) queue.push(callee);
+      }
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+  }
+  contract.functions = contract.functions.filter((fn) => reached.has(fn));
+  for (const fn of reached) fn.genesisMode = true;
+  // B7.3: a kept function is a body `create` calls, never an arm. A public or external one (OpenZeppelin's
+  // `decimals()` under a premint, say) would otherwise become a third arm of Deploy<C>, which O1 forbids.
+  for (const fn of reached) {
+    if (fn === create || fn.isFallback || fn.isReceive) continue;
+    if (fn.visibility === 'internal' || fn.visibility === 'private') continue;
+    fn.modifiers = [...fn.modifiers.filter((modifier) => modifier !== FunctionModifier.PUBLIC
+      && modifier !== FunctionModifier.EXTERNAL), FunctionModifier.INTERNAL];
+  }
+  // A2/A5: every body this program keeps is a genesis body. Its block reads come from the locktime, so it takes
+  // no `__oraclePool` binding and no block-oracle input index; the pool is only for a live call of C.
+  contract.usesBlockOracle = false;
+  contract.usesBlockhash = false;
+  contract.constructorDef = undefined;
+  contract.fallbackDef = undefined;
+  contract.receiveDef = undefined;
+
+  const requireStatement = (expression: ExpressionNode): RequireNode => {
+    const node = new RequireNode(expression);
+    node.location = location;
+    return node;
+  };
+  const int = (value: bigint): IntLiteralNode => {
+    const node = new IntLiteralNode(value);
+    node.location = location;
+    return node;
+  };
+  const binary = (left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode => {
+    const node = new BinaryOpNode(left, operator, right);
+    node.location = location;
+    return node;
+  };
+  const age = new TimeOpNode(TimeOp.CHECK_SEQUENCE, int(1440n));
+  age.location = location;
+  const outputs = new NullaryOpNode(NullaryOperator.OUTPUT_COUNT);
+  outputs.location = location;
+  const outputCategory = new UnaryOpNode(UnaryOperator.OUTPUT_TOKEN_CATEGORY, int(0n));
+  outputCategory.location = location;
+  const emptyCategory = new HexLiteralNode(new Uint8Array(0));
+  emptyCategory.location = location;
+  const sweepBody = new BlockNode([
+    age,
+    requireStatement(binary(outputs, BinaryOperator.EQ, int(1n))),
+    requireStatement(binary(outputCategory, BinaryOperator.EQ, emptyCategory)),
+  ]);
+  sweepBody.location = location;
+  const sweep = new FunctionDefinitionNode('__solidcash_sweep', [], sweepBody);
+  sweep.location = location;
+  sweep.functionSelector = DEPLOYER_SELECTOR_SWEEP;
+  sweep.modifiers.push(FunctionModifier.PUBLIC, FunctionModifier.UNSAFE);
+  sweep.unsafeTier = 0;
+  contract.functions.push(create, sweep);
+  if (options.__deployerTestBox?.thirdArm === true) {
+    const thirdBody = new BlockNode([requireStatement(new BoolLiteralNode(true))]);
+    thirdBody.location = location;
+    const third = new FunctionDefinitionNode('__solidcash_third_arm', [], thirdBody);
+    third.location = location;
+    third.functionSelector = Uint8Array.from([0xde, 0xad, 0xbe, 0xef]);
+    third.modifiers.push(FunctionModifier.PUBLIC);
+    contract.functions.push(third);
+  }
+  void options;
+}
+
+/**
+ * B7.3: compile Deploy<C> from C's pristine resolved tree. The program carries only `create` and `sweep`; its
+ * artifact is the redeem script A13 publishes, and the box carries what B7.14 needs from the second compile.
+ */
+/**
+ * A2: C reads block data when a function other than its constructor reads `block.*` (or reaches a reader by a
+ * named call). The constructor's own reads come from the locktime (A5) and need no oracle.
+ */
+function liveFunctionReadsBlockData(contract: ContractNode): boolean {
+  if (contract.fallbackDef?.usesBlockOracle === true || contract.receiveDef?.usesBlockOracle === true) return true;
+  return contract.functions.some((fn) => fn.isEntryPoint === true && fn.usesBlockOracle === true);
+}
+
+/** B7.5 `ctor-base-argument`: a base constructor argument must not read state or have a side effect. */
+/**
+ * C and every contract it derives from in the pristine source, before inheritance expansion. A contract's direct
+ * bases are the names of its `is` list that name a contract of the source; an interface adds nothing.
+ */
+function sourceInheritance(sourceAst: Ast): {
+  root: ContractNode;
+  contracts: ContractNode[];
+  byName: Map<string, ContractNode>;
+  ancestorsOf: (contract: ContractNode) => Set<ContractNode>;
+  /** How many distinct paths of the inheritance graph lead from C to the contract, saturating at 2. */
+  pathsTo: (contract: ContractNode) => number;
+  /**
+   * The contract's base constructor invocations and its constructor's modifier invocations. The parser keeps a
+   * header item written with arguments, `B(x)` or `m(x)`, among the contract's parent invocations, and one without
+   * among the constructor's modifiers: a name that is a modifier of the inheritance and not a contract is a modifier.
+   */
+  baseInvocationsOf: (contract: ContractNode) => CustomModifierInvocation[];
+  modifierInvocationsOf: (contract: ContractNode) => CustomModifierInvocation[];
+} {
+  const root = sourceAst.contract;
+  const byName = new Map<string, ContractNode>();
+  for (const contract of [root, ...sourceAst.importedContracts]) {
+    if (!byName.has(contract.name)) byName.set(contract.name, contract);
+  }
+  const basesOf = (contract: ContractNode): ContractNode[] => (contract.implements ?? [])
+    .map((name) => byName.get(name))
+    .filter((base): base is ContractNode => base !== undefined && base !== contract);
+  const contracts: ContractNode[] = [];
+  const reached = new Set<ContractNode>();
+  const reach = (contract: ContractNode): void => {
+    if (reached.has(contract)) return;
+    reached.add(contract);
+    contracts.push(contract);
+    for (const base of basesOf(contract)) reach(base);
+  };
+  reach(root);
+  const ancestorMemo = new Map<ContractNode, Set<ContractNode>>();
+  const ancestorsOf = (contract: ContractNode): Set<ContractNode> => {
+    const known = ancestorMemo.get(contract);
+    if (known !== undefined) return known;
+    const result = new Set<ContractNode>();
+    ancestorMemo.set(contract, result); // a cycle, which the front end refuses elsewhere, ends here
+    for (const base of basesOf(contract)) {
+      result.add(base);
+      for (const ancestor of ancestorsOf(base)) result.add(ancestor);
+    }
+    return result;
+  };
+  const pathMemo = new Map<ContractNode, number>();
+  const pathsTo = (contract: ContractNode): number => {
+    if (contract === root) return 1;
+    const known = pathMemo.get(contract);
+    if (known !== undefined) return known;
+    pathMemo.set(contract, 0);
+    let count = 0;
+    for (const parent of contracts) {
+      for (const base of basesOf(parent)) if (base === contract) count += pathsTo(parent);
+    }
+    const saturated = Math.min(count, 2);
+    pathMemo.set(contract, saturated);
+    return saturated;
+  };
+  const modifierNames = new Set(contracts.flatMap((contract) => (contract.modifierDefinitions ?? [])
+    .map((modifier) => modifier.name)));
+  const isModifier = (name: string): boolean => modifierNames.has(name) && !byName.has(name);
+  const headerInvocations = (contract: ContractNode): CustomModifierInvocation[] => [
+    ...(contract.parentInvocations ?? []).map((invocation) => ({
+      name: invocation.parentName, args: invocation.args ?? [], location: invocation.location,
+    })),
+    ...(contract.constructorDef?.customModifiers ?? []),
+  ];
+  const baseInvocationsOf = (contract: ContractNode): CustomModifierInvocation[] => headerInvocations(contract)
+    .filter((invocation) => !isModifier(invocation.name));
+  const modifierInvocationsOf = (contract: ContractNode): CustomModifierInvocation[] => headerInvocations(contract)
+    .filter((invocation) => isModifier(invocation.name));
+  return { root, contracts, byName, ancestorsOf, pathsTo, baseInvocationsOf, modifierInvocationsOf };
+}
+
+/**
+ * A4.1 `ctor-base-argument`: a base constructor argument that reads state or has a side effect. Every base
+ * invocation of C's inheritance counts, in an `is` list or in a constructor's header, and state is every field and
+ * collection any contract of the inheritance declares. A constructor modifier's arguments are not base arguments;
+ * they belong to the modifier's unit (`ctor-construction-order`).
+ */
+function baseConstructorArgumentReadsState(sourceAst: Ast): boolean {
+  const { contracts, baseInvocationsOf } = sourceInheritance(sourceAst);
+  const stateNames = new Set(contracts.flatMap((contract) => [
+    ...contract.stateVariables.map((state) => state.name),
+    ...(contract.collections ?? []).map((collection) => collection.name),
+  ]));
+  const baseArguments = contracts.flatMap((contract) => baseInvocationsOf(contract)
+    .flatMap((invocation) => invocation.args));
+  {
+    for (const argument of baseArguments) {
+      let found = false;
+      walkInvocationAst(argument, (visited) => {
+        if (visited instanceof MappingAccessNode || visited instanceof StateAccessNode
+          || visited instanceof MappingAssignNode || visited instanceof MappingFieldAssignNode
+          || visited instanceof MappingDeleteNode || visited instanceof AssignmentExpressionNode
+          || (visited instanceof FieldAccessNode && visited.name === 'balance')) {
+          found = true;
+        }
+        if (visited instanceof IdentifierNode && stateNames.has(visited.name)) found = true;
+        if (visited instanceof FunctionCallNode) found = true;
+        if (visited instanceof UnaryOpNode && (visited.operator === UnaryOperator.PREFIX_INCREMENT
+          || visited.operator === UnaryOperator.PREFIX_DECREMENT || visited.operator === UnaryOperator.POSTFIX_INCREMENT
+          || visited.operator === UnaryOperator.POSTFIX_DECREMENT)) found = true;
+      }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+      if (found) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A4.1 `ctor-construction-order`: construction that could depend on an order in which the front end builds a
+ * contract differently from solc. The front end orders sibling bases in reverse, runs a constructor's modifiers
+ * before its contract's state initialisers, may build a shared base once per path, and solc's two code generators
+ * themselves order initialisers differently. Decided on the pristine source, per contract K of C's inheritance,
+ * over K's units: its state initialisers (the statements the parser tags `stateInitializerOf`), its constructor
+ * modifiers (every definition of the name in the inheritance, both parts and the arguments), and its constructor
+ * body. Refused, as the spec says: units of two contracts neither of which derives from the other that touch the
+ * same state; an initialiser of K and a unit of a base of K that do; a constructor modifier of K and an
+ * initialiser of K that do; and a contract reached by more than one path that has a unit.
+ *
+ * State is every field and collection, told apart by the contract that declares it, and the satoshi balance. A
+ * unit touches what any node of it names, in its contract's scope, and what every definition it calls by name
+ * touches, transitively, with their modifiers; an assembly block touches everything. A read counts as a write, so
+ * this refuses two units that only read the same state, which the spec allows: it errs toward refusing.
+ * Returns why, or undefined.
+ */
+function constructionOrderDependence(sourceAst: Ast): string | undefined {
+  const { root, contracts, ancestorsOf, pathsTo, modifierInvocationsOf } = sourceInheritance(sourceAst);
+  const EVERYTHING = '*';
+  const BALANCE = '(balance)';
+  const declarations = (contract: ContractNode, inherited: boolean): Set<string> => new Set([
+    ...contract.stateVariables
+      .filter((state) => !state.isTransient && !(inherited && state.visibility === StateVariableVisibility.PRIVATE))
+      .map((state) => state.name),
+    ...(contract.collections ?? [])
+      .filter((collection) => !(inherited && collection.visibility === StateVariableVisibility.PRIVATE))
+      .map((collection) => collection.name),
+  ]);
+  const own = new Map(contracts.map((contract) => [contract, declarations(contract, false)]));
+  const inheritable = new Map(contracts.map((contract) => [contract, declarations(contract, true)]));
+  // The state a name means in a scope: the scope's own declaration, else an inherited one. A library or a free
+  // function (no scope) may be given the consumer's layout by this front end, so it means every declaration.
+  const resolve = (scope: ContractNode | undefined, name: string): string[] => {
+    if (scope === undefined) {
+      return contracts.filter((contract) => own.get(contract)!.has(name)).map((contract) => `${contract.name}.${name}`);
+    }
+    if (own.get(scope)?.has(name)) return [`${scope.name}.${name}`];
+    return [...ancestorsOf(scope)].filter((ancestor) => inheritable.get(ancestor)?.has(name))
+      .map((ancestor) => `${ancestor.name}.${name}`);
+  };
+  type Facts = { touches: Set<string>; calls: Set<string> };
+  const addCall = (facts: Facts, name: string): void => {
+    facts.calls.add(name);
+    // `K.f`, `super.f`, a library's `L.f` and a bound `x.f` all count as the name f, with every overload of it.
+    if (name.includes('.')) facts.calls.add(name.slice(name.lastIndexOf('.') + 1));
+  };
+  const directFacts = (roots: readonly unknown[], scope: ContractNode | undefined): Facts => {
+    const facts: Facts = { touches: new Set<string>(), calls: new Set<string>() };
+    const seen = new Set<object>();
+    for (const rootNode of roots) {
+      walkInvocationAst(rootNode, (visited) => {
+        if (visited instanceof TransferStatementNode || visited instanceof AddressTransferStatementNode
+          || visited instanceof AddressSendExpressionNode || visited instanceof MinerFeeStatementNode) {
+          facts.touches.add(BALANCE);
+        }
+        if ((visited instanceof FieldAccessNode || visited instanceof StateAccessNode) && visited.name === 'balance') {
+          facts.touches.add(BALANCE);
+        }
+        if (visited instanceof AssemblyStatementNode) facts.touches.add(EVERYTHING);
+        if (visited instanceof FunctionCallNode) addCall(facts, visited.identifier.name);
+        if (visited instanceof MethodCallNode) addCall(facts, visited.methodName);
+        const name = (visited as { name?: unknown }).name;
+        if (typeof name === 'string') {
+          for (const key of resolve(scope, name)) facts.touches.add(key);
+          if (name.includes('.')) {
+            for (const key of resolve(scope, name.slice(name.lastIndexOf('.') + 1))) facts.touches.add(key);
+          }
+        }
+      }, seen, { pruneLiteralDeadControlFlow: false });
+    }
+    return facts;
+  };
+  // Every definition a name may call: a function of the inheritance, of a library or free, and a modifier.
+  type Definition = { roots: unknown[]; scope: ContractNode | undefined; modifiers: readonly CustomModifierInvocation[] };
+  const definitionsByName = new Map<string, Definition[]>();
+  const define = (name: string, definition: Definition): void => {
+    for (const key of new Set([name, name.slice(name.lastIndexOf('.') + 1)])) {
+      definitionsByName.set(key, [...(definitionsByName.get(key) ?? []), definition]);
+    }
+  };
+  for (const contract of contracts) {
+    for (const fn of contract.functions) {
+      define(fn.name, { roots: [fn.body], scope: contract, modifiers: fn.customModifiers ?? [] });
+    }
+    for (const modifier of contract.modifierDefinitions ?? []) {
+      define(modifier.name, { roots: modifier.statements, scope: contract, modifiers: [] });
+    }
+  }
+  for (const library of sourceAst.importedContracts.filter((contract) => contract.isLibraryContract)) {
+    for (const fn of library.functions) {
+      define(fn.name, { roots: [fn.body], scope: undefined, modifiers: fn.customModifiers ?? [] });
+    }
+  }
+  for (const fn of sourceAst.freeFunctions ?? []) {
+    define(fn.name, { roots: [fn.body], scope: undefined, modifiers: fn.customModifiers ?? [] });
+  }
+  const definitionFacts = new Map<Definition, Facts>();
+  const factsOf = (definition: Definition): Facts => {
+    const known = definitionFacts.get(definition);
+    if (known !== undefined) return known;
+    const facts = directFacts([...definition.roots, ...definition.modifiers.flatMap((invocation) => invocation.args)],
+      definition.scope);
+    for (const invocation of definition.modifiers) facts.calls.add(invocation.name);
+    definitionFacts.set(definition, facts);
+    return facts;
+  };
+  const closure = (direct: Facts): Set<string> => {
+    const touches = new Set(direct.touches);
+    const pending = [...direct.calls];
+    const followed = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.pop()!;
+      if (followed.has(name)) continue;
+      followed.add(name);
+      for (const definition of definitionsByName.get(name) ?? []) {
+        const facts = factsOf(definition);
+        for (const key of facts.touches) touches.add(key);
+        pending.push(...facts.calls);
+      }
+    }
+    return touches;
+  };
+  type Units = { initialisers: Set<string>; modifiers: Set<string>; all: Set<string>; constructs: boolean };
+  const unitsOf = (contract: ContractNode): Units => {
+    const constructorDef = contract.constructorDef;
+    const statements: StatementNode[] = constructorDef?.body?.statements ?? [];
+    const initialiserStatements = statements.filter((statement) => statement.stateInitializerOf !== undefined);
+    const bodyStatements = statements.filter((statement) => statement.stateInitializerOf === undefined);
+    // A base invocation passes a base its arguments (`ctor-base-argument`); the modifiers are K's own units.
+    const invocations = modifierInvocationsOf(contract);
+    const initialisers = closure(directFacts(initialiserStatements, contract));
+    const body = closure(directFacts(bodyStatements, contract));
+    const modifierFacts = directFacts(invocations.flatMap((invocation) => invocation.args ?? []), contract);
+    for (const invocation of invocations) modifierFacts.calls.add(invocation.name);
+    const modifiers = closure(modifierFacts);
+    return {
+      initialisers,
+      modifiers,
+      all: new Set([...initialisers, ...modifiers, ...body]),
+      constructs: statements.length > 0 || invocations.length > 0,
+    };
+  };
+  const overlap = (left: Set<string>, right: Set<string>): boolean => {
+    if (left.size === 0 || right.size === 0) return false;
+    if (left.has(EVERYTHING) || right.has(EVERYTHING)) return true;
+    for (const key of left) if (right.has(key)) return true;
+    return false;
+  };
+  const units = new Map(contracts.map((contract) => [contract, unitsOf(contract)]));
+  for (const contract of contracts) {
+    if (contract !== root && pathsTo(contract) > 1 && units.get(contract)!.constructs) {
+      return `'${contract.name}' is reached through more than one base of '${root.name}' and has construction, `
+        + 'which the front end may run once per path';
+    }
+  }
+  for (const [index, left] of contracts.entries()) {
+    for (const right of contracts.slice(index + 1)) {
+      if (ancestorsOf(left).has(right) || ancestorsOf(right).has(left)) continue;
+      if (overlap(units.get(left)!.all, units.get(right)!.all)) {
+        return `the constructions of '${left.name}' and '${right.name}', neither of which derives from the other, `
+          + 'touch the same state, and the front end orders sibling bases differently from solc';
+      }
+    }
+  }
+  for (const contract of contracts) {
+    const ownUnits = units.get(contract)!;
+    for (const base of ancestorsOf(contract)) {
+      if (overlap(ownUnits.initialisers, units.get(base)!.all)) {
+        return `a state initialiser of '${contract.name}' touches state the construction of its base `
+          + `'${base.name}' touches, and solc's code generators order the two differently`;
+      }
+    }
+    if (overlap(ownUnits.modifiers, ownUnits.initialisers)) {
+      return `a constructor modifier of '${contract.name}' touches state its state initialisers touch, and the `
+        + 'front end runs the modifier first where solc runs the initialisers first';
+    }
+  }
+  return undefined;
+}
+
+function compileDeployerProgram(
+  sourceAst: Ast,
+  code: string,
+  options: InternalCompilerOptions,
+  constants: import('./generation/deployerConstants.js').DeployerConstants,
+  oraclePoolBinding = false,
+  liveReadsBlockData = false,
+): { artifact: Artifact; box: DeployerProgramBox } | { reason: string; detail?: string } {
+  const box: DeployerProgramBox = { oraclePoolBinding, readsBlockData: liveReadsBlockData };
+  if (baseConstructorArgumentReadsState(sourceAst)) return { reason: 'ctor-base-argument' };
+  const orderDependence = constructionOrderDependence(sourceAst);
+  if (orderDependence !== undefined) return { reason: 'ctor-construction-order', detail: orderDependence };
+  if (options.__deployerTestBox?.forceReason !== undefined) {
+    box.forceReason = options.__deployerTestBox.forceReason;
+  }
+  const inner = {
+    ...options,
+    deployer: false,
+    // C is stateful, so its deployer program is compiled as one, also when C declares no state of its own and
+    // is stateful because it creates a stateful child (B10): the program keeps none of C's functions to show it.
+    forceStateful: true,
+    messageBus: false,
+    messageBusKernel: false,
+    callBatch: false,
+    callRecords: 'returning',
+    genesisCalls: false,
+    composition: 'direct',
+    split: undefined,
+    autoDelegate: false,
+    __deployerProgram: {
+      constants, box, thirdArm: options.__deployerTestBox?.thirdArm === true,
+      genesisLayout: options.__deployerTestBox?.genesisLayout,
+    },
+    __pristineAstBox: undefined,
+    __parsedAst: undefined,
+    __deployerConstantsBox: undefined,
+    __admissionWinnerBox: undefined,
+    __attemptFailureBox: undefined,
+    __internalAttemptFailureState: undefined,
+    __kernelReadCarrierAuthorizationBox: undefined,
+    __singlePassVerifierSource: undefined,
+  } as InternalCompilerOptions;
+  delete (inner as { delegateVariant?: unknown }).delegateVariant;
+  let artifact: Artifact;
+  try {
+    const programAst = cloneAst(sourceAst, 'deployer-program');
+    if (sourceAst.contract.oraclePoolBindingForGenesis === true) {
+      programAst.contract.oraclePoolBindingForGenesis = true;
+    }
+    // The program is compiler-generated: its `unsafe` sweep and its missing user entries are not source facts.
+    artifact = withCompilerWarnings(true, () => compileResolvedAst(
+      programAst, code, inner,
+    ));
+  } catch (error) {
+    // A `ctor-…` reason is a signal that ends this build only; B7.14 turns it into the warning and artifact field.
+    if (error instanceof DeployerUnsupportedError) {
+      return { reason: error.reason, detail: error.message.replace(/^[^:]*\(\S+\): /, '') };
+    }
+    throw error;
+  }
+  return { artifact, box };
+}
+
+/** B7.8: `create`'s final ABI order is A4.2's, with every synthetic parameter behind the source argument bands. */
+function arrangeDeployerParameters(ast: Ast, box: DeployerProgramBox | undefined): void {
+  const contract = ast.contract;
+  const create = contract.functions.find((fn) => fn.name === '__construct');
+  if (create === undefined) return;
+  const location = create.location;
+  const parameter = (type: Type, name: string): ParameterNode => {
+    const node = new ParameterNode(type, name);
+    node.location = location;
+    return node;
+  };
+  const contractParameters = [...contract.parameters];
+  if (box?.oraclePoolBinding === true
+    && !contractParameters.some((entry) => entry.name === ORACLE_POOL_PARAMETER)) {
+    const pool = parameter(new BytesType(32), ORACLE_POOL_PARAMETER);
+    contractParameters.push(pool);
+  }
+  create.deployerContractParameters = contractParameters;
+  if (box !== undefined) box.contractParameterNames = contractParameters.map((contractParameter) => contractParameter.name);
+  for (const contractParameter of contractParameters) contractParameter.deployerContractParameter = true;
+  contract.parameters = [];
+  const sourceParameters = create.parameters.filter((entry) => !entry.name.startsWith('__internal__'));
+  const passParameters = create.parameters.filter((entry) => entry.name.startsWith('__internal__')
+    && !['__internal__budgetPad', '__internal__oracleOwner', '__internal__authorIndex', '__internal__identity',
+      '__internal__creatorInputIdx', '__internal__creatorList', '__internal__creatorListPos',
+      '__internal__code', '__internal__deployValue', '__internal__msgSenderCategory',
+      '__internal__genesisCallees', '__internal__genesisOutputBase', '__internal__genesisSidecarBase',
+      '__internal__genesisCall', '__internal__returnOutputIdx']
+      .includes(entry.name)
+    && !entry.name.startsWith('__ctorread_') && !entry.name.startsWith('__internal__viewReturn'));
+  const readingBlockData = contract.usesBlockOracle === true;
+  const readsSender = box?.constructorReadsSender === true;
+  create.parameters = [
+    parameter(new BytesType(), '__internal__budgetPad'),
+    ...(readingBlockData ? [parameter(new BytesType(20), '__internal__oracleOwner')] : []),
+    parameter(PrimitiveType.BIGINT, '__internal__authorIndex'),
+    parameter(PrimitiveType.BIGINT, '__internal__identity'),
+    ...(readsSender ? [
+      parameter(PrimitiveType.BIGINT, '__internal__creatorInputIdx'),
+      parameter(new BytesType(), '__internal__creatorList'),
+      parameter(PrimitiveType.BIGINT, '__internal__creatorListPos'),
+    ] : []),
+    parameter(PrimitiveType.BIGINT, '__internal__genesisOutputBase'),
+    parameter(PrimitiveType.BIGINT, '__internal__genesisSidecarBase'),
+    ...(() => {
+      const callSlots = (create.externalCalls ?? []).filter(
+        (slot) => !slot.loopArrayVar && !slot.inlineLoopDispatch,
+      );
+      const params = [...passParameters];
+      if (callSlots.length <= 1) return params;
+      const at = params.findIndex((entry) => entry.name === '__internal__externalCallInputBase');
+      if (at < 0) return params;
+      const existing = new Set(params.map((entry) => entry.name));
+      const witnesses = callSlots.map((slot, index) => parameter(
+        PrimitiveType.BIGINT, `__internal__extcallMasterIdx${slot.slotIndex ?? index}`,
+      )).filter((entry) => !existing.has(entry.name));
+      params.splice(at + 1, 0, ...witnesses);
+      return params;
+    })(),
+    parameter(new BytesType(), '__internal__code'),
+    ...contractParameters,
+    ...sourceParameters,
+    parameter(PrimitiveType.BIGINT, '__internal__deployValue'),
+    parameter(new BytesType(32), '__internal__msgSenderCategory'),
+    parameter(new BytesType(), '__internal__genesisCallees'),
+  ];
+}
+
+/**
+ * B7.4 (O1): the `sweep` arm is, byte for byte, O8's entry check and the three `require`s of A4.6: `1440
+ * OP_CHECKSEQUENCEVERIFY`, an output count of exactly 1, and an empty token category on output 0. Recorded from a
+ * build and read against A4.6 (B7.4); any difference is a `DeployerInternalError`. A test hook may replace the
+ * emitted body to prove the check trips.
+ */
+// OP_DEPTH OP_0 OP_NUMEQUALVERIFY · 1440 OP_CHECKSEQUENCEVERIFY OP_DROP · OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY ·
+// OP_0 OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUAL
+const SWEEP_TEMPLATE = '74009d02a005b275c4519d00d10087';
+
+function assertSweepTemplate(program: Artifact, override: string | undefined, node: Node): void {
+  const emitted = override ?? program.functionBodies?.[binToHex(DEPLOYER_SELECTOR_SWEEP)];
+  if (emitted !== SWEEP_TEMPLATE) {
+    throw new DeployerInternalError(node, `the sweep arm is ${emitted ?? 'missing'}, not O1's template ${SWEEP_TEMPLATE}`);
+  }
+}
+
+/** B7.8's generator check on `create`'s finished parameter list. */
+function assertDeployerParameters(create: FunctionDefinitionNode): void {
+  const names = create.parameters.map((parameter) => parameter.name);
+  const tail = ['__internal__code', '__internal__deployValue', '__internal__msgSenderCategory',
+    '__internal__genesisCallees'];
+  const at = names.indexOf('__internal__code');
+  if (at < 0 || names[names.length - 1] !== '__internal__genesisCallees'
+    || names[names.length - 2] !== '__internal__msgSenderCategory'
+    || names[names.length - 3] !== '__internal__deployValue') {
+    throw new DeployerInternalError(create, `create's inputs do not end with ${tail.join(', ')}`);
+  }
+  if (names.some((name) => name.startsWith('__ctorread_') || name.startsWith('__internal__viewReturn'))) {
+    throw new DeployerInternalError(create, 'create takes a constructor-read or view-return witness');
+  }
+  // B7.18 replaces the entry write path with the collection journal. Until it lands, a collection-writing
+  // constructor keeps today's write witnesses rather than failing the build.
+}
+
+/**
+ * B7.5: classify what the constructor does, refuse every `ctor-…` reason A4.1 names, and publish the facts the
+ * deployer artifact and the SDK need.
+ */
+/** B7.9: A4.4's output range order, applied to the layout the constructor's body produced. */
+interface GenesisLayoutRows {
+  /** Contract parameters that name a token container C keeps single (A8). */
+  readonly tokenRows: readonly number[];
+  readonly satoshiContainer: 'none' | 'optional' | 'required';
+  /** A4.4: one HEAD per sorted collection of C, in the compiler's order. */
+  readonly headCollections: readonly string[];
+  /** A4.4: per collection the constructor writes, in the HEADs' order, one entry row per append site of its journal. */
+  readonly entryRows: readonly { collection: string; count: number }[];
+}
+
+function buildGenesisBlockLayout(
+  layout: FunctionBlockLayout | undefined, rows: GenesisLayoutRows,
+): FunctionBlockLayout | undefined {
+  if (layout === undefined) return undefined;
+  // A runtime-variable (trailing) region has no genesis form yet; keep today's layout for it.
+  if (layout.trailingBase !== undefined) return layout;
+  // A4.4's order: master, records, oracle, HEADs, satoshi row, token rows, the collections' entry rows, then the
+  // constructor's transfers and events.
+  const rank: Partial<Record<BlockSlotKind, number>> = {
+    master: 0, dataNft: 1, head: 2, blockhashOracle: 2, blockInfoOracle: 2,
+    satoshiContainer: 4, tokenContainer: 5, entry: 5.5, transfer: 6, tcTransfer: 6,
+    event: 7, eventChunk: 7, returnEvent: 7,
+  };
+  const isSidecar = (kind: BlockSlotKind): boolean => kind === 'keccakSideCar' || kind === 'ecrecoverSideCar';
+  // A5: a genesis read of a block field comes from the transaction's locktime, so no oracle row exists. A token
+  // row exists for each parameter-named container C keeps single, whether or not the constructor reads it (A4.4,
+  // "The token rows": each such coin must exist from birth); any other container opens later. The constructor's own
+  // container slots are dropped: it reads a container's start as a constant (A5) and sends no tokens (A3 rule 4).
+  // A constructor's collection accesses are journal code (A4.4), so any entry slot of the source layout is dropped
+  // and its rows are the journal rows inserted below.
+  const kept = layout.slots.filter((slot) => slot.kind !== 'blockhashOracle' && slot.kind !== 'blockInfoOracle'
+    && slot.kind !== 'satoshiContainer' && slot.kind !== 'tokenContainer' && slot.kind !== 'entry'
+    && slot.kind !== 'head' && !isSidecar(slot.kind));
+  const inserted: { kind: BlockSlotKind; offset: number; collection?: string; slotIndex?: number }[] = [
+    ...rows.headCollections.map((collection) => ({ kind: 'head' as const, offset: 0, collection })),
+    ...(rows.satoshiContainer === 'none' ? [] : [{ kind: 'satoshiContainer' as const, offset: 0 }]),
+    // In the order of `tokenRows`, the order the SDK lays the rows out (a stable sort keeps it); a token row's
+    // slotIndex is the index of the contract parameter that names its container.
+    ...rows.tokenRows.map((parameter) => ({ kind: 'tokenContainer' as const, offset: 0, slotIndex: parameter })),
+    // Offset 0 like every inserted row: the stable sort keeps each collection's rows together, in the HEADs' order.
+    ...rows.entryRows.flatMap(({ collection, count }) => Array.from({ length: count },
+      () => ({ kind: 'entry' as const, offset: 0, collection }))),
+  ];
+  const slots = [...kept, ...inserted]
+    .sort((left, right) => (rank[left.kind] ?? 99) - (rank[right.kind] ?? 99) || left.offset - right.offset)
+    .map((slot, offset) => ({ ...slot, offset }));
+  const outputs = slots.length;
+  // The sidecar group follows the range: input and output at the same index (A4.4). It is not part of w_out.
+  for (const [position, sidecar] of layout.slots.filter((slot) => isSidecar(slot.kind)).entries()) {
+    slots.push({ ...sidecar, offset: outputs + position });
+  }
+  return { ...layout, blockSize: slots.length, slots };
+}
+
+function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions): void {
+  const contract = ast.contract;
+  const create = contract.functions.find((fn) => fn.name === '__construct');
+  if (create === undefined) throw new DeployerInternalError(contract, 'the deployer program has no create body');
+  const box = options.__deployerProgram!.box;
+  const refuse = (reason: string, detail: string): never => {
+    throw new DeployerUnsupportedError(create, reason, detail);
+  };
+  // Test hooks: a reason with no known source shape (A4.1), requested explicitly by a unit test.
+  if (box?.forceReason !== undefined) refuse(box.forceReason, 'requested by the test hook');
+
+  const slots = create.externalCalls ?? [];
+  if (slots.length > 37) refuse('ctor-call-count', 'the constructor has more than 37 call slots');
+  const targets = new Set<string>();
+  for (const slot of slots) {
+    if (slot.addressIsSelf === true) refuse('ctor-self-call', 'the constructor calls C through this');
+    if (slot.inlineLoopDispatch === true || slot.loopArrayVar !== undefined
+      || slot.batchInvocations !== undefined || slot.fnPtrCall === true
+      || slot.addressIsMsgSender === true || slot.callOrdinal !== undefined) {
+      refuse('ctor-call-shape', `the call to ${slot.interfaceName}.${slot.functionName} has a shape a call slot cannot bind`);
+    }
+    if (slot.callValueEffect === true) refuse('ctor-call-value', 'a constructor call cannot send value');
+    // A `sig` is not part of a call record (A7), so a call that passes one could not be bound.
+    if ((slot.callRecordParameterTypes ?? []).some((type) => type === PrimitiveType.SIG)) {
+      refuse('ctor-call-shape', `the call to ${slot.interfaceName}.${slot.functionName} passes a sig`);
+    }
+    const target = slot.addressParam ?? slot.addressStateVar ?? slot.addressLiteral ?? slot.interfaceName;
+    if (targets.has(target)) {
+      refuse('ctor-call-shape', 'two call slots name the same target expression');
+    }
+    targets.add(target);
+    if (slot.condition !== undefined) {
+      refuse('ctor-call-conditional', `the call to ${slot.functionName} is conditional`);
+    }
+  }
+  for (const fn of contract.functions) {
+    if (fn === create) continue;
+    if ((fn.externalCalls?.length ?? 0) > 0) {
+      refuse('ctor-call-helper', `the helper '${fn.name}' still holds an external call`);
+    }
+  }
+
+  for (const state of contract.stateVariables) {
+    if (state.isDynamic || isDynamicStorageType(state.type)) {
+      refuse('ctor-dynamic-state', `state '${state.name}' is dynamic`);
+    }
+    if (state.type instanceof FunctionType) {
+      refuse('ctor-function-value', `state '${state.name}' is a function value`);
+    }
+  }
+
+  // A function whose body touches a collection cannot be called from a loop of the constructor.
+  const collectionAccessFns = new Set<string>();
+  for (const fn of contract.functions) {
+    if (fn.body === undefined) continue;
+    let touches = false;
+    walkInvocationAst(fn.body, (visited) => {
+      if (visited instanceof MappingAccessNode || visited instanceof MappingAssignNode
+        || visited instanceof MappingFieldAssignNode || visited instanceof MappingDeleteNode) touches = true;
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    if (touches) collectionAccessFns.add(fn.name);
+  }
+  // A4.1's balance rule judges calls by the bodies they name, which are all source: a function of C's inheritance, a
+  // free function, a library function or one bound by `using for`, every overload of the name, and everything it
+  // calls by name. `walkInvocationAst` walks one body's syntax, so the calls are followed here, by name. A send is
+  // `send`, `transfer` or `payMinerFee`; a read is `this.balance`, `address(x).balance` in any cast, or a Yul
+  // `selfbalance()` or `balance(...)`.
+  type BalanceFacts = { reads: boolean; sends: boolean; calls: Set<string> };
+  const balanceFactsOf = (body: Node | undefined): BalanceFacts => {
+    const facts: BalanceFacts = { reads: false, sends: false, calls: new Set<string>() };
+    if (body === undefined) return facts;
+    walkInvocationAst(body, (visited) => {
+      if (visited instanceof TransferStatementNode || visited instanceof AddressTransferStatementNode
+        || visited instanceof AddressSendExpressionNode || visited instanceof MinerFeeStatementNode) facts.sends = true;
+      if (visited instanceof FieldAccessNode && visited.name === 'balance') facts.reads = true;
+      if (visited instanceof StateAccessNode && visited.name === 'balance' && visited.stateVariable === undefined) {
+        facts.reads = true;
+      }
+      if (visited instanceof FunctionCallNode) {
+        const name = visited.identifier.name;
+        facts.calls.add(name);
+        // `L.f`, `K.f`, `super.f` and a bound `x.f` all count as the name f, with every overload of it.
+        if (name.includes('.')) facts.calls.add(name.slice(name.lastIndexOf('.') + 1));
+      }
+      if (visited instanceof AssemblyStatementNode) {
+        const yul = visited.yulBlock;
+        const seenYul = new Set<object>();
+        const walkYul = (value: unknown): void => {
+          if (value === null || typeof value !== 'object' || seenYul.has(value)) return;
+          seenYul.add(value);
+          if (Array.isArray(value)) { for (const item of value) walkYul(item); return; }
+          if (value instanceof YulFunctionCallNode && (value.name === 'selfbalance' || value.name === 'balance')) {
+            facts.reads = true;
+          }
+          for (const child of Object.values(value)) walkYul(child);
+        };
+        if (yul !== undefined) walkYul(yul);
+        else if (/\b(selfbalance|balance)\b/.test(visited.assemblyBody)) facts.reads = true;
+      }
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    return facts;
+  };
+  const factsByName = new Map<string, BalanceFacts[]>();
+  for (const fn of [...contract.functions, ...ast.freeFunctions]) {
+    const facts = balanceFactsOf(fn.body);
+    for (const name of new Set([fn.name, fn.name.slice(fn.name.lastIndexOf('.') + 1)])) {
+      factsByName.set(name, [...(factsByName.get(name) ?? []), facts]);
+    }
+  }
+  const rootFacts = balanceFactsOf(create.body);
+  let constructorSends = rootFacts.sends;
+  let readsBalance = rootFacts.reads;
+  const pendingNames = [...rootFacts.calls];
+  const visitedNames = new Set<string>();
+  while (pendingNames.length > 0) {
+    const name = pendingNames.pop()!;
+    if (visitedNames.has(name)) continue;
+    visitedNames.add(name);
+    for (const facts of factsByName.get(name) ?? []) {
+      constructorSends ||= facts.sends;
+      readsBalance ||= facts.reads;
+      pendingNames.push(...facts.calls);
+    }
+  }
+
+  let blockNumber = false;
+  let blockTimestamp = false;
+  let conditionalDepth = 0;
+  let loopDepth = 0;
+  const seen = new Set<Node>();
+  const walk = (node: Node, parent?: Node): void => {
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (node instanceof SelfdestructStatementNode) refuse('ctor-selfdestruct', 'the constructor contains selfdestruct');
+    if (node instanceof InstantiationNode) refuse('ctor-creates', 'the constructor contains new');
+    if (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode) {
+      refuse('ctor-lowlevel-call', 'the constructor makes a raw call');
+    }
+    if (node instanceof ExternalOutputStateAccessNode) {
+      refuse('ctor-external-state', 'the constructor reads another contract\'s state');
+    }
+    if (node instanceof TokenContainerMethodStatementNode) {
+      refuse('ctor-token-container', 'the constructor uses a token container method');
+    }
+    if (node instanceof DeleteStateNode || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode
+      || node instanceof StateArrayDeleteNode) {
+      refuse('ctor-collection-shape', 'the constructor deletes an entry');
+    }
+    if (node instanceof ReturnNode && slots.length > 0) {
+      refuse('ctor-call-conditional', 'the constructor has a return and a call slot');
+    }
+    if (node instanceof NullaryOpNode) {
+      if (node.operator === NullaryOperator.OUTPUT_COUNT
+        || node.operator === NullaryOperator.MSG_SIG || node.operator === NullaryOperator.MSG_DATA) {
+        if (node.operator === NullaryOperator.OUTPUT_COUNT) {
+          refuse('ctor-reads-outputs', 'the constructor reads tx.outputs');
+        }
+        refuse('ctor-function-value', `the constructor reads ${node.operator}`);
+      }
+      if (node.operator === NullaryOperator.BLOCK_NUMBER) blockNumber = true;
+      if (node.operator === NullaryOperator.BLOCK_TIMESTAMP) blockTimestamp = true;
+      if ([NullaryOperator.BLOCK_DIFFICULTY, NullaryOperator.BLOCK_SIZE, NullaryOperator.BLOCK_TOTAL_FEES,
+        NullaryOperator.BLOCK_BASEFEE, NullaryOperator.BLOCK_BLOBBASEFEE, NullaryOperator.BLOCK_GASLIMIT,
+        NullaryOperator.BLOCK_PREVRANDAO, NullaryOperator.BLOCK_COINBASE, NullaryOperator.LOCKTIME]
+        .includes(node.operator)) {
+        refuse('ctor-block-data', `the constructor reads ${node.operator}`);
+      }
+    }
+    if (node instanceof UnaryOpNode && (node.operator === UnaryOperator.OUTPUT_TOKEN_CATEGORY
+      || node.operator === UnaryOperator.OUTPUT_NFT_COMMITMENT || node.operator === UnaryOperator.OUTPUT_VALUE
+      || node.operator === UnaryOperator.OUTPUT_TOKEN_AMOUNT)) {
+      refuse('ctor-reads-outputs', 'the constructor reads tx.outputs');
+    }
+    if (node instanceof VariableDefinitionNode && node.type instanceof FunctionType) {
+      refuse('ctor-function-value', `local '${node.name}' is a function value`);
+    }
+    if (node instanceof ParameterNode && node.type instanceof FunctionType) {
+      refuse('ctor-function-value', `parameter '${node.name}' is a function value`);
+    }
+    if (node instanceof MappingAccessNode && loopDepth > 0) {
+      refuse('ctor-collection-shape', 'the constructor reads a collection in a loop');
+    }
+    if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode) {
+      if (loopDepth > 0) refuse('ctor-collection-shape', 'the constructor writes a collection in a loop');
+      // The write must be a statement of its own: not an operand of another expression.
+      if (!(parent instanceof BlockNode) && !(parent instanceof ExpressionStatementNode)) {
+        refuse('ctor-collection-shape', 'a collection write is not a statement of its own');
+      }
+    }
+    if (loopDepth > 0 && node instanceof FunctionCallNode
+      && collectionAccessFns.has(node.identifier.name)) {
+      refuse('ctor-collection-shape', `the constructor calls '${node.identifier.name}', which accesses a collection, in a loop`);
+    }
+    if ((node instanceof EmitStatementNode || node instanceof TransferStatementNode
+      || node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode)
+      && loopDepth > 0) {
+      refuse('ctor-loop-effects', 'the constructor emits or sends inside a loop');
+    }
+    if (node instanceof FunctionCallNode && (node.fromThisCall === true || node.fromExternalSelfCall === true)) {
+      refuse('ctor-self-call', 'the constructor calls C through this');
+    }
+    if ((node instanceof ExternalFunctionCallNode || node instanceof FunctionCallNode)
+      && node instanceof ExternalFunctionCallNode && conditionalDepth > 0) {
+      refuse('ctor-call-conditional', 'the constructor makes a call under a condition');
+    }
+    if (node instanceof ExternalFunctionCallNode && loopDepth > 0) {
+      refuse('ctor-call-shape', 'the constructor makes a call inside a loop');
+    }
+
+    const branch = node instanceof BranchNode || node instanceof TernaryOpNode || node instanceof TryCatchNode
+      || (node instanceof BinaryOpNode && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
+    const loop = node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
+    if (branch) conditionalDepth += 1;
+    if (loop) loopDepth += 1;
+    for (const [key, child] of Object.entries(node)) {
+      if (['location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable', 'type',
+        'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
+      if (child instanceof Node) walk(child, node);
+      else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item, node);
+    }
+    if (loop) loopDepth -= 1;
+    if (branch) conditionalDepth -= 1;
+  };
+  walk(create.body);
+  if (blockNumber && blockTimestamp) {
+    refuse('ctor-block-data', 'the constructor reads both block.number and block.timestamp');
+  }
+  if (readsBalance && constructorSends) {
+    refuse('ctor-collection-shape', 'the constructor reads the balance and sends satoshis');
+  }
+
+  const boxTarget = options.__deployerProgram!.box;
+  if (boxTarget !== undefined) {
+    boxTarget.callSlots = slots.length;
+    boxTarget.constructorReadsSender = create.usesMsgSender === true;
+    // A2: this is the oracle Deploy<C> mints for C's live functions. The program's own bodies are genesis bodies
+    // and read the locktime, so their own block reads do not set it.
+    boxTarget.readsBlockData = boxTarget.readsBlockData === true;
+    boxTarget.constructorBlockField = blockNumber ? 'number' : blockTimestamp ? 'timestamp' : undefined;
+    boxTarget.sidecars = {
+      keccak: create.keccakCompute === true ? 1 : 0,
+      ecrecover: create.ecrecoverCallCount ?? 0,
+    };
+    let sendsSatoshi = false;
+    const writtenCollections = new Set<string>();
+    walkInvocationAst(create.body, (node) => {
+      if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+        || node instanceof AddressSendExpressionNode) sendsSatoshi = true;
+      // After the journal rewrite no collection access is left in `create`: a read would take the type default
+      // and a write would be minted from witnesses, neither checked against the journal, so any left is refused.
+      if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode || node instanceof MappingAccessNode) {
+        writtenCollections.add(node.name);
+      }
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    // A4.4: the rewrite turned every collection write of the constructor into a journal append. A write that is still
+    // a collection write would be minted from builder-supplied witnesses with no check of the rows, so it is refused.
+    if (writtenCollections.size > 0) {
+      refuse('ctor-collection-shape', `the constructor writes the collection '${[...writtenCollections][0]}' outside `
+        + 'its journal');
+    }
+    const appendSites = journalAppendSites(create.body);
+    const singleSatoshi = options.__deployerProgram!.constants.singleSatoshiContainer;
+    const payable = create.modifiers.includes(FunctionModifier.PAYABLE);
+    boxTarget.satoshiContainer = singleSatoshi ? 'required' : payable || sendsSatoshi ? 'optional' : 'none';
+    // A4.4: per collection the constructor writes, in the HEADs' order, one entry row per append site of its journal.
+    boxTarget.collectionRows = options.__deployerProgram!.constants.collections
+      .filter((collection) => appendSites.has(collection.name))
+      .map((collection) => ({ collection: collection.name, appendSites: appendSites.get(collection.name)! }));
+    boxTarget.arms = contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name);
+    // B7.9: the genesis range follows A4.4. E is the HEAD of a sorted collection the constructor does not write,
+    // which is what today's top-level genesis mints for it.
+    const constants = options.__deployerProgram!.constants;
+    const tokenRows = constants.singleTokenContainerKeys
+      .map((name) => contract.parameters.findIndex((parameter) => parameter.name === name))
+      .filter((index) => index >= 0);
+    // A4.4: one HEAD per collection, written at birth or not.
+    const headCollections = constants.collections
+      .filter((collection) => collection.sorted)
+      .map((collection) => collection.name);
+    // Test hook: a constructor layout with a trailing region, so the check below can be shown to throw.
+    const layoutHook = options.__deployerProgram!.genesisLayout;
+    const sourceLayout = layoutHook === 'trailing' && create.blockLayout !== undefined
+      ? { ...create.blockLayout, trailingBase: create.blockLayout.blockSize } : create.blockLayout;
+    // buildGenesisBlockLayout keeps a layout with a trailing region as it is, with none of A4.4's container rows, so
+    // `create` would pin none of them: fail closed rather than build that deployer.
+    if (sourceLayout?.trailingBase !== undefined && (boxTarget.satoshiContainer !== 'none' || tokenRows.length > 0)) {
+      throw new DeployerInternalError(create,
+        'the constructor\'s layout keeps a trailing region, which has no genesis form for C\'s container rows');
+    }
+    create.blockLayout = buildGenesisBlockLayout(sourceLayout, {
+      tokenRows, satoshiContainer: boxTarget.satoshiContainer, headCollections,
+      entryRows: boxTarget.collectionRows.map((row) => ({ collection: row.collection, count: row.appendSites })),
+    });
+    // Test hook: no genesis layout at all, so the generator's check (emitGenesisRowPins) can be shown to throw.
+    if (layoutHook === 'drop') create.blockLayout = undefined;
+    boxTarget.genesisOutputs = create.blockLayout?.slots
+      .filter((slot) => slot.kind !== 'keccakSideCar' && slot.kind !== 'ecrecoverSideCar').length ?? 0;
+    // Every entry row is a journal row (A4.4); one the rewrite did not account for would be pinned by nothing.
+    const journalRows = boxTarget.collectionRows.reduce((total, row) => total + row.appendSites, 0);
+    if ((create.blockLayout?.slots.filter((slot) => slot.kind === 'entry').length ?? 0) !== journalRows) {
+      throw new DeployerInternalError(create, 'the genesis layout holds an entry row that is not a journal row');
+    }
+  }
+  void box;
+}
+
+/**
+ * B7.4: the finished deployer program has exactly the two arms of A4.2 and no receive or fallback. A test hook
+ * may add a third entry through `__deployerProgram.box.arms`, so the check itself is exercised.
+ */
+function assertDeployerArms(ast: Ast, options: InternalCompilerOptions): void {
+  const contract = ast.contract;
+  const entries = contract.functions.filter((fn) => fn.isEntryPoint);
+  const names = entries.map((fn) => fn.name).sort();
+  const expected = ['__construct', '__solidcash_sweep'];
+  const selectors = entries.map((fn) => (fn.functionSelector === undefined ? '' : binToHex(fn.functionSelector)));
+  const expectedSelectors = [binToHex(DEPLOYER_SELECTOR_CREATE), binToHex(DEPLOYER_SELECTOR_SWEEP)];
+  if (names.length !== expected.length || names.some((name, index) => name !== expected[index])) {
+    throw new DeployerInternalError(contract, `Deploy<${contract.name}> dispatches ${JSON.stringify(names)}, not create and sweep`);
+  }
+  if (selectors.length !== expectedSelectors.length
+    || expectedSelectors.some((selector) => !selectors.includes(selector))) {
+    throw new DeployerInternalError(contract, `Deploy<${contract.name}> has the wrong create/sweep selectors`);
+  }
+  if (contract.receiveDef !== undefined || contract.fallbackDef !== undefined) {
+    throw new DeployerInternalError(contract, `Deploy<${contract.name}> has a receive or fallback arm`);
+  }
+  void options;
+}
+
 type InternalCompilerOptions = CompilerOptions & {
   /**
    * The public options the outermost compile was given. A contract this compile creates or embeds is compiled with
@@ -674,6 +1718,36 @@ type InternalCompilerOptions = CompilerOptions & {
   __attemptFailureBox?: { failures: CaughtCompilerAttempt[] };
   /** Test-only explicit audit flag; kernel compiles enforce this invariant regardless of the flag's value. */
   __strictNoInternalRecovery?: boolean;
+  /** Test-only observation of the constants B7.2 derives for a deployer. */
+  __deployerConstantsBox?: { constants?: import('./generation/deployerConstants.js').DeployerConstants };
+  /**
+   * Test-only hooks for the deployer generator checks. `journalBudget` and `journalItemLimit` lower A4.4's bounds;
+   * the generator reports the journals' cost bound in `journalCost`.
+   */
+  __deployerTestBox?: {
+    thirdArm?: boolean; forceReason?: string; sweepBody?: string; genesisLayout?: 'drop' | 'trailing'; obligationHook?: string;
+    journalBudget?: number; journalItemLimit?: number; journalCost?: number;
+  };
+  /**
+   * B8.0: the direct children a creator's `new` names, each compiled standalone with its deployer before the
+   * creator's semantic passes run. B8.1's predicate is membership in this map.
+   */
+  __compiledDeployers?: ReadonlyMap<string, import('./generation/deployerChildren.js').DeployerChild>;
+  /** Test-only observation of how many standalone child compiles B8.0 ran. */
+  __deployerChildCompileCounter?: { count: number };
+  /**
+   * The second compile B7.3 runs: the deployer program Deploy<C>. It is internal because a source never asks for
+   * it; `deployer: true` builds it and this flag reaches the recursive pipeline that produces it.
+   */
+  __deployerProgram?: {
+    readonly constants: import('./generation/deployerConstants.js').DeployerConstants;
+    box?: DeployerProgramBox;
+    /** Test hook: add a third entry, so B7.4's arms check can be shown to throw. */
+    readonly thirdArm?: boolean;
+    readonly forceReason?: string;
+    /** Test hook: drop `create`'s genesis layout, or give it a trailing region, so their checks can be shown to throw. */
+    readonly genesisLayout?: 'drop' | 'trailing';
+  };
   /** Compiler-owned shared state propagated through binder/recovery recursion. */
   __internalAttemptFailureState?: InternalAttemptFailureState;
   /** Compiler-private completed-ABI authority crossing only the pristine verifier-binding boundary. */
@@ -880,6 +1954,7 @@ interface OptionalLoweringFeatures {
   needsEarlyReturn: boolean;
   needsVMapCounter: boolean;
   needsRuntimeLoopTransferCounter: boolean;
+  needsRuntimeLoopEventCounter: boolean;
   needsAlphaRename: boolean;
   statefulnessSurveyComplete: boolean;
   hasContractInstantiation: boolean;
@@ -946,17 +2021,16 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsEarlyReturn = false;
   let needsVMapCounter = false;
   let needsRuntimeLoopTransferCounter = false;
+  let needsRuntimeLoopEventCounter = false;
   let needsAlphaRename = false;
   const definedFunctionNames = new Set<string>();
   const calledFunctionNames = new Set<string>();
-  const loopContainsRuntimeTransfer = (loop: WhileNode | DoWhileNode): boolean => {
+  const loopContains = (loop: WhileNode | DoWhileNode, effect: (candidate: Node) => boolean): boolean => {
     const seen = new Set<Node>();
     const walk = (candidate: Node): boolean => {
       if (seen.has(candidate)) return false;
       seen.add(candidate);
-      if (candidate instanceof TransferStatementNode || candidate instanceof TokenContainerMethodStatementNode) {
-        return true;
-      }
+      if (effect(candidate)) return true;
       for (const key in candidate) {
         if (key === 'location' || key === 'type' || key === 'name' || key === 'functionId'
           || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
@@ -1029,9 +2103,13 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       && node.fields.some((field) => typeContainsFunction(field.type))) hasFunctionPointers = true;
     if (node instanceof WhileNode || node instanceof DoWhileNode) {
       needsLoop = true;
-      // A runtime-loop transfer (a counter loop whose body mints transfer outputs) needs the counter-loop
-      // lowering even when the contract has no sorted collection, so its N outputs are derived, not one.
-      if (loopContainsRuntimeTransfer(node)) needsRuntimeLoopTransferCounter = true;
+      // A counter loop whose body mints transfer or event outputs needs the counter-loop lowering even when the
+      // contract has no sorted collection, so its N outputs are each derived and pinned, not one.
+      if (loopContains(node, (candidate) => candidate instanceof TransferStatementNode
+        || candidate instanceof TokenContainerMethodStatementNode)) needsRuntimeLoopTransferCounter = true;
+      if (loopContains(node, (candidate) => candidate instanceof EmitStatementNode)) {
+        needsRuntimeLoopEventCounter = true;
+      }
     }
     if (node instanceof BreakNode || node instanceof ContinueNode) needsBreakContinue = true;
     if (node instanceof BranchNode || node instanceof UncheckedNode || node instanceof SwitchNode
@@ -1127,6 +2205,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsEarlyReturn,
     needsVMapCounter,
     needsRuntimeLoopTransferCounter,
+    needsRuntimeLoopEventCounter,
     needsAlphaRename,
     statefulnessSurveyComplete: true,
     hasContractInstantiation,
@@ -1220,6 +2299,14 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     ? 'required'
     : options.messageBus === false ? 'disabled'
       : options.messageBus === true ? 'enabled' : 'auto';
+  // B6.2: `callRecords: 'all'` is a direct-convention option. A framed program and a message-bus program bind a
+  // callee's result in their own way, and a void entry there has no result to bind.
+  if (options.callRecords === 'all' && (compositionConvention === 'framed'
+    || messageBusMode === 'enabled' || messageBusMode === 'required')) {
+    throw new Error("callRecords: 'all' is not available on a "
+      + `${compositionConvention === 'framed' ? 'framed' : 'message-bus'} compile: that convention binds a `
+      + "callee's result in its own way, and a void entry has no result to bind");
+  }
   // Debug switch for the whole run: emitting the code generator's bytecode verbatim makes an instruction pointer
   // name the exact source line that produced it, which is what a VM-failure investigation needs. An explicit
   // option still wins, and the resolved value lands in the artifact cache key.
@@ -2628,9 +3715,38 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     } catch {
       // The direct convention refuses the contract, so the message-bus build stands with those entries refused.
     }
+  } else if (auto && artifact.compiler.options?.messageBus === true && overInputLimit(artifact, compilerOptions)
+    // A split shard or facet is a projected tree, which `code` does not compile to.
+    && internal.__functionSplitPrepared !== true && internal.__parsedAst?.contract.isSplitFacet !== true) {
+    // A default build the bus made too large for any input to spend is compiled direct when that build fits. When the
+    // direct build is over too, or refuses the contract, the message-bus build stands with its size diagnostic.
+    const direct = directBuildWithinInputLimit(code, compilerOptions);
+    if (direct !== undefined) return direct;
   }
   replay();
   return unserved.length === 0 ? artifact : refuseUnservedEntries(artifact, unserved);
+}
+
+/** The script is over the per-input limit the compile names: the subject of the `contract-size-limit` diagnostic. */
+function overInputLimit(artifact: Artifact, compilerOptions: CompileOptions): boolean {
+  return asmToBytecode(artifact.bytecode).length > (compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE);
+}
+
+/** A default compile's direct build when it fits the per-input limit; its warnings are emitted only then. */
+function directBuildWithinInputLimit(code: string, compilerOptions: CompileOptions): Artifact | undefined {
+  const options = { ...compilerOptions, messageBus: false } as InternalCompilerOptions;
+  delete options.__parsedAst;
+  const held: string[] = [];
+  let direct: Artifact;
+  try {
+    direct = withWarningListener(({ message }) => { held.push(message); },
+      () => compileStringUnchecked(code, options as CompileOptions));
+  } catch {
+    return undefined;
+  }
+  if (overInputLimit(direct, compilerOptions)) return undefined;
+  for (const message of held) emitCompilerWarning(message);
+  return direct;
 }
 
 /**
@@ -3259,8 +4375,12 @@ export function compileString(code: string, options: CompileStringOptions = {}):
       "compileString does not accept split 'size' or 'func'; use compileStringSplit. split is 'off', 'size', or 'func'",
     );
   }
-  const compilerOptions: CompileOptions = withFilesResolver(options);
-  if (compilerOptions.split === 'off') delete compilerOptions.split;
+  let compilerOptions: CompileOptions = withFilesResolver(options);
+  if (compilerOptions.split === 'off') {
+    // A copy: without `files` the resolver hands back the caller's own options object, which must not change.
+    compilerOptions = Object.defineProperties({}, Object.getOwnPropertyDescriptors(compilerOptions)) as CompileOptions;
+    delete compilerOptions.split;
+  }
   // SOLIDC env registry: when SOLIDC_STRICT_UNKNOWN_ENV=1 (CI), refuse unknown SOLIDC_* before any compile work.
   enforceSolidcEnvPolicy();
   clearDefineFrameValidations();
@@ -5993,25 +7113,6 @@ function messageBusRecordClaim(
   return { ...claim, collections: [...named] };
 }
 
-/** Whether the function deploys a child with `new C{code: c}`, which only the direct path checks. */
-function deploysChildCode(fn: FunctionDefinitionNode): boolean {
-  const seen = new Set<object>();
-  const visit = (value: unknown): boolean => {
-    if (!(value instanceof Node) || seen.has(value)) return false;
-    seen.add(value);
-    if (value instanceof InstantiationNode && value.callOptions?.code !== undefined) return true;
-    for (const [key, child] of Object.entries(value)) {
-      if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
-        'referencedContract', 'deployedStateVars', 'stateVariable', 'collection'].includes(key)) continue;
-      if (child instanceof Node ? visit(child) : Array.isArray(child) && child.some((item) => visit(item))) {
-        return true;
-      }
-    }
-    return false;
-  };
-  return visit(fn.body);
-}
-
 function synthesizeMessageBusRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
@@ -7661,14 +8762,6 @@ function synthesizeMessageBusRoute(
       continue;
     }
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
-      fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
-        ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
-      continue;
-    }
-    // A route rebuilds its child sites from the embedded body; `new C{code: c}` embeds none and requires the code to
-    // match a template, which no route replays. Keep such a deploy on the direct path alone, where it is checked.
-    if (deploysChildCode(fn)) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
         ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
@@ -15085,6 +16178,10 @@ function compileResolvedAst(
   let phaseStarted = resolvedStarted;
   let currentPhase = 'start';
   const contractName = ast.contract?.name;
+  // B7.3: the deployer program is a second compile of C's source. Take the pristine tree before any pass mutates it.
+  const isDeployerProgram = (mergedCompilerOptions as InternalCompilerOptions).__deployerProgram !== undefined;
+  const deployerSourceAst = mergedCompilerOptions.deployer === true && !isDeployerProgram
+    ? cloneAst(ast, 'deployer-source') : undefined;
   // The inline-assembly blocks each body reaches are read from the program as it arrived. A later pass rewrites
   // the blocks the lowering supports, and the admission rungs prune entry bodies, so the reachability a framed
   // body is refused by is taken here and matched against what the lowering left in place further down.
@@ -15383,6 +16480,25 @@ function compileResolvedAst(
     ast = lowerTransientStateVars(ast);
   }
 
+  // A4.4/B7.3: in the deployer program, a constructor that reaches a collection keeps journals. Inline the helpers it
+  // reaches into it first, as the message-bus prefix does, then rewrite every collection access of the constructor
+  // into journal code, before any pass that reasons about collections can act on it.
+  if (isDeployerProgram && constructorReachesCollections(ast)) {
+    checkConstructorCollectionShapes(ast);
+    ast = ast.accept(new InlineStoragePointerCalls(
+      mergedCompilerOptions.evmCompat ?? false, inlineDelegateStateHelpers,
+      mergedCompilerOptions.composition === 'framed', signatureChecksInlined,
+    )) as Ast;
+    ast = ast.accept(new InlineReturningStateHelpers(
+      mergedCompilerOptions.evmCompat ?? false, mergedCompilerOptions.composition === 'framed', signatureChecksInlined,
+    )) as Ast;
+    ast = ast.accept(new InlineStoragePointerCalls(
+      mergedCompilerOptions.evmCompat ?? false, inlineDelegateStateHelpers,
+      mergedCompilerOptions.composition === 'framed', signatureChecksInlined,
+    )) as Ast;
+    rewriteConstructorJournals(ast);
+  }
+
   // A low-level call written in a MODIFIER body is invisible to the source-shape pass above, and reaches the
   // user as `Block slot not found: lowLevelCall[0]` once inlined. Re-run the same check on the expanded bodies.
   // The first pass still owns every callsite it can see, so a loop callsite keeps its loop diagnostic rather
@@ -15495,12 +16611,20 @@ function compileResolvedAst(
     // and loop-return normalization below.
     ast = ast.accept(new DesugarNestedBranchReturn(true)) as Ast;
   }
-  if (earlyEntryFeatures?.needsBlockOracle) {
+  if (earlyEntryFeatures?.needsBlockOracle && !isDeployerProgram) {
     ast = ast.accept(new SynthesizeBlockOracle(
       mergedCompilerOptions.evmCompat ?? false,
       oracleDelegateExecutionContext,
     )) as Ast;
   }
+
+  // A fixed loop whose turns pay, send, transfer tokens or emit unrolls before the source-level proof below and route
+  // admission: a rolled loop's effect has one output register for every turn, so the proof, admission and the route
+  // clone must each see a site per turn, and each turn's recipe reads its counter as a literal. The unroll before
+  // admission below takes a loop whose effect a helper inlined there made. A framed body binds a looped effect where
+  // it makes it.
+  const unrollBusLoopEffects = !!mergedCompilerOptions.messageBus && mergedCompilerOptions.composition !== 'framed';
+  if (unrollBusLoopEffects) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, 'only')) as Ast;
 
   // Capture the source-level fixed-effect proof before returning-helper and storage-pointer lowering can simplify
   // an operand. A materializable expression produced later is not proof that the SDK can replay the original
@@ -15700,8 +16824,13 @@ function compileResolvedAst(
   // before kernel route admission clones the body. Otherwise clones snapshot the runtime loop, skip key
   // binding, and fail closed looking up entry[0] on a clone with no block descriptor. The graph path keeps
   // refusing that shape (`verified-mapping-runtime-loop-write-unsupported`) until its own clones unroll.
+  // A fixed loop whose effect a helper inlined above made unrolls here too (`unrollBusLoopEffects`). A legacy route
+  // may admit before its other fixed loops unroll (below), so only such a loop unrolls ahead of it.
+  if (unrollBusLoopEffects && mergedCompilerOptions.messageBusKernel !== true) {
+    ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, 'only')) as Ast;
+  }
   if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
-    ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+    ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollBusLoopEffects)) as Ast;
     // Counter-keyed `m[i]` must expose `__internal__vmapCounterPerm_*` on the source handler before
     // admission clones it, so the route can pass that hidden witness into the DEFINE body.
     ast = ast.accept(new LowerVMapCounterLoops(true, mergedCompilerOptions.composition === 'framed')) as Ast;
@@ -15829,8 +16958,8 @@ function compileResolvedAst(
     needsExternalCallLowering, needsInlineAssembly,
     needsTailRecursion, needsReturnInLoop, needsNamedReturns, needsReturnDesugaring, needsNestedBranchReturn,
     needsPostfixIncDec, needsMappingFieldCoalesce, needsLoop, needsBreakContinue,
-    needsEarlyReturn, needsVMapCounter, needsRuntimeLoopTransferCounter, needsAlphaRename,
-    statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
+    needsEarlyReturn, needsVMapCounter, needsRuntimeLoopTransferCounter, needsRuntimeLoopEventCounter,
+    needsAlphaRename, statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
   // The survey above answers for the whole unit, which for a multi-artifact compile is every sibling contract as
   // well. A statefulness question is about one contract's own declarations and bodies, so under the framed
@@ -15854,14 +16983,24 @@ function compileResolvedAst(
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
-  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  // A fixed loop that pays, sends or emits unrolls too: the counter-loop lowering below admits no literal-bound
+  // `for`, journals no send and refuses an effect in a nested loop, while a rolled loop's effect has one output
+  // register for every turn. A framed body binds a looped effect where it makes it. A message-bus compile whose route
+  // was synthesized above keeps the loop its route admission saw; those loops unrolled before it (`unrollBusLoopEffects`).
+  const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed'
+    && (!mergedCompilerOptions.messageBus || !synthesizeBatchBeforeLowering);
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
 
   // Keep direct compilation's narrow permutation ABI stable. Message-bus compilation still needs the richer
   // analysis to classify legacy-unroll refusals, while kernel execution was already lowered at admission.
+  // A looped emit takes the richer lowering too, so each iteration's event is pinned; a framed body binds a looped
+  // event where it emits it instead (framed/master/loop-effects.ts).
+  const needsRuntimeLoopCounter = needsRuntimeLoopTransferCounter
+    || (needsRuntimeLoopEventCounter && mergedCompilerOptions.composition !== 'framed');
   if (needsVMapCounter && needsLoop && !mergedCompilerOptions.messageBus
-    && !needsRuntimeLoopTransferCounter) {
+    && !needsRuntimeLoopCounter) {
     ast = ast.accept(new LowerLegacyVMapCounterLoops()) as Ast;
-  } else if ((needsVMapCounter || needsRuntimeLoopTransferCounter) && needsLoop
+  } else if ((needsVMapCounter || needsRuntimeLoopCounter) && needsLoop
     && mergedCompilerOptions.messageBusKernel !== true) {
     ast = ast.accept(new LowerVMapCounterLoops(false)) as Ast;
   }
@@ -16230,8 +17369,8 @@ function compileResolvedAst(
   // constant. N==0 unrolls to zero iterations, eliminating the provably-dead loop before its body (e.g. a vmap
   // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
   // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on
-  // these post-inline new-array-bound loops.
-  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  // these post-inline new-array-bound loops, and on a fixed loop whose effect an inlined helper made.
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
 
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
@@ -16265,7 +17404,8 @@ function compileResolvedAst(
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
-  if (needsExternalCallLowering) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
+  // B7.3: in the deployer program a constructor's external call is a call slot, not a deploy input.
+  if (needsExternalCallLowering && !isDeployerProgram) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
   // A guarded pointer-table row hoists its element + runtime-selector locals inside the branch; move only their
   // DECLARATIONS to the body top so the epilogue can read them while the reads stay conditional.
   if (needsPointerTableWork) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
@@ -16307,8 +17447,8 @@ function compileResolvedAst(
     || ast.contract.constructorDef?.usesBlockOracle === true
     || ast.contract.fallbackDef?.usesBlockOracle === true
     || ast.contract.receiveDef?.usesBlockOracle === true;
-  if (needsBlockOracle || oracleAlreadyMarked
-    || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
+  if (!isDeployerProgram && (needsBlockOracle || oracleAlreadyMarked
+    || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle))) {
     ast = ast.accept(blockOracle) as Ast;
   }
 
@@ -16548,7 +17688,21 @@ function compileResolvedAst(
   // statement once. A function that still returns from a loop is left to EarlyReturnTransformation's refusal.
   ast = confineReturns(ast, true);
 
+  // B8.0: a direct creator's `new` sites need facts about each child (its deployer's DEPLOY(C), w_out, call slots,
+  // constructor reads) before the creator's symbol pass. Compile each named child standalone with its deployer here,
+  // and let the later referenced-contract pass take its code from this map instead of compiling it again.
+  const gatheredDeployers = gatherDeployerChildren(ast, code, mergedCompilerOptions as InternalCompilerOptions);
+  if (gatheredDeployers !== undefined) {
+    (mergedCompilerOptions as InternalCompilerOptions).__compiledDeployers = gatheredDeployers;
+    prepareMarkedCreator(ast, gatheredDeployers, mergedCompilerOptions as InternalCompilerOptions);
+  }
+
   mark('lowering');
+  // B7.3: the deployer program is the second compile's shape. Build its two arms once every pass that adds,
+  // merges or inlines functions has run, and before the semantic pass assigns selectors and block layouts.
+  if ((mergedCompilerOptions as InternalCompilerOptions).__deployerProgram !== undefined) {
+    prepareDeployerContract(ast, mergedCompilerOptions as InternalCompilerOptions);
+  }
   // Semantic analysis
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
@@ -17164,6 +18318,16 @@ function compileResolvedAst(
     }
     delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
   }
+  // B7.5/B7.4: classify the constructor, publish the facts, then require the two arms of A4.2.
+  if (isDeployerProgram) {
+    inspectDeployerConstructor(ast, mergedCompilerOptions as InternalCompilerOptions);
+    const deployerCreate = ast.contract.functions.find((fn) => fn.name === '__construct');
+    if (deployerCreate !== undefined) {
+      arrangeDeployerParameters(ast, (mergedCompilerOptions as InternalCompilerOptions).__deployerProgram?.box);
+      assertDeployerParameters(deployerCreate);
+    }
+    assertDeployerArms(ast, mergedCompilerOptions as InternalCompilerOptions);
+  }
   // Code generation
   if (mergedCompilerOptions.composition === 'framed') {
     // The route is built for the lowering it performs on the source's own bodies — a low-level call becomes an
@@ -17284,6 +18448,9 @@ function compileResolvedAst(
   // path so bytecode size does not depend on the front-end compilation-speed preference.
   // The children are compiled, so a creator knows which of them take the pool binding it passes on.
   bindOraclePool(ast.contract, ast.freeFunctions, isFramedMaster(mergedCompilerOptions as InternalCompilerOptions));
+  // B8.7 rule 2: after every transformation that moves statements, declare the created-children local in the arms
+  // that hold a sender-reading site, so code generation's stack model and the program agree.
+  injectCreatedChildrenLocals(ast, (mergedCompilerOptions as InternalCompilerOptions).__compiledDeployers);
   const traversal = new GenerateTargetTraversal(mergedCompilerOptions.messageBusKernel === true
     ? { ...mergedCompilerOptions, optimizeForCompilationSpeed: true }
     : mergedCompilerOptions);
@@ -17294,6 +18461,10 @@ function compileResolvedAst(
     throwProfile(error);
   }
   mark('codegen');
+  for (const fn of ast.contract.functions) {
+    assertRecoveryLoopBand(fn);
+    assertKeccakLoopBand(fn);
+  }
 
   const constructorParamLength = ast.contract.parameters.length;
 
@@ -17402,6 +18573,168 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  // B7.0: the deployer option concerns this contract only. A plain compile builds none; an unsupported contract
+  // records why and warns instead of failing.
+  if (mergedCompilerOptions.deployer === true) {
+    // B7.0: computed before any decision about the deployer, so it is present also when the deployer is refused.
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of [...ast.contract.functions, ...(ast.contract.constructorDef === undefined
+      ? [] : [ast.contract.constructorDef])]) {
+      const list = byName.get(fn.name) ?? [];
+      list.push(fn);
+      byName.set(fn.name, list);
+    }
+    const seen = new Set<FunctionDefinitionNode>();
+    const queue = ast.contract.constructorDef === undefined ? [] : [ast.contract.constructorDef];
+    let constructorWritesCollections = false;
+    while (queue.length > 0 && !constructorWritesCollections) {
+      const fn = queue.pop()!;
+      if (seen.has(fn)) continue;
+      seen.add(fn);
+      let writesCollections = false;
+      walkInvocationAst(fn.body, (visited) => {
+        if (visited instanceof MappingAssignNode || visited instanceof MappingFieldAssignNode) {
+          writesCollections = true;
+        }
+        if (visited instanceof FunctionCallNode) {
+          for (const callee of byName.get(visited.identifier.name) ?? []) queue.push(callee);
+        }
+      }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+      if (writesCollections) constructorWritesCollections = true;
+    }
+    if (constructorWritesCollections) artifact.constructorWritesCollections = true;
+    // B7.2: computed once the artifact exists; the deployer program consumes them in B7.3.
+    const constants = deployerConstantsOf(artifact, ast.contract);
+    const constantsBox = (mergedCompilerOptions as InternalCompilerOptions).__deployerConstantsBox;
+    if (constantsBox !== undefined) constantsBox.constants = constants;
+    const split = requestsSplit(mergedCompilerOptions);
+    const constructorParameters = ast.contract.constructorDef?.parameters ?? [];
+    const unsupportedParameter = constructorParameters.some((parameter) => parameter.type instanceof StructType
+      || parameter.type instanceof ArrayType || parameter.type instanceof FunctionType);
+    const inlineLibrary = artifact.externalLibraries?.some((library) => library.resultNft !== true) === true;
+    // A4.1 `single-container-key`: C keeps its token containers single (A8) and a function names a container by a
+    // category that is not a contract parameter (C's own category, a state value, a parameter of the function).
+    // A4.4 gives a row only to a contract parameter's container (`singleTokenContainerKeys`), so any other single
+    // coin could not be required at birth. This is the complement of that filter, over the same functions; a name
+    // decides it, since nothing may redeclare a contract parameter's name.
+    const contractParameterNames = new Set(ast.contract.parameters.map((parameter) => parameter.name));
+    const unrequiredSingleKey = ast.contract.singleTokenContainer !== true ? undefined
+      : [ast.contract.constructorDef, ast.contract.fallbackDef, ast.contract.receiveDef, ...ast.contract.functions]
+        .flatMap((fn) => (fn === undefined ? [] : (fn.tokenContainerAccesses ?? []).map((access) => ({ fn, access }))))
+        .find(({ access }) => !(access.keySource === 'param' && contractParameterNames.has(access.keyParam)));
+    const reason = !artifact.stateLayout || mergedCompilerOptions.composition === 'framed' ? 'not-stateful-direct'
+      : ast.contract.usesBlockhash === true ? 'blockhash-ring'
+        // A live block read names its oracle pool by the contract argument `__oraclePool`, which A carries, so the
+        // code is the same for every category; only a read with no such binding would make it differ.
+        : liveFunctionReadsBlockData(ast.contract)
+          && !artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER) ? 'code-not-constant'
+          : artifact.composition !== undefined || split || mergedCompilerOptions.messageBus === true
+            ? 'lock-composition'
+            : unsupportedParameter ? 'param-type'
+              : inlineLibrary ? 'inline-library'
+                : unrequiredSingleKey !== undefined ? 'single-container-key'
+                  : undefined;
+    if (reason !== undefined) {
+      artifact.deployerUnsupported = reason;
+      const detail = reason === 'not-stateful-direct'
+        ? 'a deployer exists only for a direct stateful contract'
+        : reason === 'blockhash-ring' ? 'a blockhash ring would have to be minted at genesis'
+          : reason === 'lock-composition' ? 'its master lock is not the plain pin and code P2SH32 lock'
+            : reason === 'param-type' ? 'a constructor parameter has a struct, array or function type'
+              : reason === 'inline-library' ? 'an inline external library puts an OP_DROP between the pin and the arguments'
+                : `C keeps its token containers single and '${unrequiredSingleKey!.fn.name}' names one by `
+                + `'${unrequiredSingleKey!.access.keyParam}', which is not a contract parameter, so that coin cannot `
+                + 'be required at birth';
+      emitCompilerWarning(new DeployerUnsupportedWarning(artifact.contractName, reason, detail).message);
+    } else if (deployerSourceAst !== undefined && !isDeployerProgram) {
+      // A block reader's master lock commits to the `__oraclePool` binding; the deployer's create must pin it even
+      // though its own genesis block reads come from the locktime.
+      if (artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER)
+        || takesOraclePool(ast.contract)) {
+        deployerSourceAst.contract.oraclePoolBindingForGenesis = true;
+      }
+      const built = compileDeployerProgram(deployerSourceAst, code, mergedCompilerOptions as InternalCompilerOptions,
+        constants, artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER),
+        liveFunctionReadsBlockData(ast.contract));
+      if ('reason' in built) {
+        artifact.deployerUnsupported = built.reason;
+        emitCompilerWarning(new DeployerUnsupportedWarning(
+          artifact.contractName, built.reason,
+          ('detail' in built ? built.detail : undefined) ?? 'the constructor uses a construct the deployer cannot compile',
+        ).message);
+      } else {
+        const program = built.artifact;
+        assertSweepTemplate(program, (mergedCompilerOptions as { __deployerTestBox?: { sweepBody?: string } })
+          .__deployerTestBox?.sweepBody, deployerSourceAst.contract);
+        const createAbi = program.abi.find((fn) => fn.name === '__construct');
+        const sweepAbi = program.abi.find((fn) => fn.name === '__solidcash_sweep');
+        const callSlots = built.box.callSlots ?? 0;
+        const body = constants.code;
+        const bytecodeBytes = asmToBytecode(program.bytecode);
+        const unlockingSize = smallestCreateUnlockingSize(
+          createAbi?.inputs ?? [], body.length, bytecodeBytes.length, callSlots,
+        );
+        if (unlockingSize > 10000) {
+          artifact.deployerUnsupported = 'unlocking-too-large';
+          emitCompilerWarning(new DeployerUnsupportedWarning(
+            artifact.contractName, 'unlocking-too-large',
+            `even the smallest create unlocking is ${unlockingSize} bytes, past the 10,000-byte limit`,
+          ).message);
+        } else {
+        // B7.14: a constructor with a call slot makes C's born code end with `push32(hash256(Deploy<C>)) OP_DROP`.
+        // The body, which TEMPLATE hashes, stays the same with and without a deployer.
+          const deployerHash = hash256(bytecodeBytes);
+          const bornCode = callSlots > 0 ? Uint8Array.from([...body, 0x20, ...deployerHash, 0x75]) : body;
+          if (callSlots > 0) {
+            const script = [...bytecodeToScript(asmToBytecode(artifact.bytecode)), deployerHash,
+              Op.OP_DROP];
+            artifact.bytecode = scriptToAsm(script);
+          }
+          const lockingBytecode = Uint8Array.from([0xaa, 0x20, ...deployerHash, 0x87]);
+          const deployerAbi: DeployerAbi = {
+            version: 1,
+            bytecode: binToHex(bytecodeBytes),
+            lockingBytecode: binToHex(lockingBytecode),
+            template: binToHex(sha256Bytes.hash(body)),
+            code: binToHex(bornCode),
+            birthTrailer: callSlots > 0,
+            coinValue: BigInt(1200 + Math.ceil(sweepTransactionSize(bytecodeBytes.length) / 100) * 100).toString(),
+            sweepAge: 1440,
+            abi: [
+              ...(createAbi === undefined ? [] : [{ ...createAbi, name: 'create', selector: binToHex(DEPLOYER_SELECTOR_CREATE) }]),
+              ...(sweepAbi === undefined ? [] : [{ ...sweepAbi, name: 'sweep', selector: binToHex(DEPLOYER_SELECTOR_SWEEP) }]),
+            ],
+            genesisOutputs: built.box.genesisOutputs ?? 0,
+            callSlots,
+            satoshiContainer: built.box.satoshiContainer ?? 'none',
+            tokenRows: constants.singleTokenContainerKeys
+              .map((name) => artifact.constructorInputs.findIndex((input) => input.name === name))
+              .filter((index) => index >= 0),
+            collectionRows: (built.box.collectionRows ?? []).map((row) => ({
+              ...row,
+              ...(built.box.journalDepths?.[row.collection] === undefined
+                ? {} : { journalDepth: built.box.journalDepths[row.collection] }),
+            })),
+            // A2: a function of C other than its constructor reads block data (the constructor's reads use the locktime).
+            readsBlockData: liveFunctionReadsBlockData(ast.contract),
+            constructorReadsSender: built.box.constructorReadsSender === true,
+            ...(built.box.constructorBlockField === undefined
+              ? {} : { constructorBlockField: built.box.constructorBlockField }),
+            sidecars: built.box.sidecars ?? { keccak: 0, ecrecover: 0 },
+          };
+          // B7.14 (O4): the born code ends with the trailer exactly when callSlots > 0, and it names this deployer.
+          if (callSlots > 0) {
+            const trailer = [...bornCode.slice(-34)];
+            if (trailer[0] !== 0x20 || trailer[33] !== 0x75
+            || trailer.slice(1, 33).some((byte, index) => byte !== deployerHash[index])) {
+              throw new DeployerInternalError(ast.contract, 'the birth trailer does not name this deployer');
+            }
+          }
+          artifact.deployer = deployerAbi;
+        }
+      }
+    }
+  }
   if (traversal.routeOnlyEntries.size > 0) {
     artifact.abi = artifact.abi.map((fn) => (traversal.routeOnlyEntries.has(fn.selector ?? fn.name)
       ? { ...fn, routeOnly: true } : fn));
@@ -18974,8 +20307,64 @@ function compileResolvedAst(
       ...(artifact.diagnostics ?? []),
       { severity: 'error', code: 'contract-size-limit', message },
     ];
-    // A compiler warning is diagnostic only; the actual refusal remains at the spend boundary.
+    // A compiler warning is diagnostic only. The SDK refuses to deploy code no input can spend on its provider's
+    // network, and a spend of it fails at consensus. A default compile takes the direct build when that one fits.
     console.warn(`Error: ${message}`);
+  }
+  // B8.10: the deployer of every child type this contract creates, by contract name.
+  const childDeployers = (mergedCompilerOptions as InternalCompilerOptions).__compiledDeployers;
+  if (childDeployers !== undefined && childDeployers.size > 0) {
+    const entries: Record<string, NonNullable<Artifact['deployer']>> = {};
+    for (const [name, child] of childDeployers) {
+      if (child.abi !== undefined) entries[name] = child.abi;
+    }
+    if (Object.keys(entries).length > 0) artifact.childDeployers = entries;
+  }
+  // B8.7: a marked creator publishes the flag, and every entry but `receive` ends its ABI with the digest input.
+  if (ast.contract.createsSenderReadingChildren === true) {
+    artifact.createsSenderReadingChildren = true;
+    for (const fn of ast.contract.functions) {
+      if (fn.isEntryPoint !== true || fn.name === '__construct' || fn.isReceive || fn.isFallback) continue;
+      if (fn.parameters[fn.parameters.length - 1]?.name !== '__internal__createdChildren') {
+        throw new DeployerInternalError(fn,
+          `'${fn.name}' does not end with the created-children parameter`);
+      }
+    }
+  }
+  // O4 (B6.4, B7.14) on the code this artifact gives, after every pass. The flags are those of the contract's facts:
+  // bit 0 exactly for a marked creator (O3), bit 1 for a record-sound contract (O5).
+  if (ast.contract.codeTailApplied === true) {
+    const expectedFlags = (ast.contract.recordSound === true ? CODE_MARKER_RECORD_SOUND : 0)
+      | (ast.contract.createsSenderReadingChildren === true ? CODE_MARKER_MARKED_CREATOR : 0);
+    if ((ast.contract.codeMarkerFlags ?? 0) !== expectedFlags) {
+      throw new DeployerInternalError(ast.contract,
+        `O4: the code marker's flags ${ast.contract.codeMarkerFlags ?? 0} are not the contract's ${expectedFlags}`);
+    }
+    const trailer = artifact.deployer?.birthTrailer === true
+      ? hexToBin(artifact.deployer.lockingBytecode).slice(2, 34) : undefined;
+    try {
+      verifyCodeTail(asmToBytecode(artifact.bytecode), { flags: expectedFlags, trailer });
+    } catch (error) {
+      if (error instanceof CodeTailError) throw new DeployerInternalError(ast.contract, `O4: ${error.message}`);
+      throw error;
+    }
+    if (artifact.deployer !== undefined && binToHex(asmToBytecode(artifact.bytecode)) !== artifact.deployer.code) {
+      throw new DeployerInternalError(ast.contract, 'B7.14: the artifact\'s code is not the code Deploy<C> gives birth to');
+    }
+  }
+  // O8 (B6.0) on the code this artifact gives, after every pass: each arm of a direct stateful master begins with its
+  // exact-stack check. A throwaway admission pass omits bodies and the dispatcher, so it has nothing to walk.
+  const exactStack = traversal.exactStackArms;
+  if (exactStack.arms.length > 0
+    && (mergedCompilerOptions as InternalCompilerOptions).__cheapAdmissionCodegen !== true) {
+    try {
+      verifyArmHeads(asmToBytecode(artifact.bytecode), exactStack.arms, {
+        redeemLengthBlock: exactStack.redeemLengthBlock, poolBinding: exactStack.poolBinding,
+      });
+    } catch (error) {
+      if (error instanceof ArmHeadError) throw new DeployerInternalError(ast.contract, `O8: ${error.message}`);
+      throw error;
+    }
   }
   return artifact;
 }
@@ -20686,6 +22075,14 @@ function compileReferencedContracts(
     // Skip abstract contracts - they can't be compiled
     if (contract.isAbstract) continue;
 
+    // B8.0: a deployer child was already compiled standalone with its deployer; the creator embeds no code and
+    // code generation reads its binding from the DeployerAbi instead.
+    const gathered = (compilerOptions as InternalCompilerOptions).__compiledDeployers?.get(contractName);
+    if (gathered?.abi !== undefined) {
+      compiledBytecodes.set(contractName, hexToBin(gathered.abi.code));
+      continue;
+    }
+
     // Create a minimal AST wrapper and run semantic analysis passes
     // to properly populate opRolls (last-use tracking for OP_ROLL optimization).
     // Without this, imported contracts get OP_PICK + OP_NIP instead of OP_ROLL,
@@ -20934,8 +22331,272 @@ function publicCompilerOptions(options: CompilerOptions): CompilerOptions {
   return Object.fromEntries(Object.entries(options).filter(([key]) => !key.startsWith('__'))) as CompilerOptions;
 }
 
+/**
+ * Whether the options ask for a split program. `split: 'off'` asks for the plain one: `compileString` deletes it, but
+ * `compileStringMulti` passes it through to every contract and to the children a creator compiles.
+ */
+function requestsSplit(options: CompilerOptions): boolean {
+  const split = (options as { split?: unknown }).split;
+  return split !== undefined && split !== 'off';
+}
+
 /** Contracts whose standalone compile an enclosing compile is waiting on, outermost first. */
 const referencedContractCompileStack: string[] = [];
+
+/**
+ * B8.0: the direct `new` targets of `ast`, each compiled standalone with its deployer. Only a contract a source
+ * names with `new` is included; `type(C).creationCode` and a stateless child get no entry, so B8.1's predicate
+ * keeps today's binding for them. A cycle is refused rather than left to a missing bytecode error.
+ */
+function gatherDeployerChildren(
+  ast: Ast, code: string, options: InternalCompilerOptions,
+): Map<string, DeployerChild> | undefined {
+  // The pre-B10 inline fold remains reachable for the regression files that assert its shape (B13.4 removes it
+  // later). It is not a public option: no source or SDK path sets it.
+  if ((options as { __legacyDeployFold?: boolean }).__legacyDeployFold === true) return undefined;
+  if (!compilesInDirectConvention(options)) return undefined;
+  // The deployer program is a synthetic compile of C's constructor: it cannot create children.
+  if (options.__deployerProgram !== undefined) return undefined;
+  const knownNames = new Set(ast.importedContracts.map((contract) => contract.name));
+  const named = directNewContractNames(
+    ast.contract, knownNames, freeFunctionsReachedFrom(ast.contract, ast.freeFunctions ?? []),
+  );
+  if (named.size === 0) return undefined;
+  const childOptions = { ...referencedChildCompilerOptions(options), deployer: true };
+  const map = new Map<string, DeployerChild>();
+  for (const name of named) {
+    // The library self-deploy cases reach here with the primary's own name and no state: skipping is what lets the
+    // existing bytecode reference path build them instead of reporting a deployer cycle.
+    if (name === ast.contract.name) {
+      if (ast.contract.stateVariables.length === 0 && ast.contract.collections.length === 0) continue;
+      throw new DeployCycleError(ast.contract, name);
+    }
+    // A stateless child never gets a deployer (B8.1); its `new` keeps today's embedding. Declaring no state does not
+    // make a child stateless: one that emits, or creates a stateful child, is stateful (B10). Its own compile
+    // decides, and a stateless one records `not-stateful-direct` below.
+    const counter = options.__deployerChildCompileCounter;
+    if (counter !== undefined) counter.count += 1;
+    const result = compileReferencedDeployerStandalone(code, name, childOptions);
+    if (result.cycle === true) throw new DeployCycleError(ast.contract, name);
+    if (result.error !== undefined) throw result.error;
+    const artifact = result.artifact;
+    if (artifact === undefined) continue;
+    const abi = artifact.deployer;
+    // A5 refuses a live block reader's deployer as `code-not-constant` (the constant-lock form this backend
+    // lacks); the creator-side name for the same child fact is A15's `child-reads-block-data`.
+    const reason = artifact.deployerUnsupported === 'code-not-constant' && artifact.usesBlockOracle === true
+      ? 'child-reads-block-data'
+      : artifact.deployerUnsupported;
+    if (abi === undefined && (reason === undefined || reason === 'not-stateful-direct')) continue;
+    map.set(name, { name, artifact, abi, reason });
+  }
+  return map.size > 0 ? map : undefined;
+}
+
+/**
+ * B8.7: a creator that makes a sender-reading child is a marked creator. Refuse the shapes whose master cannot
+ * carry the unlocking check, declare the hidden `__solidcash_created` local in each arm that holds such a site,
+ * and mark the contract so the code tail sets the creator flag.
+ */
+function prepareMarkedCreator(
+  ast: Ast, children: ReadonlyMap<string, DeployerChild>, options: InternalCompilerOptions,
+): void {
+  const names = new Set([...children]
+    .filter(([, child]) => child.abi?.constructorReadsSender === true)
+    .map(([name]) => name));
+  if (names.size === 0) return;
+  const contract = ast.contract;
+  const refuse = (detail: string): never => {
+    throw new DeployerUnsupportedError(contract, 'creator-shape', detail);
+  };
+  if (options.messageBus === true || options.composition === 'framed') {
+    refuse('a marked creator must be a plain direct master, not a message-bus or framed program');
+  }
+  if (options.callBatch === true) refuse('a marked creator has no multi-call entry');
+  if (requestsSplit(options)) refuse('a marked creator cannot be split');
+  if (options.autoDelegate === true
+    || (options as InternalCompilerOptions & { delegateVariant?: unknown }).delegateVariant !== undefined) {
+    refuse('a marked creator cannot be a proxy or delegate variant');
+  }
+  if (contract.fallbackDef !== undefined) refuse('a marked creator has no fallback arm');
+
+  const countSites = (body: Node | undefined): number => {
+    if (body === undefined) return 0;
+    let count = 0;
+    const seen = new Set<Node>();
+    const walk = (value: unknown): void => {
+      if (value === null || typeof value !== 'object' || seen.has(value as Node)) return;
+      seen.add(value as Node);
+      if (Array.isArray(value)) { for (const item of value) walk(item); return; }
+      if (!(value instanceof Node)) return;
+      if (value instanceof InstantiationNode && names.has(value.identifier.name)) count += 1;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable'
+          || key === 'resolvedFunction' || key === 'type' || key === 'stateVariable' || key === 'collection') continue;
+        walk(child);
+      }
+    };
+    walk(body);
+    return count;
+  };
+  for (const fn of [contract.constructorDef, contract.receiveDef, ...contract.functions]) {
+    if (fn === undefined || countSites(fn.body) === 0) continue;
+    if (fn.name === '__construct') refuse('the constructor creates a child');
+    if (fn.isReceive) refuse('a deployer `new` cannot run in `receive`');
+    if (fn === contract.fallbackDef) refuse('a deployer `new` cannot run in `fallback`');
+    if (fn.isEntryPoint !== true) refuse('a deployer `new` in an invoked function body has no created-children list');
+  }
+  for (const fn of ast.freeFunctions) {
+    if (countSites(fn.body) > 0) refuse('a deployer `new` in an invoked function body has no created-children list');
+  }
+  contract.createsSenderReadingChildren = true;
+}
+
+/**
+ * B8.7 rule 2: declare the hidden `__solidcash_created` local in each arm that holds a sender-reading `new`. It
+ * runs after every transformation that moves statements, so the local sits at the function body's start in the
+ * program code generation emits.
+ */
+function injectCreatedChildrenLocals(ast: Ast, children: ReadonlyMap<string, DeployerChild> | undefined): void {
+  if (children === undefined || ast.contract.createsSenderReadingChildren !== true) return;
+  const names = new Set([...children]
+    .filter(([, child]) => child.abi?.constructorReadsSender === true)
+    .map(([name]) => name));
+  if (names.size === 0) return;
+  const countSites = (body: Node | undefined): number => {
+    if (body === undefined) return 0;
+    let count = 0;
+    const seen = new Set<Node>();
+    const walk = (value: unknown): void => {
+      if (value === null || typeof value !== 'object' || seen.has(value as Node)) return;
+      seen.add(value as Node);
+      if (Array.isArray(value)) { for (const item of value) walk(item); return; }
+      if (!(value instanceof Node)) return;
+      if (value instanceof InstantiationNode && names.has(value.identifier.name)) count += 1;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable'
+          || key === 'resolvedFunction' || key === 'type' || key === 'stateVariable' || key === 'collection') continue;
+        walk(child);
+      }
+    };
+    walk(body);
+    return count;
+  };
+  for (const fn of ast.contract.functions) {
+    if (!fn.isEntryPoint || fn.isReceive || fn.isFallback || countSites(fn.body) === 0) continue;
+    const statements = fn.body.statements ?? [];
+    if (statements.some((statement) => statement instanceof VariableDefinitionNode
+      && statement.name === '__solidcash_created')) continue;
+    const empty = new HexLiteralNode(new Uint8Array(0));
+    empty.location = fn.location;
+    const local = new VariableDefinitionNode(new BytesType(), [], '__solidcash_created', empty);
+    local.location = fn.location;
+    local.compilerGenerated = true;
+    local.allowUnused = true;
+    statements.unshift(local);
+    fn.body.statements = statements;
+  }
+}
+
+/**
+ * The free functions the contract can reach by bare-name calls, transitively. A module's free functions are not
+ * all part of every contract: compiling a child standalone must not see a `new` in a helper only the *creator*
+ * calls, or it reports a creation cycle against itself.
+ */
+function freeFunctionsReachedFrom(
+  contract: ContractNode, freeFunctions: FunctionDefinitionNode[],
+): FunctionDefinitionNode[] {
+  if (freeFunctions.length === 0) return [];
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of freeFunctions) {
+    const list = byName.get(fn.name) ?? [];
+    list.push(fn);
+    byName.set(fn.name, list);
+  }
+  const reached = new Set<FunctionDefinitionNode>();
+  const queue: FunctionDefinitionNode[] = [];
+  const visit = (fn: FunctionDefinitionNode): void => {
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof FunctionCallNode)) return;
+      for (const callee of byName.get(node.identifier.name) ?? []) {
+        if (reached.has(callee)) continue;
+        reached.add(callee);
+        queue.push(callee);
+      }
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+  };
+  for (const fn of [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]) {
+    if (fn !== undefined) visit(fn);
+  }
+  while (queue.length > 0) visit(queue.pop()!);
+  return [...reached];
+}
+
+/** The names a direct `new` in `contract` (or in a retained free function) quotes, without the transitive closure. */
+function directNewContractNames(
+  contract: ContractNode, knownNames: Set<string>, freeFunctions: FunctionDefinitionNode[],
+): Set<string> {
+  const names = new Set<string>();
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || seen.has(value as object)) return;
+    seen.add(value as object);
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!(value instanceof Node)) return;
+    // A call node may carry its resolved body (a library member, an inlined helper). Those bodies are walked as
+    // roots when they belong to this contract; a library's `new` is the library's own deployment, not this one's.
+    if (value instanceof FunctionDefinitionNode) return;
+    if (value instanceof InstantiationNode
+      && (knownNames.has(value.identifier.name) || value.identifier.name === contract.name)) {
+      names.add(value.identifier.name);
+      for (const argument of value.parameters) walk(argument);
+      if (value.callOptions?.value) walk(value.callOptions.value);
+      if (value.callOptions?.salt) walk(value.callOptions.salt);
+      if (value.callOptions?.args) for (const argument of value.callOptions.args) walk(argument);
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      // A back-reference to a child declaration would pull in that child's own `new` sites.
+      if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable'
+        || key === 'resolvedFunction' || key === 'type' || key === 'stateVariable' || key === 'collection') continue;
+      walk(child);
+    }
+  };
+  for (const fn of [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]) {
+    if (fn !== undefined) walk(fn.body);
+  }
+  for (const fn of freeFunctions) walk(fn.body);
+  return names;
+}
+
+/**
+ * The whole artifact of `contractName`'s standalone compile, nested inside the compile that gathers it. It shares
+ * the recursion stack of `compileReferencedContractStandalone`, so a creation cycle is reported instead of looped.
+ */
+function compileReferencedDeployerStandalone(
+  code: string, contractName: string, options: CompilerOptions,
+): { artifact?: Artifact; cycle?: boolean; error?: Error } {
+  if (referencedContractCompileStack.includes(contractName)) return { cycle: true };
+  const enclosingAdmissionAnalysis = pendingSpanAdmissionAnalysis;
+  referencedContractCompileStack.push(contractName);
+  try {
+    const artifact = withCompilerWarnings(true, () => compileStringUnchecked(code, {
+      ...options,
+      primaryContractName: contractName,
+      suppressWarnings: true,
+      __artifactCache: true,
+    } as CompileOptions));
+    return { artifact };
+  } catch (error) {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  } finally {
+    referencedContractCompileStack.pop();
+    pendingSpanAdmissionAnalysis = enclosingAdmissionAnalysis;
+  }
+}
 
 /**
  * The bytes of `contractName`'s standalone compile, nested inside the compile that embeds it, or the error when the

@@ -118,6 +118,12 @@ export default interface NetworkProvider {
   getBlockHeight(): Promise<number>;
 
   /**
+   * The tip's median time past, in unix seconds, for a constructor that reads `block.timestamp`. Consensus requires a
+   * time-type locktime to be strictly below this value (BCH's `LOCKTIME_MEDIAN_TIME_PAST`).
+   */
+  getMedianTimePast(): Promise<number>;
+
+  /**
    * Retrieve the Hex transaction details for a given transaction ID.
    * @param txid Hex transaction ID.
    * @throws {Error} If the transaction does not exist

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Contract } from '../../src/index.js';
+import { Contract, RawCallCalleeRequiredError } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { registerDeployment } from '../../src/stateful/index.js';
@@ -10,7 +10,8 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 // returns nothing, so the carrier must encode an EMPTY inline field rather than the legacy `0101` sentinel (which
 // the caller would read as two bytes of data and ABI-decode as a 32-byte word). The false case pins the other
 // half: a canonical all-zero boolean is an authenticated `false`, not the zero seed that state-writing calls
-// replace with success.
+// replace with success. A call whose payload has bytes runs on its co-spent target, so EVM's `(false, "")` for a
+// target that cannot run it has no spend: the SDK refuses such a call by name before building it.
 
 const VOID_CALLEE = `pragma solidcash >=0.8.0;
 contract VoidCallee {
@@ -111,24 +112,27 @@ describe('raw call returndata carriers', () => {
       .send()).rejects.toThrow(/BOOL_CALL_FAILED/);
   });
 
-  it('answers (false, "") when the callee lacks the requested selector', async () => {
+  it('refuses a call whose target has no function for its payload', async () => {
     const provider = createTestProvider();
     const callee = await deploy(provider, VOID_CALLEE);
     const caller = await deploy(provider, MISSING_SELECTOR_CALLER);
 
-    // No `withExternalCall`: the planner pins the deployment and finds no matching function, which EVM answers
-    // as a failed call. The caller's own require is the outcome; the callee covenant is never co-spent.
-    await expect(caller.contract.callMissing(callee.address).send()).rejects.toThrow(/MISSING_FAILED/);
+    // No `withExternalCall`: the planner pins the deployment and finds no function for the payload's selector. The
+    // caller's covenant requires the target co-spent and running the call, so nothing can answer it.
+    const sent = caller.contract.callMissing(callee.address).send();
+    await expect(sent).rejects.toThrow(RawCallCalleeRequiredError);
+    await expect(sent).rejects.toThrow(/no function for the payload/);
   });
 
-  it('answers (false, "") when the co-spent callee would revert', async () => {
+  it('refuses a call whose co-spent callee would revert', async () => {
     const provider = createTestProvider();
     const callee = await deploy(provider, REVERTING_CALLEE);
     const caller = await deploy(provider, BOOL_CALLER);
 
-    // EVM's low-level call swallows the callee's revert; the caller observes `success = false` and raises its
-    // own reason. A spend that co-spent the reverting callee would abort with CALLEE_REVERTED instead.
-    await expect(caller.contract.callBool(callee.address).send())
-      .rejects.toThrow(/BOOL_CALL_FAILED/);
+    // The planner proves the invocation on the callee's own covenant first. The call must run there, and it fails,
+    // so the SDK names that failure rather than plan a spend that cannot pass.
+    const sent = caller.contract.callBool(callee.address).send();
+    await expect(sent).rejects.toThrow(RawCallCalleeRequiredError);
+    await expect(sent).rejects.toThrow(/the target fails the call/);
   });
 });

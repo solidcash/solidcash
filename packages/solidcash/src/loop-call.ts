@@ -177,6 +177,8 @@ export function buildOpaqueLoopCallTransaction(opts: BuildOpaqueLoopCallOptions)
     else if (inp.name.startsWith('__internal__extcallAnchorIdx')) internalArgs.push(-1n);
     else if (inp.name === '__internal__externalReturnOutputIdx') internalArgs.push(BigInt(1 + n));
     else if (inp.name === '__internal__returnOutputIdx') internalArgs.push(-1n);
+    // An ordinary call does not answer a constructor's genesis call.
+    else if (inp.name === '__internal__genesisCall') internalArgs.push(new Uint8Array());
     // A short return is stored raw. The preimage is read only when the commitment is a SHA256 digest.
     else if (inp.name.startsWith('__internal__externalReturnPreimage')) internalArgs.push(new Uint8Array());
   }

@@ -157,3 +157,77 @@ export function computeEcrecoverWitness(hash: Uint8Array, v: number, r: Uint8Arr
     zinv: vmNum(inv(acc[2], P)), compressedQ, uncompressedPubkey, argBlob,
   };
 }
+
+/**
+ * Arguments the EVM's precompile refuses, so that it answers the zero address, and what a direct-convention call needs
+ * of its slots to answer the same:
+ * - `unread`: its range rules refuse them, a `v` other than 27 or 28 or an `r` or `s` outside [1, n). An address
+ *   projection answers the zero address without reading its slots. (Side-car A would take an `s`, and an `r` in
+ *   [n, p), reduced mod n.)
+ * - `offCurve`: `r` is in range but no curve point's x-coordinate, so no side-car serves the call. An address
+ *   projection answers the zero address once the pad of the input in its first slot proves it: `proof` is w, with
+ *   w^2 = -(r^3 + 7) mod p, as a 32-byte little-endian word.
+ * - `atInfinity`: the recovered key would be the point at infinity, which no side-car commits. A pair over the digest
+ *   shifted by -2^128 r mod n, `shiftedHash` as a 32-byte little-endian word, recovers the key plus 2^128 G, which is
+ *   2^128 G, and an address projection reads that pair and answers the zero address.
+ * `ecrecoverPubKey` has no zero key and refuses every one of them.
+ */
+export type EcrecoverRefusal =
+  | { readonly kind: 'unread'; readonly reason: string }
+  | { readonly kind: 'offCurve'; readonly reason: string; readonly proof: Uint8Array }
+  | { readonly kind: 'atInfinity'; readonly reason: string; readonly shiftedHash: Uint8Array };
+
+/** A value below 2^256 as a 32-byte little-endian word. */
+const leWord = (value: bigint): Uint8Array => {
+  const word = new Uint8Array(32);
+  for (let i = 0, x = value; i < 32; i++, x >>= 8n) word[i] = Number(x & 0xffn);
+  return word;
+};
+
+/** `base` to the power `exponent` mod p. */
+const powP = (base: bigint, exponent: bigint): bigint => {
+  let result = 1n;
+  for (let b = mod(base, P), e = exponent; e > 0n; b = mod(b * b, P), e >>= 1n) {
+    if ((e & 1n) === 1n) result = mod(result * b, P);
+  }
+  return result;
+};
+
+/**
+ * Why (hash, v, r, s) recover no key the EVM's precompile would, and what the call's slots need for it, or undefined
+ * when a side-car pair recovers the key the precompile does. `hash`, `r` and `s` are little-endian, as
+ * `computeEcrecoverWitness` takes them.
+ */
+export function ecrecoverRefusal(hash: Uint8Array, v: number, r: Uint8Array, s: Uint8Array): EcrecoverRefusal | undefined {
+  const leBig = (b: Uint8Array): bigint => {
+    let x = 0n;
+    for (let i = b.length - 1; i >= 0; i--) x = (x << 8n) | BigInt(b[i]);
+    return x;
+  };
+  if (v !== 27 && v !== 28) return { kind: 'unread', reason: `v is ${v}, not 27 or 28` };
+  if (hash.length !== 32 || r.length !== 32 || s.length !== 32) {
+    return { kind: 'unread', reason: 'hash, r and s are not 32 bytes each' };
+  }
+  const rr = leBig(r), ss = leBig(s);
+  if (rr === 0n || rr >= N) return { kind: 'unread', reason: 'r is outside [1, n)' };
+  if (ss === 0n || ss >= N) return { kind: 'unread', reason: 's is outside [1, n)' };
+  const alpha = mod(mod(rr * rr, P) * rr + 7n, P);
+  const y = powP(alpha, (P + 1n) / 4n);
+  if (mod(y * y, P) !== alpha) {
+    // -1 is no square mod p, so -alpha is one exactly when alpha is not.
+    return {
+      kind: 'offCurve', reason: 'no curve point has r as its x-coordinate',
+      proof: leWord(powP(P - alpha, (P + 1n) / 4n)),
+    };
+  }
+  const Ry = (y & 1n) === BigInt(v - 27) ? y : mod(P - y, P);
+  const rinv = inv(rr, N);
+  const z = mod(leBig(hash), N);
+  const recovered = Point.BASE.multiplyAndAddUnsafe(
+    Point.fromAffine({ x: rr, y: Ry }), mod(-z * rinv, N), mod(ss * rinv, N),
+  );
+  if (recovered !== undefined) return undefined;
+  return {
+    kind: 'atInfinity', reason: 'the recovered key is the point at infinity', shiftedHash: leWord(mod(z - (rr << 128n), N)),
+  };
+}

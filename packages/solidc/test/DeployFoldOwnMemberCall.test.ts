@@ -28,7 +28,7 @@ contract D {
 `;
 
 describe('deploy-then-call on a member the fresh contract declares itself', () => {
-  const OPTS = { evmCompat: true };
+  const OPTS = { evmCompat: true, __legacyDeployFold: true } as never;
 
   it('compiles the corpus fixture with the conformance sweep options', () => {
     // Exactly the options the solc-corpus conformance sweep passes for unmodified upstream sources.

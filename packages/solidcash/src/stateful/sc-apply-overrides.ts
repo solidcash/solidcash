@@ -12,6 +12,7 @@ import {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { loadFixedEffectEntries } from '../message-bus/fixed-effect-entries.js';
 import { addressToLockScript } from '../utils.js';
@@ -23,6 +24,7 @@ import type {
   StatefulContract,
 } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
+import type { StandInCaller } from './stb-materialize-caller-edge-outputs.js';
 
 type StateValueType = StateValue;
 
@@ -34,6 +36,10 @@ export interface ApplyOverridesHost {
   parentContract?: StatefulContract;
   callerLockingBytecode?: Uint8Array;
   callerCategoryId?: string;
+  /** The shared side-car pool (salt 0) a build laid out to run off input 0 takes its side-cars from. */
+  sharedSidecarPool?: NetworkProvider;
+  /** A contract caller the transaction does not hold, which every build of the call carries. */
+  standInCaller?: StandInCaller;
   functionName?: string;
   functionArgs?: any[];
   stateOverrides: Array<{ name: string; value: StateValueType }>;
@@ -212,6 +218,8 @@ export async function applyOverrides(
           && { callerLockingBytecode: host.callerLockingBytecode }),
         ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
+        ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
+        ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
         ...(host.compilerRoute && {
           abiFunction: host.compilerRoute.abiFunction,
           compilerRouteSelector: host.compilerRoute.selector,
@@ -356,6 +364,8 @@ export async function applyOverrides(
           && { callerLockingBytecode: host.callerLockingBytecode }),
         ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
+        ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
+        ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
         ...(host.compilerRoute && {
           abiFunction: host.compilerRoute.abiFunction,
           compilerRouteSelector: host.compilerRoute.selector,
@@ -397,6 +407,8 @@ export async function applyOverrides(
           && { callerLockingBytecode: host.callerLockingBytecode }),
           ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
+          ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
+          ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
           drainTokenContainers: drainedTokenContainers,
           ...(host.compilerRoute && {
             abiFunction: host.compilerRoute.abiFunction,
@@ -418,14 +430,16 @@ export async function applyOverrides(
   }
 
   // Re-derive if: (a) initial derivation returned no state, OR (b) the VM errored
-  // during initial derivation (state may be incorrect/partial). In both cases,
-  // re-derive only when new context (transfers) has been added and no manual
-  // .setState() was called.
+  // during initial derivation (state may be incorrect/partial), OR (c) the call attaches a value or a token
+  // deposit: the initial derivation probed a transaction without it, so whatever reads `msg.value` or the
+  // container's units (a state write, an event) was derived from 0 and would not match the sent call. In each
+  // case, re-derive only when new context has been added and no manual .setState() was called.
   const vmErrored = !!(builder as any).__vmErrored;
   const transparentAtomicPromotion = ((builder as StatefulTransactionBuilder & {
     __preparedAtomicCalls?: readonly PreparedAtomicMessageBusCall[];
   }).__preparedAtomicCalls?.length ?? 0) > 0;
-  const shouldReDerive = (!derived || vmErrored) && host.stateOverrides.length === 0;
+  const depositUnseen = host.containerDepositAmount > 0n || host.tokenContainerDeposits.length > 0;
+  const shouldReDerive = (!derived || vmErrored || depositUnseen) && host.stateOverrides.length === 0;
   if (shouldReDerive) {
     const reDerive = (builder as any).__reDerive;
     const hasNewContext = host.transfers.length > 0

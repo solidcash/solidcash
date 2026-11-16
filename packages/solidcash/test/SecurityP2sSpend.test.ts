@@ -10,7 +10,7 @@ import { compileString } from './direct-compile.js';
  */
 describe('a p2s contract derives its locking bytecode from the raw script', () => {
   it('returns the raw redeem-script bytes from generateLockingBytecode', () => {
-    const artifact = compileString('pragma solidcash ^0.50.0; contract C() { function f() { require(true); } }');
+    const artifact = compileString('pragma solidcash ^0.51.0; contract C() { function f() { require(true); } }');
     const provider = new MockNetworkProvider();
     const contract = new Contract(artifact, [], { provider, addressType: 'p2s' });
     const unlocker = contract.unlock.f();

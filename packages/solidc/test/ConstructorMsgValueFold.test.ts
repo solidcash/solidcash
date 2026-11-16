@@ -6,7 +6,7 @@ import { compileString } from './direct-compile.js';
 // child's `msg.value` = the value the deploy funds it with (`new C{value: v}` in EVM). The corpus harness
 // compiles with `evmCompat: true`, which is the mode whose `(new C()).x()` form reaches the deploy-result path.
 describe('constructor msg.value fold', () => {
-  const OPTS = { evmCompat: true };
+  const OPTS = { evmCompat: true, __legacyDeployFold: true } as never;
 
   const source = (value: number): string => 'contract C {\n'
     + '    uint public x = msg.value - 10;\n'

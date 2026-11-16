@@ -28,7 +28,7 @@ const COMPOSITION_LIMITS = {
   maximumNftCommitmentBytes: 10_000_000,
 };
 
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' contract Ledger {'
   + '   int public total;'
   + '   pubkey external owner;'

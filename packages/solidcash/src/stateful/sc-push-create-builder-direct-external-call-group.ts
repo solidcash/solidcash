@@ -47,6 +47,28 @@ export function directVmapBatchTrailingCount(
   return BigInt(lanes.size);
 }
 
+/**
+ * The dynamic values a callee's function writes that its call already names: for each written variable, the one
+ * visible argument of its type, when there is exactly one and it holds bytes or a string.
+ */
+export function argumentDynamicStateValues(
+  fn: AbiFunction | undefined, stateLayout: StateLayout, args: readonly FunctionArgument[],
+): Record<string, StateValue> | undefined {
+  const values: Record<string, StateValue> = {};
+  for (const name of fn?.dynamicWrites ?? []) {
+    const variable = stateLayout.variables.find((candidate) => candidate.name === name);
+    if (!variable) continue;
+    const candidates = fn!.inputs
+      .map((abiInput, index) => ({ abiInput, index }))
+      .filter(({ abiInput }) => !abiInput.name.startsWith('__internal__')
+        && abiInput.type === variable.type);
+    if (candidates.length !== 1) continue;
+    const value = args[candidates[0].index];
+    if (typeof value === 'string' || value instanceof Uint8Array) values[name] = value;
+  }
+  return Object.keys(values).length > 0 ? values : undefined;
+}
+
 export interface PushCreateBuilderDirectExternalCallGroupHost {
   deriveReturnValue(...args: any[]): Promise<unknown>;
   resolveLoopArgs(occurrenceIndex: number): FunctionArgument[] | undefined;
@@ -324,6 +346,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       precomputedHex: directPrecomputedReturn ? binToHex(directPrecomputedReturn) : undefined,
     });
   }
+  const argumentValues = argumentDynamicStateValues(bAbiFunc, bStatelayout, callInfo.args);
   externalCallUtxoGroups.push({
     categoryId: externalCategoryId,
     stateLayout: bStatelayout,
@@ -408,21 +431,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       entryLoopCollection: bEntryLoopCollection,
     }),
     ...(bValueChunkOutputCount > 0 && { valueChunkOutputCount: bValueChunkOutputCount }),
-    ...(() => {
-      const values: Record<string, StateValue> = {};
-      for (const name of bAbiFunc?.dynamicWrites ?? []) {
-        const variable = bStatelayout.variables.find((candidate) => candidate.name === name);
-        if (!variable) continue;
-        const candidates = bAbiFunc!.inputs
-          .map((abiInput, index) => ({ abiInput, index }))
-          .filter(({ abiInput }) => !abiInput.name.startsWith('__internal__')
-            && abiInput.type === variable.type);
-        if (candidates.length !== 1) continue;
-        const value = callInfo.args[candidates[0].index];
-        if (typeof value === 'string' || value instanceof Uint8Array) values[name] = value;
-      }
-      return Object.keys(values).length > 0 ? { dynamicStateValues: values } : {};
-    })(),
+    ...(argumentValues !== undefined && { dynamicStateValues: argumentValues }),
   });
   const directGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
   directGroup.valueChunkWrites = describeValueChunkWrites(directGroup);

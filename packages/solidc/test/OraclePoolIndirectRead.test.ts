@@ -32,7 +32,7 @@ interface Coin {
   readonly unlocking: Uint8Array;
 }
 
-const P = 'pragma solidcash ^0.50.0;';
+const P = 'pragma solidcash ^0.51.0;';
 // `p()` reaches the read only through a pointer, so its target is entered by an indirect call.
 const INDIRECT = `${P} contract R {`
   + ' function stamp() internal view returns (uint32) { return block.timestamp; }'

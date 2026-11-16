@@ -22,6 +22,11 @@ export interface MeasureAndFundCovenantFeeHost {
   readonly checkMinRelayFee: boolean;
   /** The signer that pays when the provider cannot mint a funder, as a live network cannot. */
   readonly feeSigner?: Signer;
+  /**
+   * The entry reads `msg.sender`/`tx.origin`, so the transaction needs a native P2PKH origin input. A mock
+   * provider's minted OP_TRUE funder is not one, so the signer's own coin pays the fee in that case.
+   */
+  readonly requiresNativeOrigin?: boolean;
   accountingFunderUtxos(): readonly UnlockableUtxo[];
   /** Count inputs the transaction already holds as funders, so their surplus is change. */
   adoptAccountingFunders(funders: readonly UnlockableUtxo[]): void;
@@ -82,7 +87,9 @@ export async function measureAndFundCovenantFee(
   // Change output: 8 (value) + 1 (scriptLen varint) + scriptLen
   const accountingFundersAtMeasurement = host.accountingFunderUtxos();
   const canMintFunder = !!(provider as { addUtxo?: unknown }).addUtxo;
-  const signerPaysFee = !canMintFunder && host.feeSigner !== undefined;
+  const signerPaysFee = host.requiresNativeOrigin === true
+    ? host.feeSigner !== undefined
+    : (!canMintFunder && host.feeSigner !== undefined);
   const funderUnlockSize = accountingFundersAtMeasurement.length > 0
     // A native P2PKH funder (msg.sender / tx.origin sender input) signs over the source outputs, which are not
     // assembled yet at this fee-estimation point, so use the fixed sig+pubkey size (~107 B) instead of signing.

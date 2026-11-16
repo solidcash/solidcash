@@ -66,7 +66,7 @@ describe('a framed genesis for an array-state contract', () => {
 
   it('derives the .scash control for the same layout', () => {
     const control = compileString(
-      'pragma solidcash ^0.50.0;'
+      'pragma solidcash ^0.51.0;'
       + ' contract Impl {'
       + '   int[] listed;'
       + '   constructor() { }'

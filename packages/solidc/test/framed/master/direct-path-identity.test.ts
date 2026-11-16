@@ -15,13 +15,15 @@ import { compileString } from '../../../src/compiler.js';
  * arm moved them only while every contract carried it); and again when the own-category count pinned each record
  * beside a count-path call at its own index (C3); and again when the data-record covenant, whose lock the master
  * rebuilds to check its records, defined its authority bind and its category once; and again when a drained container
- * left a sweepable filler in place of a zero-value output (c2d8ed7ea). A framed compile may add artifacts, but it may
- * not make these two directs disagree.
+ * left a sweepable filler in place of a zero-value output (c2d8ed7ea); and again when `genesisCalls` went on by
+ * default, so these record-sound contracts carry the genesis step and their marker (with `genesisCalls: false` each is
+ * the previous bytecode less the trailing marker push, which A7 drops when the option is off). A framed compile may
+ * add artifacts, but it may not make these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
-const STATE_CONTRACT = 'pragma solidcash ^0.50.0;'
+const STATE_CONTRACT = 'pragma solidcash ^0.51.0;'
   + ' contract Counter(pubkey admin) {'
   + '   int public counter;'
   + '   function increment(sig s) {'
@@ -30,7 +32,7 @@ const STATE_CONTRACT = 'pragma solidcash ^0.50.0;'
   + '   }'
   + ' }';
 
-const SENDER_CONTRACT = 'pragma solidcash ^0.50.0;'
+const SENDER_CONTRACT = 'pragma solidcash ^0.51.0;'
   + ' contract Gate(address owner) {'
   + '   int public hits;'
   + '   function bump() { require(msg.sender == owner); this.hits = this.hits + 1; }'
@@ -38,9 +40,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.50.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: 'c171ab35b400868894f3855a05d351f8a2dd247dcad61751261ae2ebd101d609' },
+    pinnedSha256: '92c4939094859722e4cf9ea490502f12cfbd71ecc90bf3f1d427519a820ddeef' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: '0af68169c82dd2c15a74995ee5539506173f29892b57cc1cc65a87e4d7c60780' },
+    pinnedSha256: '8cfd9205bc42b102b4d2c2bf03ed272f51889f181da5f22ee2be6a5dc767382c' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

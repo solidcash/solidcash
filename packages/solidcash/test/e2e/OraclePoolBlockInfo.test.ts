@@ -221,9 +221,14 @@ describe('oracle pool block-info reads by direct contracts', () => {
   });
 
   it('a creator deploys a child that reads block.* through the creator\'s pool', async () => {
+    // A deployer `new` of a block reader is not in v1 (A15): its oracle needs an owner the creator binds. The
+    // binding-forwarding shape is the pre-B10 fold's, kept through the internal escape.
+    expect(() => compileStringMulti(CREATOR, { allowUnsafeOperations: true })).toThrow(/child-reads-block-data/);
     const { provider, signer } = await chain();
     const pool = await mintTestOraclePool(provider, POOL_TIP);
-    const { Clock, ClockMaker } = compileStringMulti(CREATOR, { allowUnsafeOperations: true });
+    const { Clock, ClockMaker } = compileStringMulti(CREATOR, {
+      allowUnsafeOperations: true, __legacyDeployFold: true,
+    } as never);
     expect(ClockMaker.constructorInputs.map((input) => input.name)).toEqual([ORACLE_POOL_PARAMETER]);
     const make = ClockMaker.abi.find((fn) => fn.name === 'make')!;
     expect(make.deployTargets?.[0]?.constructorArgs).toEqual([ORACLE_POOL_PARAMETER]);

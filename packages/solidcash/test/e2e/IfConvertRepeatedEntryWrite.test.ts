@@ -66,13 +66,16 @@ describe('if/else entry writes: an arm that writes one entry twice', () => {
     // Bytecode of the pre-fix build (958fb0120) as the 2026-11-05 landing encodes it, void records and filler locks
     // included: every entry still runs the pre-fix instructions. The default and direct conventions compile these
     // alike.
+    // Re-pinned 2026-11-14 to the current build: these were stale by 07552ad33, and e7fe44e3a moved them again. With
+    // genesisCalls: false its code equals 07552ad33's but for O8 (the exact-stack check now first in every arm, the
+    // shared helper renumbered behind it); with the default it also carries the genesis marker and header.
     const before: Record<string, string> = {
       'k = k + 1; if (c) { m[k] = a; } else { m[k] = 5; }':
-        '2c01f1ff7cf256a9ded66cc4b701078460cfdf5e833a1917dd878198edbb6fad',
+        'f54d94acc741514c43275dfe759dc06073430668edec194affcf8e3b6df970bb',
       'if (c) { m[k] = a; } else { n[k] = 5; }':
-        '05f639980f015a2070aa5185137c8124c7b228c73d2fc23323f70b33d7ad24b6',
+        'eff2bd58d776509a07165b70e67e262bbce5639d89d7516f0f8f52b7eaea3f5d',
       'k = k + 1; if (c) { m[k] = a; n[k] = 1; } else { m[k] = 5; }':
-        '09d9095801bb5232baba78f7dbfb994fcb988ce3c40d414936aca462d377b5e9',
+        '730f226313edba6590ba1eda557f2c898d997da0af1d018fb5818fbf120f3581',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);
@@ -113,15 +116,18 @@ describe('if entry writes: the condition runs once, each arm in its own order', 
     // Bytecode of the build before this fix (6bb226632) as the 2026-11-05 landing encodes it, void records and filler
     // locks included: every entry still runs that build's instructions. The default and direct conventions compile
     // these alike.
+    // Re-pinned 2026-11-14 to the current build: these were stale by 07552ad33, and e7fe44e3a moved them again. With
+    // genesisCalls: false its code equals 07552ad33's but for O8 (the exact-stack check now first in every arm, the
+    // shared helper renumbered behind it); with the default it also carries the genesis marker and header.
     const before: Record<string, string> = {
       // The condition reads no mapping, or only the one the last write mutates.
-      'if (c) { m[k] = a; n[k] = 1; }': '5ad0a5c594f2d123fdce971c6b7cf457743c833895bba03606cdefcc847395e6',
-      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': 'a5e7cf2990578e93906531cb2b08e516fb2814b96dd41b1f11f5a4fc3727ce22',
+      'if (c) { m[k] = a; n[k] = 1; }': 'ff1aa9dc9f0bac1d4283c31e6f560849210dadb3877540f3831b515ed53f80c2',
+      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': 'f30a173006eb1f4e95dbd8eec5941cc1f15c47c007dd4e7add05c0e0e37fc469',
       // The merge runs n[k] ahead of the else arm's m[k]; neither write observes the other.
       'k = k + 1; if (c) { n[k] = 3; } else { m[k] = 1; n[k] = 2; }':
-        'a3a35f9f5954030bc36fba4b5c1bda94ff069dfd4299b8f978ed9fbed9098039',
+        '442c6e9eebe4def175f54850b8f9680cc4d47a3ca7b2689d59ff25b41786771f',
       'k = k + 1; if (c) { n[k] = 3; m[k] = 4; } else { m[k] = 1; n[k] = 2; }':
-        '120c4324cd3618dc647388a59e2f6b5640df1a2b0339fceee43aa3558ccacc58',
+        'aca96f0fe47d41c37f4e9c6b000bf31616a5d7d86b157557499feb868c6fe4cc',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);

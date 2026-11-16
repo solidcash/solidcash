@@ -71,6 +71,7 @@ import {
 } from './storagePointerBinding.js';
 import { readsMessageField } from './selfMessageCall.js';
 import { checksTransactionSignature, namesCalledFrom } from './transactionSignatureCheck.js';
+import { recoveryLoopHelpers } from './recoveryLoopHelpers.js';
 
 /**
  * Inlines internal calls to void functions that take `storage` reference parameters
@@ -148,6 +149,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private keepDefFns: Set<string> = new Set();
   private constructorCalledFns: Set<string> = new Set();
   private journalEffectFns: Set<string> = new Set();
+  // Helpers whose recovery runs in a loop of a stateful function once inlined (`recoveryLoopHelpers`).
+  private recoveryLoopHelpers: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private counter = 0;
   // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
@@ -247,6 +250,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
     this.inlinedFns = new Set();
     this.keepDefFns = new Set();
+    // A recovery a helper makes in a loop reads one triple per iteration only once it is the entry's own loop recovery,
+    // which inlining makes it. A framed compile keeps its helpers.
+    this.recoveryLoopHelpers = this.keepSelfMessageCalls ? new Set() : recoveryLoopHelpers(node, this.freeFns);
     // A function used as a VALUE (function pointer arg / stored pointer) must keep its definition and is
     // not safely droppable-after-inline; exclude such names from the state-touching criteria.
     const valueReferenced = this.collectValueReferencedNames(node);
@@ -300,6 +306,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
               || halts
               || this.transitiveSortedWriters.has(fn.name)
               || checksSignature(fn)
+              || this.recoveryLoopHelpers.has(fn.name)
               || (this.inlineSolidityInitializers && /^__.*_init(?:_unchained)?$/.test(fn.name)))))) {
         this.inlinedFns.add(fn.name);
       } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
@@ -308,7 +315,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           || hasPhysicalEffects
           || halts
           || this.transitiveSortedWriters.has(fn.name)
-          || (calledByName.has(fn.name) && checksSignature(fn)))) {
+          || (calledByName.has(fn.name) && checksSignature(fn))
+          || this.recoveryLoopHelpers.has(fn.name))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -358,7 +366,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // co-spent delegatecalls, including when their bodies emit events or touch collections.
       if (fn.modifiers.includes(FunctionModifier.DELEGATE)) continue;
       if (fn.body && fn.returnTypes.length === 0 && (this.hasStoragePointerParam(fn) || this.hasPhysicalEffects(fn)
-        || this.holdsAssemblyReturn(fn) || checksSignature(fn))) {
+        || this.holdsAssemblyReturn(fn) || checksSignature(fn) || this.recoveryLoopHelpers.has(fn.name))) {
         this.inlinedFns.add(fn.name);
       }
     }

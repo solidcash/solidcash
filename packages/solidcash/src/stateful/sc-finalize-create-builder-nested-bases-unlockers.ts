@@ -13,9 +13,11 @@ import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-he
 import { directCallBatchUnlocker } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
+import { externalReturnParamSlot } from './physical-external-call.js';
 import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
+import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import { groupLayoutTrailingBase } from './writer-event-delegate-layout.js';
 
 export function selectorParamSlot(
@@ -116,6 +118,17 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     oracleBlockBase += group.blockInputs?.length ?? 1 + group.dataNftUtxos.length;
     oracleBlockBase += group.ordinaryDynamicChunkInputs?.length ?? 0;
   }
+  // The inputs a group takes as the builder flattens it: its block (or its master and records), then the old chunks
+  // its write consumes.
+  const plannedInputWidth = (group: ExternalCallUtxoGroup): number => (group.blockInputs
+    ? group.blockInputs.length : 1 + group.dataNftUtxos.length) + (group.ordinaryDynamicChunkInputs?.length ?? 0);
+  // Every group's planned master, for a caller planned before the callees its witnesses name.
+  const plannedMasterIndices: number[] = [];
+  let plannedBase = externalCallInputBase;
+  for (const group of externalCallUtxoGroups) {
+    plannedMasterIndices.push(plannedBase);
+    plannedBase += plannedInputWidth(group);
+  }
   let currentInputBase = externalCallInputBase;
   const groupMasterIndices: number[] = []; // per co-spend group: its master's absolute input index
   for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
@@ -198,6 +211,23 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       }
       return childGroupIndices;
     };
+    // An ordinary frame's absolute input and output coordinates are planned here from band widths, which count no
+    // slot of the root's block that a plain send compacts or a published record holds open. The builder re-reads them
+    // from the assembled transaction, as it does the root's and a low-level call's nested callers': the masters and
+    // records of its callees, the first old chunk its write consumes and its first block-hash slot.
+    const rebindsAssembledCoordinates = !group.compilerRoute && group.callBatch === undefined
+      && group.callBatchUnit === undefined && group.delegateCallGroupIndex === undefined;
+    const bindToCoin = (paramName: string, coin: Pick<Utxo, 'txid' | 'vout'>): void => {
+      group.inputWitnessOutpoints = {
+        ...group.inputWitnessOutpoints, [paramName]: { txid: coin.txid, vout: coin.vout },
+      };
+    };
+    const calleeGroupForSlot = (slot: number): number | undefined => {
+      const callsiteId = bAbiFunc?.externalCalls?.[slot]?.callsiteId;
+      const children = getChildGroupIndices();
+      return callsiteId === undefined ? children[slot]
+        : children.find((index) => groupMetas[index].ecSlot.callsiteId === callsiteId);
+    };
 
     for (let i = group.compilerRoute ? 0 : userArgCount; i < bAbiInputs.length; i++) {
       const paramName = bAbiInputs[i].name;
@@ -235,6 +265,27 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
           + (group.ordinaryDynamicChunkInputs?.length ?? 0);
         bFinalArgs.push(BigInt(thisGroupEnd));
+        // The region begins at the master of the callee of the first call, wherever the transaction places it.
+        const firstCallee = rebindsAssembledCoordinates ? calleeGroupForSlot(0) : undefined;
+        if (firstCallee !== undefined) {
+          const physical = externalCallUtxoGroups[externalCallUtxoGroups[firstCallee].sharedGroupIndex ?? firstCallee];
+          group.mintingInputWitnessCategories = {
+            ...group.mintingInputWitnessCategories, [paramName]: physical.categoryId,
+          };
+        }
+      } else if (rebindsAssembledCoordinates && /^__internal__extcallMasterIdx\d*$/.test(paramName)) {
+        // Each call's own callee master, which a function that makes more than one call reads for every call. A
+        // call this run does not make names no input (-1).
+        const suffix = paramName.slice('__internal__extcallMasterIdx'.length);
+        const callee = calleeGroupForSlot(suffix === '' ? 0 : Number(suffix));
+        const physicalIndex = callee === undefined ? undefined
+          : externalCallUtxoGroups[callee].sharedGroupIndex ?? callee;
+        bFinalArgs.push(physicalIndex === undefined ? -1n : BigInt(plannedMasterIndices[physicalIndex]));
+        if (physicalIndex !== undefined) {
+          group.mintingInputWitnessCategories = {
+            ...group.mintingInputWitnessCategories, [paramName]: externalCallUtxoGroups[physicalIndex].categoryId,
+          };
+        }
       } else if (paramName.startsWith('__internal__extcallAnchorIdx')) {
         // Batch-route callees address their own callees physically; -1 selects the direct identity proof.
         bFinalArgs.push(-1n);
@@ -260,6 +311,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           });
         }
       } else if (paramName === '__internal__blockOracleInputIndex') {
+        // Planned here: each sync of the builder's unlockers names the transaction's one info coin of the pool.
         const ownOffset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
         const pool = group.externalContract.inner.oraclePool as string | undefined;
         const own = ownOffset === undefined ? undefined : group.blockInputs?.[ownOffset];
@@ -267,7 +319,16 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           sharedOracleInputs.set(pool, masterInputIndex + ownOffset!);
         }
         const oracleIndex = pool === undefined ? undefined : sharedOracleInputs.get(pool);
-        if (oracleIndex === undefined) throw new Error('nested block oracle reader has no co-spent pool coin');
+        if (oracleIndex === undefined) {
+          const label = `${group.externalContract.inner.artifact.contractName}.${group.functionName}`;
+          throw new Error(pool === undefined
+            ? `The call of ${label} cannot be laid out: it reads the block, and its contract binds no oracle pool`
+            : `The call of ${label} cannot be laid out: it reads the block from oracle pool ${pool}, and no contract `
+              + 'in this transaction co-spends an info coin of that pool: a contract that another contract\'s call '
+              + 'reaches has no block of its own to hold one. Read the block from that pool in the contract the '
+              + `transaction runs, or in a contract it calls directly, and ${label} reads that coin; or call `
+              + `${label} directly.`);
+        }
         bFinalArgs.push(BigInt(oracleIndex));
       } else if (paramName === '__internal__blockhashInputIndex') {
         const firstOracleOffset = group.blockLayout?.slots.find(
@@ -277,6 +338,8 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           throw new Error('External message-bus batch graph blockhash plan has no physical oracle band');
         }
         bFinalArgs.push(BigInt(masterInputIndex + firstOracleOffset));
+        const firstOracle = group.blockInputs?.[firstOracleOffset];
+        if (rebindsAssembledCoordinates && firstOracle !== undefined) bindToCoin(paramName, firstOracle);
       } else if (paramName === '__internal__returnOutputIdx') {
         const retIdx = returnEventIndexMap.get(groupIdx);
         if (retIdx !== undefined) {
@@ -288,27 +351,40 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       } else if (paramName === '__internal__dynamicChunkInputBase') {
         // Old chunks follow this callee's fixed block. With none, the negative sentinel makes the covenant
         // reconstruct its output base rather than treating input zero as an output coordinate.
-        bFinalArgs.push(group.ordinaryDynamicChunkInputs?.length
-          ? BigInt(masterInputIndex + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length))
-          : -1n);
+        const firstOldChunk = group.ordinaryDynamicChunkInputs?.[0]?.utxo;
+        bFinalArgs.push(firstOldChunk === undefined ? -1n
+          : BigInt(masterInputIndex + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length)));
+        // The run reads them from the first one. A run that also reads chunks inside its block takes the first of
+        // those instead, once the transaction is assembled (pendingDynamicChunkInputFills).
+        if (rebindsAssembledCoordinates && firstOldChunk !== undefined && !group.dynamicChunkResources?.length) {
+          bindToCoin(paramName, firstOldChunk);
+        }
       } else if (paramName === '__internal__dynamicChunkOutputBase') {
         // A nested route's final output coordinate is resolved by its physical layout authority.
         bFinalArgs.push(-1n);
       } else if (paramName.startsWith('__internal__externalReturnOutputIdx')) {
-        // Find child groups with return values, in order
-        const children = getChildGroupIndices();
-        const childReturning: number[] = [];
-        for (const cIdx of children) {
-          if (groupMetas[cIdx].ecSlot.hasReturnValues) {
-            childReturning.push(cIdx);
-          }
-        }
-        if (bReturningSlotIdx < childReturning.length) {
-          const childRetIdx = returnEventIndexMap.get(childReturning[bReturningSlotIdx]);
-          if (childRetIdx !== undefined) {
-            bFinalArgs.push(BigInt(childRetIdx));
-          }
+        // An ordinary frame names the record of the call in the slot the witness stands for (its ordinal among the
+        // function's returning calls), matched by callsite: a call this run does not make shifts no later witness
+        // and names none itself (-1). Other frames take their returning callees in order.
+        let childIdx: number | undefined;
+        if (rebindsAssembledCoordinates) {
+          const slot = externalReturnParamSlot(paramName, bAbiFunc?.externalCalls);
+          childIdx = slot === undefined ? undefined : calleeGroupForSlot(slot);
+        } else {
+          childIdx = getChildGroupIndices()
+            .filter((cIdx) => groupMetas[cIdx].ecSlot.hasReturnValues)[bReturningSlotIdx];
           bReturningSlotIdx++;
+        }
+        const childRetIdx = childIdx === undefined ? undefined : returnEventIndexMap.get(childIdx);
+        if (childIdx !== undefined && childRetIdx !== undefined) {
+          bFinalArgs.push(BigInt(childRetIdx));
+          // Read where the callee's record lands, as the root's own return witnesses are.
+          if (rebindsAssembledCoordinates) {
+            group.returnWitnessGroups = {
+              ...group.returnWitnessGroups,
+              [paramName]: logicalReturnGroupIndex(externalCallUtxoGroups, childIdx),
+            };
+          }
         }
       } else if (paramName.startsWith('__internal__loopTargetStride')) {
         // A computed-target loop's occurrences are this caller's child groups. One occurrence's physical width is
@@ -328,16 +404,20 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         bFinalArgs.push(physical === undefined ? 1n
           : BigInt(physical.blockInputs ? physical.blockInputs.length : 1 + physical.dataNftUtxos.length));
       } else if (paramName.startsWith('__internal__externalCallSelector')) {
-        // Resolve selector for child group's target function
+        // Resolve selector for child group's target function. An ordinary frame takes the callee of the slot's
+        // callsite, as two calls can name functions of one name on two contracts; other frames match by name.
         const children = getChildGroupIndices();
         const slotIdx = host.selectorParamSlot(paramName, bAbiFunc?.externalCalls);
         const call = bAbiFunc?.externalCalls?.[slotIdx];
-        const childGroup = children
-          .map((idx) => externalCallUtxoGroups[idx])
-          .find((candidateGroup) => candidateGroup.functionName === call?.functionName
-            || candidateGroup.logicalFunctionName === call?.functionName
-            || candidateGroup.functionName === call?.rawFunctionName)
-          ?? (slotIdx < children.length ? externalCallUtxoGroups[children[slotIdx]] : undefined);
+        const slotCallee = rebindsAssembledCoordinates ? calleeGroupForSlot(slotIdx) : undefined;
+        const childGroup = rebindsAssembledCoordinates
+          ? slotCallee === undefined ? undefined : externalCallUtxoGroups[slotCallee]
+          : children
+            .map((idx) => externalCallUtxoGroups[idx])
+            .find((candidateGroup) => candidateGroup.functionName === call?.functionName
+              || candidateGroup.logicalFunctionName === call?.functionName
+              || candidateGroup.functionName === call?.rawFunctionName)
+            ?? (slotIdx < children.length ? externalCallUtxoGroups[children[slotIdx]] : undefined);
         if (childGroup) {
           const cAbi = childGroup.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[];
           const cFunc = cAbi.find((f) => f.name === childGroup.functionName);
@@ -516,8 +596,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
 
     // Advance to next group. A full block occupies blockInputs.length slots (its output-only slots each
     // carry a paired funder), which is what the builder's input flattening emits.
-    currentInputBase += (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
-      + (group.ordinaryDynamicChunkInputs?.length ?? 0);
+    currentInputBase += plannedInputWidth(group);
   }
   timing('nested-bases-complete');
   return { currentInputBase, groupMasterIndices };

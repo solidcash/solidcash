@@ -317,7 +317,7 @@ describe('Cross-Contract External Function Calls', () => {
 
     it('should build a StatefulTransactionBuilder with external call UTXOs', () => {
       const readerMasterUnlocker = readerContract.unlock.readAfterIncrement(
-        alicePub, new SignatureTemplate(alicePriv), 2n, -1n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
 
@@ -357,7 +357,7 @@ describe('Cross-Contract External Function Calls', () => {
 
     it('should include external call inputs in the correct order', () => {
       const readerMasterUnlocker = readerContract.unlock.readAfterIncrement(
-        alicePub, new SignatureTemplate(alicePriv), 2n, -1n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
       const counterMasterUnlocker = counterContract.unlock.increment(
@@ -393,7 +393,7 @@ describe('Cross-Contract External Function Calls', () => {
 
     it('should set external call state updates correctly', () => {
       const readerMasterUnlocker = readerContract.unlock.readAfterIncrement(
-        alicePub, new SignatureTemplate(alicePriv), 2n, -1n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
       const counterMasterUnlocker = counterContract.unlock.increment(

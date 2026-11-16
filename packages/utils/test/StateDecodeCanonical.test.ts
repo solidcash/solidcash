@@ -143,7 +143,8 @@ describe('canonical encodings round-trip', () => {
       const encoded = roundTrip(filled(length), 'bytes');
       expect(peekPushdataEncodedLength(encoded)).toBe(encoded.length);
     }
-    expect(binToHex(roundTrip(bytes(0x05), 'bytes'))).toBe('0105');
+    // A one-byte byte string has one encoding whatever its type (A9): 0x05 is OP_5, as for bytes1 above.
+    expect(binToHex(roundTrip(bytes(0x05), 'bytes'))).toBe('55');
   });
 
   it('keeps the two narrow forms honest writers produce', () => {

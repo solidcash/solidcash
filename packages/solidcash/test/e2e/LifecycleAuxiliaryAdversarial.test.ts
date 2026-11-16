@@ -246,8 +246,9 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       captured = hex;
       return send(hex);
     };
+    let prepTransactions: string[] = [];
     try {
-      await StatefulContract.deployFrom({
+      ({ prepTransactions = [] } = await StatefulContract.deployFrom({
         provider,
         factory,
         deployFunctionName: 'createChild',
@@ -258,17 +259,24 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
         fundingUtxo: childFunding,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)),
         changeAddress: p2pkh.address,
-      });
+      }));
     } finally {
       (provider as any).sendRawTransaction = send;
     }
     expect(captured).not.toBe('');
+    // The child is born through its deployer (B10): the creation spends its prep's outputs, so after each rewind
+    // the prep goes out again first.
+    expect(prepTransactions).toHaveLength(1);
+    const restoreWithPrep = async (): Promise<void> => {
+      await beforeDeploy.restore();
+      for (const hex of prepTransactions) await send(hex);
+    };
     await beforeDeploy.restore();
 
     const rejectMutation = async (
       mutate: (tx: ReturnType<typeof decodeTransactionUnsafe>) => void,
     ): Promise<void> => {
-      await beforeDeploy.restore();
+      await restoreWithPrep();
       const tx = decodeTransactionUnsafe(hexToBin(captured));
       mutate(tx);
       await send(binToHex(encodeTransaction(tx)));
@@ -295,7 +303,7 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
     await expect(rejectMutation((tx) => { tx.outputs[2].lockingBytecode = OP_TRUE; }))
       .rejects.toThrow(covenantFailure);
 
-    await beforeDeploy.restore();
+    await restoreWithPrep();
     await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 

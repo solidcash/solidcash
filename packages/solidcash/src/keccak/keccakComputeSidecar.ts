@@ -53,9 +53,12 @@ export function scanKeccakPreimageReads(
  * a 1-based emission ordinal under the index, and the body slices that member (`ordinal - 1 - 3 * slot`) out of
  * the side-car's committed digest list. Grouping by index (not by ordinal) is what tells the SDK how many
  * side-cars one reached body consumes, and the member is where its preimage belongs.
+ *
+ * `ordinals: false` says no read carries an ordinal: every keccak256 call of the function is its own, so each one
+ * the loop band holds is a loop call. A one- or two-byte preimage then cannot pass for an ordinal.
  */
 export function scanKeccakBatchReads(
-  trace: unknown[], base: number, slotCount: number,
+  trace: unknown[], base: number, slotCount: number, ordinals = true,
 ): Array<{ slot: number; member: number; preimage: Uint8Array }> {
   const reads: Array<{ slot: number; member: number; preimage: Uint8Array }> = [];
   for (const s of trace) {
@@ -70,7 +73,7 @@ export function scanKeccakBatchReads(
     // under it. A straight-line call pushes its 1-based emission ordinal, and the batch member is that ordinal
     // minus the three calls each earlier side-car of the same body owns (`3 * slot`). A preimage that happens to
     // be a one- or two-byte small number is the only ambiguity; the range test rejects everything else.
-    const candidate = step.stack.length >= 3 ? step.stack[step.stack.length - 2] : undefined;
+    const candidate = ordinals && step.stack.length >= 3 ? step.stack[step.stack.length - 2] : undefined;
     const ordinal = candidate !== undefined && candidate.length <= 2 ? leSmallNumber(candidate) : 0;
     const member = ordinal - 1 - 3 * slot;
     const hasOrdinal = member >= 0 && member <= 2;

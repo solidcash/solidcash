@@ -910,7 +910,7 @@ contract Reader(bytes32 counterCategory) {
 
     it('should build a StatefulTransactionBuilder with external outState UTXOs', () => {
       const readerMasterUnlocker = readerContract.unlock.readOutputState(
-        alicePub, new SignatureTemplate(alicePriv), 2n, -1n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
 
@@ -948,7 +948,7 @@ contract Reader(bytes32 counterCategory) {
 
     it('should include external outState inputs in the correct order', () => {
       const readerMasterUnlocker = readerContract.unlock.readOutputState(
-        alicePub, new SignatureTemplate(alicePriv), 2n, -1n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
       const counterMasterUnlocker = counterContract.unlock.increment(

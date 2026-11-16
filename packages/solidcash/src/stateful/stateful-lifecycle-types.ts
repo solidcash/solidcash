@@ -21,6 +21,12 @@ export interface DeployOptions {
    * by what the contract and the contracts it creates read, and binds the deployment and its children to it.
    */
   oraclePool?: DeploymentOraclePool;
+  /**
+   * @internal A creator's `new` of a child whose constructor reads `msg.sender`: Deploy<C> gives the child the
+   * creator's master lock as `msg.sender` (A4.3 step 8), so the SDK derives the child's state with that sender.
+   * `categoryId` is the creator's category in display order.
+   */
+  genesisSender?: { categoryId: string; lockingBytecode: Uint8Array };
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;
@@ -122,6 +128,17 @@ export interface DeployOptions {
   metadataProbe?: true;
   /** Internal composition: a split root's facets, which answer its probe's views and publish its container key. */
   splitFacets?: SplitFacets;
+  /** Deploy through the artifact's Deploy<C>; an artifact without one refuses (A12). */
+  viaDeployer?: boolean;
+  /** A prep built beforehand, whose deployer coin this deployment spends. */
+  deployerPrep?: import('./deployer.js').DeployerPrep;
+  /**
+   * The contract each constructor call slot calls, in A4.2 slot order (A7, A14 item 5). Each callee must be
+   * record-sound; `args` are its function's visible arguments, and `functionName` defaults to the call's name.
+   */
+  constructorCallees?: readonly import('./deployer.js').ConstructorCallee[];
+  /** Internal: the locktime the deployer's create needs, so its probe reads the same block field. */
+  __deployerLocktime?: number;
 }
 
 /** A split root's facets, as its deployment's metadata checks read them (docs/bcmr/DESIGN.md, 6.4). */
@@ -139,6 +156,8 @@ export interface DeployResult<T extends Artifact = Artifact> {
   identity?: IdentityRecord;
   /** The registry the genesis published, with the URIs its publication offers. */
   registry?: PublishedRegistry;
+  /** The prep transactions a deployer deployment broadcast before its creation, in chain order. */
+  prepTransactions?: string[];
 }
 
 export interface UpgradeOptions<T extends Artifact = Artifact> {
@@ -214,7 +233,10 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   deployFunctionName: string;                // must have 'deploy' modifier
   deployFunctionArgs: FunctionArgument[];    // user args to the factory's deploy function
   childArtifact?: T;                         // child artifact; else resolved via factory.registerChild()
-  childConstructorArgs?: ConstructorArgument[]; // else derived from the deploy args (new C(param) mapping)
+  // Else derived from the deploy args (new C(param) mapping). A child created through its deployer takes the
+  // arguments the creator's run binds (A14 item 4); these, when given, must equal its constructor arguments (or, for
+  // a constructor without any, its contract arguments), and a call they differ from is refused before broadcasting.
+  childConstructorArgs?: ConstructorArgument[];
   childSalt?: Uint8Array;                    // create2 salt; else derived from the recorded new C{salt}() mapping
   /** Optional initial values for fields the constructor descriptor does not authenticate. Attempts to override
    * authenticated constructor fields are rejected; non-default values for other fields must still satisfy the
@@ -223,7 +245,8 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   // `new Child{value: x}()` transfers x sats from the factory's OWN satoshi container (the value source, like any
   // scash value transfer - EVM-faithful "from the deployer's balance") to the child's address. deployFrom then
   // co-spends the factory container (input) + recreates it (output, minus x) + adds the x-sat transfer output.
-  // The factory must have been deployed with an initialBalance >= x. Supply the transferred amount here.
+  // The factory must have been deployed with an initialBalance >= x. Supply the transferred amount here. A child
+  // created through its deployer receives the value the creator's run binds; this, when given, must equal it.
   childValue?: bigint;
   // A deploy function that transfers CashTokens from the factory's token container - e.g. to the freshly-created
   // child (`Child ch = new Child(...); this.tokens[cat].transfer(<addr>, amt)`). Supply each FT transfer the deploy
@@ -244,6 +267,54 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   changeAddress?: string;
   masterAmount?: bigint;                     // default: 1200n
   dataNftAmount?: bigint;                    // default: 1200n per data NFT
+  /**
+   * Whole coins that open the children's single token containers (A4.4's token rows), the explicit form of
+   * `childContainers`: per deployment in run order, one coin per row that `childContainers` does not name, each
+   * holding fungible units of the row's category and no NFT. The creation spends each coin and moves all its units.
+   */
+  childTokenContainers?: Array<{ utxo: Utxo; unlocker: Unlocker }>;
+  /** Preps for a creator whose `new` runs through a deployer, one per deployment in run order (A14 item 4). */
+  deployerPreps?: import('./deployer.js').DeployerPrep[];
+  /** Funding for the preps a creating call has to build, all as one chain before the creation (A14 item 4). */
+  prepFunding?: {
+    fundingUtxos: Utxo[];
+    authorSigner: Unlocker;
+    authorLockingBytecode: Uint8Array;
+  };
+  /**
+   * The number of children this call creates. Through deployers the creator's run decides it, and a run that creates
+   * another number is refused; without it the SDK finds the number from the run.
+   */
+  deployments?: number;
+  /**
+   * What the paying wallet puts into a child's containers (A14 item 11), by deployment in run order, 0 first.
+   * `satoshis` is the child's satoshi coin, at least what its row needs (more is a gift the constructor does not see);
+   * for a child without a satoshi row it is one plain output at the container's lock. `tokens` gives the units of
+   * each token container: the SDK takes coins of the category from the funder's wallet, puts the units in the child's
+   * row (or, for a container the child does not keep single, in one plain output at its lock) and returns the rest.
+   */
+  childContainers?: Array<{
+    deployment: number;
+    satoshis?: bigint;
+    tokens?: Array<{ categoryId: string; amount: bigint }>;
+  }>;
+  /** The children's own artifacts by contract name, when the caller wants `Contract` objects back. */
+  childArtifacts?: Record<string, Artifact>;
+  /**
+   * The contract each call slot of the child's constructor calls, in A4.2 slot order (A7, A14 item 5), as
+   * `constructorCallees` of a top-level deployment.
+   */
+  childConstructorCallees?: readonly import('./deployer.js').ConstructorCallee[];
+  /**
+   * The callees of one deployment's constructor, by deployment in run order (0 is the first), when the call creates
+   * more than one child whose constructor calls: each child's slots name its own callees. A deployment not named here
+   * takes `childConstructorCallees`. One creation answers one call of a contract (A7).
+   */
+  childCallees?: ReadonlyArray<{
+    deployment: number; callees: readonly import('./deployer.js').ConstructorCallee[];
+  }>;
+  /** The oracle pool category (display order) a child binds when the factory has no pool of its own. */
+  childOraclePool?: string;
 }
 
 // Options for the `factory.deployFn(...args).deploy({...})` sugar: the provider, factory, deploy-function
@@ -253,9 +324,17 @@ export type DeployFromCallOptions<T extends Artifact = Artifact> =
 
 export interface DeployFromResult<T extends Artifact = Artifact> {
   factory: ConnectedStatefulContract;        // factory with updated state
-  child: ConnectedStatefulContract<T>;       // newly deployed child contract
+  /** The first child; undefined when the creator's run made none (a `new` in a branch that did not run). */
+  child: ConnectedStatefulContract<T>;
   tx: TransactionDetails;
+  /** The first child's category; undefined when the creator's run made no child. */
   childCategoryId: string;
+  /** Every child this call created, in run order; `child` is the first. */
+  children?: ConnectedStatefulContract<T>[];
+  /** Every child's category, in run order; `childCategoryId` is the first. */
+  childCategoryIds?: string[];
+  /** The prep transactions this creating call built and broadcast (A14). */
+  prepTransactions?: string[];
 }
 
 export interface SplitOptions {

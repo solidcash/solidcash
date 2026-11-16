@@ -1,3 +1,4 @@
+import { DeployedChildCallError } from '@solidcash/solidc';
 import { compileString, compileStringMulti } from '../direct-compile.js';
 import {
   Contract,
@@ -43,14 +44,22 @@ contract Factory {
 `;
 
 // These fixtures exercise the deploy mechanic (child genesis folding) without caller authorization: the
-// factory's deploy entry is deliberately unguarded, so compile with the explicit permissionless opt-in.
+// factory's deploy entry is deliberately unguarded, so compile with the explicit permissionless opt-in. A call on
+// the child a deployer `new` returns is refused (DeployedChildCallError), so the fold keeps the internal escape.
 describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const factoryArtifact = compileString(FACTORY, { evmCompat: true, allowUnsafeOperations: true });
+  const factoryArtifact = compileString(FACTORY, {
+    evmCompat: true, allowUnsafeOperations: true, __legacyDeployFold: true,
+  } as never);
   const childArtifact = compileString(CHILD, { evmCompat: true });
 
   let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+
+  it('a deployer new refuses the same-transaction call on its child', () => {
+    expect(() => compileString(FACTORY, { evmCompat: true, allowUnsafeOperations: true }))
+      .toThrow(DeployedChildCallError);
+  });
 
   it('marks make() as a deploy function targeting Child', () => {
     const make = factoryArtifact.abi.find((f) => f.name === 'make');
@@ -104,7 +113,7 @@ describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () =
   });
 
   it('deployFrom materializes authenticated fixed-array and mapping constructor entries', async () => {
-    const artifacts = compileStringMulti(`struct Metric { int32 amount; bool enabled; }
+    const source = `struct Metric { int32 amount; bool enabled; }
       contract RecordCollectionChild(int32 seed) {
         int32[2] values;
         mapping(int32 => int32) keyed;
@@ -125,7 +134,11 @@ describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () =
         function make(int32 seed) public {
           RecordCollectionChild child = new RecordCollectionChild(seed); require(true);
         }
-      }`, { allowUnsafeOperations: true });
+      }`;
+    // A deployer refuses a constructor that accesses a state array kept as a collection (A4.1
+    // `ctor-collection-shape`); the fold's genesis entries keep the internal escape.
+    expect(() => compileStringMulti(source, { allowUnsafeOperations: true })).toThrow(/ctor-collection-shape/);
+    const artifacts = compileStringMulti(source, { allowUnsafeOperations: true, __legacyDeployFold: true } as never);
     const make = artifacts.GenesisCoordinator.abi.find((candidate) => candidate.name === 'make')!;
     expect(make.deployTargets?.[0]).toMatchObject({
       entryNftCount: 6,

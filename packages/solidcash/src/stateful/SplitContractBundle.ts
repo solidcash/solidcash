@@ -1,6 +1,6 @@
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
-import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
+import { type ConstructorArgument, type FunctionArgument, eventValueOfArgument } from '../Argument.js';
 import Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -131,9 +131,9 @@ export class SplitContract {
         if (event.parameters.length === 0) continue;
         // Only a same-named argument is known to be the emitted value. Guessing the caller for an unmatched address
         // (`AddedBlackList(_user)` from `addBlackList(_evilUser)`) lays out a wrong payload the facet refuses;
-        // anything unmatched is left to the builder's trace derivation.
+        // anything unmatched is left to the builder's trace derivation. A value is the argument as the call passes it.
         const values = event.parameters.map((parameter) => (byName.has(parameter.name)
-          ? byName.get(parameter.name)! : undefined));
+          ? eventValueOfArgument(byName.get(parameter.name)!, parameter.type) : undefined));
         if (values.every((value) => value !== undefined)) {
           call.emitEvent(event.signature, ...values as unknown as import('../types/state-inference.js').StateValueType[]);
         }

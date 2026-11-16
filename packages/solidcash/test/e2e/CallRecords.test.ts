@@ -161,7 +161,7 @@ contract Publisher() {
 }
 library L {
   function pairFor(address a, address b) internal pure returns (address) {
-    return address(uint160(uint256(uint160(a)) + uint256(uint160(b))));
+    return address(uint160(uint256(keccak256(abi.encodePacked(a, b)))));
   }
 }`;
 const LOOP_SUBSCRIBER = `pragma solidcash >=0.8.0;

@@ -2,6 +2,30 @@
 title: Release Notes
 ---
 
+## v0.51.0
+
+SolidCash 0.51.0 creates stateful children through deployer coins, adds the single-container pragmas, and binds every
+call to the callee it names. Every stateful contract on the direct convention compiles to new bytecode, so its address
+changes; stateless contracts keep theirs. Please refer to the
+[migration notes](/docs/releases/migration-notes#v050-to-v051). Like 0.50, this is a beta, and it has had no outside
+audit.
+
+- A direct `new` of a stateful contract spends a one-shot coin of the child's `Deploy<C>` program, which runs the
+  child's constructor on chain. A constructor can call other contracts, write collections, emit, publish BCMR metadata
+  and receive value. See [Contract creation](/docs/language/contract-creation).
+- `pragma satoshicontainer single` and `pragma tokencontainer single` keep each container in one coin, and
+  `this.payMinerFee` pays the fee by omission.
+- Calls: a call through `address(0)` fails; a call is bound to its target's value where it runs; a loop's callee
+  witnesses are checked unless the target is computed with keccak256, which compiles with a warning; a raw call with a
+  payload must co-spend a target that runs it, and reads its record when the payload names a returning function;
+  `call{value: v}` pays its target.
+- `ecrecoverEvm` answers `address(0)` where the EVM's precompile does.
+- Programs near the input limit get an outlining pass, and the SDK refuses to deploy code no input can spend.
+
+Known issues carried from 0.50.0, not re-checked: on the direct convention, a nested callee's external call under a
+false guard on `block.number` or `block.timestamp` spends the callee anyway, and `block.number` in a nested callee's
+external-call arguments is unresolved. The changelog lists the shapes this release refuses by name.
+
 ## v0.50.0
 
 SolidCash's version numbers now depart from CashScript's: 0.50.0 follows 0.14.0-beta.1 and tracks no CashScript release.

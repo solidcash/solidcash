@@ -620,3 +620,312 @@ describe('STATEFUL HELPER RECOVERY: recovery arguments read off a VM probe of th
     await expect(bump(other, g)).rejects.toThrow(VERIFY_FAILED);
   });
 });
+
+// A STATEFUL recovery loop answers each call as Solidity's ecrecover does: the signer for a recovery id of 27 or 28,
+// and address(0) for any other, which reads no triple (an ecrecoverP2pkh answers the empty locking bytecode). The loop
+// still counts that call, so each later call's triple stays at its own index; the call's three slots take wallet coins.
+// Built and checked under the real BCH 2026 limits (the production profile), where no coin is minted.
+describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), every other call its signer', () => {
+  // Each answer is kept in fixed-size state: the address itself, or the SHA-256 of the P2PKH locking bytecode.
+  const source = (projection: 'ecrecoverEvm' | 'ecrecoverP2pkh'): string => {
+    const [type, kept, keep] = projection === 'ecrecoverEvm'
+      ? ['bytes20', 'bytes20', (name: string): string => name]
+      : ['bytes', 'bytes32', (name: string): string => `sha256(${name})`];
+    return `
+    pragma solidcash ^0.51.0;
+    contract T { ${kept} first; ${kept} second; ${kept} third;
+      function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        ${type} a0; ${type} a1; ${type} a2;
+        for (int i = 0; i < k; i++) {
+          ${type} a = ${projection}(h[i], v[i], r[i], s[i]);
+          if (i == 0) { a0 = a; } else { if (i == 1) { a1 = a; } else { a2 = a; } }
+        }
+        first = ${keep('a0')}; second = ${keep('a1')}; third = ${keep('a2')}; return true; } }`;
+  };
+  const deployed = async (artifact: ReturnType<typeof compileString>): Promise<{
+    provider: MockNetworkProvider;
+    contract: { getState(): Promise<Record<string, unknown>> };
+    call: (...args: unknown[]) => Promise<unknown>;
+  }> => {
+    const { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } = await import('@bitauth/libauth');
+    const { SignatureTemplate, Signer } = await import('../../src/index.js');
+    const { alicePkh, alicePriv } = await import('../fixture/vars.js');
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const lock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const fundingUtxo = { txid: 'e1'.repeat(32), vout: 0, satoshis: 2_000_000n };
+    await provider.seedUtxo(binToHex(lock), fundingUtxo);
+    const { contract } = await StatefulContract.deploy(artifact, [] as never, {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: change.address,
+      senderLockingBytecode: lock,
+    } as never);
+    // The shared pool (salt 0) the loop's triples come from: A, B2, M and B3 for a native projection; A, B and the
+    // stateful keccak side-car for ecrecoverEvm.
+    const roles = ['A', 'B', 'B2', 'M', 'B3'] as const;
+    for (const [roleIndex, role] of roles.entries()) {
+      for (let index = 0; index < 2; index += 1) {
+        await provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(SHARED_LIBRARY_SALT, role)), {
+          txid: `e2${roleIndex.toString(16)}${index}`.padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+          token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+        });
+      }
+    }
+    for (let index = 0; index < 2; index += 1) {
+      await provider.seedUtxo(binToHex(keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, true)), {
+        txid: `e3${index}`.padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+        token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+    const signer = new Signer(alicePriv, provider);
+    for (let index = 0; index < 8; index += 1) {
+      await provider.seedUtxo(signer.getAddress(), { txid: `e4${index}`.padEnd(64, '0'), vout: 0, satoshis: 200_000n });
+    }
+    const connected = contract.connect(signer) as unknown as {
+      call: { f(...args: unknown[]): { withMaxFee(fee: bigint): { send(): Promise<unknown> } } };
+    };
+    return {
+      provider,
+      contract: contract as never,
+      call: (...args: unknown[]) => connected.call.f(...args).withMaxFee(100_000n).send(),
+    };
+  };
+
+  it('ecrecoverEvm: the zero address for recovery id 30 between two signers, who match ethers', async () => {
+    const g0 = await goodSigner('stateful-loop-evm-0'), g2 = await goodSigner('stateful-loop-evm-2');
+    const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g0.h, g0.h, g2.h], [g0.v, 30n, g2.v], [g0.r, g0.r, g2.r], [g0.s, g0.s, g2.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    expect(binToHex(state.first)).toBe(g0.wallet.address.slice(2).toLowerCase());
+    expect(binToHex(state.second)).toBe('00'.repeat(20));
+    expect(binToHex(state.third)).toBe(g2.wallet.address.slice(2).toLowerCase());
+  });
+
+  it('ecrecoverEvm: the zero address for an s of n and an r of 0 around a signer, reading no triple for them', async () => {
+    const order = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+    const leWord = (value: bigint): Uint8Array => Uint8Array.from(
+      { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+    const g = await goodSigner('stateful-loop-evm-range');
+    const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g.h, g.h, g.h], [g.v, g.v, g.v], [g.r, g.r, leWord(0n)], [leWord(order), g.s, g.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    expect(binToHex(state.first)).toBe('00'.repeat(20));
+    expect(binToHex(state.second)).toBe(g.wallet.address.slice(2).toLowerCase());
+    expect(binToHex(state.third)).toBe('00'.repeat(20));
+  });
+
+  it('ecrecoverEvm: the zero address for an r no curve point has, which the pad of the A in its triple proves', async () => {
+    const prime = 2n ** 256n - 2n ** 32n - 977n;
+    const leWord = (value: bigint): Uint8Array => Uint8Array.from(
+      { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+    const power = (base: bigint, exponent: bigint): bigint => {
+      let result = 1n;
+      for (let b = base % prime, e = exponent; e > 0n; b = (b * b) % prime, e >>= 1n) {
+        if (e & 1n) result = (result * b) % prime;
+      }
+      return result;
+    };
+    let x = 1n;
+    while (power(x ** 3n + 7n, (prime - 1n) / 2n) === 1n) x += 1n;
+    const g = await goodSigner('stateful-loop-evm-off-curve');
+    const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g.h, g.h, g.h], [27n, g.v, 0n], [leWord(x), g.r, g.r], [g.s, g.s, g.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    expect(binToHex(state.first)).toBe('00'.repeat(20));
+    expect(binToHex(state.second)).toBe(g.wallet.address.slice(2).toLowerCase());
+    expect(binToHex(state.third)).toBe('00'.repeat(20));
+  });
+
+  it('ecrecoverEvm: the zero address for a key at infinity, which a triple recovering 2^128 G from the shifted digest '
+    + 'proves', async () => {
+    // R = (z/s) G, so that s R = z G: the key is the point at infinity.
+    const { secp256k1 } = await import('@noble/curves/secp256k1');
+    const order = secp256k1.CURVE.n;
+    const leWord = (value: bigint): Uint8Array => Uint8Array.from(
+      { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+    const z = 0x1d3a5f0c2b4e6d8f9a1b3c5d7e9f0a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3fn, s = 0x5eed5n;
+    let inverse = 1n;
+    for (let b = s, e = order - 2n; e > 0n; b = (b * b) % order, e >>= 1n) if (e & 1n) inverse = (inverse * b) % order;
+    const point = secp256k1.ProjectivePoint.BASE.multiply((z * inverse) % order).toAffine();
+    expect(point.x < order).toBe(true);
+    const g = await goodSigner('stateful-loop-evm-infinity');
+    const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g.h, leWord(z), g.h], [g.v, 27n + (point.y & 1n), 0n], [g.r, leWord(point.x), g.r],
+      [g.s, leWord(s), g.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    expect(binToHex(state.first)).toBe(g.wallet.address.slice(2).toLowerCase());
+    expect(binToHex(state.second)).toBe('00'.repeat(20));
+    expect(binToHex(state.third)).toBe('00'.repeat(20));
+  });
+
+  it('ecrecoverP2pkh: the empty bytecode for recovery ids 0 and 29 around a signer, whose P2PKH lock matches', async () => {
+    const g = await goodSigner('stateful-loop-p2pkh');
+    const { contract, call } = await deployed(compileString(source('ecrecoverP2pkh'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g.h, g.h, g.h], [0n, g.v, 29n], [g.r, g.r, g.r], [g.s, g.s, g.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    const { sha256 } = await import('@bitauth/libauth');
+    const empty = binToHex(sha256.hash(new Uint8Array(0)));
+    expect(binToHex(state.first)).toBe(empty);
+    expect(binToHex(state.second)).toBe(binToHex(sha256.hash(hexToBin(`76a914${binToHex(hash160(g.owner))}88ac`))));
+    expect(binToHex(state.third)).toBe(empty);
+  });
+});
+
+// A stateless call answers the zero address, as the EVM does, for every argument its precompile refuses. Its side-cars
+// sit at fixed offsets from the end of the inputs and its builder holds no wallet, so the slots of such a call take the
+// pool's pair over a fixed placeholder recovery, which validates on its own: its A's pad carries the proof for an r no
+// curve point has. A key at infinity takes the pair over the digest shifted by -2^128 r mod n, which recovers 2^128 G.
+// Built and checked under the production profile, where no coin is minted.
+describe('STATELESS: arguments the precompile refuses answer address(0), straight-line and in a loop', () => {
+  const order = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const prime = 2n ** 256n - 2n ** 32n - 977n;
+  const word = (value: bigint): Uint8Array => Uint8Array.from(
+    { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+  const power = (base: bigint, exponent: bigint, modulus: bigint): bigint => {
+    let result = 1n;
+    for (let b = base % modulus, e = exponent; e > 0n; b = (b * b) % modulus, e >>= 1n) {
+      if (e & 1n) result = (result * b) % modulus;
+    }
+    return result;
+  };
+  /** An x below n that no curve point has. */
+  const offCurveX = (): bigint => {
+    let x = 1n;
+    while (power(x ** 3n + 7n, (prime - 1n) / 2n, prime) === 1n) x += 1n;
+    return x;
+  };
+  /** Arguments whose key is the point at infinity: R = (z/s) G. */
+  const atInfinity = async (): Promise<[Uint8Array, bigint, Uint8Array, Uint8Array]> => {
+    const { secp256k1 } = await import('@noble/curves/secp256k1');
+    const z = 0x2c4e6a8b0d1f3e5c7a9b1d3f5e7c9a0b2d4f6e8c0a1b3d5f7e9c1a3b5d7f9e1dn, s = 0x71dn;
+    const point = secp256k1.ProjectivePoint.BASE.multiply((z * power(s, order - 2n, order)) % order).toAffine();
+    expect(point.x < order).toBe(true);
+    return [word(z), 27n + (point.y & 1n), word(point.x), word(s)];
+  };
+  const production = async (artifact: ReturnType<typeof compileString>, args: unknown[], pairs: number, keccak: number,
+    keccakStateful = false): Promise<{ provider: MockNetworkProvider; contract: Contract }> => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const contract = new Contract(artifact, args as never, { provider });
+    await provider.seedUtxo(contract.address, { ...randomUtxo({ satoshis: 2_000_000n }) });
+    for (const [roleIndex, role] of (['A', 'B'] as const).entries()) {
+      for (let index = 0; index < pairs; index += 1) {
+        await provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(SHARED_LIBRARY_SALT, role)), {
+          txid: `f1${roleIndex}${index.toString(16).padStart(2, '0')}`.padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+          token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+        });
+      }
+    }
+    for (let index = 0; index < keccak; index += 1) {
+      await provider.seedUtxo(binToHex(keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, keccakStateful)), {
+        txid: `f2${index.toString(16).padStart(2, '0')}`.padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+        token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+    return { provider, contract };
+  };
+  const spend = async (
+    { provider, contract }: { provider: MockNetworkProvider; contract: Contract }, unlocker: ReturnType<Contract['unlock'][string]>,
+  ): Promise<void> => {
+    const { createVirtualMachineBch2026, decodeTransactionUnsafe } = await import('@bitauth/libauth');
+    const { solidCashOutputToLibauthOutput } = await import('../../src/utils.js');
+    let checked: unknown;
+    const send = provider.sendRawTransaction.bind(provider);
+    (provider as unknown as { sendRawTransaction(hex: string): Promise<string> }).sendRawTransaction = async (hex) => {
+      // The transaction under real BCH 2026 consensus limits, read with the outputs it spends before they are spent.
+      const transaction = decodeTransactionUnsafe(hexToBin(hex));
+      const sourceOutputs = await Promise.all(transaction.inputs.map(async (input) => {
+        const spent = await provider.getLedgerOutput(binToHex(input.outpointTransactionHash), input.outpointIndex);
+        if (spent === undefined) throw new Error('an input of the transaction is not on the ledger');
+        return solidCashOutputToLibauthOutput({
+          to: spent.lockingBytecode, amount: spent.satoshis, ...(spent.token === undefined ? {} : { token: spent.token }),
+        });
+      }));
+      checked = createVirtualMachineBch2026().verify({ transaction, sourceOutputs } as never);
+      return send(hex);
+    };
+    await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), unlocker)
+      .addOutput({ to: contract.address, amount: 1_800_000n })
+      .send();
+    expect(checked).toBe(true);
+  };
+
+  const EVM = `
+  contract AuthEvm() {
+      function verify(bytes32 h, int v, bytes32 r, bytes32 s, bytes20 expected) {
+          require(ecrecoverEvm(h, v, r, s) == expected);
+      }
+  }`;
+  it('ecrecoverEvm: the zero address for a bad v, an r or s outside [1, n), an off-curve r and a key at infinity', async () => {
+    const g = await goodSigner('stateless-evm-refused');
+    const artifact = compileString(EVM);
+    const zero = new Uint8Array(20);
+    const refused: Array<[Uint8Array, bigint, Uint8Array, Uint8Array]> = [
+      [g.h, 0n, g.r, g.s], [g.h, g.v, g.r, word(order)], [g.h, g.v, word(0n), g.s],
+      [g.h, 27n, word(offCurveX()), g.s], await atInfinity(),
+    ];
+    for (const args of refused) {
+      const setup = await production(artifact, [], 1, 1);
+      await spend(setup, setup.contract.unlock.verify(...args, zero));
+      // Any other answer is refused: the call answered the zero address.
+      const other = await production(artifact, [], 1, 1);
+      await expect(spend(other, other.contract.unlock.verify(...args, hexToBin(g.wallet.address.slice(2)))))
+        .rejects.toThrow();
+    }
+    // The signer's own arguments answer the signer's address.
+    const signer = await production(artifact, [], 1, 1);
+    await spend(signer, signer.contract.unlock.verify(g.h, g.v, g.r, g.s, hexToBin(g.wallet.address.slice(2))));
+  });
+
+  it('ecrecoverP2pkh: the empty bytecode for refused arguments in either of two recoveries, the other its signer',
+    async () => {
+      const g = await goodSigner('stateless-p2pkh-two');
+      const expected = hexToBin(`76a914${binToHex(hash160(g.owner))}88ac`);
+      const artifact = compileString(`
+      contract AuthTwo() {
+          function verify(bytes32 h1, int v1, bytes32 r1, bytes32 s1, bytes e1, bytes32 h2, int v2, bytes32 r2, bytes32 s2,
+              bytes e2) {
+              require(ecrecoverP2pkh(h1, v1, r1, s1) == e1);
+              require(ecrecoverP2pkh(h2, v2, r2, s2) == e2);
+          }
+      }`);
+      const refused = [g.h, 0n, g.r, g.s, new Uint8Array()] as const;
+      const valid = [g.h, g.v, g.r, g.s, expected] as const;
+      for (const args of [[...refused, ...valid], [...valid, ...refused]]) {
+        const setup = await production(artifact, [], 2, 0);
+        await spend(setup, setup.contract.unlock.verify(...args));
+      }
+    });
+
+  it('ecrecoverEvm in a loop: the zero address for refused arguments around a signer', async () => {
+    // Four triples, as a standard transaction holds about four recoveries' side-cars.
+    const w = ethers.Wallet.createRandom();
+    const g = await goodRecovery('stateless-loop', w);
+    const owner = hexToBin(w.address.slice(2));
+    const artifact = compileString(`
+    contract AuthLoopEvm() {
+        function verify(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, bytes20[] e, int n) {
+            for (int i = 0; i < n; i++) {
+                require(ecrecoverEvm(h[i], v[i], r[i], s[i]) == e[i]);
+            }
+        }
+    }`);
+    const zero = new Uint8Array(20);
+    const [ih, iv, ir, is] = await atInfinity();
+    const setup = await production(artifact, [], 4, 4, true);
+    await spend(setup, setup.contract.unlock.verify(
+      [g.h, g.h, g.h, ih], [0n, g.v, 27n, iv], [g.r, g.r, word(offCurveX()), ir], [g.s, g.s, g.s, is],
+      [zero, owner, zero, zero], 4n,
+    ));
+  });
+});

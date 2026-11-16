@@ -40,7 +40,9 @@ describe('Release 1 scalar journal lowering', () => {
     // The C3 count-path record pin, which holds each own-category record at its own index, added 38 B (1289 -> 1327).
     // The data-record covenant that defines its category and authority bind once (590aca164) carries those
     // definitions in the record lock a direct master rebuilds: 15 B.
-    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_600); // B+F1: +~217 B void-record overhead
+    // `genesisCalls` on by default gives this record-sound contract the genesis step and its marker: 71 B over the
+    // same code with the option off (1548 -> 1619), where the marker alone had been 23 B (1571).
+    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_650); // B+F1: +~217 B void-record overhead
   });
 
   it('marks only recursion which survives tail-cycle lowering for concrete SDK preflight', () => {

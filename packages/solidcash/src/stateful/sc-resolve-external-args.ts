@@ -94,12 +94,14 @@ export function resolveExternalArgs(
         break;
       }
       case 'msgSender': {
-        if (executionCallerAddress !== undefined) {
-          resolved.push(executionCallerAddress);
-          break;
-        }
-        if (!host.signer) return undefined;
-        resolved.push(addressToLockScript(host.signer.getAddress()));
+        // msg.sender is the frame's caller, which a nested frame names (`executionCallerAddress`), and the signer at
+        // the top level. tx.origin is the transaction's origin in every frame: the signer, whose coin the SDK makes
+        // the first P2PKH input. Without a signer it keeps the frame's caller, as both did before `senderOp`.
+        const signerLock = host.signer ? addressToLockScript(host.signer.getAddress()) : undefined;
+        const sender = source.senderOp === 'tx.origin'
+          ? signerLock ?? executionCallerAddress : executionCallerAddress ?? signerLock;
+        if (sender === undefined) return undefined;
+        resolved.push(sender);
         break;
       }
       case 'selfAddress': {

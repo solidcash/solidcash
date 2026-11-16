@@ -3,7 +3,7 @@ import {
   type StateLayout,
   parseEntryCommitment,
   getDefaultStateValue,
-  encodePushdataValue,
+  encodeEventParameter,
   type EventDefinitionAbi,
   type StateValue,
   type FunctionBlockLayout,
@@ -510,6 +510,7 @@ import {
   type RepairComputedChunkOutputHost,
 } from './stb-repair-computed-chunk-output.js';
 import { buildInputs, insertBandPadDemand, type BuildInputsHost } from './stb-build-inputs.js';
+import { readChunksFollowKeccakLoop } from './sc-append-create-builder-nested-callee-keccak-loop.js';
 import {
   applyLearnedWriterEvents,
   learnFinalizedDelegateEvents,
@@ -558,7 +559,10 @@ import {
   runBuildMidLateThroughTail as runBuildMidLateThroughTailImpl,
   type RunBuildMidLateThroughTailHost,
 } from './stb-run-build-mid-late-through-tail.js';
-import { appendCallerEdges } from './stb-materialize-caller-edge-outputs.js';
+import {
+  appendCallerEdges, appendStandInCaller, type StandInCaller,
+} from './stb-materialize-caller-edge-outputs.js';
+import { refusePaymentsToStatefulMasters } from './master-lock-payment.js';
 import { appendUnslottedPoolCoSpends } from './block-oracle-reader-selection.js';
 import {
   getChunkableValueWriteBand as getChunkableValueWriteBandImpl,
@@ -866,6 +870,8 @@ export class StatefulTransactionBuilder {
   private blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
   private delegateBlockInfoOracle = false;
   private unslottedPoolCoSpends: UnlockableUtxo[] = [];
+  /** A contract caller the transaction does not hold, for a block that runs elsewhere (`setStandInCaller`). */
+  private standInCaller?: StandInCaller;
   private blockhashCoSpendSlotOrdinals?: number[];
   private keccakComputeCoSpendUtxos: UnlockableUtxo[];
   private keccakComputeCommitments: string[];
@@ -880,6 +886,7 @@ export class StatefulTransactionBuilder {
     salt: Uint8Array;
     argBlobs: Array<Uint8Array | null>;
     evmKeccakPreimageIndices: number[];
+    width0Coins?: Array<{ m: Utxo; b3: Utxo } | null>;
   };
 
   private ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
@@ -907,6 +914,8 @@ export class StatefulTransactionBuilder {
   private insertLoopPredecessorInputs: UnlockableUtxo[];
   private keccakLoopSideCars: UnlockableUtxo[];
   private keccakLoopRecreates: Output[];
+  /** Per build: the loop side-cars `_padOutputsToIndex` recreated before a callee block. */
+  private readonly placedTrailingSideCars = new WeakMap<object, Set<string>>();
   private get keccakLoopPrecedesTrailingUser(): boolean {
     return (this.masterUtxo?.unlocker as { abiFunction?: { keccakLoopPrecedesTrailingUser?: boolean } })
       ?.abiFunction?.keccakLoopPrecedesTrailingUser === true;
@@ -916,11 +925,27 @@ export class StatefulTransactionBuilder {
     return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
   }
 
+  /**
+   * A keccak256 loop whose band after the block holds its side-cars and the chunks of dynamic state the function only
+   * reads, and nothing else: the loop reads side-car k at master + blockSize + k and the function finds the chunks
+   * through its witness, so the chunks follow the side-cars, as their outputs already do.
+   */
+  private get keccakLoopLeadsReadChunks(): boolean {
+    const abiFunction = (this.masterUtxo?.unlocker as { abiFunction?: AbiFunction } | undefined)?.abiFunction;
+    return abiFunction !== undefined && readChunksFollowKeccakLoop(abiFunction)
+      && this.keccakLoopSideCars.length > 0 && this.iterationEntryInputs.length > 0
+      && this.dynamicChunkInputs.length === 0 && this.insertLoopPredecessorInputs.length === 0
+      && !this.loopEntriesBeforeDynamicChunks
+      && this.externalCallUtxoGroups.length === 0 && this.lowLevelCallUtxoGroups.length === 0;
+  }
+
+  /** Side-cars a run reads from blockSize on: a keccak chain's or loop's, and a recovery loop's triples. */
   private get keccakSideCarsFollowBlock(): boolean {
     const abiFunction = (this.masterUtxo?.unlocker as {
-      abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean };
+      abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean; ecrecoverTrailingLoop?: boolean };
     })?.abiFunction;
-    return abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true;
+    return abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true
+      || abiFunction?.ecrecoverTrailingLoop === true;
   }
 
   private blockLayout?: FunctionBlockLayout;
@@ -944,6 +969,11 @@ export class StatefulTransactionBuilder {
   // stateRawCommitments, these retain compiler-only registers which cannot be
   // reconstructed losslessly from the source-level state value map.
   private externalCallStateRawCommitments: Map<string, Map<number, string>> = new Map();
+
+  // The records each callee's run derived (categoryId -> nftIndex -> commitment hex). Their values reach the builder as
+  // state updates; the records only spell the values a rebuilt record leaves as they were, which the SDK's encoding
+  // can spell in other bytes than the covenant (`buildPushdataCommitmentKeeping`).
+  private externalCallDerivedRecords: Map<string, Map<number, string>> = new Map();
 
   // Cross-contract callee (B) vmap sorted-entry outputs, derived from B's VM trace (docs/deferrals.md #1).
   // categoryId -> (B block-slot position si -> commitment hex). The external-call output loop mints B's updated
@@ -1119,6 +1149,8 @@ export class StatefulTransactionBuilder {
         argBlob === null ? null : Uint8Array.from(argBlob)
       )),
       evmKeccakPreimageIndices: [...options.deferredEcrecoverCompute.evmKeccakPreimageIndices],
+      ...(options.deferredEcrecoverCompute.width0Coins === undefined ? {}
+        : { width0Coins: [...options.deferredEcrecoverCompute.width0Coins] }),
     };
     this.ecrecoverComputeCoSpendUtxos = options.ecrecoverComputeCoSpendUtxos ?? [];
     this.ecrecoverComputeRecreates = options.ecrecoverComputeRecreates ?? [];
@@ -1277,9 +1309,17 @@ export class StatefulTransactionBuilder {
       ...this.dynamicChunkInputs, ...this.trailingDisposalInputs,
       ...this.externalCallUtxoGroups.flatMap(calleeConsumedInputs),
     ].map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
+    // A loop's side-car before a callee block recreates with its result, at its own index: a copy keeps the old
+    // commitment, which the side-car's covenant and the reading master both refuse.
+    const sideCarRecreates = this._trailingSideCarRecreates();
     while (builder.outputs.length < index) {
       const occupant = this.allInputs[builder.outputs.length];
-      if (occupant?.unlocker && !consumed.has(`${occupant.txid.toLowerCase()}:${occupant.vout}`)) {
+      const key = occupant === undefined ? '' : `${occupant.txid.toLowerCase()}:${occupant.vout}`;
+      const recreate = sideCarRecreates.get(key);
+      if (recreate !== undefined) {
+        builder.addOutput(recreate);
+        this._placedTrailingSideCars(builder).add(key);
+      } else if (occupant?.unlocker && !consumed.has(key)) {
         builder.addOutput({
           to: occupant.unlocker.generateLockingBytecode(),
           amount: occupant.satoshis,
@@ -1289,6 +1329,40 @@ export class StatefulTransactionBuilder {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
       }
     }
+  }
+
+  /**
+   * Each runtime loop side-car's recreation, keyed by its input's outpoint. A keccak loop after a mapping loop recreates
+   * its side-cars past the mapping outputs, not at their own indexes, so none is placed here.
+   */
+  private _trailingSideCarRecreates(): Map<string, Output> {
+    const recreates = new Map<string, Output>();
+    if (this.keccakLoopFollowsTrailingUser) return recreates;
+    this.keccakLoopSideCars.forEach((utxo, index) => {
+      const recreate = this.keccakLoopRecreates[index];
+      if (recreate !== undefined) recreates.set(`${utxo.txid.toLowerCase()}:${utxo.vout}`, recreate);
+    });
+    return recreates;
+  }
+
+  /** The loop side-cars whose recreations `builder` already holds at their own indexes. */
+  private _placedTrailingSideCars(builder: object): Set<string> {
+    let placed = this.placedTrailingSideCars.get(builder);
+    if (placed === undefined) {
+      placed = new Set();
+      this.placedTrailingSideCars.set(builder, placed);
+    }
+    return placed;
+  }
+
+  /** The keccak loop recreations `builder` does not hold yet, in side-car order. */
+  private _pendingKeccakLoopRecreates(builder: object): Output[] {
+    const placed = this.placedTrailingSideCars.get(builder);
+    if (placed === undefined || placed.size === 0) return this.keccakLoopRecreates;
+    return this.keccakLoopRecreates.filter((_recreate, index) => {
+      const utxo = this.keccakLoopSideCars[index];
+      return utxo === undefined || !placed.has(`${utxo.txid.toLowerCase()}:${utxo.vout}`);
+    });
   }
 
   /** Set the change address for funder excess (returned after fee deduction). */
@@ -1487,6 +1561,7 @@ export class StatefulTransactionBuilder {
       stateUpdates: this.stateUpdates,
       preserveOwnState: this._preserveOwnStateOnUntakenDelegateEdge(),
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
+      externalCallDerivedRecords: this.externalCallDerivedRecords,
       externalCallStateUpdates: this.externalCallStateUpdates,
       builderOptions: this.builderOptions,
       dynamicChunkOutputCount: () => this._dynamicChunkOutputCount(),
@@ -1867,6 +1942,7 @@ export class StatefulTransactionBuilder {
       externalOutStateUtxoGroups: this.externalOutStateUtxoGroups,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
+      externalCallDerivedRecords: this.externalCallDerivedRecords,
       iterationEntryInputs: this.iterationEntryInputs,
       iterationChunksPrecedeCallees: this.iterationChunksPrecedeCallees(),
       externalCallUtxoGroups: this.externalCallUtxoGroups,
@@ -1915,6 +1991,7 @@ export class StatefulTransactionBuilder {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
+      externalCallDerivedRecords: this.externalCallDerivedRecords,
       externalCallEntryInserts: this.externalCallEntryInserts,
       externalCallEntryOutputs: this.externalCallEntryOutputs,
       allInputs: this.allInputs,
@@ -1980,7 +2057,7 @@ export class StatefulTransactionBuilder {
       runtimeLoopEventOutputs: this.runtimeLoopEventOutputs,
       runtimeLoopTransferOutputs: this.runtimeLoopTransferOutputs,
       loopEntryCommitments: this.loopEntryCommitments,
-      keccakLoopRecreates: this.keccakLoopRecreates,
+      pendingKeccakLoopRecreates: (b) => this._pendingKeccakLoopRecreates(b),
       keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       kernelJournalSettlementOutputPlan: this.kernelJournalSettlementOutputPlan,
       kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
@@ -1999,6 +2076,8 @@ export class StatefulTransactionBuilder {
       ),
       getRequiredLoopEntryCount: (collection) => this.getRequiredLoopEntryCount(collection),
       getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
+      getRuntimeLoopEventOutputBase: () => this.getRuntimeLoopEventOutputBase(),
+      detachedRuntimeLoopEffectOutputBase: () => this._detachedRuntimeLoopEffectOutputBase(),
     };
   }
 
@@ -2283,6 +2362,7 @@ export class StatefulTransactionBuilder {
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
+      externalCallDerivedRecords: this.externalCallDerivedRecords,
       childDeploymentOutputs: this.childDeploymentOutputs,
       builderOptions: this.builderOptions,
     };
@@ -2301,6 +2381,13 @@ export class StatefulTransactionBuilder {
       lateValueChunkOutputs: this.lateValueChunkOutputs,
       checkMinRelayFee: this._checkMinRelayFee,
       feeSigner: this.feeSigner,
+      requiresNativeOrigin: (() => {
+        const abi = (this.masterUtxo?.unlocker as {
+          abiFunction?: { usesMsgSender?: boolean; inputs?: { name: string }[] };
+        } | undefined)?.abiFunction;
+        return abi?.usesMsgSender === true
+          || (abi?.inputs ?? []).some((input) => input.name === '__internal__msgSenderCategory');
+      })(),
       accountingFunderUtxos: () => this._accountingFunderUtxos(),
       adoptAccountingFunders: (funders) => {
         const held = new Set(this.embeddedFunderUtxos.map((funder) => `${funder.txid.toLowerCase()}:${funder.vout}`));
@@ -2351,7 +2438,7 @@ export class StatefulTransactionBuilder {
         llcOutputsHost: this._materializeLowLevelCallOutputsHost(),
         trailingIterationHost: this._materializeTrailingIterationEntriesHost(),
         runtimeLoopHost: this._materializeRuntimeLoopTrailingHost(),
-        keccakLoopRecreates: this.keccakLoopRecreates,
+        pendingKeccakLoopRecreates: (b) => this._pendingKeccakLoopRecreates(b),
         keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       }),
       lateChunkFrameHost: () => ({
@@ -2915,6 +3002,7 @@ export class StatefulTransactionBuilder {
         return (self.masterUtxo?.unlocker as { abiFunction?: { keccakLoopPrecedesTrailingUser?: boolean } })
           ?.abiFunction?.keccakLoopPrecedesTrailingUser === true;
       },
+      get keccakLoopLeadsReadChunks() { return self.keccakLoopLeadsReadChunks; },
       get ecrecoverComputeCoSpendUtxos() { return self.ecrecoverComputeCoSpendUtxos; },
       get lowLevelCallRawInputs() { return self.lowLevelCallRawInputs; },
       get iterationEntryInputs() { return self.iterationEntryInputs; },
@@ -4037,6 +4125,27 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /**
+   * Keep the records a callee's run derived, `records[i]` for `nftIndices[i]`, to spell the values its rebuilt
+   * records leave as they were. The values themselves come from setExternalCallState.
+   */
+  setExternalCallDerivedRecords(
+    categoryId: string,
+    nftIndices: readonly number[],
+    records: readonly string[],
+  ): this {
+    let byNft = this.externalCallDerivedRecords.get(categoryId);
+    if (!byNft) {
+      byNft = new Map();
+      this.externalCallDerivedRecords.set(categoryId, byNft);
+    }
+    for (const [ordinal, record] of records.entries()) {
+      const nftIndex = nftIndices[ordinal];
+      if (nftIndex !== undefined && record.length > 0) byNft.set(nftIndex, record);
+    }
+    return this;
+  }
+
   /** B's vmap sorted-entry output at its block-slot position (commitment from B's VM trace). docs/deferrals.md #1. */
   setExternalCallEntryOutput(categoryId: string, blockSlot: number, commitmentHex: string): boolean {
     let m = this.externalCallEntryOutputs.get(categoryId);
@@ -4231,6 +4340,11 @@ export class StatefulTransactionBuilder {
 
   getExternalCallEntryOutput(categoryId: string, blockSlot: number): string | undefined {
     return this.externalCallEntryOutputs.get(categoryId)?.get(blockSlot);
+  }
+
+  /** A state value of an external call's output, as derivation or an override set it. */
+  getExternalCallState(categoryId: string, name: string): StateValue | undefined {
+    return this.externalCallStateUpdates.get(categoryId)?.get(name);
   }
 
   /**
@@ -4518,7 +4632,8 @@ export class StatefulTransactionBuilder {
         else if (isHex(value)) value = hexToBin(value);
         else throw new Error(`Invalid event argument at index ${i}: expected a hex string, got '${value}'`);
       }
-      return encodePushdataValue(value, parameter.type, this.stateLayout.structs);
+      // In the frame the event's covenant emit writes it: a parameter the artifact marks `notation: 'evm'` too.
+      return encodeEventParameter(value, parameter, this.stateLayout.structs);
     });
     const commitment = new Uint8Array(encodedParts.reduce((sum, part) => sum + part.length, 0));
     let cursor = 0;
@@ -6332,6 +6447,39 @@ export class StatefulTransactionBuilder {
     return loopEntryTransitionSatoshis(this._delegateLoopEntriesHost(), variable, commitment);
   }
 
+  /**
+   * Outputs a direct call's covenant takes out of its runtime-loop entry band but not out of the effect stream
+   * after it: the block's inactive returnEvent slot. A plain call materializes nothing there, so the loop mints its
+   * entries from emitTrailingWriteOutputBase, which steps down past the slot while the call's own
+   * `__internal__returnOutputIdx` is negative, while emitRuntimeLoopEffectVerification reads the loop's events and
+   * payments from past the complete fixed block. The slot then sits between the entries and the effects. A segment
+   * plan that also places entries (a route's rows), a kernel journal's band and a delegate's frame keep their
+   * published coordinates, so they take nothing out.
+   */
+  private _runtimeLoopEntryBandCompaction(): number {
+    if (this.runtimeLoopTrailingSegments.some((segment) => segment.kind === 'entries')
+      || this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0
+      || this.delegateEntriesAfterLowLevel || this.compilerRouteDelegateBlock || this.keccakSideCarsFollowBlock) {
+      return 0;
+    }
+    const master = this.masterUtxo?.unlocker;
+    return this._unmaterializedReturnEventCompact(
+      this.blockLayout, master !== undefined && isContractUnlocker(master) ? master : undefined,
+    );
+  }
+
+  /**
+   * The first output of a segmented runtime-loop effect stream when the covenant reads it apart from the entry band
+   * before it (`_runtimeLoopEntryBandCompaction`), or undefined when the two bands are contiguous.
+   */
+  private _detachedRuntimeLoopEffectOutputBase(): number | undefined {
+    if (this._runtimeLoopEntryBandCompaction() === 0) return undefined;
+    const first = this.runtimeLoopTrailingSegments.find((segment) => segment.kind !== 'entries');
+    if (first === undefined) return undefined;
+    return first.kind === 'events'
+      ? this.getRuntimeLoopEventOutputIndex(first.offset)
+      : this.getRuntimeLoopTransferOutputIndex(first.offset);
+  }
 
   /**
    * Output index where loop entry NFTs begin. They share the trailing region with dynamic chunks (mutually
@@ -6344,7 +6492,7 @@ export class StatefulTransactionBuilder {
       if (this.runtimeLoopTrailingSegments.length > 0) {
         return this.getChunkOutputBase()
           - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
-          - this.runtimeLoopTransferOutputs.length;
+          - this.runtimeLoopTransferOutputs.length - this._runtimeLoopEntryBandCompaction();
       }
       // Legacy direct loops co-spend their predecessor before a nested callee. The compiler verifies the
       // predecessor recreation at that input's output coordinate; the later callee block must not move it.
@@ -6741,6 +6889,16 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /**
+   * Lay this call out for a contract caller its transaction does not hold (`StandInCaller`): every build spends the
+   * caller's coin after its last input, and recreates it and appends the caller's edge record after its last output, so
+   * the master's run resolves `msg.sender` to the caller's lock and no slot moves. Such a build serves a block placed in
+   * another transaction, and is never sent.
+   */
+  setStandInCaller(caller: StandInCaller | undefined): void {
+    this.standInCaller = caller;
+  }
+
   build(): TransactionBuilder {
     if (this.emitReassertAllowed === undefined) {
       this.emitReassertAllowed = this._isPersistedChunkableValueWriteReady()
@@ -6764,6 +6922,7 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, result);
+    if (this.standInCaller !== undefined) appendStandInCaller(this.standInCaller, result);
     return result;
   }
 
@@ -7413,6 +7572,9 @@ export class StatefulTransactionBuilder {
     if (!provider) {
       throw new Error('No network provider available');
     }
+    if (this.standInCaller !== undefined) {
+      throw new Error('A call laid out for a stand-in caller serves a block of another transaction and is never sent');
+    }
     const sendTiming = createSendTiming();
 
     // -- Phase 1: build the covenant transaction (logic only, no fee) --
@@ -7457,6 +7619,9 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, finalBuilder);
+
+    // A8: a payment to a stateful contract's master lock could never be spent.
+    await refusePaymentsToStatefulMasters(provider, finalBuilder.inputs, finalBuilder.outputs);
 
     // -- Phase 4–5: converge/serialize/fee-bytes then submit --
     return runSendPhase4ThroughSubmitImpl(

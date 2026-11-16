@@ -1,4 +1,8 @@
-import { PositionHint, Op, Script, encodeInt, outlineSharedSpans, scriptToBytecode } from '../src/index.js';
+import { ConsensusCommon } from '@bitauth/libauth';
+import {
+  PositionHint, Op, Script, controlStackDepth, encodeInt, invocationDepths, literalDefinitions,
+  MAXIMUM_CONTROL_STACK_DEPTH, nestingSafeFunctionIds, outlineSharedSpans, scriptToBytecode,
+} from '../src/index.js';
 import type { FullLocationData, SingleLocationData } from '../src/index.js';
 
 const location: SingleLocationData = { location: undefined, positionHint: PositionHint.START };
@@ -348,6 +352,171 @@ describe('cross-function bytecode outlining', () => {
         && ids.has(key(fn.script[0]));
       expect(isAlias).toBe(false);
     }
+  });
+
+  it('matches an allow-listed id pushed by its single opcode only where the caller asks for it', () => {
+    // A normalised body pushes ids 1..16 by OP_1..OP_16, which the data-push match never decodes.
+    const folded: Script = [...REPEATED.slice(0, 12), Op.OP_7, Op.OP_INVOKE, ...REPEATED.slice(12)];
+    const source = [body([...folded, ...FILLER]), body([...FILLER, ...folded])];
+    const run = (allowed: number, foldedPushes: boolean): ReturnType<typeof outlineSharedSpans> => outlineSharedSpans(
+      source, allocateId, () => 1, 'savings', 12, 1024, undefined, 6, new Set([allowed]), false, foldedPushes,
+    );
+    const nests = (result: ReturnType<typeof outlineSharedSpans>): boolean =>
+      result.functions.some((shared) => shared.script.includes(Op.OP_INVOKE));
+
+    const unasked = run(7, false);
+    expect(unasked.functions.length).toBeGreaterThan(0);
+    expect(nests(unasked)).toBe(false);
+    const asked = run(7, true);
+    const nested = asked.functions.find((shared) => shared.script.includes(Op.OP_INVOKE));
+    expect(nested).toBeDefined();
+    expect(nested!.script[nested!.script.indexOf(Op.OP_INVOKE) - 1]).toBe(Op.OP_7);
+    // An id outside the allow-list stays a barrier in either push form.
+    expect(nests(run(8, true))).toBe(false);
+  });
+
+  describe('the balanced alternate-stack policy', () => {
+    // Every branch and loop iteration leaves the alternate depth where its opener found it, and nothing pops below
+    // the start: the property a shared body needs to have no alternate-stack interface.
+    const altBalanced = (script: Script): boolean => {
+      const opened: number[] = [];
+      let depth = 0;
+      for (const element of script) {
+        if (element === Op.OP_IF || element === Op.OP_NOTIF || element === Op.OP_BEGIN) opened.push(depth);
+        if (element === Op.OP_ELSE && opened[opened.length - 1] !== depth) return false;
+        if ((element === Op.OP_ENDIF || element === Op.OP_UNTIL) && opened.pop() !== depth) return false;
+        if (element === Op.OP_TOALTSTACK) depth += 1;
+        if (element === Op.OP_FROMALTSTACK) depth -= 1;
+        if (depth < 0) return false;
+      }
+      return depth === 0 && opened.length === 0;
+    };
+    const share = (repeated: Script, policy: 'barrier' | 'balanced'): ReturnType<typeof outlineSharedSpans> =>
+      outlineSharedSpans(
+        [body([...repeated, ...FILLER]), body([...FILLER, ...repeated])],
+        allocateId, () => 1, 'savings', 12, 1024, undefined, 6, undefined, policy,
+      );
+    const carries = (result: ReturnType<typeof outlineSharedSpans>, opcode: number): boolean =>
+      result.functions.some((shared) => shared.script.includes(opcode));
+
+    it('relocates a span that pops only what it pushed itself', () => {
+      const parked: Script = [
+        ...REPEATED.slice(0, 12), Op.OP_TOALTSTACK, ...REPEATED.slice(12, 18), Op.OP_FROMALTSTACK,
+        ...REPEATED.slice(18),
+      ];
+      const barrier = share(parked, 'barrier');
+      expect(barrier.functions.length).toBeGreaterThan(0);
+      expect(carries(barrier, Op.OP_TOALTSTACK) || carries(barrier, Op.OP_FROMALTSTACK)).toBe(false);
+
+      const balanced = share(parked, 'balanced');
+      expect(balanced.functions.some((shared) => shared.script.includes(Op.OP_TOALTSTACK)
+        && shared.script.includes(Op.OP_FROMALTSTACK))).toBe(true);
+      for (const shared of balanced.functions) expect(altBalanced(shared.script)).toBe(true);
+    });
+
+    it.each([
+      // The pop takes an item the span did not push: the caller's.
+      ['pops below its start', [...REPEATED.slice(0, 12), Op.OP_FROMALTSTACK, ...REPEATED.slice(12)]],
+      // The push is left for code outside the span: the first half of a handoff.
+      ['leaves its push behind', [...REPEATED.slice(0, 12), Op.OP_TOALTSTACK, ...REPEATED.slice(12)]],
+      // One branch pushes and the other does not, so the later pop takes the caller's item on the other path.
+      // The runs around each construct are 12 elements: shorter ones do not repay a two-byte identifier.
+      ['changes the depth on one path', [
+        ...REPEATED.slice(0, 12), Op.OP_IF, Op.OP_TOALTSTACK, Op.OP_ENDIF, ...REPEATED.slice(12),
+        Op.OP_FROMALTSTACK,
+      ]],
+      // A branch that ends at another depth than its opener, before the OP_ELSE.
+      ['changes the depth before its OP_ELSE', [
+        ...REPEATED.slice(0, 12), Op.OP_IF, Op.OP_TOALTSTACK, Op.OP_ELSE, Op.OP_TOALTSTACK, Op.OP_ENDIF,
+        ...REPEATED.slice(12), Op.OP_FROMALTSTACK,
+      ]],
+      // A loop iteration that moves the depth: the linear count is right for one iteration only.
+      ['changes the depth in a loop iteration', [
+        ...REPEATED.slice(0, 12), Op.OP_BEGIN, Op.OP_TOALTSTACK, Op.OP_1, Op.OP_UNTIL, ...REPEATED.slice(12),
+        Op.OP_FROMALTSTACK,
+      ]],
+    ] as const)('never relocates alternate-stack use that %s', (_name, repeated) => {
+      const result = share([...repeated], 'balanced');
+      // The runs around the alternate-stack use are worth sharing, so the refusal is of the use, not of everything.
+      expect(result.functions.length).toBeGreaterThan(0);
+      for (const shared of result.functions) {
+        expect(altBalanced(shared.script)).toBe(true);
+        expect(shared.script).not.toContain(Op.OP_FROMALTSTACK);
+      }
+    });
+  });
+
+  describe('nesting-safe helpers', () => {
+    const LEAF: Script = [Op.OP_DUP, Op.OP_SHA256, Op.OP_CAT];
+
+    it('proves a helper from its own body and the helpers it invokes, and refuses each unsafe body', () => {
+      const bodies = new Map<number, Script>([
+        [1, LEAF],
+        [2, [Op.OP_IF, ...LEAF, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF]],
+        [3, [Op.OP_TOALTSTACK, ...LEAF, Op.OP_FROMALTSTACK]],
+        // Invokes proven helpers, in the folded and the data-push form of their ids.
+        [4, [Op.OP_1, Op.OP_INVOKE, encodeInt(2n), Op.OP_INVOKE]],
+        // Defines a function.
+        [10, [...LEAF, Op.OP_DEFINE]],
+        // Reads or signs the active bytecode.
+        [11, [Op.OP_ACTIVEBYTECODE, ...LEAF]],
+        [12, [...LEAF, Op.OP_CHECKSIG]],
+        // Takes part in an alternate-stack handoff: pops the caller's item, leaves its own, or differs by path.
+        [13, [Op.OP_FROMALTSTACK, ...LEAF]],
+        [14, [...LEAF, Op.OP_TOALTSTACK]],
+        [15, [Op.OP_IF, Op.OP_TOALTSTACK, Op.OP_ENDIF, Op.OP_FROMALTSTACK]],
+        // Leaves control flow open, or closes it out of kind.
+        [16, [Op.OP_IF, ...LEAF]],
+        [17, [Op.OP_BEGIN, Op.OP_ELSE, Op.OP_1, Op.OP_UNTIL]],
+        // Invokes a computed id, an id nothing here defines, an unsafe helper, or itself through another.
+        [18, [Op.OP_ADD, Op.OP_INVOKE]],
+        [19, [encodeInt(99n), Op.OP_INVOKE]],
+        [20, [encodeInt(10n), Op.OP_INVOKE]],
+        [21, [encodeInt(22n), Op.OP_INVOKE]],
+        [22, [encodeInt(21n), Op.OP_INVOKE]],
+      ]);
+      expect([...nestingSafeFunctionIds(bodies)].sort((left, right) => left - right)).toEqual([1, 2, 3, 4]);
+    });
+
+    it('bounds the control stack an invocation adds, and refuses what it cannot bound', () => {
+      expect(MAXIMUM_CONTROL_STACK_DEPTH).toBe(ConsensusCommon.maximumControlStackDepth);
+      const key = (id: bigint): string => Array.from(encodeInt(id), (byte) => byte.toString(16).padStart(2, '0'))
+        .join('');
+      const bodies = new Map<string, Script>([
+        // Its own frame.
+        [key(1n), [Op.OP_DUP, Op.OP_DROP]],
+        // A conditional around a call of 1: 1 + 1 + 1.
+        [key(2n), [Op.OP_IF, Op.OP_1, Op.OP_INVOKE, Op.OP_ENDIF]],
+        // A loop and a conditional around a call of 2: 1 + 2 + 3.
+        [key(3n), [Op.OP_BEGIN, Op.OP_IF, encodeInt(2n), Op.OP_INVOKE, Op.OP_ENDIF, Op.OP_1, Op.OP_UNTIL]],
+        // A computed id, recursion, an id nothing defines, and a definition made while running.
+        [key(4n), [Op.OP_ADD, Op.OP_INVOKE]],
+        [key(5n), [encodeInt(6n), Op.OP_INVOKE]],
+        [key(6n), [encodeInt(5n), Op.OP_INVOKE]],
+        [key(7n), [encodeInt(42n), Op.OP_INVOKE]],
+        [key(8n), [Op.OP_DUP, encodeInt(9n), Op.OP_DEFINE]],
+      ]);
+      const depths = invocationDepths(bodies);
+      expect([1n, 2n, 3n].map((id) => depths.get(key(id)))).toEqual([1, 3, 6]);
+      for (const id of [4n, 5n, 6n, 7n, 8n]) expect(depths.get(key(id))).toBeUndefined();
+
+      // A dispatcher's computed invocation inside a conditional, at the depth its caller gives it.
+      const dispatcher: Script = [Op.OP_1, Op.OP_IF, Op.OP_DUP, Op.OP_INVOKE, Op.OP_ENDIF];
+      expect(controlStackDepth(dispatcher, (id) => depths.get(id), 6)).toEqual({ deepest: 7, open: 0 });
+      expect(controlStackDepth(dispatcher, (id) => depths.get(id))).toBeUndefined();
+      const program: Script = [Uint8Array.of(Op.OP_DUP), Op.OP_7, Op.OP_DEFINE, Op.OP_IF];
+      expect(controlStackDepth(program, (id) => depths.get(id))).toBeUndefined();
+      expect(controlStackDepth(program, (id) => depths.get(id), undefined, true)).toEqual({ deepest: 1, open: 1 });
+    });
+
+    it('reads only literal definitions from a program', () => {
+      const definitions = literalDefinitions([
+        Uint8Array.of(Op.OP_DUP), Op.OP_7, Op.OP_DEFINE,
+        Op.OP_DUP, Op.OP_SWAP, encodeInt(9n), Op.OP_DEFINE,
+      ]);
+      expect([...definitions.keys()]).toEqual(['07']);
+      expect(definitions.get('07')).toEqual({ bodyIndex: 0, body: Uint8Array.of(Op.OP_DUP) });
+    });
   });
 
   // PARAMETERIZED sharing is DISABLED as unsound (see `outline.ts`, and `8c727b03f`): it parks per-site operands

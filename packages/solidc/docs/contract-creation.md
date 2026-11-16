@@ -136,25 +136,97 @@ Guards (raise a clean `ConditionalDeployError` - fail closed, never an unsound c
 site in the function, a `{value:}` transfer on the deploy. Straight-line deploys keep the proven fixed epilogue,
 byte-for-byte.
 
+## Deployer coins
+
+A stateful contract compiled with `deployer: true` carries a one-shot **Deploy<C>** program in its artifact.
+The SDK deploys that instance through it: the prep transaction mints the deployer coin, and the creation
+spends it. A plain compile has no deployer and keeps today's genesis. A contract that cannot have a deployer
+records the reason in `artifact.deployerUnsupported` and warns; a top-level deployment of it uses today's
+genesis.
+
+Inside a creator, a `new` of a stateful direct child is a **deployer `new`**. Its syntax separates the two
+kinds of parameter:
+
+```solidity
+new C{args: (a1, a2), value: v}(c1, c2)   // contract parameters a1, a2; constructor arguments c1, c2
+new C{args: a1}()                          // one contract parameter; a constructor without parameters
+new C(c1)                                  // C has no contract parameters
+```
+
+`args` gives every contract parameter of C in declaration order; the parentheses give the constructor
+arguments. When C has both kinds of parameter, `args` is required. When C has contract parameters and its
+constructor has none, `new C(a1, …)` still means `new C{args: (a1, …)}()` and the compiler warns, suggesting
+the explicit form. `value` moves satoshis into the child's satoshi container (below). `salt` is refused on a
+deployer `new`: the child's redeem must start with its category pin.
+
+**The prep, one per child.** A transaction creates category `X` only by spending output 0 of transaction `X`,
+so each child needs a parent transaction of its own:
+
+| Index | Input | Output |
+| --- | --- | --- |
+| 0 | the author's coins, or the change of the prep before it | Deploy<C> coin, `V_DEPLOY(C)` satoshis. `X` = this txid |
+| 1 | | author coin, P2PKH: what the author brings to this child's creation |
+| 2 | | change, when there is any. In a chain it pays for the next prep |
+
+The SDK prepares the whole chain before broadcasting anything, so every category is known before the first
+prep is sent, and arguments may name any of them. Each prep spends only coins whose unlocking nobody else can
+alter, and the chain's coins are reserved from the SDK's coin selection.
+
+**The creation, through a creator.** In this example the creator has one record and a satoshi container, and
+C has one record and receives value `v`:
+
+| Index | Input | Output |
+| --- | --- | --- |
+| 0 | creator master | creator master |
+| 1 | creator record | creator record, new state |
+| 2 | creator satoshi container | creator satoshi container, `v` less |
+| 3 | Deploy<C> coin (prep output 0), spent by `create` | C's master, lock `M`, `X‖02`, RESERVE |
+| 4 | author coin (prep output 1) | C's record: `X‖01`, starting state, RESERVE |
+| 5 | funding | C's satoshi container, `v` |
+| 6 | | change |
+
+`OUTBASE`, the first output of C's genesis range, is `__internal__genesisOutputBase`; it is not required to
+equal the deployer's input index. At top level the creator's rows are absent: the deployer is input 0, the
+author coin is input 1, and output 0 is the category's identity output, followed by the publication output
+when one is asked for.
+
+**The constructor's environment.** `msg.sender` is the deploying wallet (`tx.origin`), as in Solidity.
+`block.number` and `block.timestamp` come from the transaction's locktime, which is a lower bound, not the
+mined block. The category is the prep transaction's txid, not `fundingUtxo.txid`; code that needs a category
+or an address before a deployment builds the preps first and reads it from the result.
+
+**Collisions and reuse.** A creator may declare functions named `create` or `sweep`; the deployer's own
+entries are separate and are published as `create` and `sweep` in its ABI. Two deployer `new` sites may not
+name the same callee expression. The author can reuse an unspent deployer coin whose author coin is still
+unspent; after 1,440 blocks anyone may sweep it, so the author should create before then.
+
 ## Value and token transfers on deploy
 
-A deploy function can move funds from the factory to the freshly-created child (or any recipient) in the same
-transaction:
+`new C{value: V}(...)` moves `V` satoshis from the creator's satoshi container into C's satoshi container
+before C's constructor runs. Inside the constructor, `msg.value` is `V`. `V` is 0 or at least RESERVE, the
+constructor must be payable, and C must keep a satoshi container that its deployer pins; otherwise the
+compile refuses the expression.
 
-- **Satoshis** - `new Child{value: V}()` transfers `V` sats from the factory's satoshi container to the child.
-  Straight-line, conditional (`if (c) new Child{value:V}()`), and loop (`for (i<n) new Child{value:V}()`) forms
-  work. SDK: `deployFrom({ childValue: V })`; the factory must have been deployed with `initialBalance >= V`.
-- **CashTokens** - a deploy function that does `this.tokens[cat].transfer(recipient, amt)` co-spends the factory's
-  token container, recreates it with the remainder, and sends `amt` to `recipient` (pass the new child's address
-  to fund it). SDK:
-  `deployFrom({ tokenContainerCategoryIds: [cat], childTokenTransfers: [{ categoryId: cat, to, amount }] })`.
-  `to` is the recipient locking bytecode (a raw p2sh32/p2pkh script, or a token-aware address).
+A payment made to a `new` result after the expression goes to the child's **container**, not to its master
+lock:
 
-Both are covenant-enforced: the container's own output is self-preserved (locking bytecode + value/amount) and
-each transfer output is pinned (recipient + amount + category), so a caller cannot redirect the container's
-remaining balance to a foreign address - adversarially VM-proven in `SatoshiContainer.test.ts` /
-`TokenContainer.test.ts`. Not yet wired in a single deploy: combining a satoshi and a token transfer, and NFT
-container transfers (both fail closed).
+- `this.transfer(child, n)` pays C's satoshi container lock for `(M, X)`;
+- `this.tokens[t].transfer(child, n)` pays C's token container lock for `(M, X, t)`.
+
+A child without the container in question is refused. A payment to any other stateful contract value is an
+error: its address is the master lock, and a coin there can never be spent. Send through one of the
+contract's payable functions instead.
+
+`new` has no `tokens` option and never takes tokens from the creator. Each token container starts from the
+least its coin can hold: 1 unit for a container C keeps **single**, whose coin the creation opens, and 0 for
+any other, which has no coin at birth. A constructor may read `this.tokens[t].tokenAmount`; it cannot send
+tokens or use any other member (`tokenCategory`, `nftCount`, `nftCommitment`, `transferNft`), and the compile
+refuses it. A creator funds a child's non-single token containers with a transfer after `new`.
+
+Under `pragma satoshicontainer single` and `pragma tokencontainer single`, the creation opens the coin at the
+container lock and no other; a payment after `new` into such a container would make a second coin and is
+refused (`second-coin-at-single-container`). Fund such a child through `value`, or call one of its functions
+later.
 
 ## Why no literal CREATE2/CREATE3 redeployable address for stateful contracts
 

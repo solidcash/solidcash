@@ -329,8 +329,8 @@ describe('deploy-then-call fold THROUGH a local fn-ptr (#2 slice, sound by reduc
     const direct = `${other} contract C { function use() public { (new Other()).bump(); require(true); } }`;
     const fnptr = `${other} contract C { function use() public {`
       + ' function() external p = (new Other()).bump; p(); require(true); } }';
-    const a = compileStringMulti(direct, { evmCompat: true }).C;
-    const b = compileStringMulti(fnptr, { evmCompat: true }).C;
+    const a = compileStringMulti(direct, { evmCompat: true, __legacyDeployFold: true } as never).C;
+    const b = compileStringMulti(fnptr, { evmCompat: true, __legacyDeployFold: true } as never).C;
     expect(b.bytecode).toBe(a.bytecode);
     expect(b.abi.find((f) => f.name === 'use')!.deployTargets)
       .toEqual(a.abi.find((f) => f.name === 'use')!.deployTargets);
@@ -1058,7 +1058,7 @@ describe('cast-wrapped same-transaction deploy calls', () => {
     const src = 'contract Child { uint x; function f() public returns (uint) { x = 3; return 1; } }'
       + ' interface IView { function f() external view returns (uint); }'
       + ' contract C { function test() public returns (uint) { return IView(address(new Child())).f(); } }';
-    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true, __legacyDeployFold: true } as never).contractName).toBe('C');
   });
 });
 

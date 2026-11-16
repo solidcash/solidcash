@@ -99,6 +99,26 @@ export interface CompilerOptions {
   // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
   allowUnsafeOperations?: boolean;
   commitmentLimit?: number;
+  /**
+   * Compile the primary contract together with its deployer contract, Deploy<C>, and publish it as
+   * `artifact.deployer`. A contract that cannot have one carries `artifact.deployerUnsupported` and a warning.
+   */
+  deployer?: boolean;
+  /**
+   * Internal. Compile a direct creator's deployer `new` sites against the child's deployer instead of embedding
+   * the child (B8). It is off until the switch of B10; with it off every source compiles as it did after B7.
+   */
+  __deployerNew?: boolean;
+  /**
+   * Which entry functions publish a call record: `'returning'` (today's behaviour: only functions that return a
+   * value) or `'all'` (void entries too). Framed and message-bus compiles accept only `'returning'`.
+   */
+  callRecords?: 'returning' | 'all';
+  /**
+   * Compile direct contracts with the constructor-genesis (O6) mechanisms. Defaults to on. A framed compile and a
+   * message-bus compile take none: a constructor calls only a direct contract.
+   */
+  genesisCalls?: boolean;
   /** Encode an NFT-index tag even when fixed state occupies only one data NFT. Opt-in wire-layout choice. */
   tagSingletonDataNfts?: boolean;
   // Solidity-source compatibility and EVM byte-parity mode: resolve `.sol` imports as solidcash sources,
@@ -390,6 +410,8 @@ export type BlockSlotKind =
   | 'readOnlyDataNft'
   | 'blockhashOracle'
   | 'blockInfoOracle'
+  /** A collection's HEAD at birth (A4.4): an own-category mutable entry coin at slot 0. */
+  | 'head'
   | 'keccakSideCar'
   | 'ecrecoverSideCar'
   | 'entry'
@@ -421,6 +443,7 @@ export interface BlockLayoutSlot {
   slotIndex?: number;       // for entry/tokenContainer/transfer/event/eventChunk/tcTransfer
   chunk?: number;           // eventChunk: the payload chunk this output carries (>= 1)
   nftIndex?: number;        // for dataNft/readOnlyDataNft
+  collection?: string;      // for head: the collection whose HEAD this output is
   conditional?: boolean;    // true if slot may be inactive (in if/else branch)
   // entry: a branch delete lowered to an existence-gated soft-delete write (SDK derives it as a write, not a drop)
   softDelete?: boolean;
@@ -519,15 +542,6 @@ export interface FixedBchTransferAbi {
   /** For a send made as a low-level call (`to.call{value: v}("")`), its `ExternalCallAbi.failedCallMessage`. */
   failedCallMessage?: string;
 }
-
-/** Where a `new C{code: c}` child's code comes from: a deploy-function parameter it forwards, or an expression. */
-export type DeployCodeSourceAbi = { kind: 'parameter'; name: string; index: number } | { kind: 'expression' };
-
-/**
- * The sha256 the code of a `new C{code: c}` child must have, which the creator checks before building the child's
- * address from that code: the hash of C's compiled body (`compiled`), or a value chosen at run time.
- */
-export type DeployTemplateAbi = { kind: 'compiled'; hash: string } | DeployCodeSourceAbi;
 
 /** Completely folded, constructor-only initial state for one child deployment site. */
 export interface ChildDeploymentGenesisStateAbi {
@@ -787,19 +801,18 @@ export interface AbiFunction {
     contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
     // or null for a non-trivial expression. Lets the SDK derive childConstructorArgs from the deploy args.
-    // `__oraclePool` forwards the creator's own `__oraclePool` constructor input.
+    // `__oraclePool` forwards the creator's own `__oraclePool` constructor input. For a deployer child these are
+    // the parentheses' arguments; `contractArgs` names `args`, and `valueArg` names `value`.
     constructorArgs?: readonly (string | null)[];
+    /** Per contract argument of a deployer `new`: the creating function's parameter it forwards, or null. */
+    contractArgs?: readonly (string | null)[];
+    /** The creating function's parameter a deployer `new`'s `value` comes from, or null. */
+    valueArg?: string | null;
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
-    /**
-     * Exact child redeem-script body embedded by the factory for CREATE/CREATE2 address derivation. With `code` the
-     * factory embeds nothing, and this is C's compiled body: the code a `compiled` template requires.
-     */
+    /** Exact child redeem-script body embedded by the factory for CREATE/CREATE2 address derivation. */
     creationBytecode?: string;
-    /** `new C{code: c}`: the child runs the bytes `c`, whose sha256 the factory requires to be `template`. */
-    code?: DeployCodeSourceAbi;
-    template?: DeployTemplateAbi;
     /** The deploy covenant folds a same-transaction child call and its post-call genesis must be VM-derived. */
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
@@ -962,6 +975,12 @@ export interface AbiFunction {
   /** Closed, source-ordered compute operands, evaluated only from authenticated invocation values. */
   computeSideCarRecipes?: ComputeSideCarRecipesAbi;
   ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery triple per sig-array element
+  /**
+   * A stateful function whose recoveries all run in a loop: its block holds no recovery slot, and iteration k reads
+   * its triple (A, a middle coin, B; or A, B and the keccak side-car for ecrecoverEvm) from the shared pool at
+   * master + blockSize + 3k.
+   */
+  ecrecoverTrailingLoop?: boolean;
 }
 
 /**
@@ -1247,6 +1266,27 @@ export interface SortedUpsertLoopAbi {
    * runs once per turn. Merging a repeated key's turns would run it one time fewer, so the SDK refuses the repeat.
    */
   siblingEffect?: boolean;
+  /**
+   * Each turn of the loop is fixed by its own pair of the call's arrays. A turn upserts the key
+   * `varyingArrayParam[i]` (its other keys loop-invariant) by `valueArrayParam[i]` (plus `valueArrayOffset`), by a
+   * parameter the function never assigns, or by a literal, or deletes it; a `+` or `-` reads only the entry it writes.
+   * The turn does nothing else, except that a `+` credit may also debit msg.sender's entry of this mapping by the value
+   * it credits. The loop runs `i` from 0 over the whole array, and the function reads `i` and the two arrays nowhere
+   * else, besides `require(keys.length == values.length)`.
+   *
+   * The call's result then depends on its (key, value) pairs alone: running the turns in another order, or merging a
+   * repeated key's turns (`+` and `-` summed, `=` its last value), leaves it unchanged. The SDK rewrites a call's
+   * arrays to reach the order the covenant folds only under this flag; without it the call is built as given, or
+   * refused by name. Published for the direct convention.
+   */
+  pairwise?: boolean;
+  /**
+   * With `pairwise` on a `+` credit: each turn first debits msg.sender's entry of this mapping, under the same other
+   * keys, by the value it credits (`bal[msg.sender] -= v[i]; bal[k[i]] += v[i]`), and nothing else in the function writes
+   * that entry. A turn crediting msg.sender then nets to nothing, and the sender's balance at the loop is the chain's: the
+   * SDK may leave that turn out, as it must when the sender's entry is co-spent once for the debit.
+   */
+  senderDebit?: boolean;
   /** Authenticated source-order trace for a mapping value which carries state between loop iterations. */
   valueTraceWitnessParam?: string;
   valueTraceLocal?: string;
@@ -1404,6 +1444,12 @@ export interface ArgSource {
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
   expression?: ExternalCallExpression;
+  /**
+   * For 'msgSender': 'tx.origin' when the source is `tx.origin`, the transaction's origin in every frame, which a
+   * nested frame's `msg.sender` (its caller) is not. Absent is `msg.sender`, or either in an artifact compiled
+   * before this field.
+   */
+  senderOp?: 'msg.sender' | 'tx.origin';
 }
 
 export interface ExternalCallExpression {
@@ -1677,6 +1723,11 @@ export interface ExternalCallAbi {
   functionName: string;
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state, not caller-provided)
+  /**
+   * The function can write the call's target before the call: the callee the call runs on is not the one the caller's
+   * current state and the call's arguments name, so a builder cannot resolve it from them.
+   */
+  targetWrittenBeforeCall?: true;
   addressLiteral?: string; // code-baked literal address target IFoo(0x..).m(): covenant pushes this constant (un-seedable)
   loopArrayVar?: string; // state array of callee addresses: every element is co-spent + loop-verified (IFoo(arr[i]).m())
   // varying-method dispatch table: parallel `bytes[]` state array of per-element selectors. The covenant reads
@@ -1705,6 +1756,11 @@ export interface ExternalCallAbi {
   rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
   rawSelector?: string; // decoded abi.encodeWithSelector selector when the source function name is unavailable
   rawArgSources?: readonly ArgSource[];
+  /**
+   * A low-level call whose payload names a function that declares a result: the caller reads its callee's record, so
+   * the call has no record-less answer (return coordinate -1) and a returned `false` cannot be hidden.
+   */
+  rawReadsRecord?: boolean;
   /**
    * The message of the caller's own `require` over this low-level call's success: what the EVM reports when the call
    * fails, since a low-level call returns `false` to its caller rather than reverting it. Absent for a typed call,
@@ -2320,6 +2376,49 @@ export interface CreationArgumentBinding {
   readonly value: string | bigint | boolean | Uint8Array;
 }
 
+/** The deployer contract a stateful direct contract C was compiled together with (A13). */
+export interface DeployerAbi {
+  version: 1;
+  /** Deploy<C>'s redeem script, hex. Used verbatim: no pin, no arguments. */
+  bytecode: string;
+  /** DEPLOY(C), hex. */
+  lockingBytecode: string;
+  /** TEMPLATE(C) = sha256(the body of C's code), hex. */
+  template: string;
+  /** C's code, hex, with its birth trailer when it has one. */
+  code: string;
+  /** True when the constructor makes an external call, so C's born code ends with the birth trailer. */
+  birthTrailer: boolean;
+  /** V_DEPLOY(C), satoshis, decimal. */
+  coinValue: string;
+  sweepAge: 1440;
+  /** `create` and `sweep`, with selectors, inputs in A4.2 order, and blockLayout. */
+  abi: AbiFunction[];
+  /** w_out(C): the genesis outputs `create` pins. */
+  genesisOutputs: number;
+  /** s: the constructor's call slots; the callee list is 2s bytes. */
+  callSlots: number;
+  satoshiContainer: 'none' | 'optional' | 'required';
+  /** Indexes of the contract parameters that name a single token container. */
+  tokenRows: number[];
+  /**
+   * Per collection the constructor writes, in the HEADs' order: its entry rows, one per append site of its journal
+   * (A4.4), and where `create`'s run holds the journal, as a depth from the bottom of its stack at step 12, so the SDK
+   * can lay out the entries the run produced (A14 item 4 step 5).
+   */
+  collectionRows: { collection: string; appendSites: number; journalDepth?: number }[];
+  /** Deploy<C> mints C's oracle: C reads block data. */
+  readsBlockData: boolean;
+  /** C stores `msg.sender` in its constructor: its creator is a marked creator. */
+  constructorReadsSender: boolean;
+  /** The constructor reads this field: the SDK sets the locktime. */
+  constructorBlockField?: 'number' | 'timestamp';
+  sidecars: { keccak: number; ecrecover: number };
+}
+
+/** One of the identifiers listed in A4.1; a string so an added reason needs no artifact version bump. */
+export type DeployerUnsupportedReason = string;
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -2356,6 +2455,25 @@ export interface Artifact {
   usesBlockhash?: boolean;  // contract reads blockhash(n) from a ring slot of its oracle pool
   /** A function reads a block-info coin of the bound oracle pool. */
   usesBlockOracle?: boolean;
+  /** Present when the primary contract was compiled with `deployer: true` and has a deployer. */
+  deployer?: DeployerAbi;
+  /** Set when `deployer: true` was given and C cannot have one; `reason` is an A4.1 identifier. */
+  deployerUnsupported?: DeployerUnsupportedReason;
+  /** Set when `deployer: true` was given: C's constructor arm, or a function it calls, writes a collection. */
+  constructorWritesCollections?: boolean;
+  /** Which entries publish a call record, on a contract compiled by this plan. */
+  callRecords?: 'returning' | 'all';
+  /** The `genesisCalls` option the contract was compiled with. */
+  genesisCalls?: boolean;
+  /**
+   * True: compiled as record-sound (its code marker says so). False: a record-publishing entry meets an arm that
+   * prevents it, or the contract is a message-bus build.
+   */
+  recordSound?: boolean;
+  /** True for a marked creator: a contract that creates a sender-reading child. */
+  createsSenderReadingChildren?: boolean;
+  /** One entry per child type a `new` creates through a deployer, by contract name. */
+  childDeployers?: Record<string, DeployerAbi>;
   /**
    * The pool coin kinds the bound contracts this one creates or names read, theirs included. With this contract's
    * own reads it shapes a pool its deployment mints.

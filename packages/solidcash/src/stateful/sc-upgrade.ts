@@ -8,6 +8,7 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   VALUE_INLINE_LIMIT,
   buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   containerKeepsTokenless,
   containerMasterRetires,
   parsePushdataCommitment,
@@ -39,6 +40,7 @@ import { tokenContainerKeyValue } from './sc-load-create-builder-token-container
 import { decodeEntryCommitment } from './SortedList.js';
 import type { LeftBehindCoin, UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
 import { fillerOutput } from './filler.js';
+import { assertSpendableContract } from './spendable-code.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
@@ -323,6 +325,8 @@ export async function upgradeStatefulContract<T extends Artifact>(
     addressType,
     category: hexToBin(categoryId),
   });
+  // The master moves to the replacement's lock for good, so code no input could spend is refused before any migration.
+  assertSpendableContract(newContract);
 
   // CRYPTO-4 binds every record to the master's exact lock, so whatever stays at the old lock once the upgrade moves
   // the master is unspendable for good. Plan the whole migration from complete listings, and refuse before anything
@@ -527,7 +531,9 @@ export async function upgradeStatefulContract<T extends Artifact>(
       const nftUtxo = filteredDataNftUtxos[i];
       const nftIdx = requiredNftIndices[i];
 
-      const newCommitment = buildPushdataCommitment(newLayout, oldState, nftIdx);
+      // A record whose layout the upgrade keeps keeps its bytes: a value carried over is spelled as the old record holds
+      // it, and the SDK's encoding can spell it otherwise (an `address` of 20 zero bytes encodes as address(0)).
+      const newCommitment = buildPushdataCommitmentKeeping(newLayout, oldState, nftIdx, [nftUtxo.token?.nft?.commitment]);
 
       builder.addOutput({
         to: getDataNftAddress(newContract, categoryId),

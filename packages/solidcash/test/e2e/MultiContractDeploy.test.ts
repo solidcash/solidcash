@@ -36,7 +36,9 @@ const SOURCE = `
 
 describe('ContractBundle (implicit ArtifactMap context)', () => {
   const provider = createTestProvider();
-  const bundle = ContractBundle.from(compileStringMulti(SOURCE), { provider });
+  // Bundle resolution is independent of the B10 binding; keep the legacy fold path this test's
+  // category and output expectations describe.
+  const bundle = ContractBundle.from(compileStringMulti(SOURCE, { __legacyDeployFold: true } as never), { provider });
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
   let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];

@@ -161,6 +161,7 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
     for (const [name, value] of Object.entries(bState)) {
       stb.setExternalCallState(group.categoryId, name, value);
     }
+    stb.setExternalCallDerivedRecords(group.categoryId, group.requiredDataNftIndices, bCommitments);
     // A callee with more than one data NFT authenticates its records one at a time: the probe reaches a record's
     // check only when every earlier record already carries its derived value in the probe's outputs, so a single
     // pass learns the first record and stops at the second. Re-probe after each round until every required record
@@ -185,6 +186,7 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
       for (const [name, value] of Object.entries(nextState)) {
         stb.setExternalCallState(group.categoryId, name, value);
       }
+      stb.setExternalCallDerivedRecords(group.categoryId, group.requiredDataNftIndices, newlyKnown);
       known = newlyKnown;
       currentTrace = nextTrace;
     }

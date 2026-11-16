@@ -373,6 +373,14 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     return this.readRpc.request<GetBlockCount>('getblockcount');
   }
 
+  async getMedianTimePast(): Promise<number> {
+    await this.ensureReady();
+    const height = await this.readRpc.request<GetBlockCount>('getblockcount');
+    const hash = await this.readRpc.request<GetBlockHash>('getblockhash', height);
+    const header = await this.readRpc.request<GetBlockHeaderTime>('getblockheader', hash, true);
+    return header.mediantime;
+  }
+
   async getBlockHash(height: number): Promise<string> {
     await this.ensureReady();
     return this.readRpc.request<GetBlockHash>('getblockhash', height);
@@ -840,6 +848,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       getUtxosForLockingBytecode: (lockingBytecode) => this.getUtxosForLockingBytecode(lockingBytecode),
       getUtxosByTokenCategory: (categoryId) => this.getUtxosByTokenCategory(categoryId),
       getBlockHeight: () => this.getBlockHeight(),
+      getMedianTimePast: () => this.getMedianTimePast(),
       getRawTransaction: (txid) => this.getRawTransaction(txid),
       sendRawTransaction: async (txHex) => {
         const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', txHex);

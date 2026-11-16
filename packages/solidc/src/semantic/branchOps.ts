@@ -7,6 +7,7 @@ import {
   TransferStatementNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
+  LowLevelCallNode,
   LowLevelCallStatementNode,
   MethodCallNode,
   MethodCallStatementNode,
@@ -124,10 +125,13 @@ function isValueTransferNode(node: Node): boolean {
     || (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value))
     || (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value))
     || (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value))
+    || (node instanceof LowLevelCallNode && hasEffectiveCallValue(node.callOptions?.value))
     || (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
       || hasEffectiveCallValue(node.callOptions?.value)))
-    // `new C{value: x}()` transfers x from the contract's satoshi container to the child - a value transfer.
-    || (node instanceof InstantiationNode && hasEffectiveCallValue(node.callOptions?.value));
+    // `new C{value: x}()` transfers x from the contract's satoshi container to the child - a value transfer. A
+    // deployer `new`'s value has no transfer output: Deploy<C> pins the child's container (B8.8).
+    || (node instanceof InstantiationNode && node.isDeployerNew !== true
+      && hasEffectiveCallValue(node.callOptions?.value));
 }
 
 // Min and max value-transfers on any single execution path through `node`. Branch/switch arms are MUTUALLY
@@ -198,12 +202,17 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
   if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
     result.transfers++;
   }
+  // The same returning low-level expression once the body's visit has made it a low-level call node.
+  if (node instanceof LowLevelCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+    result.transfers++;
+  }
   if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
     || hasEffectiveCallValue(node.callOptions?.value))) {
     result.transfers++;
   }
-  // `new C{value: x}()` transfers x from the contract's satoshi container to the child.
-  if (node instanceof InstantiationNode && hasEffectiveCallValue(node.callOptions?.value)) {
+  // `new C{value: x}()` transfers x from the contract's satoshi container to the child. A deployer `new` does not:
+  // its value reaches the child's container through Deploy<C> (B8.8).
+  if (node instanceof InstantiationNode && node.isDeployerNew !== true && hasEffectiveCallValue(node.callOptions?.value)) {
     result.transfers++;
   }
   if (node instanceof EmitStatementNode) {

@@ -38,9 +38,11 @@ import {
   type FunctionBlockLayout,
   isComputedBlockhashKey,
   encodePushdataValue,
+  encodeEventPushdataValue,
   ORACLE_POOL_PARAMETER,
   getDefaultStateValue,
   keccakComputeLockingBytecode,
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   sha256 as sha256Sync,
   ripemd160 as ripemd160Sync,
   hash160 as hash160Sync,
@@ -54,6 +56,7 @@ import {
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
 import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
+import { boundedIntegerRange, givenOrderRangeBreak, upsertLoopRewriteReason } from './upsert-loop-rewrites.js';
 import { encodeEvmInvocationResult } from './evm-abi-result.js';
 import {
   buildKeccakComputeSidecar, learnKeccakPreimages, scanKeccakPreimageReads,
@@ -170,6 +173,7 @@ import {
   ValueChunkWriteStagingSession,
   valueChunkWriteResourceIdentity,
 } from './StatefulTransactionBuilder.js';
+import type { StandInCaller } from './stb-materialize-caller-edge-outputs.js';
 import { legacyIsPublishJobEventName } from './legacy-planning-heuristics.js';
 import { type OnChainState, type ParsedEvent, type EventFilter } from './StateReader.js';
 import {
@@ -477,6 +481,13 @@ import {
   deriveFullPhase1PostEvaluateDataCommitments as deriveFullPhase1PostEvaluateDataCommitmentsImpl,
 } from './sc-derive-full-phase1-post-evaluate-data-commitments.js';
 import {
+  deriveFullPhase1CalleeDynamicChunks as deriveFullPhase1CalleeDynamicChunksImpl,
+} from './sc-derive-full-phase1-callee-dynamic-chunks.js';
+import {
+  keccakLoopReadSuccessors, readChunksFollowKeccakLoop, sharedSidecarPoolWithout,
+} from './sc-append-create-builder-nested-callee-keccak-loop.js';
+import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
+import {
   deriveFullPhase1ProgressiveEntries as deriveFullPhase1ProgressiveEntriesImpl,
 } from './sc-derive-full-phase1-progressive-entries.js';
 import {
@@ -533,6 +544,7 @@ import {
 } from './sc-hydrate-external-predicate-state.js';
 import { upgradeStatefulContract as upgradeStatefulContractImpl } from './sc-upgrade.js';
 import type {
+  DeployFromCallOptions, DeployFromOptions, DeployFromResult,
   DestroyOptions, DestroyResult, LeftBehindCoin, UpgradeOptions, UpgradeResult,
 } from './stateful-lifecycle-types.js';
 import {
@@ -584,8 +596,13 @@ import {
   sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl,
 } from './sc-send-without-logical-nonce.js';
 import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from './sc-with-external-call.js';
-import { resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl } from './sc-resolve-ecrecover-co-spends.js';
-import { resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl } from './sc-resolve-stateful-keccak-loop.js';
+import {
+  resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl, type ResolveEcrecoverCoSpendsHost,
+} from './sc-resolve-ecrecover-co-spends.js';
+import {
+  resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl, type KeccakLoopTrailingSuccessors,
+} from './sc-resolve-stateful-keccak-loop.js';
+import { resolveStatefulEcrecoverLoop as resolveStatefulEcrecoverLoopImpl } from './sc-resolve-stateful-ecrecover-loop.js';
 import {
   keccakProbeTrailingRun,
   resolveKeccakComputeCoSpends as resolveKeccakComputeCoSpendsImpl,
@@ -657,6 +674,7 @@ export {
 import { type RouteProbeObservation } from './route-probe-progress.js';
 
 import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-loader.js';
+import { calleeBlockExceedsLowLevelBand } from './sc-select-compat-callee-block-calls.js';
 
 function isFramedArtifact(artifact: Artifact): boolean {
   return artifact.composition?.convention === 'framed';
@@ -995,55 +1013,8 @@ export type {
   DestroyOptions, DestroyResult, LeftBehindCoin, UpgradeOptions, UpgradeResult,
 };
 
-export interface DeployFromOptions<T extends Artifact = Artifact> {
-  provider: NetworkProvider;
-  factory: ConnectedStatefulContract;        // the factory contract
-  deployFunctionName: string;                // must have 'deploy' modifier
-  deployFunctionArgs: FunctionArgument[];    // user args to the factory's deploy function
-  childArtifact?: T;                         // child artifact; else resolved via factory.registerChild()
-  childConstructorArgs?: ConstructorArgument[]; // else derived from the deploy args (new C(param) mapping)
-  childSalt?: Uint8Array;                    // create2 salt; else derived from the recorded new C{salt}() mapping
-  /** Optional initial values for fields the constructor descriptor does not authenticate. Attempts to override
-   * authenticated constructor fields are rejected; non-default values for other fields must still satisfy the
-   * factory's on-chain genesis covenant. */
-  childInitialState?: Record<string, StateValueType>;
-  // `new Child{value: x}()` transfers x sats from the factory's OWN satoshi container (the value source, like any
-  // scash value transfer - EVM-faithful "from the deployer's balance") to the child's address. deployFrom then
-  // co-spends the factory container (input) + recreates it (output, minus x) + adds the x-sat transfer output.
-  // The factory must have been deployed with an initialBalance >= x. Supply the transferred amount here.
-  childValue?: bigint;
-  // A deploy function that transfers CashTokens from the factory's token container - e.g. to the freshly-created
-  // child (`Child ch = new Child(...); this.tokens[cat].transfer(<addr>, amt)`). Supply each FT transfer the deploy
-  // performs; deployFrom co-spends the factory's token container, recreates it (amount minus the transfers), and
-  // adds each tcTransfer output. `to` is the recipient locking bytecode/address (pass the child's address to fund
-  // the new contract). Multiple categories are co-spent + recreated in one deploy. NFT (transferNft) transfers on
-  // deploy are not yet supported. See docs/contract-creation.md.
-  childTokenTransfers?: Array<{ categoryId: string; to: string | Uint8Array; amount: bigint }>;
-  fundingUtxo: Utxo;                         // must be at vout 0 for token genesis (becomes child category)
-  // A LOOP deploy (`for (i<n) new C()`) mints N children - a balanced contract block needs N funding inputs
-  // (any value, each vout 0), one per child; child i's category = fundingUtxos[i].txid. When set, this supersedes
-  // the single fundingUtxo (which stays fundingUtxos[0] for a 1-child deploy). See docs/contract-creation.md.
-  fundingUtxos?: Utxo[];
-  funder?: Unlocker;                         // unlocker for funding UTXO(s); else factory.setDeployDefaults()
-  addressType?: AddressType;
-  fee?: bigint;                              // default: 1000n
-  maxFee?: bigint;                           // maximum allowed fee (throws if exceeded)
-  changeAddress?: string;
-  masterAmount?: bigint;                     // default: 1200n
-  dataNftAmount?: bigint;                    // default: 1200n per data NFT
-}
-
-// Options for the `factory.deployFn(...args).deploy({...})` sugar: the provider, factory, deploy-function
-// name and args are taken from the call itself, leaving only the child + funding details.
-export type DeployFromCallOptions<T extends Artifact = Artifact> =
-  Omit<DeployFromOptions<T>, 'provider' | 'factory' | 'deployFunctionName' | 'deployFunctionArgs'>;
-
-export interface DeployFromResult<T extends Artifact = Artifact> {
-  factory: ConnectedStatefulContract;        // factory with updated state
-  child: ConnectedStatefulContract<T>;       // newly deployed child contract
-  tx: TransactionDetails;
-  childCategoryId: string;
-}
+// The creating call's options and results are the ones sc-deploy-from.ts implements.
+export type { DeployFromCallOptions, DeployFromOptions, DeployFromResult };
 
 export interface SplitOptions {
   provider: NetworkProvider;
@@ -1914,7 +1885,8 @@ export function encodeExternalReturnValues(
   if (values.length !== types.length) {
     throw new Error(`Native result has ${values.length} values for ${types.length} declared types`);
   }
-  const parts = values.map((value, index) => encodePushdataValue(value, types[index], structs));
+  // A native result is pushed as the callee's return pushes it: an address of 20 zero bytes stays 20 bytes.
+  const parts = values.map((value, index) => encodeEventPushdataValue(value, types[index], structs));
   const encoded = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
   let offset = 0;
   for (const part of parts) { encoded.set(part, offset); offset += part.length; }
@@ -5409,6 +5381,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private async _resolveKeccakComputeCoSpends(
     abiFunction: AbiFunction, args: any[],
     probeCtx?: ResolveKeccakProbeCtx,
+    sharedSidecarPool?: NetworkProvider,
   ): Promise<{
       coSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }>;
       preimages: Array<Uint8Array | null>;
@@ -5419,7 +5392,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return resolveKeccakComputeCoSpendsImpl(
       {
         categoryId: this.categoryId,
-        inner: this.inner as any,
+        // A shared pool (salt 0) is listed through the view the caller gives; it is not minted on demand.
+        ...(sharedSidecarPool !== undefined && { sidecarSalt: new Uint8Array(32) }),
+        inner: (sharedSidecarPool === undefined ? this.inner : {
+          bytecode: this.inner.bytecode, artifact: this.inner.artifact, provider: sharedSidecarPool,
+        }) as any,
         extractStatefulKeccakPreimages: (...a: any[]) => (this as any)._extractStatefulKeccakPreimages(...a),
         evalComputedKey: (...a: any[]) => (evalComputedKey as any)(...a),
       },
@@ -5436,14 +5413,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private async _resolveEcrecoverComputeCoSpends(
     abiFunction: AbiFunction, args: any[], selectedCalls?: readonly GraphEcrecoverCall[],
     options: { deferUnresolved?: boolean; graphExecution?: boolean } = {},
+    sharedSidecarPool?: NetworkProvider,
+    takeMiddleCoin?: ResolveEcrecoverCoSpendsHost['takeMiddleCoin'],
   ): Promise<{
       coSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>;
       argBlobs: Array<Uint8Array | null>;
       evmPreimages: Array<Uint8Array | null>;
       salt: Uint8Array;
+      width0Coins: Array<{ m: Utxo; b3: Utxo } | null>;
     }> {
     return resolveEcrecoverComputeCoSpendsImpl(
-      { categoryId: this.categoryId, inner: this.inner as any },
+      {
+        categoryId: this.categoryId,
+        ...(sharedSidecarPool === undefined
+          ? { inner: this.inner as any }
+          : { sidecarSalt: new Uint8Array(32), inner: { provider: sharedSidecarPool } as any }),
+        ...(takeMiddleCoin === undefined ? {} : { takeMiddleCoin }),
+      },
       abiFunction, args, selectedCalls, options,
     );
   }
@@ -5631,17 +5617,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     dataNftUtxos: Utxo[], dataNftUnlockers: Unlocker[],
     frontRegionInputs: UnlockableUtxo[] = [], locktime = 0,
     trailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] } = { inputs: [], outputs: [] },
+    sharedSidecarPool?: NetworkProvider,
+    trailingSuccessors?: KeccakLoopTrailingSuccessors,
   ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
     return resolveStatefulKeccakLoopImpl(
       {
         categoryId: this.categoryId,
-        inner: this.inner as any,
+        // A shared pool (salt 0) is listed through the view the caller gives; it is not minted on demand.
+        ...(sharedSidecarPool !== undefined && { sidecarSalt: new Uint8Array(32) }),
+        inner: (sharedSidecarPool === undefined ? this.inner : { provider: sharedSidecarPool }) as any,
         frontRegionRecreate: (u: UnlockableUtxo) => this._frontRegionRecreate(u),
         createVirtualMachine: (provider: any) => createVirtualMachineBch2026ForProvider(provider),
         generateLibauthSourceOutputs: (inputs: any) => generateLibauthSourceOutputs(inputs),
       },
       abiFunction, masterUtxo, stateInputUnlocker, dataNftUtxos, dataNftUnlockers,
-      frontRegionInputs, locktime, trailingPredecessors,
+      frontRegionInputs, locktime, trailingPredecessors, trailingSuccessors,
     );
   }
 
@@ -5774,8 +5764,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     trailingEntryOutputOffset?: number,
     probeState?: Record<string, StateValue>,
     eventOutputCount: number = 0,
+    locktime?: number,
   ): Promise<{
       state: Record<string, StateValueType> | undefined;
+      stateCommitments?: string[];
       entryCommitments: string[];
       childCommitments: string[];
       returnBlob?: Uint8Array;
@@ -5795,7 +5787,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       functionName, args, requiredNftIndices, extraOutputs, extraInputs,
       entryOutputCount, childDataNftCount, deriveChildCommitments, returnEventOutputCount,
       containerOutputCount, trailingEntryOutputCount, trailingEntryOutputOffset, probeState,
-      eventOutputCount,
+      eventOutputCount, locktime,
     );
   }
 
@@ -5976,6 +5968,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           fullTrace = phase1PostEval.fullTrace;
           const bOutputBase = phase1PostEval.bOutputBase;
           if (phase1PostEval.skipGroup) continue;
+          // The chunks of dynamic state the callee writes from a value of its own run, by the lengths its record holds.
+          fullTrace = deriveFullPhase1CalleeDynamicChunksImpl(
+            { inner: this.inner as any }, stb, group, bMasterIdx,
+          ) ?? fullTrace;
 
           deriveFullPhase1ProgressiveEntriesImpl(
             { inner: this.inner as any },
@@ -7028,6 +7024,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
        * lock-only placeholder unlocker is sufficient here - never use one outside the probe path.
        */
       callerIdentityUtxos?: UnlockableUtxo[];
+      /**
+       * A contract caller the transaction does not hold, for a build whose block runs in another transaction (a
+       * constructor's callee block, A7): its coin, spent after every input and recreated after every output, and the
+       * edge record it pins for the call (F1). With `callerLockingBytecode` and `msgSenderCategory` naming it, the
+       * master's run resolves `msg.sender` to the caller's lock, so every key, stored value and size derived from it is
+       * the caller's.
+       */
+      standInCaller?: StandInCaller;
+      /**
+       * The shared side-car pool (salt 0) the keccak256 and ecrecover side-cars come from, listed through this view, for
+       * a build laid out to run off input 0: a branded side-car is spendable only beside input 0 of its category.
+       */
+      sharedSidecarPool?: NetworkProvider;
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
@@ -10221,6 +10230,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             categoryId: this.categoryId,
             inner: this.inner,
             signer: this._signer,
+            ...(overrides?.callerLockingBytecode !== undefined
+              && { callerLockingBytecode: overrides.callerLockingBytecode }),
             hydrateExternalPredicateState: (...a: any[]) => (this as any)._hydrateExternalPredicateState(...a),
             evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a),
             vmapCounterDomain: (...a: any[]) => (this as any)._vmapCounterDomain(...a),
@@ -10496,6 +10507,50 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`vmap upsert loop ${info.collection}: recipients/amounts length mismatch`);
         }
         const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
+        // Below, the SDK rewrites the call's own arrays to reach the order the covenant folds: it merges a repeated key,
+        // groups a repeated scalar key's turns, nets the sender's own credit out, and orders a gap's new keys. The
+        // rewritten call means what the caller's call means only when each turn's own pair fixes all the turn does
+        // (`pairwise`, and `senderDebit` for a net-out). Otherwise a call the covenant folds as given is built as given,
+        // and any other is refused by name. A lowered counter loop's permutation is compiler-owned, the covenant's own
+        // to order, and authenticated as a permutation of the turns it runs.
+        const publicKeys = !info.varyingArrayParam.startsWith('__internal__');
+        const rewriteReason = (): string => upsertLoopRewriteReason(info);
+        const givenKeys = Array.isArray(keysArr) ? [...keysArr as unknown[]] : [];
+        const givenValues = Array.isArray(valsArr) ? [...valsArr as unknown[]] : undefined;
+        let rangeChecked = false;
+        // Under the EVM the call runs its turns as given. A bounded integer the given order takes past its type's range
+        // reverts that call; a merged, reordered or shortened call adds the same values in other partial sums, and need
+        // not. Refuse such a call before rewriting it, rather than send a rewrite that succeeds.
+        const refuseGivenOrderRangeBreak = (): void => {
+          if (rangeChecked) return;
+          rangeChecked = true;
+          const range = boundedIntegerRange(collection.valueType);
+          if (!info.pairwise || range === undefined || (info.op !== '+' && info.op !== '-')) return;
+          let sender: Uint8Array | undefined;
+          if (info.senderDebit && this._signer) {
+            try {
+              sender = keyToSlotMulti([...fixedBins, addressToLockScript(this._signer.getAddress())], collection);
+            } catch { sender = undefined; }
+          }
+          const slots = new Map<string, Uint8Array>(sender === undefined ? [] : [[binToHex(sender), sender]]);
+          const turns = givenKeys.map((key, turn) => {
+            const slot = slotForKey(key);
+            slots.set(binToHex(slot), slot);
+            return { slotHex: binToHex(slot), amount: scalarAmt ?? toBig(givenValues?.[turn]) };
+          });
+          const broken = givenOrderRangeBreak({
+            op: info.op, range, turns, senderSlotHex: sender === undefined ? undefined : binToHex(sender),
+            current: (slotHex) => {
+              const entry = list.find(slots.get(slotHex)!);
+              return entry ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n;
+            },
+          });
+          if (broken !== undefined) {
+            throw new Error(`vmap upsert loop ${info.collection}: under the EVM this call reverts: ${broken}, outside `
+              + `${collection.valueType}; the SDK would rewrite '${info.varyingArrayParam}' to the order the covenant `
+              + 'takes, which need not revert, so it refuses the call');
+          }
+        };
         // A repeated key whose turns are observable cannot be merged: when a turn reads the entry it writes, a later
         // occurrence reads what an earlier one wrote; a value computed at run time is the last occurrence's, not the
         // first's; and a per-turn effect (an event, a require, another write) runs once per turn, which the merge
@@ -10523,7 +10578,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && !info.valueArrayIndexParam && (isDelete || perKey || info.op === 'set')) {
           const kArr = keysArr as unknown[];
           const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
-          if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
+          const repeat = slotHexes.findIndex((h, i) => slotHexes.indexOf(h) !== i);
+          if (repeat >= 0) {
+            // The merge runs a repeated key as one turn, its last value or its sum, which is the key's every turn only
+            // when the pair alone fixes each turn.
+            if (!info.pairwise) {
+              throw new Error(`vmap upsert loop ${info.collection}: key ${repeat} of '${info.varyingArrayParam}' repeats `
+                + `an earlier key, and ${rewriteReason()}, so its turns cannot be merged; pass each key once`);
+            }
+            refuseGivenOrderRangeBreak();
             const seen = new Set<string>();
             const order: number[] = [];
             const merged = new Map<string, unknown>();
@@ -10561,15 +10624,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (!groups.has(h)) { groups.set(h, []); firstOrder.push(h); }
               groups.get(h)!.push(i);
             });
-            keysArr = firstOrder.flatMap((h) => groups.get(h)!).map((i) => kArr[i]);
-            const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-            if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
+            const grouped = firstOrder.flatMap((h) => groups.get(h)!);
+            if (grouped.some((source, target) => source !== target)) {
+              if (publicKeys && !info.pairwise) {
+                const repeat = slotHexes.findIndex((h, i) => slotHexes.indexOf(h) !== i);
+                throw new Error(`vmap upsert loop ${info.collection}: key ${repeat} of '${info.varyingArrayParam}' repeats `
+                  + 'an earlier key, whose turns the covenant adds only one after another, so it takes '
+                  + `'${info.varyingArrayParam}' only in the order of indices [${grouped.join(', ')}]; the SDK would `
+                  + `reorder the call to that order, but ${rewriteReason()}, so the reordered call need not mean what `
+                  + "this one means. Pass a repeated key's turns together if that is the call you mean.");
+              }
+              keysArr = grouped.map((i) => kArr[i]);
+              const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+              if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
+            }
           }
         }
         // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
-        // Since the debit and the credit share amounts[i], dropping that entry from recipients+amounts leaves the debit
-        // summing (total - own) and never credits msg.sender separately - the identical net, with msg.sender co-spent
-        // ONCE (the debit) instead of twice. Solidity allows a self-transfer in a batch; this matches it.
+        // When the debit and the credit share amounts[i] (`senderDebit`), dropping that entry from recipients+amounts
+        // leaves the debit summing (total - own) and never credits msg.sender separately - the identical net, with
+        // msg.sender co-spent ONCE (the debit) instead of twice. Solidity allows a self-transfer in a batch; this matches
+        // it. A loop whose debit is not the turn's own, or whose turn its pair alone does not fix, is refused instead.
         if (!info.mutation && foldActive && this._signer && Array.isArray(keysArr) && keysArr.length > 0) {
           const debitE = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
           let senderKey: Uint8Array | null = null;
@@ -10586,7 +10661,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               throw new Error(`vmap upsert loop ${info.collection}: a credit to the sender itself cannot be netted out `
                 + 'because each turn has its own effect; send it as its own call');
             }
+            if (keepIdx.length < kArr.length && !(info.pairwise && info.senderDebit)) {
+              const own = kArr.findIndex((_key, i) => !keepIdx.includes(i));
+              throw new Error(`vmap upsert loop ${info.collection}: element ${own} of '${info.varyingArrayParam}' credits `
+                + "the sender itself; the covenant co-spends the sender's entry once, for this call's own write to it, so "
+                + 'the SDK would leave that turn out, but '
+                + `${info.pairwise ? 'the loop is not proven to debit the sender by the value it credits' : rewriteReason()}`
+                + ", so the shorter call need not mean what this one means. Send the sender's own credit in a call of "
+                + 'its own.');
+            }
             if (keepIdx.length < kArr.length) {
+              refuseGivenOrderRangeBreak();
               keysArr = keepIdx.map((i) => kArr[i]);
               const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
               if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
@@ -10603,10 +10688,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
         // CASE (b) ADJACENCY REORDER: the covenant folds a new recipient into a credited predecessor P only when P is
-        // processed IMMEDIATELY before it. The multiTransfer result is order-independent, so reorder recipients+amounts
-        // (as a PAIR, preserving each recipient's amount) to place each such new recipient right after P. Chains /
-        // two-in-gap can't be made adjacent and stay fail-closed. Crediting loops only (foldActive); write back to args
-        // so the encoded tx argument matches the commitment order the covenant verifies.
+        // processed IMMEDIATELY before it. A pairwise loop's result (a multiTransfer's) is order-independent, so reorder
+        // recipients+amounts (as a PAIR, preserving each recipient's amount) to place each such new recipient right
+        // after P; any other loop is refused unless the call is already in that order. Crediting loops only
+        // (foldActive); write back to args so the encoded tx argument matches the commitment order the covenant
+        // verifies.
         if (foldActive && Array.isArray(keysArr) && keysArr.length > 1) {
           const kArr = keysArr as unknown[];
           const slotsB = kArr.map((key) => slotForKey(key));
@@ -10624,12 +10710,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             insertsByPred.get(ph)!.push(i);
           });
           // Reorder only when it changes something: a gap with >1 insert (chain) or an insert bracketed by a credited
-          // update (case-b adjacency). Result is order-independent, so this is transparent.
+          // update (case-b adjacency), and only a pairwise loop's call, whose result is order-independent.
           let needsReorder = false;
           for (const [ph, arr] of insertsByPred) if (arr.length > 1 || updBySlot.has(ph)) needsReorder = true;
           if (needsReorder) {
             for (const [, arr] of insertsByPred) {
-              arr.sort((a, b) => (bytesToSlotValue(slotsB[a]) < bytesToSlotValue(slotsB[b]) ? -1 : 1));
+              // Stable: equal slots, a key a counter loop repeats, keep the order its turns were given in.
+              arr.sort((a, b) => {
+                const [left, right] = [bytesToSlotValue(slotsB[a]), bytesToSlotValue(slotsB[b])];
+                return left < right ? -1 : left > right ? 1 : 0;
+              });
             }
             const order: number[] = [];
             const placed = new Set<number>();
@@ -10646,10 +10736,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               emitGap(ph); // untouched / HEAD gap: place the whole ascending group here
             }
             for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) { order.push(i); placed.add(i); } // safety net
-            if (runtimeFiltered && order.some((sourceIndex, targetIndex) => sourceIndex !== targetIndex)) {
+            const permutes = order.some((sourceIndex, targetIndex) => sourceIndex !== targetIndex);
+            if (runtimeFiltered && permutes) {
               throw new Error(`vmap upsert loop ${info.collection}: predicate-selected keys require topology reordering; `
               + 'split the action sequence so each selected mapping transition is already adjacent.');
             }
+            // An order the covenant already folds is written back unchanged; any other is a rewrite of the call.
+            if (permutes && publicKeys && !info.pairwise) {
+              throw new Error(`vmap upsert loop ${info.collection}: the covenant takes '${info.varyingArrayParam}' only in `
+                + `the order of indices [${order.join(', ')}], a gap's new keys one after another in ascending slot `
+                + 'order and each right after the credited entry it follows; the SDK would reorder the call to that order, '
+                + `but ${rewriteReason()}, so the reordered call need not mean what this one means. Pass `
+                + `'${info.varyingArrayParam}' in that order if that is the call you mean.`);
+            }
+            if (permutes) refuseGivenOrderRangeBreak();
             keysArr = order.map((i) => kArr[i]);
             // Write the reordered arrays to BOTH args (read by other derivations) AND finalArgs (already copied from
             // args by the msg.sender/synthetic injection above - it builds the master unlocker, so the ENCODED tx
@@ -12001,7 +12101,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     } | undefined;
     let deferredEcrecoverCompute: {
       salt: Uint8Array; argBlobs: Array<Uint8Array | null>;
-      evmKeccakPreimageIndices: number[];
+      evmKeccakPreimageIndices: number[]; width0Coins?: Array<{ m: Utxo; b3: Utxo } | null>;
     } | undefined;
     let delegateComputeResources = false;
     let ecrecoverComputeCoSpendUtxos: UnlockableUtxo[] = [];
@@ -12018,6 +12118,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }));
     }
     // Handle external function calls (cross-contract calls via interfaces)
+    // An argument msg.sender gives a call this frame makes is the frame's caller: the contract a composition or a
+    // stand-in caller names (`callerLockingBytecode`), else the signer. A resolution that names its own keeps it.
+    const frameCaller = overrides?.callerLockingBytecode;
     const externalCallsOrchestrated = await orchestrateCreateBuilderExternalCallsImpl(
       {
         categoryId: this.categoryId,
@@ -12027,7 +12130,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         callerContract: this,
         // Predicates plan the same authenticated clock and state that stored-value recipes and the VM read.
         getFullState: async () => ({ ...onChainState, state: recipeState }),
-        resolveExternalArgs: (...a: any[]) => (this as any)._resolveExternalArgs(...a),
+        resolveExternalArgs: (...a: any[]) => {
+          if (frameCaller !== undefined && a[9] === undefined) a[9] = frameCaller;
+          return (this as any)._resolveExternalArgs(...a);
+        },
         buildRepeatedExternalBatch: (...a: any[]) => (this as any)._buildRepeatedExternalBatch(...a),
         resolveExternalKeccakSideCars: (...a: any[]) => (this as any)._resolveExternalKeccakSideCars(...a),
         resolveExternalBlockhashCoSpends: (...a: any[]) => (this as any)._resolveExternalBlockhashCoSpends(...a),
@@ -12038,11 +12144,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const derive = (candidate as { _deriveReturnValue?: unknown } | undefined)?._deriveReturnValue;
           if (typeof derive !== 'function') return { ok: true as const };
           const calleeAbi = (candidate as {
-            inner?: { artifact?: { abi?: Array<{ name?: string; outputs?: unknown[] }> } };
+            inner?: { artifact?: { abi?: Array<Pick<AbiFunction, 'blockLayout'> & { name?: string; outputs?: unknown[] }> } };
           }).inner?.artifact?.abi;
-          if ((calleeAbi?.find((entry) => entry.name === calleeFunction)?.outputs?.length ?? 0) === 0) {
+          const calleeEntry = calleeAbi?.find((entry) => entry.name === calleeFunction);
+          if ((calleeEntry?.outputs?.length ?? 0) === 0) {
             // A void callee has no value to decode, so the read probe cannot run it. Its covenant still executes
             // when the call is co-spent; an unsupported probe is not evidence of a revert.
+            return { ok: true as const };
+          }
+          if (calleeBlockExceedsLowLevelBand(calleeEntry)) {
+            // The read probe does not lay out a block that holds more than the callee's master, data records and
+            // record: a transferFrom that writes mapping entries and emits fails there although its co-spend
+            // settles. Such a failure is no evidence of a revert, so the co-spend's own preflight decides.
             return { ok: true as const };
           }
           try {
@@ -12889,6 +13002,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       maxBhLocktime = slots.reduce((max, slot) => Math.max(max, slot.locktime), maxBhLocktime);
     }
 
+    // This function's own side-cars of a shared pool skip the coins the blocks of the contracts it calls already
+    // spend: a callee's keccak256 loop takes its side-cars from the same pool.
+    const ownSidecarPool = overrides?.sharedSidecarPool === undefined ? undefined
+      : sharedSidecarPoolWithout(overrides.sharedSidecarPool, [...externalCallUtxoGroups, ...lowLevelCallUtxoGroups]
+        .flatMap((group) => [...(group.blockInputs ?? []), ...(group.keccakInputs ?? [])]));
+
     // Recovery runs first because an EVM projection contributes its verified uncompressed public key to the
     // ordinary batched keccak side-cars. Computed recovery arguments remain deferred; the full routed trace later
     // replaces both the A/B pair and that batch member atomically.
@@ -12906,7 +13025,55 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         hasCategory: this.categoryId !== undefined,
       });
     }
-    if ((abiFunction?.ecrecoverCompute || entryAbiFunction?.ecrecoverCompute) && this.categoryId) {
+    const coinKey = (utxo: Utxo): string => `${utxo.txid.toLowerCase()}:${utxo.vout}`;
+    let middleCoins = 0;
+    // A slot of the block no covenant reads (a 2-way recovery's middle input, straight-line or in a loop, and each slot
+    // of a recovery whose arguments recover no key): a coin of the signer fills it and an output at the same index
+    // returns its value; a mock mints a neutral coin where the call has none. The coin is taken from the wallet's coins
+    // once, so no funder of the call spends it again.
+    const takeMiddleCoin = async (): Promise<{ input: UnlockableUtxo; recreate: Output } | undefined> => {
+      if (this._signer !== undefined) {
+        const reserved = new Set((sharedFunderPool ?? []).map(coinKey));
+        const plain = (utxo: Utxo): boolean => utxo.token === undefined && !consumedSharedFunders.has(coinKey(utxo));
+        const wallet = (earlySignerUtxos ?? await signerFundingCoins(this._signer))
+          .filter((utxo) => plain(utxo) && !reserved.has(coinKey(utxo)))
+          .sort((left, right) => Number(left.vout === 0) - Number(right.vout === 0)
+            || (left.satoshis < right.satoshis ? -1 : left.satoshis > right.satoshis ? 1 : 0));
+        const coin: Utxo | undefined = wallet[0] ?? sharedFunderPool?.find(plain);
+        if (coin !== undefined) {
+          consumedSharedFunders.add(coinKey(coin));
+          const pooled = sharedFunderPool?.findIndex((utxo) => coinKey(utxo) === coinKey(coin)) ?? -1;
+          if (pooled >= 0) sharedFunderPool!.splice(pooled, 1);
+          if (!overrides?.returnProbeOnly) retireSignerUtxos(this._signer, [coin]);
+          const lock = addressToLockScript(this._signer.getAddress());
+          return {
+            input: { ...coin, unlocker: this._signer.unlockP2PKH() },
+            recreate: { to: lock, amount: coin.satoshis },
+          };
+        }
+      }
+      const mint = (this.inner.provider as { addUtxo?: (lock: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
+      if (typeof mint !== 'function') return undefined;
+      middleCoins += 1;
+      const lock = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+      const coin: Utxo = {
+        txid: binToHex(sha256Sync(utf8ToBin(`SolidCash recovery loop middle\0${this.categoryId}:`
+          + `${derivationMasterUtxo.txid}:${derivationMasterUtxo.vout}:${middleCoins}`))),
+        vout: 0, satoshis: 10_000n,
+      };
+      await mint.call(this.inner.provider, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, coin);
+      return {
+        input: {
+          ...coin,
+          unlocker: { generateLockingBytecode: () => lock, generateUnlockingBytecode: () => Uint8Array.of(0x01, 0x51) },
+        },
+        recreate: { to: lock, amount: coin.satoshis },
+      };
+    };
+    // A recovery loop's triples follow the block; they are laid out with the loop below, after the fixed keccak
+    // side-cars a run can read before its loop.
+    const recoveryLoop = abiFunction?.ecrecoverTrailingLoop === true;
+    if ((abiFunction?.ecrecoverCompute || entryAbiFunction?.ecrecoverCompute) && this.categoryId && !recoveryLoop) {
       const ecrecoverAbiFunction = abiFunction?.ecrecoverCompute ? abiFunction : entryAbiFunction!;
       // A selected message-bus handler is represented by a different ABI object than the synthetic route
       // wrapper, but its compute resources still belong to the route owner's balanced block. Treat resources as
@@ -12924,11 +13091,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const ecrecoverArgs = ecrecoverAbiFunction === entryAbiFunction ? entryArgs : args;
       const graphRuntime = ecrecoverAbiFunction as MessageBusRuntimeAbiFunction;
       const graphCalls = graphRuntime.graphEcrecoverCalls;
+      const graphExecution = graphRuntime.messageBusGraphExecution === true;
       const resolution = await this._resolveEcrecoverComputeCoSpends(
         ecrecoverAbiFunction, ecrecoverArgs, graphCalls, {
           deferUnresolved: true,
-          graphExecution: graphRuntime.messageBusGraphExecution === true,
+          graphExecution,
         },
+        ownSidecarPool,
+        // A message-bus graph's composer funds the slots no covenant reads with its own neutral coin.
+        graphCalls === undefined && !graphExecution ? takeMiddleCoin : undefined,
       );
       ecrecoverComputeCoSpendUtxos = resolution.coSpends.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       ecrecoverComputeRecreates = resolution.coSpends.map((cs) => cs.recreate);
@@ -12942,6 +13113,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           salt: resolution.salt,
           argBlobs: resolution.argBlobs,
           evmKeccakPreimageIndices,
+          width0Coins: resolution.width0Coins,
         };
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process
@@ -13016,9 +13188,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
       }
+      // The chunks of dynamic state the function only reads follow the side-cars (stb-build-inputs): the function
+      // finds them through its `__internal__dynamicChunkInputBase` witness. Each probe places them past its own
+      // side-cars, with the witness naming them there as the build encodes it, so a read made before the loop
+      // reaches them. The probe's master is input 0.
+      const readChunks = readChunksFollowKeccakLoop(abiFunction) && dynamicReadChunkInputs.length > 0
+        && topLevelDynamicChunkArgumentIndex >= 0 && overrides?.compilerRouteSelector === undefined
+        ? keccakLoopReadSuccessors(dynamicReadChunkInputs, (firstInputIndex) => {
+          const witness = finalArgs[topLevelDynamicChunkArgumentIndex];
+          finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(firstInputIndex, 0, false);
+          try {
+            return buildStateInputUnlocker();
+          } finally {
+            finalArgs[topLevelDynamicChunkArgumentIndex] = witness;
+          }
+        })
+        : undefined;
       const loop = await this._resolveStatefulKeccakLoop(
         abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers,
-        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors,
+        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors, ownSidecarPool, readChunks,
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
@@ -13030,7 +13218,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, slotInputs: keccakProbeSlotInputs,
         locktime: maxBhLocktime,
-      });
+      }, ownSidecarPool);
       keccakLoopSideCars = resolution.chain?.sideCars ?? [];
       keccakLoopRecreates = resolution.chain?.recreates ?? [];
     } else if ((abiFunction?.keccakCompute || entryAbiFunction?.keccakCompute
@@ -13072,7 +13260,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ...(delegatedKeccak && {
           artifactBytecode: executingGroup?.externalContract.inner.bytecode,
         }),
-      });
+      }, ownSidecarPool);
       keccakComputeCoSpendUtxos = resolution.coSpends.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       keccakComputeCommitments = resolution.coSpends.map((cs) => binToHex(cs.commitment));
       if (resolution.preimages.some((preimage) => preimage === null)) {
@@ -13082,6 +13270,60 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           preimages: resolution.preimages,
         };
       }
+    }
+
+    // A recovery loop reads its k-th call's triple at master + blockSize + 3k: the triples ride the trailing band, as a
+    // keccak256 loop's side-cars do, from the shared pool whose locks the loop checks. The probe of the master's run
+    // that learns each call's arguments holds the fixed block's coins, the keccak side-cars and entries a run reads
+    // before its loop among them. A chained keccak256 of an unbounded argument comes first in the band, its side-cars
+    // resolved above, and the triples follow it.
+    if (recoveryLoop && abiFunction !== undefined && this.categoryId) {
+      const blockSize = abiFunction.blockLayout?.blockSize ?? 1;
+      const frontStart = 1 + filteredDataNftUtxos.length;
+      const front = padKeccakFront(blockSize).map((input) => ({ input, recreate: this._frontRegionRecreate(input) }));
+      let keccakSlot = 0;
+      for (const slot of abiFunction.blockLayout?.slots ?? []) {
+        const at = slot.offset - frontStart;
+        if (at < 0 || at >= front.length) continue;
+        if (slot.kind === 'keccakSideCar') {
+          const sidecar = keccakComputeCoSpendUtxos[keccakSlot];
+          const commitment = keccakComputeCommitments[keccakSlot];
+          keccakSlot += 1;
+          if (sidecar === undefined || commitment === undefined) continue;
+          front[at] = {
+            input: sidecar,
+            recreate: {
+              to: sidecar.unlocker.generateLockingBytecode(), amount: sidecar.satoshis,
+              token: {
+                category: sidecar.token?.category ?? this.categoryId, amount: sidecar.token?.amount ?? 0n,
+                nft: { capability: 'mutable', commitment },
+              },
+            },
+          };
+        } else if (slot.kind === 'entry') {
+          const entry = keccakProbeSlotInputs.find((candidate) => candidate.offset === slot.offset);
+          if (entry !== undefined) {
+            const input = { ...entry.utxo, unlocker: entry.unlocker };
+            front[at] = { input, recreate: this._frontRegionRecreate(input) };
+          }
+        }
+      }
+      const chain = abiFunction.keccakChainReads === true
+        ? keccakLoopSideCars.map((input, index) => ({ input, recreate: keccakLoopRecreates[index]! }))
+        : [];
+      const loop = await resolveStatefulEcrecoverLoopImpl(
+        {
+          provider: (ownSidecarPool ?? this.inner.provider) as never,
+          vmProvider: this.inner.provider,
+          createVirtualMachine: (provider) => createVirtualMachineBch2026ForProvider(provider as never),
+          generateLibauthSourceOutputs: (inputs) => generateLibauthSourceOutputs(inputs as never),
+          takeMiddleCoin,
+        },
+        abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers, front,
+        maxBhLocktime, chain,
+      );
+      keccakLoopSideCars = [...chain.map(({ input }) => input), ...loop.sideCars];
+      keccakLoopRecreates = [...chain.map(({ recreate }) => recreate), ...loop.recreates];
     }
 
     const unlockableMaster = {
@@ -13375,6 +13617,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
     );
     const builder = constructed.builder;
+    // Before the first derivation: its runs read the caller's coin and edge as the final build holds them.
+    builder.setStandInCaller(overrides?.standInCaller);
     finalArgs = constructed.finalArgs;
     const firstRootDynamicChunk = constructed.firstRootDynamicChunk;
     const refreshTopLevelReturnWitnesses = constructed.refreshTopLevelReturnWitnesses;
@@ -14512,6 +14756,28 @@ export class StatefulFunctionCall {
     return this;
   }
 
+  /** The shared side-car pool (salt 0) a build laid out to run off input 0 takes its side-cars from. */
+  private sharedSidecarPool?: NetworkProvider;
+
+  /** @internal Take this call's keccak256 and ecrecover side-cars from the shared pool, listed through `pool`. */
+  _withSharedSidecarPool(pool: NetworkProvider): this {
+    this.sharedSidecarPool = pool;
+    return this;
+  }
+
+  /** A contract caller this call's transaction does not hold, which every build of the call carries. */
+  private standInCaller?: StandInCaller;
+
+  /**
+   * @internal Lay this call out for `caller`, a contract caller its transaction does not hold, as `withCallerIdentity`
+   * names it: each build spends its coin and carries its edge record (`_createBuilder`'s `standInCaller`). The call
+   * serves a block placed in another transaction and is never sent.
+   */
+  _withStandInCaller(caller: StandInCaller): this {
+    this.standInCaller = caller;
+    return this;
+  }
+
   private messageBusUpgradeTarget?: PreparedAtomicMessageBusCall['upgradeTarget'];
   private tokenContainerDeposits: Array<{ tokenContainerCategoryId: string; amount: bigint }> = [];
   private manualEvents: Array<{ name: string; args: StateValueType[] }> = [];
@@ -14918,6 +15184,7 @@ export class StatefulFunctionCall {
         {
           externalCallInfos: this.externalCallInfos,
           functionArgs: this.functionArgs,
+          callerLockingBytecode: this.callerLockingBytecode,
           parentContract: this.parentContract as any,
           selectedAbiFunction: () => this._selectedAbiFunction() as any,
         },

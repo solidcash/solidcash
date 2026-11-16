@@ -11,7 +11,7 @@ import type { Utxo } from '../../src/interfaces.js';
  * key. The handle keeps the values beside the filled bytecode so a call can resolve `this.tokens[category]` and pay
  * from the contract's container; the state NFT carries no slot for them.
  */
-const SOURCE = 'pragma solidcash ^0.50.0;'
+const SOURCE = 'pragma solidcash ^0.51.0;'
   + ' contract TokenPool(int denomination, bytes32 category) {'
   + '   int balance;'
   + '   constructor() { }'
@@ -92,7 +92,7 @@ describe('a framed entry with a token container keyed by a creation argument', (
   }, 900_000);
 
   it('splits creation arguments from the constructor block\'s own arguments', async () => {
-    const source = 'pragma solidcash ^0.50.0;'
+    const source = 'pragma solidcash ^0.51.0;'
       + ' contract D(int x, bytes32 y) { int z; constructor(int z_) { z = z_; }'
       + '   function get() view returns (int) { return x; }'
       + '   function getZ() view returns (int) { return this.z; } }';

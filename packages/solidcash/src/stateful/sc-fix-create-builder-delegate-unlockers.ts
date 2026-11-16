@@ -422,6 +422,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           && inp.name !== '__internal__graphSelfIdentityInput'
           && !isSdkResolvedExternalCallTopologyWitness(inp.name)
           && !isSdkResolvedParticipantStorageWitness(inp.name)) return compilerOwnedWitness;
+        if (inp.name === '__internal__genesisCall') return new Uint8Array();
         if (inp.name === '__internal__returnOutputIdx') {
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
           return BigInt(proxyExternalGroup === undefined

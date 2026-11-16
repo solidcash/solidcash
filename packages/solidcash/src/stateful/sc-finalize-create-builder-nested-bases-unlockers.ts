@@ -264,9 +264,18 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         const thisGroupEnd = currentInputBase
           + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
           + (group.ordinaryDynamicChunkInputs?.length ?? 0);
-        bFinalArgs.push(BigInt(thisGroupEnd));
         // The region begins at the master of the callee of the first call, wherever the transaction places it.
         const firstCallee = rebindsAssembledCoordinates ? calleeGroupForSlot(0) : undefined;
+        // A function whose one call has no master-index witness of its own reads that call's master at this base. A
+        // conditional call this run does not make has no callee here, and is stated as not made by a base of -1, as
+        // the root states its own: the epilogue passes over a negative master, and the call site, reached only when
+        // the call runs, requires a non-negative one. The block's end named an input that is not the callee, so the
+        // epilogue's identity check refused every run that skipped the call.
+        const calls = bAbiFunc?.externalCalls ?? [];
+        const untakenSoleCall = rebindsAssembledCoordinates && firstCallee === undefined && calls.length === 1
+          && calls[0].occurrence === 'conditional' && !calls[0].loopArrayVar
+          && !bAbiInputs.some((input) => /^__internal__extcallMasterIdx\d*$/.test(input.name));
+        bFinalArgs.push(untakenSoleCall ? -1n : BigInt(thisGroupEnd));
         if (firstCallee !== undefined) {
           const physical = externalCallUtxoGroups[externalCallUtxoGroups[firstCallee].sharedGroupIndex ?? firstCallee];
           group.mintingInputWitnessCategories = {

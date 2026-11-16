@@ -193,6 +193,19 @@ Findings from committing bch-next's pending work on 2026-11-15. Not acted on; bc
   - tornado-36's `deployer-genesis-pins`;
   - `/Code/tornado/bch-next` and `groth16_composed`.
 - **The next version bump.** `scripts/bump.py` did this one: edit its version pair and run it with `--dry` first.
+- **Landing checks learned after the release** (2026-11-16). A TARGET-6 over-refusal reached the local master
+  because:
+  - the union that landed it did not list the test that compiles the EACC Marketplace;
+  - the next union reported that test's four cases as skipped, not failed. It skips when the EACC checkout seems
+    missing, and the checkout was there, so a file check failed under load.
+
+  So a landing now also:
+  - compiles the EACC corpus (`/Code/effectiveacceleration.ai/contract/contracts/*.sol`, `evmCompat`) with the
+    released and the new compiler, and compares the results;
+  - compares every union's skipped tests, file by file, with the release's full run (`full/*.json`).
+
+  On the `/Code` mount, a cherry-pick of several commits in one command can stop with a spurious "local changes
+  would be overwritten"; pick one commit per command.
 
 ## What the user decided
 
@@ -223,15 +236,9 @@ Each item has its home doc; this list gathers them. The security ledger is
 `docs/security/security-audit-2026-10-16.md` ("Call targets", "Container sums" and the older "Open" sections). The
 spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.md`.
 
-**In progress after the release (2026-11-16)**, each by an agent on its own branch, landed by the lander:
-
-- `nested-guard`: the root path's version of the undecided guard (under "Soundness, documented"), the late pass's
-  unpublished guard and unplanned loops, the compiler flag for a call after an early `return` or in a ternary arm,
-  and the evmCompat root refused at input 0;
-- `raw-send-target`: the follow-ups to TARGET-6 below:
-  - a message-bus build;
-  - unsafe, split and merge functions, genesis bodies and framed bodies, which its call-site registers skip;
-  - the SDK's recipe for a compat low-level call.
+**After the release (2026-11-16).** The agents of `nested-guard`, `keccak-band` and `raw-send-target` worked the items
+below. Each worked on its own branch, and the lander landed the result. None is still running. What they found and
+left is listed under the classes further down.
 
 **Landed after the release** (on `post-0.51.0`):
 
@@ -288,6 +295,13 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
   - A 0.51.1 patch release is the user's decision.
 - **TARGET-6, a low-level call bound to its target's value before the function wrote it** (`ea5d53251`,
   `ad4a6b785`). It now binds the written value where it runs, or is refused by name.
+  - Follow-ups:
+    - message-bus routes (`8af553985`);
+    - framed and constructor refusals (`d3f89113b`);
+    - the SDK's auto-wiring (`c07b59e3f`);
+    - a field-path test for "written first" (`a54d42e9e`, `95325fdbe`).
+  - The field-path fix repairs an over-refusal of the first version. It had refused the EACC MarketplaceV1 to V3
+    ports, which 0.51.0 compiles, on the local master only. See the landing checks under "How the work was run".
 - Checks for both:
   - `DelegatecallTargetPin` passed 24 of 24 (6 failed before the fix);
   - `LowLevelCallSiteTarget` passed 10, and its e2e 9;
@@ -295,30 +309,48 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
   - a union of every file on low-level calls, delegatecall and call targets, plus the release's merge-check list
     and the size-pin candidates, passed: 108 solidc files (3,189 passed, 6 skipped) and 259 solidcash files (2,156
     passed, 13 skipped), none failed.
-
+- **The root path's undecided guard and the short-circuit condition** (`0f37960bc`, `03a33de2d`, `e175c40c7`,
+  `676ba27b4`, `5db31ec0e`).
+  - A root raw call to a callee that reads no `msg.sender`, under a guard the SDK could not decide, was made on a
+    guess. On the VM, the callee was spent with the guard false. It is now refused by name, unless a caller edge
+    guards it; a typed call has one, so the caller's covenant refuses the false case.
+  - A call in the right operand of `&&` or `||` inside a branch was published with the operand alone. On the VM,
+    the callee was spent with the branch false. The condition now includes the branch.
+  - The late pass refuses an undecidable guard, and discovery refuses an unplannable loop, unless an edge guards it.
+  - MasterChef's `deposit` and the Sushi tests still pass.
+- **Checks for the TARGET-6 follow-ups and the root-path work**, run together in the lander worktree `land-3`:
+  - a superset union of 141 solidc and 824 solidcash files, covering the split, delegate, nested, keccak,
+    root-call and artifact tests. Its only failures were the over-refusals the field-path fix then repaired: four
+    cases in solidc and one framed case in solidcash. Its skips matched the release's full run, file by file.
+  - after the fix: the corpus is unchanged, and the EACC corpus compiles as with 0.51.0. A union passed of the
+    low-level-call lists, every framed call and conformance test, the route tests and the Marketplace test: 109
+    solidc files (3,199 passed, 6 skipped) and 424 solidcash files (2,857 passed, 29 skipped), none failed. Its
+    skips matched the release's full run.
 **Soundness, documented:**
 
 - **Computed call targets** (TARGET-3, by decision): the callee is the spender's witness, and every such call
   compiles with `[computed-call-target-unverified]`.
 - **Hidden `false`** (TARGET-5, by decision): an opaque `bytes`, selector-literal or `abi.encodeWithSignature`
   payload can still hide a callee's `false` behind `(true, "")`.
-- **TARGET-6's remaining bodies.** A low-level call after a write of its target is fixed in ordinary bodies (see
-  "Landed after the release"). On the following bodies it may still bind the value from the top of the body: a
-  message-bus build, unsafe, split and merge functions, genesis bodies and framed bodies. In progress on
-  `raw-send-target`.
+- **Left after TARGET-6** (by reading, not run on the VM; the ledger's "Call targets" Open list has them):
+  - under `evmCompat`, a cached mapping-entry field write under another key can leave the call on the old target
+    when the keys are equal;
+  - a call through a field of a memory copy, made after a write of that field, binds the written value;
+  - a statement-form value call through a stored struct field crashes code generation.
 - **20-byte lock** (LOW, needs a miner): an output with a 20-byte lock is non-standard but valid in a block, and
   under `evmCompat` it could stand for an EVM address.
 - **CONTAINER-SUM-1:** not determined whether 0.50.1 is affected, because the test's honest spend does not build
   on the 0.50.1 tree. CONTAINER-SUM-2 is VM-confirmed on 0.50.1 (message-bus kernel routes, experimental there).
-- **An undecided guard on the root path** (found 2026-11-16). Discovery now decides or refuses a called contract's
-  guard (see "Landed after the release"). The root still keeps a call whose guard it cannot resolve
-  (`sc-expand-resolve-create-builder-external-calls.ts:258-260`) and ignores `conditionUnpublished`. A false guard
-  then spends a callee that reads no `msg.sender`. Also open on the SDK side:
-  - the late pass keeps a call under an unpublished guard;
-  - discovery keeps a looped call whose loop it cannot plan.
+- **Guards the SDK decides at build time.** The root, discovery, the late pass and the delegatecall path now decide a
+  guard or refuse it (see "Landed after the release"). What remains:
+  - an explicit `withExternalCall` list at the root evaluates no guard, so an edgeless call named there can still
+    be spent uncalled;
+  - guards are decided on the state and call results as they are when building. An earlier call in the same
+    transaction that changes them is not modelled.
+  - The delegatecall path refuses an unpublishable guard even for a callee that reads `msg.sender` and would get an
+    edge. This is conservative, not unsound.
 
-  On the compiler side, a call after an early `return`, or one in a ternary arm, may carry neither a `condition` nor
-  the flag (suspected from reading). All of these are in progress on `nested-guard`.
+  An early `return` and a ternary arm do carry their conditions; that was checked from the compiler.
 
 **Refused by name (fail closed), could be built later:**
 
@@ -338,8 +370,8 @@ mapping loop, payments or events is refused, and side-cars beside a fixed sorted
 - A fixed mapping write or read before a keccak256 loop stops the loop's probe. The probe stands an `OP_TRUE` coin in
   each entry slot, and the write checks its proof input inline. The call then fails at the VM. A chain has no probe
   and is not affected.
-- An evmCompat root that makes a typed call and a compat low-level call was refused at input 0 in an agent's test,
-  not yet explained (examined on `nested-guard`).
+- An evmCompat root that makes a typed call and a compat low-level call was refused at input 0 in an agent's test.
+  It is not explained: finding out needs diagnostic runs, which the agents' test rule leaves to the lander.
 
 - Master's compat-call callee groups (`7766bf6f5`) are materialized after transitive discovery, so they get no
   nested refusals and no transitive callees. A compat callee that itself calls on, reads `blockhash` or makes a
@@ -378,8 +410,8 @@ Under `/Code/cashscript/.worktrees`:
 - `release-0.51.0` and `deployer-spec`, until the user says otherwise;
 - `release-review`, until the conformance review has been read: it holds the review's tests and their verdicts.
 
-**Agent worktrees after the release.** Each is removed once its work has landed: `lint-0.51`, `keccak-band`,
-`nested-guard` and `raw-send-target`.
+**Worktrees after the release.** The agents' worktrees (`lint-0.51`, `keccak-band`, `nested-guard`,
+`raw-send-target`) and the lander's (`land-2`, `land-3`) were removed once their work had landed. Their branches stay.
 
 **The release is out, so these can go, on the user's word:**
 

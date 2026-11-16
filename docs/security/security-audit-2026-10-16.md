@@ -1840,6 +1840,19 @@ profile.
     such a write is marked `targetWrittenBeforeCall`, and the SDK asks for its callee by name.
   - Tests: `LowLevelCallSiteTarget` (solidc, 10) and `LowLevelCallSiteTarget.e2e` (9). In the e2e, the old target
     is refused.
+  - Follow-ups (2026-11-16):
+    - A message-bus route binds a routed call through a target its handler wrote first; a handler the route checks
+      before its body runs is refused by name (`ROUTE_TARGET_WRITTEN_BEFORE_CALL`, `8af553985`).
+    - A framed body had answered from the old target where the EVM calls the new one. Framed and constructor
+      (`Deploy<C>`) calls through a target written first are now refused by name
+      (`FRAMED_TARGET_WRITTEN_BEFORE_CALL`, `GENESIS_TARGET_WRITTEN_BEFORE_CALL`, `d3f89113b`).
+    - The SDK refuses by name to auto-wire a low-level callee from a target written first (`c07b59e3f`).
+    - Split, merge and unsafe(1, 2) functions refuse external calls and state writes already. unsafe(0) checks no
+      external call, by design and with a warning.
+    - The first version over-refused: it compared state roots, so a write of another field of the same entry made
+      the target stale. The EACC MarketplaceV1 to V3 ports (`payStartJob`) and a framed proxy test were refused,
+      although 0.51.0 compiles them. The check now compares field paths (`a54d42e9e`). The regression was on the
+      local master only, never pushed.
 
 ### By design, with a warning
 
@@ -1857,17 +1870,15 @@ profile.
   witness.
 ### Open
 
-- TARGET-6's call-site registers do not reach every body. On the following, a low-level call after a write of its
-  target may still bind the value from the top of the body (under examination, 2026-11-16):
-  - a message-bus build, where `verifyGraphEmissionRow` reads an `__extaddr_ll_` target before the handler body;
-  - unsafe, split and merge functions;
-  - genesis bodies;
-  - framed bodies.
-
-  The SDK refuses to resolve a callee whose target the function can write before the call
-  (`ExternalCallTargetWrittenBeforeCallError`), so the author passes it with `withExternalCall`. For a compat
-  low-level call, `lowLevelCalls[].targetSource` still publishes the recipe from before the write, so the SDK
-  co-spends the old callee and the build fails at preflight (fails closed).
+- Left after TARGET-6 and its follow-ups (2026-11-16, by reading, not run on the VM):
+  - Under `evmCompat`, a mapping-entry field write is cached and written back after the call, so
+    `book[j].token = t; book[k].token.call(..)` binds entry k's value from the top of the body. If `j == k` can be
+    spent, the call goes to the old token, while the EVM calls `t`. A write under the same key binds the written
+    value correctly, but the call is not flagged `targetWrittenBeforeCall`.
+  - A struct local initialized from a state element is treated as a storage pointer. A call through a field of a
+    memory copy, made after a write of that field, binds the written value, where the EVM uses the copy.
+  - A statement-form value call through a stored struct field (`split.to.call{value: v}("");`) crashes code
+    generation (`structType` undefined in `visitFieldAccess`). This predates TARGET-6.
 - The genesis body's check after the body still reads the variable, so a constructor that writes its target after
   the call fails closed.
 - Two calls through one variable reassigned between them share one callee identity and are refused when the two
@@ -1926,6 +1937,11 @@ Found on `post-0.51.0` while closing TARGET-6, and confirmed on the VM on the 0.
     failed: the expression form with a hostile delegate and with none, for each of the three sources. After the
     fix, 24 of 24 pass.
   - Fix: the expression arm now emits the statement form's pin (`emitDelegateCoSpendPin`).
+  - The same fix pins the forwarder through which a split contract's read-only function that returns a value
+    delegatecalls its facet; it is synthesized as the expression form, and was unpinned too. A callee's return record
+    names the method and the arguments but not the callee, so a spender could, by reading, have answered such a
+    call from other code. The split and delegate suites, with the `LargeContractSplitting` e2e among them, pass with
+    the pin.
   - Reached: explicit expression-form delegatecalls, as in ports of OpenZeppelin's `Address.functionDelegateCall`
     (UUPS `upgradeToAndCall`). By reading, Yul `delegatecall` lowers to the same node. There only the identity pin
     applies, because its payload is a placeholder; on the EVM, a fallback proxy's caller picks the function too.

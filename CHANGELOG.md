@@ -7,15 +7,25 @@
 - An expression-form delegatecall, `(bool ok, bytes data) = impl.delegatecall(input)`, was not pinned to its
   implementation (DELEGATE-1, in 0.51.0 and, by reading, 0.50.x). A spender could co-spend other code, or none, and
   set the calling contract's state at will. It is now pinned as the statement form `impl.delegatecall(input);` always
-  was. A contract that uses the expression form compiles to new bytes: recompile and redeploy it. The statement form,
-  library calls and the SDK's default proxy were not affected.
+  was. A contract that uses the expression form compiles to new bytes: recompile and redeploy it. The same pin now
+  covers the forwarder through which a split contract's read-only function returns from its facet. The statement
+  form, library calls and the SDK's default proxy were not affected.
 
 ### Fixed
 
 - A low-level call made after a write of its target in the same function now pins and pays the written value, as
   the EVM calls it (TARGET-6). Before, `payee = p; payee.call{value: v}("")` paid the old payee, and
   `token = t; token.call(p)` required the old token. A call the compiler cannot read at its site is refused
-  (`ENTRY_TARGET_WRITTEN_BEFORE_CALL`).
+  (`ENTRY_TARGET_WRITTEN_BEFORE_CALL`). A message-bus route binds such a call too. A framed or constructor call
+  through a target written first is refused by name, and the SDK refuses to auto-wire such a callee. A write is
+  judged by field path, so a write to another field of the same entry leaves the target current.
+- A root call under a guard the SDK cannot decide, with no caller edge to guard it, is refused by name
+  (`CallGuardUndecidedError`). Before, a raw call to a callee that reads no `msg.sender` was made on a guess, and the
+  callee was spent with the guard false.
+- A call in the right operand of `&&` or `||` inside a branch or a ternary arm now publishes the branch with its
+  operand. It was published with the operand alone, so the SDK made the call with the branch false.
+- The late pass refuses a call under a guard no frame can decide. Discovery refuses a looped call whose number of
+  turns it cannot plan, unless a caller edge guards it.
 
 - On the direct convention, a nested callee's external call under a false guard on `block.number` or
   `block.timestamp` no longer spends the callee. The SDK now gives the guard the block clock when it works out which

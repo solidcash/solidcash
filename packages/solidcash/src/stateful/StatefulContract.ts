@@ -484,7 +484,7 @@ import {
   deriveFullPhase1CalleeDynamicChunks as deriveFullPhase1CalleeDynamicChunksImpl,
 } from './sc-derive-full-phase1-callee-dynamic-chunks.js';
 import {
-  keccakLoopReadSuccessors, readChunksFollowKeccakLoop, sharedSidecarPoolWithout,
+  keccakLoopReadSuccessors, readChunksFollowKeccakSideCars, sharedSidecarPoolWithout,
 } from './sc-append-create-builder-nested-callee-keccak-loop.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import {
@@ -13192,7 +13192,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // finds them through its `__internal__dynamicChunkInputBase` witness. Each probe places them past its own
       // side-cars, with the witness naming them there as the build encodes it, so a read made before the loop
       // reaches them. The probe's master is input 0.
-      const readChunks = readChunksFollowKeccakLoop(abiFunction) && dynamicReadChunkInputs.length > 0
+      const readChunks = readChunksFollowKeccakSideCars(abiFunction) && dynamicReadChunkInputs.length > 0
         && topLevelDynamicChunkArgumentIndex >= 0 && overrides?.compilerRouteSelector === undefined
         ? keccakLoopReadSuccessors(dynamicReadChunkInputs, (firstInputIndex) => {
           const witness = finalArgs[topLevelDynamicChunkArgumentIndex];

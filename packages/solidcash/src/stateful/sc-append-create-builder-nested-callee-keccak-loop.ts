@@ -74,13 +74,25 @@ export function keccakLoopBandSharer(fn: AbiFunction): (typeof TRAILING_BAND_USE
 }
 
 /**
- * Whether `fn` hashes in a keccak256 loop and lays out nothing after its block but the loop's side-cars and the chunks
- * of dynamic state it only reads. It reads side-car k at master + blockSize + k and finds the chunks through
- * DYNAMIC_READ_BASE, so the chunks follow the side-cars, in a call of the function as in a callee's block.
+ * Whether a direct call of `fn` lays out the chunks of dynamic state it only reads right after the keccak256 side-cars
+ * that open the band after its block, and nothing else there. The function finds the chunks through DYNAMIC_READ_BASE,
+ * so they can follow the side-cars; the side-cars cannot move. A keccak256 loop reads side-car k at
+ * master + blockSize + k, and a keccak256 chain reads its FINAL side-car at master + blockSize + n/136 for an n-byte
+ * value, after one side-car per full 136-byte block. A callee's loop lays out its read chunks the same way, in its own
+ * block (appendCreateBuilderNestedCalleeKeccakLoop).
  */
-export function readChunksFollowKeccakLoop(fn: AbiFunction): boolean {
-  return fn.keccakLoopReads === true && (fn.dynamicReads?.length ?? 0) > 0
-    && fn.inputs.some((parameter) => parameter.name === DYNAMIC_READ_BASE) && keccakLoopBandSharer(fn) === undefined;
+export function readChunksFollowKeccakSideCars(fn: AbiFunction): boolean {
+  if ((fn.dynamicReads?.length ?? 0) === 0 || !fn.inputs.some((parameter) => parameter.name === DYNAMIC_READ_BASE)) {
+    return false;
+  }
+  const publishes = (field: keyof AbiFunction): boolean => {
+    const value = fn[field];
+    return Array.isArray(value) ? value.length > 0 : value === true;
+  };
+  if (fn.keccakChainReads === true) {
+    return TRAILING_BAND_USERS.every(([field]) => field === 'keccakChainReads' || !publishes(field));
+  }
+  return fn.keccakLoopReads === true && keccakLoopBandSharer(fn) === undefined;
 }
 
 /**

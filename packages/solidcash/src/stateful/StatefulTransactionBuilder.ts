@@ -510,7 +510,7 @@ import {
   type RepairComputedChunkOutputHost,
 } from './stb-repair-computed-chunk-output.js';
 import { buildInputs, insertBandPadDemand, type BuildInputsHost } from './stb-build-inputs.js';
-import { readChunksFollowKeccakLoop } from './sc-append-create-builder-nested-callee-keccak-loop.js';
+import { readChunksFollowKeccakSideCars } from './sc-append-create-builder-nested-callee-keccak-loop.js';
 import {
   applyLearnedWriterEvents,
   learnFinalizedDelegateEvents,
@@ -926,13 +926,14 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * A keccak256 loop whose band after the block holds its side-cars and the chunks of dynamic state the function only
-   * reads, and nothing else: the loop reads side-car k at master + blockSize + k and the function finds the chunks
+   * A keccak256 loop or chain whose band after the block holds its side-cars (`keccakLoopSideCars`, a chain's too) and
+   * the chunks of dynamic state the function only reads, and nothing else: the loop reads side-car k at
+   * master + blockSize + k, the chain its FINAL side-car at master + blockSize + n/136, and the function finds the chunks
    * through its witness, so the chunks follow the side-cars, as their outputs already do.
    */
   private get keccakLoopLeadsReadChunks(): boolean {
     const abiFunction = (this.masterUtxo?.unlocker as { abiFunction?: AbiFunction } | undefined)?.abiFunction;
-    return abiFunction !== undefined && readChunksFollowKeccakLoop(abiFunction)
+    return abiFunction !== undefined && readChunksFollowKeccakSideCars(abiFunction)
       && this.keccakLoopSideCars.length > 0 && this.iterationEntryInputs.length > 0
       && this.dynamicChunkInputs.length === 0 && this.insertLoopPredecessorInputs.length === 0
       && !this.loopEntriesBeforeDynamicChunks

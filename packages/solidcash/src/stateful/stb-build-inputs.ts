@@ -34,9 +34,10 @@ export interface BuildInputsHost {
   keccakLoopSideCars: UnlockableUtxo[];
   keccakLoopPrecedesTrailingUser: boolean;
   /**
-   * The keccak256 loop's side-cars and the chunks of dynamic state the function only reads (`iterationEntryInputs`)
-   * are the whole band after the block: the loop reads side-car k at master + blockSize + k, and the function finds
-   * the chunks through its witness, so they follow the side-cars.
+   * The keccak256 loop's or chain's side-cars (`keccakLoopSideCars`) and the chunks of dynamic state the function only
+   * reads (`iterationEntryInputs`) are the whole band after the block: the loop reads side-car k at
+   * master + blockSize + k, the chain its FINAL side-car at master + blockSize + n/136, and the function finds the
+   * chunks through its witness, so they follow the side-cars.
    */
   keccakLoopLeadsReadChunks: boolean;
   ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
@@ -278,8 +279,8 @@ export function buildInputs(
         ...host.keccakLoopSideCars,
         ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
       ];
-    // A keccak loop beside nothing but the chunks of dynamic state the function only reads takes the band's start: the
-    // chunks are found through the function's witness, wherever they sit.
+    // A keccak loop or chain beside nothing but the chunks of dynamic state the function only reads takes the band's
+    // start: the chunks are found through the function's witness, wherever they sit.
     const trailingInputs = host.keccakLoopLeadsReadChunks
       ? [...host.keccakLoopSideCars, ...host.iterationEntryInputs]
       : sourceOrderedTrailingInputs;

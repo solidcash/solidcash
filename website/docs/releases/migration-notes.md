@@ -2,6 +2,31 @@
 title: Migration Notes
 ---
 
+## v0.50 to v0.51
+
+- Change `pragma solidcash ^0.50.0` to `pragma solidcash ^0.51.0`, and move all six packages to 0.51.0 together. A
+  caret range on 0.x pins the minor version, so the 0.51.0 compiler refuses `^0.50.0`.
+- Recompile, and deploy a new category for every stateful contract on the direct convention: each arm now opens with
+  an exact-stack check, and a contract whose records are sound carries a genesis-call marker, so the bytecode and the
+  address change. Measured against 0.50.1, a minimal counter grows from 1,231 to 1,416 bytes and a Solidity ERC20 from
+  4,880 to 5,184. Stateless contracts compile to the same bytes, as did a framed counter. A framed contract that
+  recovers keys grows, so recompile any framed contract and compare its address before reusing a category.
+- A direct creator's `new` of a stateful child now spends a one-shot coin of the child's `Deploy<C>` program; the SDK
+  builds it. See [Proof of birth](/docs/language/contract-creation#proof-of-birth-deploying-through-deployc) for what
+  changes in the category, the constructor's `msg.sender` and the fallbacks.
+- Check the calls that now behave differently:
+  - `x.call{value: v}(...)` pays `x`, where it paid nothing; under `evmCompat`, `transfer` and `send` pay the P2PKH
+    lock of a 20-byte address.
+  - A raw call with a payload must co-spend a target that runs it. A payload that names a returning function reads the
+    callee's record, so a `false` reaches the caller; a plain send with an empty payload answers `(true, "")`.
+  - `ecrecoverEvm` answers `address(0)` for the arguments the EVM's precompile refuses, and a refused recovery compares
+    equal to `address(0)`.
+  - A call whose target the contract computes compiles with `[computed-call-target-unverified]`: its callee is the
+    spender's choice. Call through a stored address where the callee matters.
+- Some shapes that compiled before are refused by name, each with a message that says what to do: a call through a
+  collection entry the function writes before the call, repeated calls through one loop-local target, a keccak256 loop
+  beside a collection walk or a dynamic-state write, and, in the SDK, a raw call whose target cannot run it.
+
 ## v0.14 to v0.50
 
 - Change `pragma solidcash ^0.14.0` to `pragma solidcash ^0.50.0`, and move all six packages to 0.50.0 together.

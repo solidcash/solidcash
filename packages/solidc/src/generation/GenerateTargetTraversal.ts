@@ -54825,7 +54825,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             || write instanceof MappingFieldAssignNode) && straightLine.has(write)
             && entries.some((entry) => entry.name === write.name && entry.entrySlotIndex === write.entrySlotIndex));
         if (readsWritten) return initializer;
-        const typed = !(call instanceof Node) && call.interfaceName !== '__raw__' ? call : undefined;
+        // A typed call is named whether it comes as its slot or, from a body that checks every call, as its node.
+        const typed = (call instanceof ExternalFunctionCallNode || !(call instanceof Node))
+          && call.interfaceName !== '__raw__' ? call : undefined;
         const calling = typed ? `calling ${typed.interfaceName}.${typed.functionName}` : 'making a low-level call';
         throw new SolidcDiagnosticError(
           'ENTRY_TARGET_WRITTEN_BEFORE_CALL',

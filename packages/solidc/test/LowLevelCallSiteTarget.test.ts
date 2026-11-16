@@ -230,4 +230,25 @@ describe('a call through a field of an entry its function writes other fields of
       composition: 'framed', evmCompat: true,
     } as never)).toThrow(/FRAMED_TARGET_WRITTEN_BEFORE_CALL/);
   });
+
+  it('keeps a framed call through a packed element\'s field its function does not write, and names one it refuses', () => {
+    // framed/call/proxy-dynamic-struct-conditional-update.test.ts's `close`: a framed body checks every call's target.
+    const registry = (member: string): string => `pragma solidity ^0.8.20;
+      interface ISink { function transfer(address to, uint256 amount) external returns (bool); }
+      contract Registry {
+        struct Record { uint8 state; string note; uint256 amount; address token; }
+        Record[] records;
+        ${member}
+      }`;
+    const framed = {
+      composition: 'framed', evmCompat: true, tagSingletonDataNfts: true, maximumInputBytes: 10_000_000,
+    } as never;
+    expect(compileStringMulti(registry(`function close(uint256 id) external {
+      Record storage record = records[id]; record.state = 2;
+      require(ISink(record.token).transfer(msg.sender, record.amount)); }`), framed).Registry).toBeDefined();
+    expect(() => compileStringMulti(registry(`function close(uint256 id, address t) external {
+      Record storage record = records[id]; record.token = t;
+      require(ISink(record.token).transfer(msg.sender, record.amount)); }`), framed))
+      .toThrow(/'close' writes 'records' before calling ISink\.transfer through an entry of it/);
+  });
 });

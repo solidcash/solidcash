@@ -11,7 +11,8 @@ was run, what the user decided, and every item still open, with pointers. The sc
   debug dump removed (`f9ca3e948`), the 0.51.0 version (`d0d7718b3`) and the docs. **Not pushed, not tagged, not
   published.** Pushing, tagging `v0.51.0` and publishing the six packages to npm are the user's to start.
 - **`deployer-spec`** stays at `7d8fb3900`, the line before the master merge.
-- **master** (`a04d90c7c`) is unchanged; `release/0.51.0` contains it.
+- **master** carries 0.51.0: on 2026-11-16 it merged `release/0.51.0` in a merge commit, so its tree is the release
+  branch's. Before that it was at `a04d90c7c`, which `release/0.51.0` already contained. Not pushed either.
 - **What 0.51.0 contains**: 616 non-merge commits since 0.50.1 (`mainnet-final`, `95f051c36`). These comprise:
   - master's 2026-11-11 landing (the sushi line, caller edges, void-call binding, the single-container pragmas);
   - the other party's `deployer-coins` work (deployer coins, from 2026-11-12);

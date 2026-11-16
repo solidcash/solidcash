@@ -1028,8 +1028,16 @@ interface CallSiteWrites {
    * write of one of the state roots `roots`.
    */
   before(names: readonly string[], roots: readonly string[], slot: ExternalCallSlot): boolean;
-  /** The initializer of local `name` when a write of what it reads can land between it and a run of the call. */
-  staleInitializer(name: string, slot: ExternalCallSlot): ExpressionNode | undefined;
+  /**
+   * The initializer of local `name` when a write of what it reads can land between it and a run of the call: a slot's
+   * calls, or one low-level call node.
+   */
+  staleInitializer(name: string, call: ExternalCallSlot | Node): ExpressionNode | undefined;
+  /**
+   * Keeps every stack variable `expression` reads on the stack where the call runs, so a copy of it can be read there:
+   * a final use before the call, with no reassignment between, becomes a pick.
+   */
+  keepReads(expression: ExpressionNode, call: ExternalCallSlot | Node): void;
 }
 /** A bound route's verifier input index; -1 on a standalone batch. */
 const ACTIVE_VERIFIER_INDEX = '__internal__activeVerifierIndex';
@@ -2796,6 +2804,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // (collectCallSiteTargets), each with the register that holds the value where the call ran.
   private callSiteTargets: Map<number, CallSiteTarget> = new Map();
   private callSiteSelectors: Map<number, CallSiteTarget> = new Map();
+  // The low-level calls, and raw calls paid where they run, that read their target again there
+  // (collectLowLevelCallSiteTargets), each with the expression it reads.
+  private lowLevelCallSiteTargets: Map<Node, ExpressionNode> = new Map();
   private graphStraightRuntimeRows: string[] = [];
   private graphStraightRuntimeMode = false;
   private deferredGraphEmissionRows = 0;
@@ -10742,6 +10753,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentFunction = node;
     this.callSiteTargets = new Map();
     this.callSiteSelectors = new Map();
+    this.lowLevelCallSiteTargets = new Map();
     this.callBatchFrame = false;
     this.callBatchRecordViews = false;
     this.ecrecoverLoopsEmitted = 0;
@@ -12026,6 +12038,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A call whose target or runtime selector the body can change after the call is bound to the value where the call
     // runs. Its register starts empty; the call site fills it and the checks after the body read it.
     ({ targets: this.callSiteTargets, selectors: this.callSiteSelectors } = this.collectCallSiteTargets(node));
+    this.lowLevelCallSiteTargets = this.collectLowLevelCallSiteTargets(node);
     for (const target of [...this.callSiteTargets.values(), ...this.callSiteSelectors.values()]) {
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(target.register);
@@ -30794,14 +30807,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (node.rawValueTransferOnly) {
       const value = node.callOptions?.value;
-      const address = this.getAddressParamFromTarget(node.addressExpression);
+      // The recipient where the call runs (lowLevelCallSiteTarget): a write of it before the call is the one paid.
+      const target = this.lowLevelCallSiteTarget(node, node.addressExpression);
+      const address = this.getAddressParamFromTarget(target);
       if (!value || node.valueTransferIndex < 0) {
         throw new Error('Transfer-only raw call lacks its compiler-indexed value');
       }
       node.callOptions!.value = address
         ? this.emitValueTransfer(node.valueTransferIndex, value, address, locationData, node)
         : this.emitValueTransferToExpression(
-          node.valueTransferIndex, value, node.addressExpression, locationData, node,
+          node.valueTransferIndex, value, target, locationData, node,
         );
       // The required transfer output is the operation: if it is absent the covenant aborts, so a reached
       // expression has Solidity's successful empty-fallback result without an invented producer-result row.
@@ -30839,14 +30854,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // either reconstructs its result, so runtime-emission handlers also settle their compiler-owned slot.
     if ((this.currentFunction.graphEmissionHandler || this.currentFunction.graphRuntimeEmissionHandler)
       && node.interfaceName === '__raw__' && node.callOptions?.value && node.valueTransferIndex >= 0) {
-      const address = this.getAddressParamFromTarget(node.addressExpression);
+      // The recipient where the call runs (lowLevelCallSiteTarget): a write of it before the call is the one paid.
+      const target = this.lowLevelCallSiteTarget(node, node.addressExpression);
+      const address = this.getAddressParamFromTarget(target);
       // Payment is evaluated before the emission's calldata/target replay. Copies must not consume an
       // identifier merely because source-order liveness marked its call-option occurrence as the final use.
       const value = cloneNode(node.callOptions.value) as ExpressionNode;
       node.callOptions.value = address
         ? this.emitValueTransfer(node.valueTransferIndex, value, address, locationData, node)
         : this.emitValueTransferToExpression(
-          node.valueTransferIndex, value, cloneNode(node.addressExpression) as ExpressionNode, locationData, node,
+          node.valueTransferIndex, value, cloneNode(target) as ExpressionNode, locationData, node,
         );
     }
     if (this.currentFunction.graphRuntimeEmissionHandler) {
@@ -32788,9 +32805,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Pays a low-level call's `{value: v}` to its target: the parameter or local naming it, else the target expression
    * where the call site can read it again (`msg.sender`, `payable(msg.sender)`, a literal, a state read), which is the
-   * address the call runs on. Any other target is refused by name rather than leave the payment unpaid.
+   * address the call runs on. A target read again where the call runs (lowLevelCallSiteTarget) is a read of state and
+   * parameters, paid as it is read. Any other target is refused by name rather than leave the payment unpaid.
    */
-  private emitLowLevelCallValue(node: LowLevelCallNode | LowLevelCallStatementNode, loc: SingleLocationData): void {
+  private emitLowLevelCallValue(
+    node: LowLevelCallNode | LowLevelCallStatementNode, loc: SingleLocationData,
+    target: ExpressionNode = node.targetExpression,
+  ): void {
     if (!node.callOptions?.value) return;
     if (node.valueTransferIndex < 0) {
       // A payment the semantic pass gave no transfer slot would drop. A framed body settles its sends itself.
@@ -32806,17 +32827,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // cleanup.
     this.keepVariablesReadLater([
       node.callOptions.value,
-      ...(this.isEmptyLiteralPayload(node.data) ? [] : [node.targetExpression]),
+      ...(this.isEmptyLiteralPayload(node.data) ? [] : [target]),
       node.data,
     ]);
-    const addrParam = this.getAddressParamFromTarget(node.targetExpression);
+    const addrParam = this.getAddressParamFromTarget(target);
     if (addrParam) {
       node.callOptions.value = this.emitValueTransfer(
         node.valueTransferIndex, node.callOptions.value, addrParam, loc, node,
       );
-    } else if (this.readsAddressAgain(node.targetExpression)) {
+    } else if (target !== node.targetExpression || this.readsAddressAgain(target)) {
       node.callOptions.value = this.emitValueTransferToExpression(
-        node.valueTransferIndex, node.callOptions.value, cloneNode(node.targetExpression) as ExpressionNode, loc, node,
+        node.valueTransferIndex, node.callOptions.value, cloneNode(target) as ExpressionNode, loc, node,
       );
     } else {
       this.refuseUnpaidCallValue(node, 'to a target the call site holds as no single value');
@@ -33542,8 +33563,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
-    // Handle {value: X} call option
-    this.emitLowLevelCallValue(node, locationData);
+    // Handle {value: X} call option. Its pin and payment read the target where the call runs.
+    const target = this.lowLevelCallSiteTarget(node, node.targetExpression);
+    this.emitLowLevelCallValue(node, locationData, target);
 
     if (node.callMode === 'delegatecall' || this.isCompilerRoutedLowLevelBatch(node)) {
       // Delegatecall: proxy doesn't verify delegate's calldata - the delegate handles
@@ -33552,7 +33574,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_1, locationData);           // [true]
       this.emit(encodeInt(0n), locationData);      // [true, empty]
     } else {
-      this.emitLowLevelCallVerification(node.data, node.callIndex, locationData, node.targetExpression);
+      this.emitLowLevelCallVerification(node.data, node.callIndex, locationData, target);
       // Stack: [remaining unlocking after the calldata prefix pin]. That remainder is
       // redeem-script, not ERC20 return data. SafeERC20 treats empty returndata as
       // success (optional-return tokens); decoding leftover pushes as a bool OP_VERIFYs.
@@ -33589,8 +33611,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
-    // Handle {value: X} call option
-    this.emitLowLevelCallValue(node, locationData);
+    // Handle {value: X} call option. Its pin and payment read the target where the call runs.
+    const target = this.lowLevelCallSiteTarget(node, node.targetExpression);
+    this.emitLowLevelCallValue(node, locationData, target);
 
     if (node.callMode === 'delegatecall') {
       // C1/piece-3: FORCE + PIN the delegate co-spend. The input at __internal__delegateInputIndex must have
@@ -33599,7 +33622,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // (pinsDelegateCoSpend); a P2PKH-placeholder target keeps the C1 warning path.
       if (this.currentFunction.pinsDelegateCoSpend) {
         // (a) IDENTITY: the delegate at delegateInputIndex is the contract at impl.
-        this.visit(node.targetExpression);           // [impl]
+        this.visit(target);                          // [impl]
         this.emitDelegateInputIndex(node, locationData);
         // Real stack: [impl, delegateIdx]
         this.emit(Op.OP_UTXOBYTECODE, locationData); // [impl, delegate_utxobc]
@@ -33718,7 +33741,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.markDelegateEdgeReached(node);
     } else if (!this.isCompilerRoutedLowLevelBatch(node)) {
-      this.emitLowLevelCallVerification(node.data, node.callIndex, locationData, node.targetExpression);
+      this.emitLowLevelCallVerification(node.data, node.callIndex, locationData, target);
       // Stack: [remaining] - drop it
       this.emit(Op.OP_DROP, locationData);
     }
@@ -54170,7 +54193,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       },
       after: (names, slot) => (positions ??= this.bodyWrites(body)).after(names, slot),
       before: (names, roots, slot) => (positions ??= this.bodyWrites(body)).before(names, roots, slot),
-      staleInitializer: (name, slot) => (positions ??= this.bodyWrites(body)).staleInitializer(name, slot),
+      staleInitializer: (name, call) => (positions ??= this.bodyWrites(body)).staleInitializer(name, call),
+      keepReads: (expression, call) => (positions ??= this.bodyWrites(body)).keepReads(expression, call),
     };
     for (const slot of this.externalCallSlots) {
       if (slot.inlineLoopDispatch || slot.loopArrayVar || this.isExternalCallSlotLoopNested(slot)) continue;
@@ -54198,6 +54222,48 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     return { targets, selectors };
+  }
+
+  /**
+   * The low-level calls that read their target again where they run. SynthesizeExternalAddressLocals reads a raw call's
+   * receiver into a compiler local at the top of the body: a stored address (`target.call{value: v}("")`), a stored or
+   * parameter-rooted chain (`s.to.call(..)`, `__extaddr_ll_<chain>`), an inlined helper's alias. A low-level call pins
+   * and pays that local where it runs, and a raw call with no register pays it there too. When the function writes
+   * what the local read between the two, the local still holds the value from before the write, while the EVM's call
+   * goes to the written one, so such a call reads the local's initializer again, where it runs. A collection entry the
+   * call cannot read there is refused by name (bodyWrites). A framed body binds its calls by record.
+   */
+  private collectLowLevelCallSiteTargets(node: FunctionDefinitionNode): Map<Node, ExpressionNode> {
+    const targets = new Map<Node, ExpressionNode>();
+    const body = node.body;
+    if (!body || this.framedMaster) return targets;
+    const sites: { call: Node; target: IdentifierNode }[] = [];
+    walkInvocationAst(body, (child) => {
+      // An expression delegatecall reads no target where it runs (visitLowLevelCall).
+      const target = (child instanceof LowLevelCallNode && child.callMode !== 'delegatecall')
+        || child instanceof LowLevelCallStatementNode ? child.targetExpression
+        : child instanceof ExternalFunctionCallNode && child.interfaceName === '__raw__'
+          && child.callOptions?.value !== undefined ? child.addressExpression : undefined;
+      if (target instanceof IdentifierNode && target.name.startsWith('__extaddr_')) sites.push({ call: child, target });
+    });
+    if (sites.length === 0) return targets;
+    const writes = this.bodyWrites(body);
+    for (const { call, target } of sites) {
+      const chain = writes.staleInitializer(target.name, call);
+      if (chain === undefined) continue;
+      writes.keepReads(chain, call);
+      targets.set(call, chain);
+    }
+    return targets;
+  }
+
+  /**
+   * The target a low-level call, or a raw call paid where it runs, reads there: a copy of the expression it reads again
+   * (collectLowLevelCallSiteTargets), else `target` itself.
+   */
+  private lowLevelCallSiteTarget(node: Node, target: ExpressionNode): ExpressionNode {
+    const reread = this.lowLevelCallSiteTargets.get(node);
+    return reread === undefined ? target : cloneNode(reread) as ExpressionNode;
   }
 
   /**
@@ -54280,9 +54346,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Where `body` writes, by position (walkInvocationAst's order; a write lands once its own subtree has run, so
    * `t = t.next()` writes after its call; a write in a loop with a call can run on either side of it). `after` and
    * `before`: whether a write can land after, or before, a run of `slot`'s call. `staleInitializer`: the initializer of
-   * local `name` when a write of what it reads can land between the declaration and a run of `slot`'s call; a write of
-   * another field of an entry, or a constructor rebuild carrying the read field over, does not count. A call writes
-   * what its callee writes; assembly may write anything.
+   * local `name` when a write of what it reads can land between the declaration and a run of the call (a slot's calls,
+   * or one low-level call node); a write of another field of an entry, or a constructor rebuild carrying the read field
+   * over, does not count, and a local assigned after its declaration has none. A call writes what its callee writes;
+   * assembly may write anything; a write of a local array's element changes the array in place.
    *
    * An initializer reading a collection entry is read again at the call only where visitMappingAccess reads the
    * written value: every write of it before the call is a straight-line whole-value write of the same entry slot.
@@ -54290,7 +54357,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private bodyWrites(body: Node): Omit<CallSiteWrites, 'state'> {
     const at = new Map<Node, number>();
-    const writes: { names: readonly string[] | undefined; roots: ReadonlySet<string> | 'any'; node: Node }[] = [];
+    const writes: {
+      names: readonly string[] | undefined; element: string | undefined; roots: ReadonlySet<string> | 'any'; node: Node;
+    }[] = [];
     const loops: Node[] = [];
     const declarations = new Map<string, VariableDefinitionNode>();
     const calleeRoots = new Map<FunctionDefinitionNode, ReadonlySet<string> | 'any'>();
@@ -54305,9 +54374,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           ? child.elements.flatMap((element) => (element.name && !element.skip ? [element.name] : []))
           : child instanceof VariableDefinitionNode ? [child.name]
             : child instanceof AssemblyStatementNode ? undefined : [];
+      // An element write leaves the array in its slot, so it counts only for an initializer that reads the array.
+      const element = child instanceof ArrayAssignNode || child instanceof ArrayDeleteNode
+        || child instanceof ArrayPushNode || child instanceof ArrayPopNode ? child.name : undefined;
       const roots = this.stateRootsWrittenAt(child, calleeRoots);
-      if (names === undefined || names.length > 0 || roots === 'any' || roots.size > 0) {
-        writes.push({ names, roots, node: child });
+      if (names === undefined || names.length > 0 || element !== undefined || roots === 'any' || roots.size > 0) {
+        writes.push({ names, element, roots, node: child });
       }
     });
     const subtree = (root: Node): Set<Node> => {
@@ -54335,6 +54407,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callsOf = (slot: ExternalCallSlot): Node[] => [...at.keys()].filter((candidate) =>
       candidate instanceof ExternalFunctionCallNode && candidate.callInfo !== undefined
       && this.externalCallSlots[candidate.callInfo.externalCallSlotIndex] === slot);
+    // A low-level call node is its own one call.
+    const runsOf = (call: ExternalCallSlot | Node): Node[] => (call instanceof Node ? [call] : callsOf(call));
     const sharesLoop = (write: Node, call: Node): boolean =>
       loopBodies.some((inside) => inside.has(write) && inside.has(call));
     // A write that leaves `field` of the entry it writes as it was: a write of another field, or a rebuild of the entry
@@ -54369,10 +54443,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           || write.roots === 'any' || [...write.roots].some((root) => roots.includes(root)))
           && calls.some((call) => write.end < at.get(call)! || sharesLoop(write.node, call)));
       },
-      staleInitializer: (name, slot) => {
+      staleInitializer: (name, call) => {
         const declaration = declarations.get(name);
         const initializer = declaration?.expression;
         if (declaration === undefined || initializer === undefined) return undefined;
+        // A local assigned after its declaration (`__extaddr_llf<N>`) holds what was assigned, not its initializer.
+        if (landed.some((write) => write.node !== declaration && write.names?.includes(name) === true)) {
+          return undefined;
+        }
         const stack = new Set<string>();
         const roots = new Set<string>();
         const entries: MappingAccessNode[] = [];
@@ -54383,21 +54461,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (inner instanceof MappingAccessNode) {
             roots.add(inner.name);
             entries.push(inner);
+            // An element of a parameter or local array, should one read reach here as an entry: its writes are too.
+            if (inner.collection === undefined && inner.isPackedStateArrayAccess !== true) stack.add(inner.name);
           }
           if (inner instanceof FieldAccessNode && inner.expression instanceof MappingAccessNode) {
             fields.set(inner.expression, inner.name);
           }
         });
         const declared = subtreeEnd(declaration);
-        const calls = callsOf(slot);
+        const calls = runsOf(call);
         // A write of a collection read here that keeps every field read of its entries, whichever entry it writes.
         const keepsReads = (write: Node): boolean => (write instanceof MappingAssignNode
           || write instanceof MappingFieldAssignNode) && entries.some((entry) => entry.name === write.name)
           && entries.every((entry) => entry.name !== write.name || keepsField(write, fields.get(entry)));
         const changing = landed.filter((write) => write.node !== declaration
           && (write.names === undefined || write.roots === 'any'
-            || write.names.some((written) => stack.has(written)) || [...write.roots].some((root) => roots.has(root)))
-          && calls.some((call) => (write.end > declared && write.end < at.get(call)!) || sharesLoop(write.node, call))
+            || write.names.some((written) => stack.has(written))
+            || (write.element !== undefined && stack.has(write.element))
+            || [...write.roots].some((root) => roots.has(root)))
+          && calls.some((run) => (write.end > declared && write.end < at.get(run)!) || sharesLoop(write.node, run))
           && !keepsReads(write.node));
         if (changing.length === 0) return undefined;
         if (entries.length === 0) return initializer;
@@ -54407,14 +54489,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             || write instanceof MappingFieldAssignNode) && straightLine.has(write)
             && entries.some((entry) => entry.name === write.name && entry.entrySlotIndex === write.entrySlotIndex));
         if (readsWritten) return initializer;
+        const typed = !(call instanceof Node) && call.interfaceName !== '__raw__' ? call : undefined;
+        const calling = typed ? `calling ${typed.interfaceName}.${typed.functionName}` : 'making a low-level call';
         throw new SolidcDiagnosticError(
           'ENTRY_TARGET_WRITTEN_BEFORE_CALL',
-          `'${this.currentFunction.name}' writes '${entries[0]!.name}' before calling ${slot.interfaceName}.`
-            + `${slot.functionName} through an entry of it, and the call cannot read the written entry: the write is in `
-            + 'a branch or loop, to another key, or of a sorted, packed or array-element value. On the EVM the call '
-            + 'goes to the written value. Make the call before the write, or write the same entry unconditionally.',
-          { functionName: this.currentFunction.name, collection: entries[0]!.name, call: slot.functionName },
+          `'${this.currentFunction.name}' writes '${entries[0]!.name}' before ${calling} through an entry of it, and `
+            + 'the call cannot read the written entry: the write is in a branch or loop, to another key, or of a '
+            + 'sorted, packed or array-element value. On the EVM the call goes to the written value. Make the call '
+            + 'before the write, or write the same entry unconditionally.',
+          {
+            functionName: this.currentFunction.name, collection: entries[0]!.name, call: typed?.functionName ?? 'call',
+          },
         );
+      },
+      keepReads: (expression, call) => {
+        const last = Math.max(-1, ...runsOf(call).map((run) => at.get(run) ?? -1));
+        if (last < 0) return;
+        const { opRolls } = this.currentFunction;
+        walkInvocationAst(expression, (inner) => {
+          if (!(inner instanceof IdentifierNode)) return;
+          const finalUse = opRolls.get(inner.name);
+          const used = finalUse === undefined ? undefined : at.get(finalUse);
+          if (used === undefined || used >= last) return;
+          // A reassignment between that use and the call puts the variable back on the stack.
+          if (landed.some((write) => write.names?.includes(inner.name) === true && at.get(write.node)! > used
+            && write.end < last)) return;
+          opRolls.delete(inner.name);
+        });
       },
     };
   }

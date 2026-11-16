@@ -674,6 +674,7 @@ export {
 import { type RouteProbeObservation } from './route-probe-progress.js';
 
 import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-loader.js';
+import { calleeBlockExceedsLowLevelBand } from './sc-select-compat-callee-block-calls.js';
 
 function isFramedArtifact(artifact: Artifact): boolean {
   return artifact.composition?.convention === 'framed';
@@ -12143,11 +12144,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const derive = (candidate as { _deriveReturnValue?: unknown } | undefined)?._deriveReturnValue;
           if (typeof derive !== 'function') return { ok: true as const };
           const calleeAbi = (candidate as {
-            inner?: { artifact?: { abi?: Array<{ name?: string; outputs?: unknown[] }> } };
+            inner?: { artifact?: { abi?: Array<Pick<AbiFunction, 'blockLayout'> & { name?: string; outputs?: unknown[] }> } };
           }).inner?.artifact?.abi;
-          if ((calleeAbi?.find((entry) => entry.name === calleeFunction)?.outputs?.length ?? 0) === 0) {
+          const calleeEntry = calleeAbi?.find((entry) => entry.name === calleeFunction);
+          if ((calleeEntry?.outputs?.length ?? 0) === 0) {
             // A void callee has no value to decode, so the read probe cannot run it. Its covenant still executes
             // when the call is co-spent; an unsupported probe is not evidence of a revert.
+            return { ok: true as const };
+          }
+          if (calleeBlockExceedsLowLevelBand(calleeEntry)) {
+            // The read probe does not lay out a block that holds more than the callee's master, data records and
+            // record: a transferFrom that writes mapping entries and emits fails there although its co-spend
+            // settles. Such a failure is no evidence of a revert, so the co-spend's own preflight decides.
             return { ok: true as const };
           }
           try {

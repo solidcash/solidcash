@@ -12051,12 +12051,19 @@ export default class SymbolTableTraversal extends AstTraversal {
         })
         : undefined;
       // Inlined helper calls retain their original source node, but their cloned statement can be flattened away
-      // from the caller's branch. Recover that source path when the direct traversal did not carry a predicate.
-      const loweredConditions = enclosingConditions.length > 0
-        ? enclosingConditions
+      // from the caller's branch. Recover that source path when the direct traversal did not carry a predicate. The
+      // traversal carries short-circuit operands alone, so on the direct convention a call in a short-circuit right
+      // operand takes the branches and ternary arms on its path too: published with its operand alone, the call in
+      // `if (x) { if (a && t.f()) {..} }` read as made whenever `a` held, and its callee, co-spent while `x` was
+      // false, ran without being called.
+      const branchPath = enclosingConditions.length > 0 && this.compilerOptions.composition === 'framed'
+        ? undefined
         : this.currentFunction?.body
           ? this.enclosingBranchConditions(this.currentFunction.body, node)
           : undefined;
+      const loweredConditions = enclosingConditions.length > 0
+        ? [...(branchPath ?? []), ...enclosingConditions]
+        : branchPath;
       // The source snapshot owns activation CARDINALITY; the lowered path owns the rewritten predicate values.
       // Returning-helper normalization may nest a straight-line continuation under a callee postcondition, so
       // discard any lowered suffix beyond the source depth. Conversely, retain the source expressions only when

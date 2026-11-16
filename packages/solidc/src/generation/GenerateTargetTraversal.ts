@@ -808,6 +808,12 @@ export function assertRecoveryLoopBand(fn: FunctionDefinitionNode): void {
  * chunks the entry only reads). Neither counts the side-cars and the loop counts neither, so the side-cars and the
  * walk's entries, or the write's new chunks, need the same indexes. The chunks an entry only reads are found through its
  * `__internal__dynamicChunkInputBase` witness, so they follow the side-cars and are not refused.
+ *
+ * A loop that runs after a mapping loop starts its counter past the mapping loop's inputs (the shared cursors), at
+ * master + blockSize + m + k, while the mapping loop takes its coins past the chunks the entry only reads, which it counts
+ * and the keccak256 loop does not. Beside such chunks the two runs need the same indexes, so that order is refused too; a
+ * loop that runs first is counted by the mapping loop, per-turn payments and events after it, and the chunks follow its
+ * side-cars.
  */
 export class KeccakLoopSideCarError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
@@ -816,9 +822,10 @@ export class KeccakLoopSideCarError extends SolidCashError {
 }
 
 /**
- * Refuse a source entry whose keccak256 loop shares the index after its block with a collection walk or a write of
- * dynamic state (KeccakLoopSideCarError), naming the entry and both runs. Run on the code generator's final function
- * facts. A constructor, built by its deploy, and a compiler-named function are not checked.
+ * Refuse a source entry whose keccak256 loop shares the index after its block with a collection walk, a write of
+ * dynamic state, or a mapping loop that runs before it beside chunks the entry only reads (KeccakLoopSideCarError),
+ * naming the entry and the runs. Run on the code generator's final function facts. A constructor, built by its deploy,
+ * and a compiler-named function are not checked.
  */
 export function assertKeccakLoopBand(fn: FunctionDefinitionNode): void {
   if (fn.keccakLoopReads !== true || !fn.isEntryPoint || fn.name.startsWith('__')) return;
@@ -831,11 +838,22 @@ export function assertKeccakLoopBand(fn: FunctionDefinitionNode): void {
       ? `writes the dynamic state '${written}', whose new chunks it checks at the outputs right after its block, where `
         + 'the loop recreates its side-cars'
       : undefined;
-  if (other === undefined) return;
-  throw new KeccakLoopSideCarError(fn, 'keccak-loop-shares-trailing-band', `'${fn.name}' hashes in a keccak256 loop, `
-    + 'which reads side-car k from the input master + blockSize + k and recreates it at the output of that index, and '
-    + `${other}. Neither run counts the coins of the other, so no transaction holds both. Move the loop, or the `
-    + `${walked !== undefined ? 'walk' : 'write'}, into a function of its own`);
+  if (other !== undefined) {
+    throw new KeccakLoopSideCarError(fn, 'keccak-loop-shares-trailing-band', `'${fn.name}' hashes in a keccak256 loop, `
+      + 'which reads side-car k from the input master + blockSize + k and recreates it at the output of that index, and '
+      + `${other}. Neither run counts the coins of the other, so no transaction holds both. Move the loop, or the `
+      + `${walked !== undefined ? 'walk' : 'write'}, into a function of its own`);
+  }
+  const read = fn.dynamicReads?.[0];
+  const mapped = fn.entryLoopWrites?.[0] ?? fn.sortedInsertLoops?.[0] ?? fn.sortedInsertLoopInfo?.[0]?.collection
+    ?? fn.sortedUpsertLoopInfo?.[0]?.collection;
+  if (read === undefined || mapped === undefined || fn.keccakLoopPrecedesTrailingUser === true) return;
+  throw new KeccakLoopSideCarError(fn, 'keccak-loop-shares-trailing-band', `'${fn.name}' hashes in a keccak256 loop `
+    + `that runs after a loop writing the mapping '${mapped}', and reads the dynamic state '${read}'. The mapping loop `
+    + `takes its coins after the block past the chunks of '${read}', which it counts, and the keccak256 loop reads `
+    + 'side-car k from the input master + blockSize + m + k, past the m inputs of the mapping loop but not past the '
+    + 'chunks, so the side-cars and the mapping loop\'s coins need the same indexes and no transaction holds both. Hash '
+    + `in a loop that runs before the mapping loop, or read '${read}' in a function of its own`);
 }
 
 /**

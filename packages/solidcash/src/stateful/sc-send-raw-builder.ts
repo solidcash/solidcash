@@ -3,9 +3,12 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
+import { applyExternalSignatures } from '../external-signing.js';
 import type { TransactionDetails } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { generateLibauthSourceOutputs } from '../utils.js';
 import { attachWait } from '../wait.js';
 import {
   assertFinalizedBytesWithCovenant,
@@ -14,6 +17,26 @@ import {
 
 export interface SendRawBuilderHost {
   readonly parentProvider: NetworkProvider;
+}
+
+/**
+ * The bytes to broadcast for a judged, built `transaction`: each input whose key a wallet holds signed by that wallet
+ * (../external-signing.ts), or `transaction` as it was built when there is none. The lifecycle-admin sites (this
+ * file's `sendRawBuilder`, split, merge) fund from a caller-supplied unlocker, which may be `Signer.external`'s, and
+ * call this after their fee and byte gates, so a wallet is asked to sign only bytes the SDK would broadcast. The
+ * placeholder has the signature's size, so those verdicts hold for the signed bytes.
+ */
+export async function signExternallySignedInputs(
+  builder: TransactionBuilder, transaction: Transaction, rawTx: string,
+): Promise<{ transaction: Transaction; rawTx: string; rawTxBin: Uint8Array }> {
+  const signed = await applyExternalSignatures(
+    builder.inputs.map((input) => ('unlocker' in input ? input.unlocker : undefined)),
+    transaction, generateLibauthSourceOutputs(builder.inputs),
+  );
+  if (signed === transaction) return { transaction, rawTx, rawTxBin: hexToBin(rawTx) };
+  const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+  const rawTxBin = encodeTransaction(signed);
+  return { transaction: signed, rawTx: binToHex(rawTxBin), rawTxBin };
 }
 
 /**
@@ -60,11 +83,12 @@ export async function sendRawBuilder(
   // with it instead of arriving before it.
   assertFinalizedBytesWithCovenant(builder, decoded, inputSubjectsOfBuilder(builder));
 
+  const signed = await signExternallySignedInputs(builder, decoded, rawTx);
   const provider = host.parentProvider;
-  const txid = await provider.sendRawTransaction(rawTx);
+  const txid = await provider.sendRawTransaction(signed.rawTx);
 
   // Verify txid matches locally computed hash to detect compromised providers
-  const expectedTxid = binToHex(hash256(rawTxBin).reverse());
+  const expectedTxid = binToHex(hash256(signed.rawTxBin).reverse());
   if (txid !== expectedTxid) {
     throw new Error(
       `Txid mismatch: provider returned '${txid}', expected '${expectedTxid}'. `
@@ -72,5 +96,5 @@ export async function sendRawBuilder(
     );
   }
 
-  return attachWait({ ...decoded, txid, hex: rawTx } as TransactionDetails, builder.provider);
+  return attachWait({ ...signed.transaction, txid, hex: signed.rawTx } as TransactionDetails, builder.provider);
 }

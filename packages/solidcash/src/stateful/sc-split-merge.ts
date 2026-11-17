@@ -8,6 +8,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import {
   assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder,
 } from '../message-bus/preflight.js';
+import { signExternallySignedInputs } from './sc-send-raw-builder.js';
 import type {
   MergeOptions, MergeResult, SplitOptions, SplitResult,
 } from './stateful-lifecycle-types.js';
@@ -159,10 +160,12 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
   // BOTH, so neither objection can absorb a test written against the other.
   assertFinalizedBytesWithCovenant(builder, decoded, inputSubjectsOfBuilder(builder));
 
-  const txid = await provider.sendRawTransaction(rawTx);
+  // `funder` may be a wallet's (`Signer.external`): it signs the funding inputs now (./sc-send-raw-builder.ts).
+  const signed = await signExternallySignedInputs(builder, decoded, rawTx);
+  const txid = await provider.sendRawTransaction(signed.rawTx);
 
   // Verify txid matches locally computed hash to detect compromised providers
-  const expectedTxid = binToHex(hash256(rawTxBin).reverse());
+  const expectedTxid = binToHex(hash256(signed.rawTxBin).reverse());
   if (txid !== expectedTxid) {
     throw new Error(
       `Txid mismatch: provider returned '${txid}', expected '${expectedTxid}'. `
@@ -170,7 +173,7 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
     );
   }
 
-  return { tx: { ...decoded, txid, hex: rawTx } as any, categoryId };
+  return { tx: { ...signed.transaction, txid, hex: signed.rawTx } as any, categoryId };
 }
 
 
@@ -332,10 +335,12 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
   // rather than in place of it.
   assertFinalizedBytesWithCovenant(builder, decoded, inputSubjectsOfBuilder(builder));
 
-  const txid = await provider.sendRawTransaction(rawTx);
+  // `funder` may be a wallet's (`Signer.external`): it signs the funding inputs now (./sc-send-raw-builder.ts).
+  const signed = await signExternallySignedInputs(builder, decoded, rawTx);
+  const txid = await provider.sendRawTransaction(signed.rawTx);
 
   // Verify txid matches locally computed hash to detect compromised providers
-  const expectedTxid = binToHex(hash256(rawTxBin).reverse());
+  const expectedTxid = binToHex(hash256(signed.rawTxBin).reverse());
   if (txid !== expectedTxid) {
     throw new Error(
       `Txid mismatch: provider returned '${txid}', expected '${expectedTxid}'. `
@@ -343,5 +348,5 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
     );
   }
 
-  return { tx: { ...decoded, txid, hex: rawTx } as any, categoryId };
+  return { tx: { ...signed.transaction, txid, hex: signed.rawTx } as any, categoryId };
 }

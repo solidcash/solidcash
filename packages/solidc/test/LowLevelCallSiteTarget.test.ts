@@ -67,6 +67,9 @@ const SHAPES: ReadonlyArray<readonly [string, string]> = [
     payee = p;
     payee.call{value: amount}("");
   }`],
+  ['as a statement through a stored struct\'s field', `function f(int amount) external {
+    split.to.call{value: amount}("");
+  }`],
 ];
 
 /**
@@ -142,6 +145,21 @@ describe('a low-level call through a target its function writes before the call'
     expect(rawCallOf(artifact, 'callThenRetarget')?.targetWrittenBeforeCall).toBeUndefined();
     expect(rawCallOf(artifact, 'callOnly')).toBeDefined();
     expect(rawCallOf(artifact, 'callOnly')?.targetWrittenBeforeCall).toBeUndefined();
+  });
+
+  it('publishes a statement call through a stored struct\'s field as written first only after a write of it', () => {
+    // The statement form reads its receiver where it runs; the flag tells a builder not to resolve the callee from the
+    // state before the call.
+    const artifact = compileString(payer(`
+      function reshare(int s, int amount) external { split.share = s; split.to.call{value: amount}(""); }
+      function resplit(address p, int amount) external { split.to = p; split.to.call{value: amount}(""); }`), {
+      forceStateful: true,
+    });
+    const row = (entry: string): { targetWrittenBeforeCall?: true } | undefined => artifact.abi
+      .find((fn) => fn.name === entry)?.lowLevelCalls?.[0];
+    expect(row('reshare')).toBeDefined();
+    expect(row('reshare')?.targetWrittenBeforeCall).toBeUndefined();
+    expect(row('resplit')?.targetWrittenBeforeCall).toBe(true);
   });
 });
 

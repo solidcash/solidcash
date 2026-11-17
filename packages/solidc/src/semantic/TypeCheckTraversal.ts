@@ -711,7 +711,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitLowLevelCall(node: LowLevelCallNode): Node {
-    // Don't type-check targetExpression - it may be an unresolved interface/contract ref
+    // Don't type-check targetExpression - it may be an unresolved interface/contract ref - beyond its field reads.
+    node.targetExpression = this.typeLowLevelCallTargetFields(node.targetExpression);
     node.data = this.visit(node.data);
     if (node.data.type && !implicitlyCastable(node.data.type, new BytesType())) {
       throw new TypeError(node, node.data.type, new BytesType());
@@ -729,7 +730,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitLowLevelCallStatement(node: LowLevelCallStatementNode): Node {
-    // Don't type-check targetExpression
+    // Don't type-check targetExpression beyond its field reads (typeLowLevelCallTargetFields).
+    node.targetExpression = this.typeLowLevelCallTargetFields(node.targetExpression);
     node.data = this.visit(node.data);
     if (node.data.type && !implicitlyCastable(node.data.type, new BytesType())) {
       throw new TypeError(node, node.data.type, new BytesType());
@@ -744,6 +746,18 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.callOptions.gas = this.visit(node.callOptions.gas);
     }
     return node;
+  }
+
+  /**
+   * A low-level call's target is not type-checked as a whole: it may name an interface or contract the checker cannot
+   * resolve. A field read in it, alone or under casts (`split.to.call{value: v}("")`, `payable(s.to).call(..)`), is
+   * read where the call runs, so it is checked like any other: code generation reads the struct it names (structType)
+   * and its base's type.
+   */
+  private typeLowLevelCallTargetFields(target: ExpressionNode): ExpressionNode {
+    if (target instanceof FieldAccessNode) return this.visit(target) as ExpressionNode;
+    if (target instanceof CastNode) target.expression = this.typeLowLevelCallTargetFields(target.expression);
+    return target;
   }
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {

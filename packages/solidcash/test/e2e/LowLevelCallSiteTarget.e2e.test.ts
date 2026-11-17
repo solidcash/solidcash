@@ -84,6 +84,50 @@ contract FieldPayer {
   }
 }`;
 
+/**
+ * A payer that pays a stored struct's `to` with the statement form, which reads its receiver where the call runs: no
+ * write of it, after a write of it, and after a write of another field. Code generation read that receiver as a field
+ * of a struct the type checker had not looked at, and failed (`structType` undefined).
+ */
+const STATEMENT_PAYER = `pragma solidcash >=0.8.0;
+contract StatementPayer {
+  struct Split { address to; int share; }
+  Split split;
+  int sends;
+  function setPayee(address p) external { split = Split(p, 1); }
+  function pay(int amount) external { split.to.call{value: amount}(""); sends = sends + 1; }
+  function resplitThenPay(address p, int amount) external {
+    split.to = p;
+    split.to.call{value: amount}("");
+    sends = sends + 1;
+  }
+  function reshareThenPay(int share, int amount) external {
+    split.share = share;
+    split.to.call{value: amount}("");
+    sends = sends + 1;
+  }
+}`;
+
+/** The statement payer as a Solidity port, whose receiver is a cast of the field. */
+const SOLIDITY_STATEMENT_PAYER = `pragma solidity ^0.8.0;
+contract StatementPayer {
+  struct Split { address to; uint256 share; }
+  Split split;
+  uint256 public sends;
+  function setPayee(address p) external { split = Split(p, 1); }
+  function pay(uint256 amount) external { payable(split.to).call{value: amount}(""); sends = sends + 1; }
+  function resplitThenPay(address p, uint256 amount) external {
+    split.to = p;
+    payable(split.to).call{value: amount}("");
+    sends = sends + 1;
+  }
+  function reshareThenPay(uint256 share, uint256 amount) external {
+    split.share = share;
+    payable(split.to).call{value: amount}("");
+    sends = sends + 1;
+  }
+}`;
+
 /** The same payer written as a Solidity port. */
 const SOLIDITY_PAYER = `pragma solidity ^0.8.0;
 contract Payer {
@@ -231,6 +275,34 @@ describe('a value call through a field its function does not write, after a writ
     expect((await payer.getState()).sends).toBe(1n);
   });
 });
+
+for (const form of [
+  { name: 'native', source: STATEMENT_PAYER, options: { forceStateful: true } },
+  { name: 'evmCompat', source: SOLIDITY_STATEMENT_PAYER, options: EVM_OPTIONS },
+]) {
+  describe(`a statement-form value call through a stored struct's field (${form.name})`, () => {
+    const artifact = compileString(form.source, form.options);
+
+    it('pays the stored field, and the spend that pays another address is refused', async () => {
+      const { payer, first, second } = await payerWithPayee(artifact);
+      await expectPays(payer.pay(AMOUNT), first, second);
+      const tx = await payer.pay(AMOUNT).send();
+      expect(paymentTo(decodeTransactionUnsafe(hexToBin(tx.hex)), first)).toBeGreaterThanOrEqual(0);
+      expect((await payer.getState()).sends).toBe(1n);
+    });
+
+    it('pays the written field when the write comes first, and the spend that pays the old one is refused',
+      async () => {
+        const { payer, first, second } = await payerWithPayee(artifact);
+        await expectPays(payer.resplitThenPay(second, AMOUNT), second, first);
+      });
+
+    it('pays the stored field after a write of another field', async () => {
+      const { payer, first, second } = await payerWithPayee(artifact);
+      await expectPays(payer.reshareThenPay(2n, AMOUNT), first, second);
+    });
+  });
+}
 
 type Provider = ReturnType<typeof createTestProvider>;
 type Deployed = { contract: any; address: Uint8Array };

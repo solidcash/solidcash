@@ -95,7 +95,7 @@ export function installOfflineRpcShims(
     eth_getLogs: () => [],
     eth_accounts: () => [],
     eth_syncing: () => false,
-    web3_clientVersion: () => 'solidhat-mock/0.51.0',
+    web3_clientVersion: () => 'solidhat-mock/0.51.1',
   };
 
   const patched = async (method: string, params: unknown[] = []): Promise<unknown> => {

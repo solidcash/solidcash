@@ -54,6 +54,12 @@ const oneTimeUnit = (1 << 22) | 1; // one 512-second unit
 builder.addInput(utxo, unlocker, { sequence: oneTimeUnit });
 ```
 
+In a stateful contract, `this.age` checks the contract's master input. Set that input's sequence on the call with
+`setSequence()`, for example `await sc.call.claim().setSequence(144).send()`. A value with the disable flag (bit 31)
+is refused. Only an ordinary call takes it: split and merge functions and composed calls (message-bus batches and
+typed callbacks) refuse a call that sets it. `this.age` inside a co-spent callee checks that callee's own master,
+which this option does not reach.
+
 ## Introspection variables
 Introspection functionality is used to create *covenant* contracts. Covenants are a technique used to put constraints on spending the money inside a smart contract. The main use case of this is limiting the addresses where money can be sent and the amount sent. To explore the possible uses of covenants inside smart contracts, read the [SolidCash Covenants Guide][covenants-guide].
 

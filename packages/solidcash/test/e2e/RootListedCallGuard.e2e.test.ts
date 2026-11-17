@@ -22,6 +22,7 @@ import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.j
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
 const source = (setSelector: string): string => `pragma solidcash ^0.51.0;
+  interface IT { function set(int h, int c) external; }
   contract T { int height; int clock; int calls;
     function set(int h, int c) external { height = h; clock = c; calls = calls + 1; } }
   contract R { int runs;
@@ -39,10 +40,16 @@ const source = (setSelector: string): string => `pragma solidcash ^0.51.0;
       }
       runs = runs + 1;
     }
+    function typedTimes(IT t, int n) external {
+      for (int i = 0; i < n; i++) { t.set(5, 5); }
+      runs = runs + 1;
+    }
   }`;
 
-const compileOptions = (primary: string): never => ({
+// With `callBatch`, T carries its multi-call entry, through which R's calls in a loop run as frames of one spend.
+const compileOptions = (primary: string, callBatch = false): never => ({
   deployer: true, genesisCalls: true, messageBus: false, primaryContractName: primary,
+  ...(callBatch && { callBatch: true }),
 }) as never;
 
 let serial = 0x7e00;
@@ -64,7 +71,7 @@ interface Chain {
   tLock: Uint8Array;
 }
 
-async function chain(): Promise<Chain> {
+async function chain(callBatch = false): Promise<Chain> {
   const provider = new MockNetworkProvider({ profile: 'production' });
   const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
   const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
@@ -84,7 +91,7 @@ async function chain(): Promise<Chain> {
     sent.push({ transaction, sourceOutputs });
     return original(hex);
   };
-  const tArtifact = compileString(source('00000000'), compileOptions('T'));
+  const tArtifact = compileString(source('00000000'), compileOptions('T', callBatch));
   const setSelector = tArtifact.abi.find((fn) => fn.name === 'set')!.selector!.replace(/^0x/, '');
   const deploy = async (artifact: Artifact): Promise<DeployResult<Artifact>> => {
     const fundingUtxo: Utxo = { txid: nextTxid(), vout: 0, satoshis: 2_000_000n };
@@ -141,6 +148,20 @@ describe('R\'s raw call to T, with T listed by withExternalCall(), under a guard
       expect(c.sentCount()).toBe(before);
       expect(await c.tState()).toEqual({ height: 3n, clock: 3n, calls: 1n });
       expect(await c.runs()).toBe(1n);
+    });
+
+  // A typed call in a loop runs as frames of T's multi-call spend on the direct convention. The frames are planned from
+  // the loop's turns, the listed slot's too: a loop that does not turn spends no frame, and T stays unspent.
+  it('a listed typed call in a loop: T stays unspent when the loop does not turn, and is called when it turns once',
+    async () => {
+      const c = await chain(true);
+      const skipped = await c.outcome('typedTimes', [c.tLock, 0n], [5n, 5n]);
+      expect(skipped.text).toBe('sent; T not spent; T 0/0/0');
+      expect(await c.runs()).toBe(1n);
+
+      const made = await c.outcome('typedTimes', [c.tLock, 1n], [5n, 5n]);
+      expect(made.text).toBe('sent; T spent; T 5/5/1');
+      expect(await c.runs()).toBe(2n);
     });
 
   it('refuses by name, before sending, a listed call under a guard the compiler cannot publish', async () => {

@@ -297,6 +297,7 @@ import { computeExpressionSiteKey } from '../ast/Location.js';
 import {
   compileBinaryOp,
   compileAddressToEvmIdentity,
+  compileLockToEvmIdentity,
   compileCast,
   compileEvmWordCast,
   compileGlobalFunction,
@@ -33110,10 +33111,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * [.., candidateLbc, target] -> [..]: a 20-byte target must be a canonical lock of that identity
-   * (emitCompatAddressMatch); any other target must match exactly. An empty target, address(0), fails, as does an
-   * empty lock for a 20-byte target (it projects to the zero identity): the only coin either matches is an empty-lock
-   * coin, which a miner can include and which would then answer the call.
+   * [.., candidateLbc, target] -> [..]: a 20-byte target must be the identity of the candidate's P2SH32 or P2PKH lock
+   * (emitCompatAddressMatch for a candidate); any other target must match exactly. An empty target, address(0), fails,
+   * as does any other lock for a 20-byte target, an empty one among them: the coins they match are ones a spender or a
+   * miner can make, which would then answer the call.
    */
   private emitCompatTargetIdentity(loc: SingleLocationData): void {
     this.emit(Op.OP_SIZE, loc);
@@ -33123,9 +33124,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_SWAP, loc);                              // [.., target20, candidateLbc] = [identity, lock]
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_VERIFY, loc);
-    this.emitCompatAddressMatch(loc);                        // consumes both, EQUALVERIFY inside
+    this.emitCompatAddressMatch(loc, true);                  // consumes both, EQUALVERIFY inside
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);                       // lbc == target (full lock, exact)
     this.emit(Op.OP_ENDIF, loc);
@@ -33624,9 +33623,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * [identity, lock] -> []: the lock is a P2SH32 lock whose HASH160 is the identity, its P2PKH or P2SH20 lock, the raw
-   * identity, or no bytes for the zero address.
+   * identity, or no bytes for the zero address. A `candidate`, a coin the spender co-spends as a callee, matches only as
+   * a P2SH32 or a P2PKH lock (compileLockToEvmIdentity); an address argument the caller holds keeps every form.
    */
-  private emitCompatAddressMatch(loc: SingleLocationData): void {
+  private emitCompatAddressMatch(loc: SingleLocationData, candidate = false): void {
+    if (candidate) {
+      for (const operation of compileLockToEvmIdentity()) this.emit(operation, loc); // [identity, candidateIdentity]
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      return;
+    }
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(35n), loc);
@@ -54155,13 +54160,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[candidateLbc, expected]` -> the pair the caller's OP_EQUALVERIFY binds: a 20-byte imported-Solidity identity and
-   * the candidate's canonical projection, or any other expected address and the candidate itself.
+   * the candidate's identity, or any other expected address and the candidate itself.
+   *
+   * A candidate stands for a 20-byte identity only as a P2SH32 or a P2PKH lock (compileLockToEvmIdentity). A P2SH20
+   * lock carrying the HASH160 of the callee's P2SH32 lock projects to the callee's identity too, and anyone can spend
+   * it with the callee's public redeem bytecode; with a token of a category its spender makes it answered the call in
+   * the callee's place. A 20-byte lock, or a zero-padded 32-byte one, projected to itself, and a miner can include one.
    *
    * The zero address names no contract, so a call through it fails here, as a high-level call to an account without
    * code reverts on the EVM. Its empty form is refused outright. Its 20-byte form is the projection of an empty
-   * candidate, and of no other lock a spender can unlock, so an empty candidate is refused as well. An empty expected
-   * address used to select the candidate itself: a target holding address(0) (a state variable never set or zeroed,
-   * a parameter, a literal) then accepted whatever contract the spender co-spent, and the caller used its answer.
+   * candidate, which no candidate form takes. An empty expected address used to select the candidate itself: a target
+   * holding address(0) (a state variable never set or zeroed, a parameter, a literal) then accepted whatever contract
+   * the spender co-spent, and the caller used its answer.
    */
   private emitCalleeIdentityOperands(locationData: SingleLocationData): void {
     if (this.compilerOptions.evmCompat) {
@@ -54185,11 +54195,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(20n), locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
-    // [candidateLbc, expected20] -> [expected20, projectedCandidate]. An empty candidate fails the VERIFY.
+    // [candidateLbc, expected20] -> [expected20, candidateIdentity]. Any other lock, an empty one too, fails.
     this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    for (const operation of compileLockToEvmIdentity()) this.emit(operation, locationData);
     this.emit(Op.OP_ENDIF, locationData);
   }
 
@@ -55286,10 +55294,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_NUMEQUAL, locationData);
         this.emit(Op.OP_IF, locationData);
         this.emit(Op.OP_SWAP, locationData);          // [idx, target20, lbc] = [identity, lock]
-        // An empty lock projects to the zero identity, address(0), and only an empty-lock coin has one.
-        this.emit(Op.OP_SIZE, locationData);
-        this.emit(Op.OP_VERIFY, locationData);
-        this.emitCompatAddressMatch(locationData);    // consumes both, EQUALVERIFY inside
+        // Only a P2SH32 or a P2PKH lock stands for the identity: an empty one, address(0), and the forms a spender or
+        // a miner can make for another's identity do not.
+        this.emitCompatAddressMatch(locationData, true); // consumes both, EQUALVERIFY inside
         this.emit(Op.OP_ELSE, locationData);
         this.emitCalleeIdentityOperands(locationData); // address(0) refused
         this.emit(Op.OP_EQUALVERIFY, locationData);

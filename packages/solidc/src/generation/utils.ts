@@ -40,6 +40,28 @@ function evmTwosBytesToSigned(byteLen: number): Script {
   ];
 }
 
+/**
+ * `[lock] -> [identity]`: a co-spent coin's locking bytecode to the 20-byte identity a call's target names, accepting only
+ * the forms that take a preimage to make for another's identity: a P2SH32 lock's HASH160 and a P2PKH lock's key hash.
+ * Any other lock fails the spend. A P2SH20 lock's hash can be the HASH160 of a contract's P2SH32 lock: its redeem script
+ * is then that lock, `OP_HASH256 <h> OP_EQUAL`, which the contract's public redeem bytecode satisfies, so anyone can make
+ * and spend a coin with the contract's identity. A 20-byte lock, or a 32-byte one with a 12-byte zero prefix, is the
+ * identity itself, and a miner can include one. An address value, not a lock, keeps compileAddressToEvmIdentity.
+ */
+export function compileLockToEvmIdentity(): Script {
+  return [
+    Op.OP_SIZE, encodeInt(35n), Op.OP_NUMEQUAL,
+    Op.OP_IF,
+    Op.OP_HASH160,
+    Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(25n), Op.OP_NUMEQUALVERIFY,
+    // P2PKH `76a914 <20> 88ac`: its hash, once both ends match the template.
+    encodeInt(3n), Op.OP_SPLIT, Op.OP_SWAP, Uint8Array.of(0x76, 0xa9, 0x14), Op.OP_EQUALVERIFY,
+    encodeInt(20n), Op.OP_SPLIT, Uint8Array.of(0x88, 0xac), Op.OP_EQUALVERIFY,
+    Op.OP_ENDIF,
+  ];
+}
+
 /** Convert a native BCH address or a Solidity ABI address word into the canonical 20-byte identity. */
 export function compileAddressToEvmIdentity(): Script {
   return [

@@ -42,6 +42,8 @@ import {
 import {
   expandResolveCreateBuilderExternalCalls as expandResolveCreateBuilderExternalCallsImpl,
   rawCallName,
+  refuseListedLowLevelCallsTheGuardSkips,
+  type ExpandResolveCreateBuilderExternalCallsHost,
 } from './sc-expand-resolve-create-builder-external-calls.js';
 import {
   allocateCreateBuilderSharedFunders as allocateCreateBuilderSharedFundersImpl,
@@ -414,28 +416,34 @@ export async function orchestrateCreateBuilderExternalCalls(
     }
   }
 
+  const resolveHost: ExpandResolveCreateBuilderExternalCallsHost = {
+    getExternalTargetEntriesByInterface: (interfaceName) =>
+      host.inner.getExternalTargetEntriesByInterface(interfaceName),
+    resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
+    evaluateExternalExpression: (...a: any[]) => host.callerContract._evaluateExternalExpression(...a),
+    resolveExternalExpressionReturns: (
+      sources, functionArgs, state, callerInputs, executionSelfAddress, producerCalls,
+    ) => host.callerContract._resolveExternalExpressionReturns(
+      sources, functionArgs, host.callerContract, state, callerInputs,
+      executionSelfAddress, producerCalls, false,
+    ),
+    hydrateExternalPredicateState: (...a: any[]) => host.callerContract._hydrateExternalPredicateState(...a),
+    getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
+    getExternalDeploymentByAddressValue: (value) =>
+      findDeploymentByAddressValue(host.inner.provider, value)?.contract,
+    isCreate2ProjectedAddressValue: (value) =>
+      isCreate2ProjectedAddressValue(host.inner.provider, value),
+    getFullState: () => host.getFullState(),
+    probeRawCallee: host.probeRawCallee === undefined
+      ? undefined : (...a: any[]) => host.probeRawCallee!(...a),
+  };
+  // A `.withCall()` list names a low-level call's callee, not whether the function makes it: decide each listed call's
+  // guard before a compat callee group or a low-level callee is co-spent for it.
+  await refuseListedLowLevelCallsTheGuardSkips(
+    resolveHost, abiFunction, args, host.inner.artifact, publicSelfAddress, overrides?.calls,
+  );
   const expandedExternal = await expandResolveCreateBuilderExternalCallsImpl(
-    {
-      getExternalTargetEntriesByInterface: (interfaceName) =>
-        host.inner.getExternalTargetEntriesByInterface(interfaceName),
-      resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
-      evaluateExternalExpression: (...a: any[]) => host.callerContract._evaluateExternalExpression(...a),
-      resolveExternalExpressionReturns: (
-        sources, functionArgs, state, callerInputs, executionSelfAddress, producerCalls,
-      ) => host.callerContract._resolveExternalExpressionReturns(
-        sources, functionArgs, host.callerContract, state, callerInputs,
-        executionSelfAddress, producerCalls, false,
-      ),
-      hydrateExternalPredicateState: (...a: any[]) => host.callerContract._hydrateExternalPredicateState(...a),
-      getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
-      getExternalDeploymentByAddressValue: (value) =>
-        findDeploymentByAddressValue(host.inner.provider, value)?.contract,
-      isCreate2ProjectedAddressValue: (value) =>
-        isCreate2ProjectedAddressValue(host.inner.provider, value),
-      getFullState: () => host.getFullState(),
-      probeRawCallee: host.probeRawCallee === undefined
-        ? undefined : (...a: any[]) => host.probeRawCallee!(...a),
-    },
+    resolveHost,
     abiFunction,
     args,
     host.inner.artifact,

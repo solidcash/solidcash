@@ -48,7 +48,7 @@ function walk(dir: string, accept: (file: string) => boolean, out: string[] = []
 
 function sourceModules(contractsDir: string): Map<string, { module: string; identifiers: ReadonlySet<string> }> {
   const found = new Map<string, { module: string; identifiers: ReadonlySet<string> }>();
-  for (const file of walk(contractsDir, (candidate) => /\.(?:sol|scash)$/.test(candidate))) {
+  for (const file of walk(contractsDir, (candidate) => /\.(?:sol|scash)$/.test(candidate)).sort()) {
     const source = fs.readFileSync(file, 'utf8');
     const relative = path.relative(contractsDir, file).replace(/\\/g, '/').replace(/\.(?:sol|scash)$/, '');
     const identifiers = new Set(source.match(/[A-Za-z_$][\w$]*/g) ?? []);
@@ -64,6 +64,26 @@ function stableArtifactJson(artifact: Artifact): string {
   // The compiler writes a flat and a nested copy, and each copy's lazy delegate build carries its own timestamp.
   // Drop every `updatedAt` so the copies compare by content, while any real bytecode or ABI difference still fails.
   return JSON.stringify(artifact, (key, value: unknown) => key === 'updatedAt' ? undefined : value);
+}
+
+function sameContract(left: Artifact, right: Artifact): boolean {
+  // A root re-emits each declaration it imports under its own source directory, with the root's top-level `source`,
+  // its file-level `enums` and a `debug` map over that source. Those copies describe the same contract, so compare
+  // everything else (nested ABI metadata included); the binding uses the declaring source's copy, and enum types are
+  // filtered by that source anyway.
+  const content = ({
+    source: _source, debug: _debug, enums: _enums, ...rest
+  }: Artifact): string => stableArtifactJson(rest as Artifact);
+  return content(left) === content(right);
+}
+
+/** Whether the compile task wrote the artifact under its declaring file: `<artifacts>/<contracts dir>/<File>.scash/`. */
+function emittedByOwnSource(
+  artifactsDir: string, contractsDir: string, file: string, sourceModule: string | undefined,
+): boolean {
+  if (sourceModule === undefined) return false;
+  const directory = path.relative(artifactsDir, path.dirname(file)).replace(/\\/g, '/');
+  return directory === `${path.basename(contractsDir)}/${sourceModule}.scash`;
 }
 
 function readArtifacts(artifactsDir: string, contractsDir: string): ArtifactFile[] {
@@ -84,11 +104,16 @@ function readArtifacts(artifactsDir: string, contractsDir: string): ArtifactFile
       .filter((enumeration) => identifiers.has(enumeration.name))
       .map((enumeration) => enumeration.name);
     const existing = byName.get(artifact.contractName);
-    if (existing && stableArtifactJson(existing.artifact) !== stableArtifactJson(artifact)) {
+    if (existing && !sameContract(existing.artifact, artifact)) {
       throw new Error(`Type generation found multiple distinct artifacts named "${artifact.contractName}".`);
     }
     const candidate = { artifact, file, sourceModule, visibleEnumNames };
-    if (!existing || file.split(path.sep).length > existing.file.split(path.sep).length) {
+    // Prefer the copy its declaring source emitted, then the nested copy over the flat one.
+    const own = emittedByOwnSource(artifactsDir, contractsDir, file, source?.module);
+    const existingOwn = existing !== undefined
+      && emittedByOwnSource(artifactsDir, contractsDir, existing.file, source?.module);
+    if (!existing || (own && !existingOwn)
+      || (own === existingOwn && file.split(path.sep).length > existing.file.split(path.sep).length)) {
       byName.set(artifact.contractName, candidate);
     }
   }

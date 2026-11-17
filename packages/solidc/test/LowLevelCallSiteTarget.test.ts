@@ -223,6 +223,18 @@ describe('a call through a field of an entry its function writes other fields of
     expect(rawCallOf(artifact, 'retoken')?.targetWrittenBeforeCall).toBe(true);
   });
 
+  it('publishes a call after a write of its entry\'s target field, which it reads through the entry cache', () => {
+    // Under evmCompat the field write is cached (`__vmapcache_book_<n>`) and written back after the call; the call
+    // reads the cache where it runs. A builder resolves the stored field before the call, which the write changes.
+    const artifact = compileString(jobs(payAfter('retokenEntry', 'uint256 k, address t', 'book[k].token = t;',
+      'book[k].token')), { evmCompat: true, forceStateful: true });
+    const call = rawCallOf(artifact, 'retokenEntry');
+    expect(call?.targetWrittenBeforeCall).toBe(true);
+    expect(call?.addressSource).toMatchObject({
+      kind: 'expression', expression: { kind: 'field', name: 'token', expression: { kind: 'stateAccess', name: 'book' } },
+    });
+  });
+
   it.each(REFUSED)('refuses by name a call after a write of %s', (_write, member) => {
     const compile = (): Artifact => compileString(jobs(member), { evmCompat: true, forceStateful: true });
     expect(compile).toThrow(/ENTRY_TARGET_WRITTEN_BEFORE_CALL/);

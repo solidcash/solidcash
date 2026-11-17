@@ -54842,6 +54842,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         { functionName: this.currentFunction.name, call: typed?.functionName ?? 'call' },
       );
     };
+    // Whether a builder, reading `assignment`'s value before the call with its base local taken as what that local
+    // was initialized from, can read another value than the assignment takes (targetWrittenFirst).
+    const assignedWrittenFirst = (assignment: AssignNode): boolean => {
+      if (changing(assignment.expression, -1, undefined, assignment, false).writes.length > 0) return true;
+      const path: string[] = [];
+      let base: ExpressionNode = assignment.expression;
+      while (base instanceof FieldAccessNode || base instanceof CastNode) {
+        if (base instanceof FieldAccessNode) path.unshift(base.name);
+        base = base.expression;
+      }
+      const local = base instanceof IdentifierNode ? declarations.get(base.name) : undefined;
+      if (local?.expression === undefined) return false;
+      let source: ExpressionNode = local.expression;
+      for (const field of path) source = new FieldAccessNode(source, field);
+      return changing(source, -1, undefined, local, false).writes.length > 0;
+    };
     const staleInitializer = (name: string, call: ExternalCallSlot | Node): ExpressionNode | undefined => {
       const declaration = declarations.get(name);
       const initializer = declaration?.expression;
@@ -54894,6 +54910,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       staleInitializer,
       targetWrittenFirst: (name, call) => {
         const declaration = declarations.get(name);
+        // A local assigned where the call runs (`__extaddr_llf<N> = e.buyer`) holds what was assigned, which a builder
+        // resolves with its base local taken as what it was initialized from (`escrow.buyer`): the call runs on
+        // another callee once a write changes what the assignment reads before it (the entry cache a field write
+        // rebuilds), or what the base local was initialized from before it was declared.
+        const assignments = landed.filter((write) => write.node !== declaration && write.names?.includes(name) === true);
+        if (declaration !== undefined && assignments.length > 0) {
+          return assignments.some(({ node: write }) => !(write instanceof AssignNode) || assignedWrittenFirst(write));
+        }
         const copy = declaration?.receiverCopy;
         if (declaration?.expression === undefined || copy === undefined) {
           try {

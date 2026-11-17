@@ -60,8 +60,12 @@ export default interface NetworkProvider {
    */
   network: Network;
 
-  /** Category of the provider's default oracle pool, hex in display byte order. */
-  readonly oraclePoolCategory?: string;
+  /**
+   * Category of the provider's default oracle pool, hex in display byte order. `undefined` is spelled out so a
+   * provider may expose it through a getter that can return no pool (as MockNetworkProvider does) and still be a
+   * NetworkProvider for consumers compiling with `exactOptionalPropertyTypes`.
+   */
+  readonly oraclePoolCategory?: string | undefined;
 
   /**
    * Simulators and devnets: the key their own oracle pools name, its P2PKH funded. A pool a deployment creates

@@ -992,12 +992,15 @@ export async function orchestrateCreateBuilderExternalCalls(
     await refuseCreateBuilderNestedLowLevelCalls(externalCallUtxoGroups);
     // A transitive callee whose run reads a region right after its block (a walk, loop side-cars, the chunks it writes)
     // gets the block a direct callee gets, with the region after it. So does one whose call publishes a record, when a
-    // low-level call's callee follows every block on the low-level path: the tail band of call records would otherwise
-    // come before that callee's outputs. A return probe runs only this function's input.
+    // low-level call's callee follows every block on the low-level path, or the raw coin `.withCall(utxo)` names for it
+    // (recreated at its own index, which a covenant coin can check): the tail band of call records would otherwise come
+    // before those outputs. A return probe runs only this function's input.
     if (overrides?.returnProbeOnly !== true) {
-      const lowLevelBandCall = (abiFunction?.lowLevelCalls ?? []).findIndex((row, index) => (
-        row.callMode !== 'delegatecall' && (overrides?.calls?.[index] as { type?: string } | undefined)?.type === 'stateful'
-        && !compatCalls.some((call) => call.callIndex === index)));
+      const lowLevelBandCall = (abiFunction?.lowLevelCalls ?? []).findIndex((row, index) => {
+        const type = (overrides?.calls?.[index] as { type?: string } | undefined)?.type;
+        return row.callMode !== 'delegatecall' && (type === 'stateful' || type === 'raw')
+          && !compatCalls.some((call) => call.callIndex === index);
+      });
       await appendCreateBuilderTransitiveCalleeRegionsImpl(
         {
           block: nestedBlockHost,

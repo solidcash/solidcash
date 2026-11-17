@@ -2,6 +2,15 @@
 title: Release Notes
 ---
 
+## v0.51.1
+
+SolidCash 0.51.1 fixes contract creation through deployer coins from an external wallet. Bytecode and addresses are
+unchanged from 0.51.0, and there is nothing to migrate.
+
+- A `new` through a deployer coin works from a wallet the SDK holds no key for, such as WalletConnect or a browser
+  extension. The wallet signs the prep and then the creation before anything is broadcast, so declining leaves nothing
+  on chain. A creating call given its preps no longer needs a spare vout-0 coin.
+
 ## v0.51.0
 
 SolidCash 0.51.0 creates stateful children through deployer coins, adds the single-container pragmas, and binds every

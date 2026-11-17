@@ -931,25 +931,52 @@ export async function orchestrateCreateBuilderExternalCalls(
     // Discover and build transitive external call groups (B->C chains).
     // For each direct group, check if B's called function also has external calls.
     // If so, resolve B's external calls from B's connect-time registry and add them.
-    await discoverCreateBuilderTransitiveExternalCallsImpl(
-      host.categoryId,
-      externalCallUtxoGroups,
-      groupMetas,
-      directGroupCount,
-      async (shared, next, callee) => buildSharedMethodExternalBatch(
-        { buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a) },
-        shared,
-        next,
-        callee,
-        {
-          artifact: host.inner.artifact,
-          state: callerStateSnapshot ?? onChainState?.state,
-          inputs: abiFunction?.inputs ?? [],
-          selfAddress: publicSelfAddress,
-          identity: publicSelfIdentity,
-        },
-      ),
-    );
+    const discoverTransitive = (firstDirectIndex: number, directEnd: number): Promise<void> => (
+      discoverCreateBuilderTransitiveExternalCallsImpl(
+        host.categoryId,
+        externalCallUtxoGroups,
+        groupMetas,
+        directEnd,
+        async (shared, next, callee) => buildSharedMethodExternalBatch(
+          { buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a) },
+          shared,
+          next,
+          callee,
+          {
+            artifact: host.inner.artifact,
+            state: callerStateSnapshot ?? onChainState?.state,
+            inputs: abiFunction?.inputs ?? [],
+            selfAddress: publicSelfAddress,
+            identity: publicSelfIdentity,
+          },
+        ),
+        firstDirectIndex,
+      ));
+    await discoverTransitive(0, directGroupCount);
+
+    // A compat call's callee follows every typed group and the contracts those call, and fills no caller ABI slot;
+    // the caller reads it through its call-input witness. Its msg.sender is the caller a typed call presents. Then
+    // discovery follows the calls each such callee makes, as a typed call's callee's, and the refusals below cover
+    // its run and theirs; their groups answer that callee, no typed callsite of the entry.
+    const compatGroupStart = externalCallUtxoGroups.length;
+    for (const [ordinal, compat] of compatCalls.entries()) {
+      await materializeDirectCalleeGroup(externalCalls.length + ordinal, compat.ec, compat.callInfo);
+      const group = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
+      group.edgeLowLevelCallIndex = compat.callIndex;
+      groupMetas.push({
+        ecSlot: directGroupEcSlot(compat.ec, group), callerCategoryId: host.categoryId, parentGroupIndex: -1,
+      });
+    }
+    const compatGroupEnd = externalCallUtxoGroups.length;
+    if (compatGroupEnd > compatGroupStart) {
+      await discoverTransitive(compatGroupStart, compatGroupEnd);
+      for (let index = compatGroupEnd; index < externalCallUtxoGroups.length; index++) {
+        const parent = externalCallUtxoGroups[groupMetas[index].parentGroupIndex];
+        externalCallUtxoGroups[index].underLowLevelCallIndex = parent?.edgeLowLevelCallIndex
+          ?? parent?.underLowLevelCallIndex;
+      }
+    }
+
     // No called contract's own blockhash(n) read gets a slot of its oracle pool, only a plain coin at its block-hash
     // slot: refuse the call by name before a transitive callee's region is laid out or the transaction is derived.
     refuseCreateBuilderNestedBlockhashReads(externalCallUtxoGroups);
@@ -982,17 +1009,6 @@ export async function orchestrateCreateBuilderExternalCalls(
         },
         externalCallUtxoGroups, groupMetas, directGroupCount,
       );
-    }
-
-    // A compat call's callee follows every typed group and fills no caller ABI slot; the caller reads it through its
-    // call-input witness. Its msg.sender is the caller a typed call presents.
-    for (const [ordinal, compat] of compatCalls.entries()) {
-      await materializeDirectCalleeGroup(externalCalls.length + ordinal, compat.ec, compat.callInfo);
-      const group = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
-      group.edgeLowLevelCallIndex = compat.callIndex;
-      groupMetas.push({
-        ecSlot: directGroupEcSlot(compat.ec, group), callerCategoryId: host.categoryId, parentGroupIndex: -1,
-      });
     }
 
     // _externalCallInputBase: runtime param (needed for mutual A<->B calls)

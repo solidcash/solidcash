@@ -12876,9 +12876,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         externalReadUtxos,
         outStateInputCount,
         iterationEntryInputs,
-        // A compat call's callee group answers no typed callsite.
-        externalCallGroupCount: externalCallUtxoGroups
-          .filter((group) => group.edgeLowLevelCallIndex === undefined).length,
+        // A compat call's callee group answers no typed callsite, nor does the group of a contract that callee calls.
+        externalCallGroupCount: externalCallUtxoGroups.filter((group) => group.edgeLowLevelCallIndex === undefined
+          && group.underLowLevelCallIndex === undefined).length,
         reachedExternalCalls: externalCallsOrchestrated.externalCalls,
       },
     );

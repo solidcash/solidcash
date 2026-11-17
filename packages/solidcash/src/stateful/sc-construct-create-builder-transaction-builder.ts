@@ -385,9 +385,10 @@ export function constructCreateBuilderTransactionBuilder(
       }
     };
   const refreshTopLevelExternalCallInputIndices = (): boolean => {
-    // A compat call's callee group answers no typed callsite, so it names no slot and starts no participant region.
+    // A compat call's callee group answers no typed callsite, so it names no slot and starts no participant region;
+    // nor does the group of a contract that callee calls.
     const typedGroupIndices = externalCallUtxoGroups.flatMap((group, index) => (
-      group.edgeLowLevelCallIndex === undefined ? [index] : []));
+      group.edgeLowLevelCallIndex === undefined && group.underLowLevelCallIndex === undefined ? [index] : []));
     if (!abiFunction || typedGroupIndices.length === 0) return false;
     const groupByCallsite = new Map<number, number>();
     for (const groupIndex of typedGroupIndices) {

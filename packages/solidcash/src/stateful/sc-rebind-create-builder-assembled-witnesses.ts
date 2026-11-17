@@ -243,9 +243,10 @@ export function rebindCreateBuilderAssembledWitnesses(
   // target). The planned coordinate is reconstructed from dense band widths, which do not hold for a layout whose
   // implementation bands interleave with nested callees, so a stale coordinate fails the spend with a bare
   // `OP_VERIFY` before anything else in the frame can run. Rebind it from the assembled transaction.
-  // A compat call's callee group answers no typed callsite, so it names no slot and starts no participant region.
+  // A compat call's callee group answers no typed callsite, so it names no slot and starts no participant region;
+  // nor does the group of a contract that callee calls.
   const typedGroupIndices = externalCallUtxoGroups.flatMap((group, index) => (
-    group.edgeLowLevelCallIndex === undefined ? [index] : []));
+    group.edgeLowLevelCallIndex === undefined && group.underLowLevelCallIndex === undefined ? [index] : []));
   if (abiFunction && typedGroupIndices.length > 0) {
     let masterWitnessesChanged = false;
     const groupByCallsite = new Map<number, number>();

@@ -1,0 +1,156 @@
+/**
+ * A call the transaction's own contract R makes under a guard, with its callee named by an explicit
+ * `withExternalCall(contract, functionName, args)` list rather than resolved by the SDK. The list names the callee, not
+ * whether R makes the call: the guard is decided as for a resolved call. A raw call to a callee that reads no
+ * msg.sender carries no caller edge, so nothing in R's covenant would refuse T running uncalled: such a listed call is
+ * refused by name, before sending, when its guard reads false or cannot be decided, and made when the guard holds.
+ * Each sent transaction is checked by the VM.
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress,
+} from '@bitauth/libauth';
+import type { Artifact } from '@solidcash/utils';
+import { compileString } from '../direct-compile.js';
+import { CallGuardUndecidedError, ListedCallNotMadeError, SignatureTemplate, Signer } from '../../src/index.js';
+import { StatefulContract, registerDeployment } from '../../src/stateful/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { addressToLockScript, solidCashOutputToLibauthOutput } from '../../src/utils.js';
+import { alicePkh, alicePriv } from '../fixture/vars.js';
+import type { Utxo } from '../../src/interfaces.js';
+import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.js';
+import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
+
+const source = (setSelector: string): string => `pragma solidcash ^0.51.0;
+  contract T { int height; int clock; int calls;
+    function set(int h, int c) external { height = h; clock = c; calls = calls + 1; } }
+  contract R { int runs;
+    function rawIf(address t, bool make) external {
+      if (make) {
+        (bool ok, bytes data) = t.call(abi.encodeWithSelector(0x${setSelector}, 3, 3));
+        require(ok);
+      }
+      runs = runs + 1;
+    }
+    function rawNever(address t) external {
+      if (int(block.difficulty) < 0) {
+        (bool ok, bytes data) = t.call(abi.encodeWithSelector(0x${setSelector}, 4, 4));
+        require(ok);
+      }
+      runs = runs + 1;
+    }
+  }`;
+
+const compileOptions = (primary: string): never => ({
+  deployer: true, genesisCalls: true, messageBus: false, primaryContractName: primary,
+}) as never;
+
+let serial = 0x7e00;
+const nextTxid = (): string => (serial++).toString(16).padStart(64, '0');
+
+type Sent = { transaction: ReturnType<typeof decodeTransactionUnsafe>; sourceOutputs: any[] };
+type TState = { height?: bigint; clock?: bigint; calls?: bigint };
+
+const same = (left: Uint8Array, right: Uint8Array): boolean => binToHex(left) === binToHex(right);
+const spends = (sent: Sent, lock: Uint8Array): boolean => sent.sourceOutputs
+  .some((output) => same(output.lockingBytecode, lock));
+
+interface Chain {
+  /** R's function `name`, sent by a wallet with T listed explicitly as the callee of R's call. */
+  outcome(name: string, args: unknown[], listed: unknown[]): Promise<{ text: string; error?: unknown }>;
+  sentCount(): number;
+  tState(): Promise<Required<TState>>;
+  runs(): Promise<bigint>;
+  tLock: Uint8Array;
+}
+
+async function chain(): Promise<Chain> {
+  const provider = new MockNetworkProvider({ profile: 'production' });
+  const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+  const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+  if (typeof change === 'string') throw new Error(change);
+  const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+  const sent: Sent[] = [];
+  const original = provider.sendRawTransaction.bind(provider);
+  (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+    const transaction = decodeTransactionUnsafe(hexToBin(hex));
+    const sourceOutputs = await Promise.all(transaction.inputs.map(async (input) => {
+      const spent = await provider.getLedgerOutput(binToHex(input.outpointTransactionHash), input.outpointIndex);
+      if (spent === undefined) throw new Error('an input of the transaction is not on the ledger');
+      return solidCashOutputToLibauthOutput({
+        to: spent.lockingBytecode, amount: spent.satoshis, ...(spent.token === undefined ? {} : { token: spent.token }),
+      });
+    }));
+    sent.push({ transaction, sourceOutputs });
+    return original(hex);
+  };
+  const tArtifact = compileString(source('00000000'), compileOptions('T'));
+  const setSelector = tArtifact.abi.find((fn) => fn.name === 'set')!.selector!.replace(/^0x/, '');
+  const deploy = async (artifact: Artifact): Promise<DeployResult<Artifact>> => {
+    const fundingUtxo: Utxo = { txid: nextTxid(), vout: 0, satoshis: 2_000_000n };
+    await provider.seedUtxo(binToHex(authorLock), fundingUtxo);
+    return StatefulContract.deploy(artifact, [] as never, {
+      provider, fundingUtxo, funder, changeAddress: change.address, senderLockingBytecode: authorLock,
+    } as never);
+  };
+  const t = await deploy(tArtifact);
+  const r = await deploy(compileString(source(setSelector), compileOptions('R')));
+  const wallet = new Signer(alicePriv, provider);
+  for (let coin = 0; coin < 16; coin += 1) {
+    await provider.seedUtxo(wallet.getAddress(), { txid: nextTxid(), vout: 0, satoshis: 200_000n });
+  }
+  const [tLock, rLock] = [t, r].map((deployed) => addressToLockScript(deployed.contract.address));
+  registerDeployment(provider, {
+    contractName: 'T', address: t.contract.target, lockingBytecode: binToHex(tLock), contract: t.contract,
+  } as never);
+  const tState = async (): Promise<Required<TState>> => {
+    const state = (await t.contract.getState()) as TState;
+    return { height: state.height ?? 0n, clock: state.clock ?? 0n, calls: state.calls ?? 0n };
+  };
+  const outcome = async (
+    name: string, args: unknown[], listed: unknown[],
+  ): Promise<{ text: string; error?: unknown }> => {
+    try {
+      await (r.contract.connect(wallet) as any).call[name](...args).withExternalCall(t.contract, 'set', listed).send();
+      const last = sent[sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(provider).verify(last as never)).toBe(true);
+      expect(spends(last, rLock)).toBe(true);
+      const state = await tState();
+      return { text: `sent; T ${spends(last, tLock) ? '' : 'not '}spent; T ${state.height}/${state.clock}/${state.calls}` };
+    } catch (error) {
+      return { text: `refused: ${(error as Error).message}`, error };
+    }
+  };
+  const runs = async (): Promise<bigint> => ((await r.contract.getState()) as { runs?: bigint }).runs ?? 0n;
+  return { outcome, sentCount: () => sent.length, tState, runs, tLock };
+}
+
+describe('R\'s raw call to T, with T listed by withExternalCall(), under a guard', () => {
+  it('makes the listed call when its guard holds, and refuses it by name, before sending, when the guard is false',
+    async () => {
+      const c = await chain();
+      const made = await c.outcome('rawIf', [c.tLock, true], [3n, 3n]);
+      expect(made.text).toBe('sent; T spent; T 3/3/1');
+      expect(await c.runs()).toBe(1n);
+
+      const before = c.sentCount();
+      const skipped = await c.outcome('rawIf', [c.tLock, false], [3n, 3n]);
+      expect(skipped.text).toMatch(/^refused: R\.rawIf's call of T\.set \(line \d+\) is listed with withExternalCall\(\), /);
+      expect(skipped.text).toContain('`make`');
+      expect(skipped.error).toBeInstanceOf(ListedCallNotMadeError);
+      expect(c.sentCount()).toBe(before);
+      expect(await c.tState()).toEqual({ height: 3n, clock: 3n, calls: 1n });
+      expect(await c.runs()).toBe(1n);
+    });
+
+  it('refuses by name, before sending, a listed call under a guard the compiler cannot publish', async () => {
+    const c = await chain();
+    const before = c.sentCount();
+    const { text, error } = await c.outcome('rawNever', [c.tLock], [4n, 4n]);
+    expect(text).toMatch(/^refused: R\.rawNever's call of T\.set \(line \d+\) cannot be built: it runs only under a /);
+    expect(error).toBeInstanceOf(CallGuardUndecidedError);
+    expect(c.sentCount()).toBe(before);
+    expect(await c.tState()).toEqual({ height: 0n, clock: 0n, calls: 0n });
+    expect(await c.runs()).toBe(0n);
+  });
+});

@@ -12,7 +12,7 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
-  CallGuardUndecidedError, ExternalCallTargetWrittenBeforeCallError, RawCallCalleeRequiredError,
+  CallGuardUndecidedError, ExternalCallTargetWrittenBeforeCallError, ListedCallNotMadeError, RawCallCalleeRequiredError,
 } from '../Errors.js';
 import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
 import { callGuardText } from './call-guard-text.js';
@@ -285,7 +285,8 @@ export async function expandResolveCreateBuilderExternalCalls(
       if (call.conditionUnpublished === true && call.condition === undefined) undecidedGuards.set(call, undefined);
     }
   }
-  const refuseUndecided = (ec: ExternalCallAbi, callee: unknown): never => {
+  // The call as a refusal names it, with its source line, and the contract it reaches.
+  const describeCall = (ec: ExternalCallAbi, callee: unknown): { call: string; calleeName: string } => {
     const selected = (callee as { implementation?: unknown }).implementation ?? callee;
     const calleeArtifact = (selected as { inner?: { artifact?: Artifact } }).inner?.artifact;
     const calleeName = calleeArtifact?.contractName ?? ec.interfaceName;
@@ -293,9 +294,14 @@ export async function expandResolveCreateBuilderExternalCalls(
       && candidate.selector?.toLowerCase() === ec.rawSelector.toLowerCase())?.name;
     const name = ec.interfaceName === '__raw__'
       ? `${calleeName}.${rawName ?? 'call'}` : `${ec.interfaceName}.${ec.functionName}`;
+    return { call: `${name}${ec.sourceLocation === undefined ? '' : ` (line ${ec.sourceLocation.line})`}`, calleeName };
+  };
+  const caller = `${artifact.contractName}.${abiFunction?.name ?? '<function>'}`;
+  const refuseUndecided = (ec: ExternalCallAbi, callee: unknown): never => {
+    const { call, calleeName } = describeCall(ec, callee);
     throw new CallGuardUndecidedError(
-      `${artifact.contractName}.${abiFunction?.name ?? '<function>'}`,
-      `${name}${ec.sourceLocation === undefined ? '' : ` (line ${ec.sourceLocation.line})`}`,
+      caller,
+      call,
       calleeName,
       ec.condition === undefined || abiFunction === undefined ? undefined : callGuardText(ec.condition, abiFunction),
       undecidedGuards.get(ec),
@@ -474,6 +480,60 @@ export async function expandResolveCreateBuilderExternalCalls(
       }
     }
     externalCalls = expanded;
+  }
+
+  // An explicit list (`withExternalCall`) names the callee of each call, not whether the function makes it, so the reach
+  // proofs above did not run for it. A listed call the function makes only under a guard is decided here as a resolved
+  // call's is. One whose guard reads false, or that no frame decides, is refused by name unless the function's own
+  // covenant refuses a skipped call (it counts the caller edges it pins): its listed callee, co-spent, would run
+  // without being called. A message-bus route binds each row it runs instead.
+  if (overrideExternalCalls && externalCalls && !isBusCompiledEntry(artifact, abiFunction?.selector)) {
+    const guarded = externalCalls.flatMap((ec, index) => {
+      const callee = overrideExternalCalls[index]?.externalContract;
+      if (callee === undefined || overrideExternalCalls[index]?.absentCallee === true) return [];
+      if (!(ec.conditionUnpublished === true && ec.condition === undefined)
+        && !(ec.occurrence === 'conditional' && ec.condition !== undefined)) return [];
+      return callCountsCallerEdge(ec, abiFunction, callee) ? [] : [{ ec, callee }];
+    });
+    const conditions = guarded.flatMap(({ ec }) => (ec.condition === undefined ? [] : [ec.condition]));
+    // The guards are read in the function's state with the entries they read, and an earlier call's result resolved
+    // as for the reach proofs above; one that does not resolve leaves its guard undecided. The listed calls' own
+    // arguments are the author's, so this state stays here.
+    let guardState: Record<string, unknown> | undefined;
+    let conditionReturns: ReadonlyMap<string, FunctionArgument> | undefined;
+    if (conditions.length > 0) {
+      guardState = callerStateSnapshot ?? (await host.getFullState()).state;
+      if (host.hydrateExternalPredicateState) {
+        guardState = await host.hydrateExternalPredicateState(
+          conditions, args, artifact, guardState, abiFunction?.inputs, publicSelfAddress,
+        );
+      }
+      if (host.resolveExternalExpressionReturns && conditions.some((condition) => containsReturningExpression(condition))) {
+        try {
+          conditionReturns = await host.resolveExternalExpressionReturns(
+            conditions.map((expression) => ({ kind: 'expression', expression })),
+            args, guardState, abiFunction?.inputs, publicSelfAddress, abiFunction?.externalCalls ?? [],
+          );
+        } catch (error) {
+          if (!(error instanceof ExternalExpressionUnresolvedConditionError)) throw error;
+        }
+      }
+    }
+    for (const { ec, callee } of guarded) {
+      if (ec.condition === undefined) refuseUndecided(ec, callee);
+      const verdict = host.evaluateExternalExpression(ec.condition, args, artifact, guardState,
+        abiFunction?.inputs, conditionReturns, 0, false, publicSelfAddress);
+      if (verdict === undefined) {
+        undecidedGuards.set(ec, 'a value it reads did not resolve');
+        refuseUndecided(ec, callee);
+      }
+      if (verdict === false) {
+        const { call, calleeName } = describeCall(ec, callee);
+        throw new ListedCallNotMadeError(
+          caller, call, calleeName, abiFunction === undefined ? 'its condition' : callGuardText(ec.condition!, abiFunction),
+        );
+      }
+    }
   }
 
   // Auto-resolve external calls from the registry when not explicitly provided.

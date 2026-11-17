@@ -120,7 +120,7 @@ export async function resolveStatefulKeccakLoop(
     const keccakInputBase = sidecarBase + trailingPredecessors.inputs.length;
     // A run that follows the side-cars starts past this probe's k of them, so the master names it there.
     const masterUnlocker = trailingSuccessors?.unlockerAt(keccakInputBase + k) ?? stateInputUnlocker;
-    probe.addInput(masterUtxo, masterUnlocker);
+    probe.addInput(masterUtxo, masterUnlocker, (masterUtxo as Partial<UnlockableUtxo>).options);
     dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
     frontRegionInputs.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
     // A mapping loop that precedes the keccak loop in source order consumes its predecessors first; co-spend them

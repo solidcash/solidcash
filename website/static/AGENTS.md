@@ -673,7 +673,9 @@ require(this.age >= delay, "too early");  // relative: OP_CHECKSEQUENCEVERIFY on
   `tx.inputs[i].sequenceNumber`. `tx.time` below 500,000,000 is a block height, above it a Unix time; `this.age`
   counts blocks, or 512-second units for a time-based sequence.
 - The spending transaction must carry a matching lock: SDK `setLocktime(n)` on the `TransactionBuilder`, and
-  `addInput(utxo, unlocker, { sequence })` with a BIP68 value (time-based: `(1 << 22) | units`).
+  `addInput(utxo, unlocker, { sequence })` with a BIP68 value (time-based: `(1 << 22) | units`). A stateful call
+  sets its master input's sequence with `.setSequence(n)`, for example `sc.call.claim().setSequence(144).send()`
+  (ordinary calls only: split/merge and composed calls refuse it; a co-spent callee's `this.age` is not covered).
 
 ### Locking Bytecode
 

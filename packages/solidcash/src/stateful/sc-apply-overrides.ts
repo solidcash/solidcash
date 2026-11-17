@@ -75,6 +75,7 @@ export interface ApplyOverridesHost {
   maxFeeOverride?: bigint;
   containerDepositAmount: bigint;
   locktimeOverride?: number;
+  sequenceOverride?: number;
   externalCallInfos: ExternalCallInfo[];
   callInfos: CallInfo[];
   registryExternalStateOverrides: Map<string, Record<string, StateValueType>>;
@@ -109,6 +110,7 @@ export function reApplyOverrides(
   for (const slotIndex of host.entryDeleteSlots) builder.deleteEntry(slotIndex);
   if (host.containerDepositAmount > 0n) builder.setContainerDepositAmount(host.containerDepositAmount);
   if (host.locktimeOverride !== undefined) builder.setLocktime(host.locktimeOverride);
+  if (host.sequenceOverride !== undefined) builder.setSequence(host.sequenceOverride);
   for (const { utxo, unlocker } of host.extraInputs) builder.addInput(utxo, unlocker);
   addContainerDepositOutput(host, builder);
   for (const output of host.extraOutputs) builder.addOutput(output);
@@ -195,7 +197,9 @@ export async function applyOverrides(
     // A declared caller identity is itself a reason to rebuild: the initial build (the namespace factory) never
     // receives it, so without this the annotation silently does nothing for a plain call - measured: the
     // `transferFrom` probe kept pinning the signer-keyed slot even after `withCallerIdentity` was called.
-    || host.callerLockingBytecode !== undefined)
+    || host.callerLockingBytecode !== undefined
+    // The master's sequence must reach the derivation probes the initial build runs, so build again with it.
+    || host.sequenceOverride !== undefined)
     && host.parentContract && host.functionName && host.functionArgs;
   if (needsRebuild) await host.parentContract!._ensureResolved();
   const signerUtxos = needsRebuild && host.functionName === '__forward'
@@ -214,6 +218,7 @@ export async function applyOverrides(
         entryKeyOverrides: host.entryKeyOverrides.size > 0 ? host.entryKeyOverrides : undefined,
         externalEntryKeyOverrides: host.externalEntryKeyOverrides.size > 0 ? host.externalEntryKeyOverrides : undefined,
         emitReturn: host.emitReturnFlag || undefined,
+        ...(host.sequenceOverride !== undefined && { masterSequence: host.sequenceOverride }),
         ...(host.callerLockingBytecode !== undefined
           && { callerLockingBytecode: host.callerLockingBytecode }),
         ...(host.callerCategoryId !== undefined
@@ -270,6 +275,7 @@ export async function applyOverrides(
   }
 
   if (host.locktimeOverride !== undefined) builder.setLocktime(host.locktimeOverride);
+  if (host.sequenceOverride !== undefined) builder.setSequence(host.sequenceOverride);
   for (const { utxo, unlocker } of host.extraInputs) builder.addInput(utxo, unlocker);
   addContainerDepositOutput(host, builder);
   for (const output of host.extraOutputs) builder.addOutput(output);
@@ -449,7 +455,8 @@ export async function applyOverrides(
       || host.tokenContainerDeposits.length > 0
       || host.extraInputs.length > 0
       || host.extraOutputs.length > 0
-      || host.locktimeOverride !== undefined;
+      || host.locktimeOverride !== undefined
+      || host.sequenceOverride !== undefined;
     if (reDerive && hasNewContext) {
       const reResult = await reDerive(builder);
       derived = reResult.state;

@@ -805,6 +805,19 @@ import {
  * - Input 1..N: data NFT UTXOs carrying state commitments
  * - Corresponding outputs preserve locking bytecode, token category, and NFT capability
  */
+/**
+ * A master input sequence for `this.age`: a raw nSequence (BIP68 when the disable flag, bit 31, is clear). A value with
+ * the disable flag set would disable the relative lock the call asks for, so it is refused.
+ */
+export function assertMasterSequence(sequence: number): void {
+  if (!Number.isInteger(sequence) || sequence < 0 || sequence > 0xffffffff) {
+    throw new Error(`setSequence: ${sequence} is not a 32-bit unsigned integer`);
+  }
+  if (sequence >= 0x80000000) {
+    throw new Error(`setSequence: ${sequence} sets the BIP68 disable flag (bit 31), which turns the relative lock off`);
+  }
+}
+
 export class StatefulTransactionBuilder {
   private builderOptions: TransactionBuilderOptions;
   private _checkMinRelayFee: boolean;
@@ -6875,6 +6888,30 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** Optional nSequence for the master input, e.g. the BIP68 lock `require(this.age >= n)` checks. */
+  sequenceOverride?: number;
+
+  setSequence(sequence: number): this {
+    assertMasterSequence(sequence);
+    this.sequenceOverride = sequence;
+    return this;
+  }
+
+  /**
+   * Put the requested sequence on the master entry itself, in `masterUtxo` and in `allInputs`, so every rebuild and
+   * unlocker refresh that re-lists the inputs from them carries it.
+   */
+  private _pinMasterSequence(): void {
+    const sequence = this.sequenceOverride;
+    if (sequence === undefined) return;
+    const pin = (input: UnlockableUtxo): UnlockableUtxo => (input.options?.sequence === sequence
+      ? input : { ...input, options: { ...input.options, sequence } });
+    this.masterUtxo = pin(this.masterUtxo);
+    const index = this.allInputs.findIndex((input) => sameOutpoint(input, this.masterUtxo));
+    if (index < 0) throw new Error('setSequence: the master input is not among this call\'s inputs');
+    this.allInputs[index] = pin(this.allInputs[index]);
+  }
+
   /** Co-spend more pool coins a function-pointer target finds itself; a coin already listed is kept once. */
   addUnslottedPoolCoSpends(coins: readonly UnlockableUtxo[]): void {
     for (const coin of coins) {
@@ -6900,6 +6937,7 @@ export class StatefulTransactionBuilder {
   }
 
   build(): TransactionBuilder {
+    this._pinMasterSequence();
     if (this.emitReassertAllowed === undefined) {
       this.emitReassertAllowed = this._isPersistedChunkableValueWriteReady()
         && !this._isInitialChunkableValueWrite();

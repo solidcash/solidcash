@@ -5552,7 +5552,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * already in `baseFrontRegion` (in slot order); satoshi/token containers add their real UTXO, and every other
    * slot (output-only transfer/event/returnEvent slots, or a container the build has not resolved) gets a neutral
    * self-preserving funder. All of these families are checked in the epilogue AFTER the keccak loop, so the
-   * self-preserving funder recreations never block preimage discovery.
+   * self-preserving funder recreations never block preimage discovery. An entry slot is checked where the function
+   * reads or writes it, which can come before the loop: it holds the coin the build co-spends there (`entryInputs`,
+   * the node itself, or an insert's predecessor), and a funder only where the build has none.
    */
   private _padKeccakLoopFrontRegion(
     abiFunction: AbiFunction,
@@ -5562,6 +5564,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     satoshiContainerUtxo: UnlockableUtxo | undefined,
     tokenContainers: readonly { utxo?: UnlockableUtxo }[],
     blockInfoCoSpendUtxos: readonly UnlockableUtxo[],
+    entryInputs: ReadonlyArray<{ offset: number; utxo: Utxo; unlocker: Unlocker }> = [],
   ): UnlockableUtxo[] {
     const result = [...baseFrontRegion];
     let syntheticSeq = 0;
@@ -5596,6 +5599,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const info = tokenContainers[tokenContainerCursor];
           tokenContainerCursor += 1;
           result.push(info?.utxo ?? syntheticFunder());
+          break;
+        }
+        case 'entry': {
+          const entry = entryInputs.find((candidate) => candidate.offset === slot.offset);
+          result.push(entry === undefined ? syntheticFunder() : { ...entry.utxo, unlocker: entry.unlocker });
           break;
         }
         default:
@@ -13160,7 +13168,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ? keccakFrontBase
       : this._padKeccakLoopFrontRegion(
         abiFunction, filteredDataNftUtxos.length, base, keccakFrontBase,
-        satoshiContainerUtxo, tokenContainers, blockInfoCoSpendUtxos,
+        satoshiContainerUtxo, tokenContainers, blockInfoCoSpendUtxos, keccakProbeSlotInputs,
       ));
     const keccakFrontRegion = padKeccakFront(fixedKeccakBase);
     if (abiFunction?.keccakLoopReads && this.categoryId) {

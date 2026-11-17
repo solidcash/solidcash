@@ -1441,6 +1441,14 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // A non-pure helper whose complete effect closure contains only events. Its return expression may be replayed
   // independently while the event statements retain their source-ordered runtime occurrence plan.
   inlinedReturningHelperSeparableEvent?: boolean;
+  /**
+   * On a compiler local holding a call's target (SynthesizeExternalAddressLocals) that reads the stored value a
+   * local copy was taken from (`address t = token`, `S memory s = stored`): the copy, and the field path from it to
+   * the target, undefined when the target sits under an element of it. The copy holds the value from where it was
+   * declared and what the function changed in it, while the stored value can be written after; the call goes
+   * through the copy.
+   */
+  receiverCopy?: { readonly local: string; readonly path: readonly string[] | undefined };
 
   constructor(
     public type: Type,

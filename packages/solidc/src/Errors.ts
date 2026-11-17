@@ -94,6 +94,8 @@ export type SolidcDiagnosticCode =
   | 'FRAMED_TARGET_WRITTEN_BEFORE_CALL'
   // A constructor's call, in a genesis body, through a target the constructor read at its top and then wrote.
   | 'GENESIS_TARGET_WRITTEN_BEFORE_CALL'
+  // A call through a local copy of a stored target, written first, whose copy the call cannot read where it runs.
+  | 'COPY_TARGET_WRITTEN_BEFORE_CALL'
   // An external call left in an invoked function body, where no entry point lays out or binds its callee.
   | 'EXTERNAL_CALL_IN_SUBROUTINE'
   // A `{value: v}` call whose target no output the covenant checks can be built for, so the payment would drop.

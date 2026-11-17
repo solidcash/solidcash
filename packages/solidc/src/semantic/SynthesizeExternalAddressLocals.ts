@@ -70,6 +70,10 @@ const LOW_LEVEL_CALLS = new Set(['call', 'staticcall', 'delegatecall']);
 // Synthetic single-assignment alias locals safe to trace through: `__rh*`/`__inl*` are inliner-created bindings of
 // call args (never reassigned); `__extaddr_*` are this pass's own hoists. A user local is deliberately excluded.
 const SYNTH_ALIAS = /^(__rh|__inl|__extaddr_|__extcap_)/;
+/** A local copy a call's target was traced through (VariableDefinitionNode.receiverCopy). */
+type ReceiverCopy = { readonly local: string; readonly path: readonly string[] | undefined };
+/** Filled with the first copy a trace passes through, nearest the call. */
+type CopyCapture = { copy?: ReceiverCopy };
 
 // The element/value type of an array/mapping (for stepping through an access chain), else undefined.
 function elementOf(t: Type | undefined): Type | undefined {
@@ -93,7 +97,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   private typeNames: Set<string> = new Set();             // interface + contract names usable as a cast target
   // localName -> synthesized decl parts (init reads the self-pinned state; iface = the local's interface type, or
   // undefined for a plain-`address` local hoisted as a low-level-call receiver)
-  private usedInFn: Map<string, { iface: string | undefined; init: ExpressionNode }> = new Map();
+  private usedInFn: Map<string, { iface: string | undefined; init: ExpressionNode; copy?: ReceiverCopy }> = new Map();
   /** Body-top address locals emitted by an earlier synthesis pass; reuse them without redeclaring them. */
   private preexistingSynthLocals: Set<string> = new Set();
   // Inlined/user local name -> its initializer expression, in body order. Populated as VariableDefinitions are
@@ -113,6 +117,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // Storage-reference locals keep pointing at their initializer even when assignments through them update the
   // referenced struct. They are safe provenance aliases despite looking "reassigned" to a generic AST scan.
   private storagePointerLocals: Set<string> = new Set();
+  // Locals declared `storage`: a reference to the state they are initialized from, not a copy of it.
+  private storageModifierLocals: Set<string> = new Set();
+  // The copies an earlier run of this pass traced its body-top locals through (VariableDefinitionNode.receiverCopy).
+  private receiverCopies: Map<string, ReceiverCopy> = new Map();
   private localStructTypes: Map<string, StructType> = new Map();
   // interface / contract name -> the method names it declares (own + inherited). A target-receiver method that is
   // NOT one of these is a `using L for IFace` library method (`token.safeTransfer(..)`), NOT an external call - it
@@ -264,6 +272,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     this.pendingMidbodyDecls = [];
     this.localInits = new Map();
     this.storagePointerLocals = new Set();
+    this.storageModifierLocals = new Set();
+    this.receiverCopies = new Map();
     this.localStructTypes = new Map();
     // Pre-populate from the WHOLE body (not just bindings visited so far): a computed target is recognised mid-visit
     // (castComputedTarget) and must resolve an inliner alias (`__rh<N>_factory`) whose binding a deeply-nested inline
@@ -277,10 +287,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (this.usedInFn.size > 0) {
       const decls = [...this.usedInFn.entries()]
         .filter(([localName]) => !this.preexistingSynthLocals.has(localName))
-        .map(([localName, { iface, init }]) => {
+        .map(([localName, { iface, init, copy }]) => {
           if (!init.location) init.location = node.location; // fresh IdentifierNode init has none
           const def = new VariableDefinitionNode(new AddressType(false, iface), [], localName, init);
           def.location = node.location;
+          if (copy) def.receiverCopy = copy;
           return def;
         });
       node.body.statements = [...decls, ...(node.body.statements ?? [])];
@@ -336,6 +347,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
             this.usedInFn.set(resolved.localName, {
               iface: undefined,
               init: cloneNode(resolved.init) as ExpressionNode,
+              ...(resolved.copy && { copy: resolved.copy }),
             });
           }
           const loc = node.identifier.location;
@@ -362,7 +374,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         // target.run(..)`). The interface local is not materialized (the cast is a no-op), so
         // sourcing it in codegen fails because the interface alias has no stack slot. Resolve the init to the
         // underlying state-var / self-pinned chain and hoist THAT, rewriting the call to the __extaddr_ local.
-        const local = this.hoistTargetLocalFor(this.localInits.get(varName)!);
+        const local = this.hoistTargetLocalFor(
+          this.localInits.get(varName)!,
+          this.receiverCopies.get(varName) ?? (this.isCopyLocal(varName) ? { local: varName, path: [] } : undefined),
+        );
         if (local) {
           const loc = node.identifier.location;
           node.identifier = new IdentifierNode(`${local}.${method}`);
@@ -385,6 +400,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
           this.usedInFn.set(resolved.localName, {
             iface: undefined,
             init: cloneNode(resolved.init) as ExpressionNode,
+            ...(resolved.copy && { copy: resolved.copy }),
           });
         }
         const replacement = new IdentifierNode(resolved.localName);
@@ -461,7 +477,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         ? this.captureAtCallSite(chain.iface, chain.init, node)
         : chain.localName;
       if (!this.visitingConstructor && !this.usedInFn.has(localName)) {
-        this.usedInFn.set(localName, { iface: chain.iface, init: chain.init });
+        this.usedInFn.set(localName, { iface: chain.iface, init: chain.init, ...(chain.copy && { copy: chain.copy }) });
       }
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
@@ -591,7 +607,9 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       // form `IService(records[id].target).call(data)`; the data arg keeps its form (codegen sources that).
       const resolved = this.resolveLlReceiver(node.object)!;
       if (!this.usedInFn.has(resolved.localName)) {
-        this.usedInFn.set(resolved.localName, { iface: undefined, init: cloneNode(resolved.init) as ExpressionNode });
+        this.usedInFn.set(resolved.localName, {
+          iface: undefined, init: cloneNode(resolved.init) as ExpressionNode, ...(resolved.copy && { copy: resolved.copy }),
+        });
       }
       const loc = node.object.location;
       node.object = new IdentifierNode(resolved.localName);
@@ -633,19 +651,31 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // Hoist the underlying target of an interface-cast init expression (`IFoo(targetAddress)` / `IFoo(s.field)` /
   // `IFoo(param.field)`) into an __extaddr_ local, reusing the state-var / self-pinned-chain / param-field resolvers,
   // and return the local name. Undefined when the init is not a recognized (self-pinned or caller-witness) target.
-  private hoistTargetLocalFor(init: ExpressionNode): string | undefined {
+  private hoistTargetLocalFor(init: ExpressionNode, copy?: ReceiverCopy): string | undefined {
     const sv = this.externalTargetStateVar(init);
-    if (sv) return this.markUsed(sv.name, sv.iface, sv.isPlain, init);
+    if (sv && !copy) return this.markUsed(sv.name, sv.iface, sv.isPlain, init);
+    if (sv && copy) {
+      // A copy of the stored target holds the value from where it was taken: a local of its own, which the call
+      // reads through the copy once a write can change the stored value (receiverCopy), rather than the
+      // state-named one, read from the state where a call through the stored value runs.
+      const localName = `${PREFIX}${sv.name}_via_${copy.local}`;
+      if (!this.usedInFn.has(localName)) {
+        const stored = sv.isPlain ? cloneNode(init) as ExpressionNode : new IdentifierNode(sv.name);
+        this.usedInFn.set(localName, { iface: sv.iface, init: stored, copy });
+      }
+      return localName;
+    }
     const castChain = this.castChainTarget(init);
     const paramField = castChain ? undefined : this.castParamFieldTarget(init);
     const resolved = castChain ?? paramField;
     if (resolved) {
-      if (!this.usedInFn.has(resolved.localName)) {
-        this.usedInFn.set(resolved.localName, {
-          iface: resolved.iface, init: castChain?.init ?? cloneNode(init) as ExpressionNode,
+      const localName = copy ? `${resolved.localName}_via_${copy.local}` : resolved.localName;
+      if (!this.usedInFn.has(localName)) {
+        this.usedInFn.set(localName, {
+          iface: resolved.iface, init: castChain?.init ?? cloneNode(init) as ExpressionNode, ...(copy && { copy }),
         });
       }
-      return resolved.localName;
+      return localName;
     }
     return undefined;
   }
@@ -655,7 +685,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // the interface + a stable local name (from the chain shape, so identical chains dedup). Returns undefined
   // unless the whole chain is state-rooted with param/literal indices (sound + valid at the body top).
   private chainTarget(obj: ExpressionNode):
-  { iface: string; localName: string; init: ExpressionNode } | undefined {
+  { iface: string; localName: string; init: ExpressionNode; copy?: ReceiverCopy } | undefined {
     // A direct interface-valued collection read (`strategies[token].exit(..)`) is the same self-pinned target
     // shape as an interface field reached through a collection. Hoist parameter/literal-indexed elements too.
     // Loop-local indices remain excluded by resolveChainType/indexSafe and continue through the per-iteration
@@ -664,12 +694,18 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       || obj instanceof ArrayAccessNode || obj instanceof TupleIndexOpNode)) return undefined;
     // A single-assignment storage pointer is the same self-pinned chain (`S storage s = m[k]; s.target`).
     // Normalize its base before checking provenance and use the normalized chain as the body-top initializer.
-    const normalized = this.resolveIndexAliases(this.inlineStoragePtrBases(cloneNode(obj) as ExpressionNode));
+    const capture: CopyCapture = {};
+    const normalized = this.resolveIndexAliases(
+      this.inlineStoragePtrBases(cloneNode(obj) as ExpressionNode, 0, capture),
+    );
     const targetType = this.resolveChainType(normalized);
     if (!(targetType instanceof AddressType) || !targetType.interfaceName) return undefined;
     const key = this.chainKey(normalized);
     if (!key) return undefined;
-    return { iface: targetType.interfaceName, localName: `${PREFIX}${key}`, init: normalized };
+    const { copy } = capture;
+    return copy
+      ? { iface: targetType.interfaceName, localName: `${PREFIX}${key}_via_${copy.local}`, init: normalized, copy }
+      : { iface: targetType.interfaceName, localName: `${PREFIX}${key}`, init: normalized };
   }
 
   private localStructFieldTarget(obj: ExpressionNode): { iface: string } | undefined {
@@ -982,18 +1018,31 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // this pass) through their recorded initializers. A user local is NOT followed (it may be reassigned - only the
   // inliner's SSA-style bindings are safe to trace), so this stays scoped to the SafeERC20/Address inline chain
   // and never re-interprets user-visible aliasing. Returns the deepest expression reached.
-  private llReceiverRoot(expr: ExpressionNode, depth = 0): ExpressionNode {
+  private llReceiverRoot(expr: ExpressionNode, depth = 0, capture?: CopyCapture): ExpressionNode {
     if (depth > 24) return expr; // guard against a pathological init cycle
-    if (expr instanceof CastNode) return this.llReceiverRoot(expr.expression, depth + 1);
+    if (expr instanceof CastNode) return this.llReceiverRoot(expr.expression, depth + 1, capture);
     if (expr instanceof FunctionCallNode && expr.parameters.length === 1 && this.typeNames.has(expr.identifier.name)) {
-      return this.llReceiverRoot(expr.parameters[0], depth + 1); // interface/contract cast `IFoo(x)` -> x
+      return this.llReceiverRoot(expr.parameters[0], depth + 1, capture); // interface/contract cast `IFoo(x)` -> x
     }
     if (expr instanceof IdentifierNode && this.localInits.has(expr.name)
       && !this.positionDependentLocals.has(expr.name)
       && (SYNTH_ALIAS.test(expr.name) || this.singleAssignLocals.has(expr.name))) {
-      return this.llReceiverRoot(this.localInits.get(expr.name)!, depth + 1);
+      // The copy nearest the call holds the value the call goes to (receiverCopy); an earlier run names its own.
+      if (capture !== undefined && capture.copy === undefined) {
+        capture.copy = this.receiverCopies.get(expr.name)
+          ?? (this.isCopyLocal(expr.name) ? { local: expr.name, path: [] } : undefined);
+      }
+      return this.llReceiverRoot(this.localInits.get(expr.name)!, depth + 1, capture);
     }
     return expr;
+  }
+
+  /**
+   * A local holding a copy of what it was initialized from, taken where it is declared: any local a trace follows
+   * except an inliner's binding of an argument or this pass's own (SYNTH_ALIAS) and a `storage` reference.
+   */
+  private isCopyLocal(name: string): boolean {
+    return !SYNTH_ALIAS.test(name) && !this.storageModifierLocals.has(name) && this.localInits.has(name);
   }
 
   // Names safe to trace through as value-equal-to-init aliases: declared exactly once WITH an initializer and
@@ -1008,6 +1057,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const scan = (node: unknown): void => {
       if (!node || typeof node !== 'object' || seen.has(node)) return;
       seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.modifier.includes(Modifier.STORAGE)) {
+        this.storageModifierLocals.add(node.name);
+      }
+      if (node instanceof VariableDefinitionNode && node.receiverCopy) this.receiverCopies.set(node.name, node.receiverCopy);
       if (node instanceof VariableDefinitionNode && node.expression) {
         this.localInits.set(node.name, node.expression);
         if (node.type instanceof StructType) this.localStructTypes.set(node.name, node.type);
@@ -1095,13 +1148,20 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // OR a param-rooted access. A bare PARAM receiver already sources in codegen; a bare STATE receiver must still
   // be hoisted because the external-call epilogue runs after the body and can only name a surviving local.
   // Returns a stable per-root local name + the ROOT to hoist as its init (valid at the body top), else undefined.
-  private resolveLlReceiver(obj: ExpressionNode): { localName: string; init: ExpressionNode } | undefined {
+  private resolveLlReceiver(obj: ExpressionNode): {
+    localName: string; init: ExpressionNode; copy?: ReceiverCopy;
+  } | undefined {
     if (obj instanceof IdentifierNode && this.llReceiverRoot(obj) === obj
       && !this.stateRoots.has(obj.name)) return undefined; // bare parameter/local receiver works
     // Resolve the receiver to its provenance root, then inline any single-assignment storage-pointer local at the
     // base of the resulting chain (`Record storage item = records[id]; item.token` -> `records[id].token`) - the
     // AstBuilder usually inlines the storage alias, but not always, so do it here for the target.
-    const root = this.inlineStoragePtrBases(cloneNode(this.llReceiverRoot(obj)) as ExpressionNode);
+    // A trace through a copy (a value or memory local) gets a local of its own, which keeps the copy for the call
+    // to read once a write can change what it was copied from (receiverCopy).
+    const capture: CopyCapture = {};
+    const root = this.inlineStoragePtrBases(
+      cloneNode(this.llReceiverRoot(obj, 0, capture)) as ExpressionNode, 0, capture,
+    );
     const rootType = this.resolveChainType(root);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RAW_TARGET === '1' && root instanceof FieldAccessNode) {
@@ -1117,7 +1177,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     }
     if (!(rootType instanceof AddressType) && !this.isParamRooted(root)) return undefined;
     const key = this.chainKey(root);
-    return key ? { localName: `${PREFIX}ll_${key}`, init: root } : undefined;
+    if (!key) return undefined;
+    const { copy } = capture;
+    return copy
+      ? { localName: `${PREFIX}ll_${key}_via_${copy.local}`, init: root, copy }
+      : { localName: `${PREFIX}ll_${key}`, init: root };
   }
 
   // Replace a single-assignment STORAGE-POINTER local at the base of an access chain with its initializer, so
@@ -1125,17 +1189,27 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // `records[id].target`.
   // Sound: a storage pointer is an alias to the same slots, and the local is single-assignment. Mutates in place
   // (the caller passes a clone); indices in the reached chain are params/literals (resolveChainType re-validates).
-  private inlineStoragePtrBases(expr: ExpressionNode, depth = 0): ExpressionNode {
+  private inlineStoragePtrBases(
+    expr: ExpressionNode, depth = 0, capture?: CopyCapture, path: readonly string[] | undefined = [],
+  ): ExpressionNode {
     if (depth > 24) return expr;
     if (expr instanceof IdentifierNode
       && (this.singleAssignLocals.has(expr.name) || this.storagePointerLocals.has(expr.name))
       && this.localInits.has(expr.name)) {
-      return this.inlineStoragePtrBases(cloneNode(this.localInits.get(expr.name)!) as ExpressionNode, depth + 1);
+      // A memory or value local is a copy, not an alias: record the first one with the path to the target.
+      if (capture !== undefined && capture.copy === undefined && this.isCopyLocal(expr.name)) {
+        capture.copy = { local: expr.name, path };
+      }
+      return this.inlineStoragePtrBases(
+        cloneNode(this.localInits.get(expr.name)!) as ExpressionNode, depth + 1, capture, path,
+      );
     }
     if (expr instanceof FieldAccessNode) {
-      expr.expression = this.inlineStoragePtrBases(expr.expression, depth + 1);
+      expr.expression = this.inlineStoragePtrBases(
+        expr.expression, depth + 1, capture, path === undefined ? undefined : [expr.name, ...path],
+      );
     } else if (expr instanceof ArrayAccessNode) {
-      expr.array = this.inlineStoragePtrBases(expr.array, depth + 1);
+      expr.array = this.inlineStoragePtrBases(expr.array, depth + 1, capture, undefined);
     }
     return expr;
   }

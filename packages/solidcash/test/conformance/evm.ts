@@ -93,6 +93,72 @@ export async function evalEvm(
   return callEvm(evm, TARGET, compiled, fnName, args);
 }
 
+// Compile every contract of a Solidity source string, by name.
+export function compileEvmContracts(source: string): Record<string, EvmCompiled> {
+  const input = {
+    language: 'Solidity',
+    sources: { [SOURCE_KEY]: { content: source } },
+    settings: {
+      optimizer: { enabled: false },
+      outputSelection: { '*': { '*': ['abi', 'evm.deployedBytecode.object', 'evm.bytecode.object'] } },
+    },
+  };
+  const out = JSON.parse(solc.compile(JSON.stringify(input)));
+  const errors = ((out.errors ?? []) as Array<{ severity: string; formattedMessage: string }>)
+    .filter((e) => e.severity === 'error');
+  if (errors.length > 0) {
+    throw new Error(`solc errors:\n${errors.map((e) => e.formattedMessage).join('\n')}`);
+  }
+  const contracts = (out.contracts?.[SOURCE_KEY] ?? {}) as Record<string, {
+    abi: EvmCompiled['abi']; evm: { deployedBytecode: { object: string }; bytecode: { object: string } };
+  }>;
+  return Object.fromEntries(Object.entries(contracts).map(([name, contract]) => [name, {
+    abi: contract.abi,
+    deployedBytecode: contract.evm.deployedBytecode.object,
+    bytecode: contract.evm.bytecode.object,
+  }]));
+}
+
+// Several contracts of one source deployed on one EVM, each by an instance name: calls change their state in turn.
+export interface EvmSystem {
+  // The instance's address, 0x-hex.
+  address(instance: string): string;
+  // Call `fnName` on the instance and return its decoded outputs; throws when the call reverts.
+  call(instance: string, fnName: string, args?: readonly unknown[]): Promise<unknown[]>;
+}
+
+// Deploy `instances` (instance name -> contract name, constructor-free) of `source` in order, from one caller.
+export async function deployEvmSystem(
+  source: string, instances: Readonly<Record<string, string>>,
+): Promise<EvmSystem> {
+  const compiled = compileEvmContracts(source);
+  const evm = await createEVM();
+  const deployed = new Map<string, { address: EvmAddress; contract: EvmCompiled }>();
+  for (const [instance, contractName] of Object.entries(instances)) {
+    const contract = compiled[contractName];
+    if (!contract) throw new Error(`contract "${contractName}" not found`);
+    const created = await evm.runCall({
+      caller: CALLER, data: hexToBytes(`0x${contract.bytecode}`), gasLimit: 1_000_000_000n,
+    });
+    if (created.execResult.exceptionError || created.createdAddress === undefined) {
+      throw new Error(`EVM deployment of ${instance} reverted: ${JSON.stringify(created.execResult.exceptionError)}`);
+    }
+    deployed.set(instance, { address: created.createdAddress, contract });
+  }
+  const of = (instance: string): { address: EvmAddress; contract: EvmCompiled } => {
+    const found = deployed.get(instance);
+    if (!found) throw new Error(`no instance "${instance}"`);
+    return found;
+  };
+  return {
+    address: (instance) => of(instance).address.toString(),
+    call: async (instance, fnName, args = []) => {
+      const { address, contract } = of(instance);
+      return (await callEvm(evm, address, contract, fnName, args)).decoded;
+    },
+  };
+}
+
 // Deploy through the creation code (the constructor and state-variable initializers run), then call `fnName`.
 export async function evalEvmDeployed(
   compiled: EvmCompiled, fnName: string, args: readonly unknown[] = [],

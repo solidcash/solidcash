@@ -18,6 +18,10 @@ import {
 import { NullaryOperator } from '../ast/Operator.js';
 import type { ArgSource } from '@solidcash/utils';
 import { SolidcDiagnosticError } from '../Errors.js';
+import { Class } from '../ast/Globals.js';
+
+/** `new LockingBytecodeP2PKH(hash)` and its siblings build a locking bytecode; they do not create a contract. */
+const BUILTIN_CLASSES = new Set<string>(Object.values(Class));
 
 /** One contract a framed master creates with CREATE2, published so a builder can stand the child up at its address. */
 export interface FramedCreateSite {
@@ -154,6 +158,7 @@ export default class LowerFramedCreate2Address extends AstTraversal {
 
   visitInstantiation(node: InstantiationNode): Node {
     const childName = node.identifier.name;
+    if (BUILTIN_CLASSES.has(childName)) return super.visitInstantiation(node);
     const salt = node.callOptions?.salt;
     if (salt === undefined) {
       throw new SolidcDiagnosticError(

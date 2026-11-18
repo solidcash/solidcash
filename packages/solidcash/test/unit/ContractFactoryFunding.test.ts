@@ -7,7 +7,8 @@ import { Network } from '../../src/interfaces.js';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import Signer from '../../src/Signer.js';
-import { selectGenesisFundingUtxo } from '../../src/stateful/ContractFactory.js';
+import { ContractFactory, selectGenesisFundingUtxo } from '../../src/stateful/ContractFactory.js';
+import { compileString } from '../direct-compile.js';
 import { alicePriv, bobPkh } from '../fixture/vars.js';
 
 const ARTIFACT = {
@@ -94,5 +95,21 @@ describe('ContractFactory genesis funding selection', () => {
     const raw = hexToBin(await provider.getRawTransaction(selected.txid));
     expect(binToHex(hash256(raw).reverse())).toBe(selected.txid);
     expect(selected.vout).toBe(0);
+  });
+
+  it('deploys from a vout-0 coin that can pay the initial balance, not a fresher one that cannot', async () => {
+    const provider = new MockNetworkProvider();
+    const signer = new Signer(alicePriv, provider);
+    const small: Utxo = { txid: 'c2'.repeat(32), vout: 0, satoshis: 30_000n };
+    const big: Utxo = { txid: 'b1'.repeat(32), vout: 0, satoshis: 1_000_000n };
+    // Listed first, the small coin wins the freshness tie: it covers the records and the fee, not the balance.
+    await provider.addUtxo(signer.getAddress(), small);
+    await provider.addUtxo(signer.getAddress(), big);
+
+    const artifact = compileString('contract Vault() { int n; function bump() { this.n = this.n + 1; } }');
+    const vault: any = await new ContractFactory(artifact, signer).deploy({ initialState: { n: 0n }, initialBalance: 200_000n });
+
+    expect(vault.categoryId).toBe(big.txid);
+    expect(await vault.satoshiContainer.getBalance()).toBe(200_000n);
   });
 });

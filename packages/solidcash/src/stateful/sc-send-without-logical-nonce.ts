@@ -368,7 +368,9 @@ export async function sendWithoutLogicalNonce(
       } else {
         if (host.requiresRecursivePreflight()) stb!.enableStrictVmPreflight();
         const signer = host.parentContract?._logicalNonceSigner ?? host.parentContract?._signer;
-        if (signer && (await host.signerUtxoSnapshot(signer)).every((utxo) => utxo.token !== undefined)) {
+        // An entry that pays the miner from the contract's balance takes nobody's coin, so its caller may hold none.
+        if (signer && !stb!.paysOwnMinerFee()
+          && (await host.signerUtxoSnapshot(signer)).every((utxo) => utxo.token !== undefined)) {
           const assembled = stb!.build();
           const callerLock = binToHex(signer.getLockingBytecode());
           const hasAuthenticatedCallerInput = assembled.inputs.some((input) => input.token === undefined

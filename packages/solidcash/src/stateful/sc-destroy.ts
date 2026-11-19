@@ -329,7 +329,13 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
     }
   }
 
-  // 4. Event NFT UTXOs (best-effort - CSV timelock may not have elapsed)
+  // 4. Event NFT UTXOs. The event covenant's 144-block CSV counts from the coin's confirmation, so the next block can
+  // spend one only from that height on, and a younger one would make the whole destroy non-final. It stays at its
+  // address and can be cleaned up after its delay. A coin listed without a height (the mock lists none) is kept.
+  const nextBlockHeight = await provider.getBlockHeight() + 1;
+  const eventDelay = EVENT_NFT_RELATIVE_LOCK_SEQUENCE & 0xffff; // BIP-68: the low 16 bits count blocks
+  const eventNftSpendable = (utxo: Utxo): boolean => utxo.blockHeight === undefined
+    || (utxo.blockHeight > 0 && nextBlockHeight - utxo.blockHeight >= eventDelay);
   const eventNftInputs: Array<{ utxo: Utxo; eventSignature: string }> = [];
   for (const eventDef of contract.inner.artifact.events ?? []) {
     const isAnonymous = eventDef.anonymous === true;
@@ -339,7 +345,7 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
     try {
       const eventUtxos = await provider.getUtxos(eventAddress);
       const events = eventUtxos.filter(
-        (u) => u.token?.category === categoryId && u.token?.nft,
+        (u) => u.token?.category === categoryId && u.token?.nft && eventNftSpendable(u),
       );
       for (const utxo of events) {
         eventNftInputs.push({ utxo, eventSignature: eventDef.signature });
@@ -349,7 +355,7 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
     }
   }
 
-  // 4b. Wide-event continuation chunk UTXOs (best-effort, same 144-block CSV as the head).
+  // 4b. Wide-event continuation chunk UTXOs (same 144-block CSV as the head).
   const eventContinuationInputs: Array<{ utxo: Utxo; eventSignature: string }> = [];
   for (const eventDef of contract.inner.artifact.events ?? []) {
     try {
@@ -358,7 +364,7 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
       );
       const continuationUtxos = await provider.getUtxos(continuationAddress);
       const chunks = continuationUtxos.filter(
-        (u) => u.token?.category === categoryId && u.token?.nft,
+        (u) => u.token?.category === categoryId && u.token?.nft && eventNftSpendable(u),
       );
       for (const utxo of chunks) {
         eventContinuationInputs.push({ utxo, eventSignature: eventDef.signature });

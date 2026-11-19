@@ -291,6 +291,8 @@ describe('SimpleToken', () => {
 2. **Keep state minimal** - each data NFT holds 128 bytes. Large state requires multiple NFTs and increases transaction size.
 3. **Index durable audit history** - event NFTs are easy to query while unspent, but anyone may clean them up after
    144 blocks. Persist them in an application index if history must outlive the current UTXO set.
+   A call that drains a container leaves a 576-sat filler output the same way; `fillerUnlocker()` from
+   `@solidcash/solidcash/stateful` spends one, with the input's `sequence` set to `FILLER_SEQUENCE`.
 4. **Implement access control** - always gate sensitive operations with `checkSig` or similar checks.
 5. **Plan for upgrades** - declare an `upgrade` function, plus a `migrateRecords` function when the contract has
    mapping or array entries, before deploying. Code deployed without them can never change.

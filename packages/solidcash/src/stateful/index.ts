@@ -312,3 +312,4 @@ export {
   type DeployerFallbackCase, type DeployerInputRun, type DeployerPathDecision, type DeployerPrep,
   type DeployerSweepCoin, type DeployerSweepResult,
 } from './deployer.js';
+export { FILLER_SEQUENCE, fillerOutput, fillerUnlocker, isFillerLockingBytecode } from './filler.js';

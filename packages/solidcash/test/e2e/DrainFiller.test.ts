@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
-import {
-  FILLER_SATOSHIS, buildFillerCovenantScript, fillerLockingBytecode, scriptToBytecode,
-} from '@solidcash/utils';
+import { FILLER_SATOSHIS, fillerLockingBytecode } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
-import { StatefulContract } from '../../src/stateful/index.js';
+import { FILLER_SEQUENCE, StatefulContract, fillerUnlocker } from '../../src/stateful/index.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
-import type { Unlocker, Utxo } from '../../src/interfaces.js';
+import type { Utxo } from '../../src/interfaces.js';
 import { randomUtxo } from '../../src/utils.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -23,11 +21,6 @@ contract Payout(pubkey admin) {
     this.counter = this.counter + 1;
   }
 }`;
-
-const fillerUnlocker: Unlocker = {
-  generateLockingBytecode: () => fillerLockingBytecode(),
-  generateUnlockingBytecode: () => scriptToBytecode([scriptToBytecode(buildFillerCovenantScript())]),
-};
 
 describe('a drained container leaves a sweepable filler', () => {
   it('pays the whole balance, leaves the filler at the container index, and anyone sweeps it after 144 blocks', async () => {
@@ -60,7 +53,7 @@ describe('a drained container leaves a sweepable filler', () => {
     const sweep = async (): Promise<string> => {
       const fee = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 10_000n }));
       const builder = new TransactionBuilder({ provider })
-        .addInput(fillerUtxo, fillerUnlocker, { sequence: 144 })
+        .addInput(fillerUtxo, fillerUnlocker(), { sequence: FILLER_SEQUENCE })
         .addInput(fee, new SignatureTemplate(alicePriv).unlockP2PKH())
         .addOutput({ to: aliceAddress, amount: FILLER_SATOSHIS + 9_000n });
       const hex = binToHex(encodeTransaction(builder.buildLibauthTransaction(true)));

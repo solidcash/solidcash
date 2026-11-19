@@ -1,5 +1,6 @@
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { compileString as compileProduction } from '@solidcash/solidc';
+import { sha256 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { Contract, TransactionBuilder } from '../../src/index.js';
@@ -12,6 +13,7 @@ import {
 import {
   createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos,
 } from '../test-util.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { bobAddress } from '../fixture/vars.js';
 
 /**
@@ -209,5 +211,52 @@ describe('events wider than one NFT commitment', () => {
     // Both the head and the continuation chunks are swept into the reclaim output.
     expect(await provider.getUtxos(headAddress)).toHaveLength(0);
     expect(await provider.getUtxos(continuationAddress)).toHaveLength(0);
+  }, 300_000);
+
+  /** The mock as an Electrum server lists it: each coin with its confirmation height, and the tip of the same index. */
+  const withHeights = (provider: any): any => (provider.indexer === undefined ? provider : new Proxy(provider, {
+    get(target, prop) {
+      if (prop === 'getBlockHeight') return async () => target.indexer.getTip().height;
+      if (prop === 'getUtxos') {
+        return async (address: string) => {
+          const heights = new Map(target.indexer.getUtxos(binToHex(sha256(addressToLockScript(address))))
+            .map((entry: any) => [`${entry.outpoint.txid}:${entry.outpoint.vout}`, entry.height]));
+          return (await target.getUtxos(address))
+            .map((utxo: any) => ({ ...utxo, blockHeight: heights.get(`${utxo.txid}:${utxo.vout}`) }));
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }));
+
+  it('destroy right after an emit leaves the young event NFTs where they are', async () => {
+    const { sc, categoryId, salted, provider } = await deploy();
+    await (sc as any).publish(...words).send();
+    const definition = artifact.events!.find((event) => event.name === 'Wide')!;
+    const headAddress = getEventNftAddress(salted, categoryId, definition.signature);
+    const continuationAddress = getEventNftContinuationAddress(salted, categoryId, definition.signature);
+    // Their 144 blocks have not passed, and spending them would make the whole destroy non-final.
+    const result = await StatefulContract.destroy({
+      provider: withHeights(provider), contract: sc, destroyFunctionName: 'destroy', destroyFunctionArgs: [],
+      recipient: bobAddress,
+    });
+    expect(result.txs).toHaveLength(1);
+    expect(await provider.getUtxos(headAddress)).toHaveLength(1);
+    expect(await provider.getUtxos(continuationAddress)).toHaveLength(1);
+  }, 300_000);
+
+  it('destroy with listed heights still sweeps the event NFTs once their delay has passed', async () => {
+    const { sc, categoryId, salted, provider } = await deploy();
+    await (sc as any).publish(...words).send();
+    const definition = artifact.events!.find((event) => event.name === 'Wide')!;
+    await (provider as any).mine(144);
+    await StatefulContract.destroy({
+      provider: withHeights(provider), contract: sc, destroyFunctionName: 'destroy', destroyFunctionArgs: [],
+      recipient: bobAddress,
+    });
+    expect(await provider.getUtxos(getEventNftAddress(salted, categoryId, definition.signature))).toHaveLength(0);
+    expect(await provider.getUtxos(getEventNftContinuationAddress(salted, categoryId, definition.signature)))
+      .toHaveLength(0);
   }, 300_000);
 });

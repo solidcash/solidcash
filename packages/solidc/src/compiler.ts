@@ -3695,7 +3695,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   const internal = compilerOptions as InternalCompilerOptions;
   const auto = compilerOptions.messageBus === undefined && !internal.__messageBusVerifierProgram;
   const held: string[] = [];
-  const replay = (): void => { for (const message of held) emitCompilerWarning(message); };
+  // A modifier inlined into several entries, or a rerun, reaches the same site twice: each warning is printed once.
+  const replay = (): void => { for (const message of new Set(held)) emitCompilerWarning(message); };
   let artifact: Artifact;
   try {
     artifact = auto ? withWarningListener(({ message }) => { held.push(message); },
@@ -3745,7 +3746,7 @@ function directBuildWithinInputLimit(code: string, compilerOptions: CompileOptio
     return undefined;
   }
   if (overInputLimit(direct, compilerOptions)) return undefined;
-  for (const message of held) emitCompilerWarning(message);
+  for (const message of new Set(held)) emitCompilerWarning(message);
   return direct;
 }
 

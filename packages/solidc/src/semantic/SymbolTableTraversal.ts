@@ -17684,7 +17684,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Multiple overloads: defer to TypeCheckTraversal
 
       const loc = this.diagLine(node.location);
-      emitCompilerWarning(`Warning: revert with custom error is a no-op in SolidCash${loc}. Error arguments are type-checked but not evaluated; the script simply fails unconditionally.`);
+      emitCompilerWarning(`Warning: revert with a custom error fails the spend but carries no revert data in SolidCash${loc}. Error arguments are type-checked but not evaluated; the error name and parameters are artifact metadata only.`);
     }
 
     node.args = this.visitList(node.args);

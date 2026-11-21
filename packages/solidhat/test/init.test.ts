@@ -56,6 +56,16 @@ describe('initializeProject', () => {
     expect(pkg.scripts['solidhat:deploy']).toBe('solidhat deploy');
   });
 
+  it('does not point the README at sample files that --no-sample left out', () => {
+    const parent = temporaryDirectory('no-sample');
+    initializeProject({ cwd: parent, target: 'bare', sample: false, install: false });
+    const directory = join(parent, 'bare');
+    expect(existsSync(join(directory, 'contracts', 'Counter.scash'))).toBe(false);
+    const readme = readFileSync(join(directory, 'README.md'), 'utf8');
+    expect(readme).not.toContain('Counter.scash');
+    expect(readme).toContain('Add `.scash` contracts under `contracts/`');
+  });
+
   it('documents and scaffolds the JavaScript/pnpm template accurately', () => {
     const parent = temporaryDirectory('javascript');
     initializeProject({

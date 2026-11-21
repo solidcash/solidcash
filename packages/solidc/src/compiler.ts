@@ -251,6 +251,7 @@ import LowerFramedCreate2Address, { type FramedCreateSite } from './semantic/Low
 import FoldFramedCreate2Initializer, { type FramedGenesisReplayer } from './semantic/FoldFramedCreate2Initializer.js';
 import { framedChildGenesisReplay } from './framed/child-genesis-replay.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
+import ScalarReplaceStructLocals from './semantic/ScalarReplaceStructLocals.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
@@ -17085,6 +17086,13 @@ function compileResolvedAst(
   // imported-struct triples exist), before LowerMemoryModel (which lowers the rebuild).
   if (!(rootSourceCoversProgram(ast) && !code.includes('struct '))) {
     ast = ast.accept(new CoalesceStructFieldArrayWrites()) as Ast;
+  }
+
+  // Scalar replacement: a struct local used only for field reads becomes one local per field, so it never goes
+  // through the pushdata struct encoder/decoder. After the field-write coalescers (a rebuilt local is not a
+  // candidate), before LowerMemoryModel. `scalarReplaceStructLocals: false` keeps the old lowering.
+  if (code.includes('struct ') && mergedCompilerOptions.scalarReplaceStructLocals !== false) {
+    ast = ast.accept(new ScalarReplaceStructLocals()) as Ast;
   }
 
   // Memory model: lower local `memory` reference types to linear-buffer pointer ops before the value-copy

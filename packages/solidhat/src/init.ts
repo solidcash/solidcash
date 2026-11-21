@@ -106,9 +106,10 @@ function sampleDeployment(target: CompatibilityTarget): string {
 }
 
 function projectReadme(
-  name: string, target: CompatibilityTarget, template: Template, manager: PackageManager,
+  name: string, target: CompatibilityTarget, template: Template, manager: PackageManager, includeSample: boolean,
 ): string {
-  const sample = template === 'empty'
+  // `--no-sample` (or `empty`) writes no Counter files, so the README must not point at them.
+  const sample = !includeSample
     ? 'Add `.scash` contracts under `contracts/` and tests under `test/`.'
     : `The included \`Counter.scash\` and \`Counter.test.${template === 'javascript' ? 'js' : 'ts'}\` demonstrate artifact and factory resolution.`;
   const install = manager === 'yarn' ? 'yarn' : `${manager} install`;
@@ -201,6 +202,7 @@ export function initializeProject(options: InitOptions = {}): InitResult {
   if (json(currentPackage) === json(mergedPackage)) skipped.push(packageFile);
   else plans.push({ path: packageFile, content: json(mergedPackage), kind: existsSync(packageFile) ? 'updated' : 'created' });
 
+  const includeSample = options.sample ?? (!existingProject && template !== 'empty');
   if (!existingProject) {
     const readmeFile = join(directory, 'README.md');
     if (existsSync(readmeFile)) skipped.push(readmeFile);
@@ -209,7 +211,7 @@ export function initializeProject(options: InitOptions = {}): InitResult {
         plans,
         skipped,
         readmeFile,
-        projectReadme(String(mergedPackage.name ?? basename(directory)), compatibility, template, manager),
+        projectReadme(String(mergedPackage.name ?? basename(directory)), compatibility, template, manager, includeSample),
         false,
       );
     }
@@ -231,7 +233,6 @@ export function initializeProject(options: InitOptions = {}): InitResult {
   if (oldIgnore === newIgnore) skipped.push(ignoreFile);
   else plans.push({ path: ignoreFile, content: newIgnore, kind: existsSync(ignoreFile) ? 'updated' : 'created' });
 
-  const includeSample = options.sample ?? (!existingProject && template !== 'empty');
   if (includeSample) {
     planFile(plans, skipped, join(directory, 'contracts', 'Counter.scash'), SAMPLE_CONTRACT, options.force ?? false);
     const testName = template === 'javascript' ? 'Counter.test.js' : 'Counter.test.ts';

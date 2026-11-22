@@ -3924,6 +3924,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (override.fundingUtxo || (override.fundingUtxos && override.fundingUtxos.length > 0)) {
       return StatefulContract.deployFrom({ ...base, ...override });
     }
+    // Preps already built name the children's categories and fund the creation, so it needs no genesis coin of its
+    // own: picking one would ask a wallet whose one vout-0 coin funded the prep for a second, or fan one out.
+    if (override.deployerPreps !== undefined && (override.funder !== undefined || this._signer)) {
+      const changeAddress = override.changeAddress ?? this._signer?.getAddress();
+      return StatefulContract.deployFrom({
+        ...base,
+        ...override,
+        funder: override.funder ?? this._signer!.unlockP2PKH(),
+        ...(changeAddress === undefined ? {} : { changeAddress }),
+      });
+    }
     if (!this._signer) {
       throw new Error(
         `Deploying '${functionName}' needs a funding UTXO or a signer: connect(signer) then `

@@ -37,6 +37,7 @@ import { Contract } from '../Contract.js';
 import { ownCoinRefusal, signerFundingCoins } from '../framed/deploy/own-coin.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs as sourceOutputsOf } from '../utils.js';
+import { applyExternalSignatures, isExternallySignedUnlocker } from '../external-signing.js';
 import { takesOraclePool } from '../oracle/pool/reader.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
@@ -430,7 +431,8 @@ async function deployFromStatefulContractInner<T extends Artifact>(
     createdChildren: Uint8Array;
   } | undefined;
   if (childDeployer !== undefined) {
-    if (prepFunding.length === 0) {
+    // Preps the caller built already name the children's categories and carry their own funding.
+    if (prepFunding.length === 0 && options.deployerPreps === undefined) {
       throw new DeployerPrepError('A deployer creating call needs prepFunding (or fundingUtxo) for its preps');
     }
     if (deploySites.length === 0) {
@@ -3337,8 +3339,22 @@ async function deployFromStatefulContractInner<T extends Artifact>(
     }
     // Run the whole creation in the VM before anything is broadcast (A14 item 4, steps 9 and 10). A refusal
     // here sends nothing, and the wrapper releases the coins the preps reserved.
-    const transaction = (builder as any).buildLibauthTransaction();
     const sourceOutputs = sourceOutputsOf((builder as any).inputs);
+    // A wallet's input holds a placeholder until the wallet signs it, and a placeholder cannot verify. The wallet
+    // signs the creation here, before any prep is broadcast, so a wallet that declines leaves nothing on chain. Its
+    // inputs then carry those signatures into `builder.send()`, which asks the wallet nothing more, and the VM
+    // judges the transaction the network will receive.
+    const unlockers: (Unlocker | undefined)[] = (builder as any).inputs
+      .map((input: { unlocker?: Unlocker }) => input.unlocker);
+    const transaction = await applyExternalSignatures(unlockers, (builder as any).buildLibauthTransaction(), sourceOutputs);
+    unlockers.forEach((unlocker, index) => {
+      if (!isExternallySignedUnlocker(unlocker)) return;
+      const signed = transaction.inputs[index]!.unlockingBytecode;
+      (builder as any).inputs[index].unlocker = {
+        generateLockingBytecode: () => unlocker.generateLockingBytecode(),
+        generateUnlockingBytecode: () => signed,
+      } satisfies Unlocker;
+    });
     const verdict = createVirtualMachineBch2026ForProvider(provider).verify({ transaction, sourceOutputs } as never);
     if (verdict !== true) {
       throw new DeployerPrepError(`The creation does not pass the VM, so nothing was broadcast: ${String(verdict)}`);

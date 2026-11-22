@@ -15,7 +15,7 @@ const ARTIFACT = {
   constructorInputs: [],
   abi: [],
   bytecode: 'OP_1',
-  compiler: { name: 'solidc', version: '0.51.0' },
+  compiler: { name: 'solidc', version: '0.51.1' },
   updatedAt: new Date(0).toISOString(),
   source: '',
 };

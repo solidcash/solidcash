@@ -24,7 +24,10 @@ import { isP2pkhLock } from '../bcmr/identity.js';
 import type { Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { addressToLockScript, createUnlockingBytecode, tryCashAddressToLockScript } from '../utils.js';
+import { applyExternalSignatures } from '../external-signing.js';
+import {
+  addressToLockScript, createUnlockingBytecode, generateLibauthSourceOutputs, tryCashAddressToLockScript,
+} from '../utils.js';
 import {
   genesisOutpointKey, isReservedGenesisOutpoint, releaseGenesisOutpoint, reserveGenesisOutpoint,
 } from './genesis-reservations.js';
@@ -2169,8 +2172,15 @@ export async function buildDeployerPreps(
         `The funding coins for '${child.contractName}' leave no change, so the next prep has nothing to spend`,
       );
     }
-    const transactionHex = builder.build();
-    const transaction = decodeTransactionUnsafe(hexToBin(transactionHex));
+    // A wallet the SDK holds no key for signs its inputs here: the prep's txid is the child's category, which the
+    // creation spends and the child's code names, so nothing can be built on a prep before its signature is final.
+    // The placeholder had the signature's size, so the fee the builder set stands.
+    const transaction = await applyExternalSignatures(
+      builder.inputs.map((input) => input.unlocker),
+      decodeTransactionUnsafe(hexToBin(builder.build())),
+      generateLibauthSourceOutputs(builder.inputs),
+    );
+    const transactionHex = binToHex(encodeTransaction(transaction));
     const txid = binToHex(hashTransactionUiOrder(encodeTransaction(transaction)));
     const deployerCoin: Utxo = {
       txid, vout: 0, satoshis: deployerValue, lockingBytecode: hexToBin(child.deployer.lockingBytecode),

@@ -54,6 +54,25 @@
 - An external call in the ABI carries `conditionUnpublished: true` when it runs under a guard the compiler cannot
   write down, so the SDK can tell it from a call inside an `if` condition. No bytecode changes.
 
+## 0.51.1
+
+A patch release of all six packages for one fix in the SDK. The compiler changes nothing but its version, so every
+contract keeps its bytecode and its address.
+
+### Fixed
+
+- A contract created through a deployer coin (a `new` of a stateful contract, through its `Deploy<C>`) can now be
+  created from a wallet the SDK holds no key for, a WalletConnect session or a browser extension. Every such creation
+  failed before, at three points:
+  - `buildDeployerPreps` took the child's category from a prep whose wallet input still held the signature's
+    placeholder.
+  - The creation's check before broadcast verified that placeholder and refused it ("error in evaluating input index
+    3: Program failed an OP_VERIFY operation").
+  - A creating call given its preps still asked the signer for a vout-0 coin it never spent.
+
+  The wallet now signs each prep and then the creation, before anything is broadcast, so a wallet that declines leaves
+  nothing on chain.
+
 ## 0.51.0
 
 All six packages move to 0.51.0 together. Source files need `pragma solidcash ^0.51.0`: a caret range on 0.x pins the

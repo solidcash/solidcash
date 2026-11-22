@@ -9,7 +9,7 @@ describe('large mock initializer legacy fence', () => {
     bytecode: 'OP_0 '.repeat(100_001).trim(),
     abi: [{ name: 'initialize', inputs: [{ name: 'counter_', type: 'int' }] }],
     stateLayout: { variables: [{ name: 'counter', type: 'int', nftIndex: 0, fieldIndex: 0 }] },
-    compiler: { name: 'solidc', version: '0.51.0' },
+    compiler: { name: 'solidc', version: '0.51.1' },
   } as Artifact;
 
   it('retains the explicitly legacy size-based shortcut', () => {

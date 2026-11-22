@@ -70,11 +70,40 @@
   that reads `blockhash(n)` is refused by name before anything is sent; such spends failed at the VM.
 - A fixed sorted-mapping insert, update or read before a keccak256 loop now builds: the loop's probe co-spends the
   entry's coin and learns the node a write pins.
+- A WalletConnect wallet can sign a function of a multi-function contract: the transaction object's
+  `contract.redeemScript` now carries the function body a signature inside an `OP_INVOKE`'d function covers, as the
+  SDK's own signer uses. Its signatures failed NULLFAIL before (#1, @swiftbotlabs).
+- `StatefulContract.split`, `merge`, and `withSplitFunding` / `withMergeFunding` funded by `Signer.external` ask the
+  wallet to sign after their fee and byte gates. They broadcast the placeholder before (#7, @astrorehan, closing #3).
+- A stateful entry that checks `tx.time` and then pays with `this.transfer` builds when sent with `.setLocktime()` and
+  no manual `.transfer()`: the locktime's re-derivation derives the transfers too (#6, @emilpz320-a11y).
+- `ContractFactory.deploy` with a signer picks a genesis coin that also covers `initialBalance` (#11, @mythos-builds).
+- An entry that pays the miner from its satoshi container (`this.payMinerFee`) can be called from a wallet holding no
+  coin, as documented; such an entry never spends its caller's coin (#12, @mythos-builds).
+- `destroy` and `selfdestructTo` no longer wait 144 blocks after an emit: an event NFT younger than its relative lock
+  stays at its address, where anyone may sweep it once the lock passes, as with any event NFT (#13, @mythos-builds).
+- A framed contract can pay to `new LockingBytecodeP2PKH(...)` and the other built-in locking bytecode classes, which
+  were taken for contract creations and refused. The payment compiles byte-identical to one to a hand-built lock
+  (#9, @aimanmalib).
+- A constructor's failing `require` is named in the deployment's refusal, with its site and error (#8, @aimanmalib).
+- `MockNetworkProvider` is assignable to `NetworkProvider` under `exactOptionalPropertyTypes` (#10, @aimanmalib).
+- `typegen` accepts a declaration compiled in its own file and imported by another root (#5, @samizdatproject).
+- `solidhat init --no-sample` writes a README that does not point at the Counter sample (#17, @Aakash074).
+
+### Added
+
+- `setSequence(n)` on a pending stateful call sets the master input's nSequence, so `require(this.age >= n)` can pass;
+  the default sequence disables BIP68 and failed every such check. Split/merge and composed calls refuse it rather
+  than drop it (#4, @samizdatproject).
+- `fillerUnlocker()` and `FILLER_SEQUENCE` from `@solidcash/solidcash/stateful` spend the 576-sat filler output a
+  call leaves, once its 144 blocks pass (#15, @aimanmalib).
 
 ### Changed
 
 - An external call in the ABI carries `conditionUnpublished: true` when it runs under a guard the compiler cannot
   write down, so the SDK can tell it from a call inside an `if` condition. No bytecode changes.
+- The warning for `revert CustomError(...)` says that it fails the spend and carries no revert data; it called the
+  revert "a no-op" (#16, @Aakash074).
 
 ## 0.51.1
 

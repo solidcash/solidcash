@@ -33,6 +33,8 @@ export interface BuildStatefulFunctionCallHost {
     valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
   };
   functionName?: string;
+  /** The master input's nSequence (`setSequence`); only the ordinary stateful builder carries it. */
+  sequenceOverride?: number;
   parentContract?: StatefulContract;
   trySplitMergeBuild(): Promise<TransactionBuilder | undefined>;
   /** The bus composition of a call whose graph runs as bus rows; undefined keeps the direct builder. */
@@ -46,12 +48,24 @@ export interface BuildStatefulFunctionCallHost {
 export async function buildStatefulFunctionCall(
   host: BuildStatefulFunctionCallHost,
 ): Promise<TransactionBuilder> {
+  // `setSequence` reaches only the ordinary stateful builder; refuse the routes that build their own transaction.
+  const refuseSequence = (route: string): void => {
+    if (host.sequenceOverride !== undefined) {
+      throw new Error(`setSequence is not supported for ${route} calls; only an ordinary stateful call sets it`);
+    }
+  };
   const splitMergeBuilder = await host.trySplitMergeBuild();
-  if (splitMergeBuilder) return splitMergeBuilder;
+  if (splitMergeBuilder) {
+    refuseSequence('split/merge');
+    return splitMergeBuilder;
+  }
   // A participant's compiler route is one row of a composition already planned; only a root call plans one.
   if (!host.compilerRoute) {
     const composed = await host.busRowComposition();
-    if (composed) return composed;
+    if (composed) {
+      refuseSequence('composed');
+      return composed;
+    }
   }
   const stb = await host.applyOverrides();
   const buildFinalized = (): TransactionBuilder => {

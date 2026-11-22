@@ -100,7 +100,7 @@ export async function extractBlockhashReads(
   const b = new CovenantTransactionBuilder({ provider: host.inner.provider });
   b.locktime = 499999999; // max block-height locktime: satisfies any tx.time >= n (height) CLTV
   const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(host.inner as any, 0, host.categoryId));
-  b.addInput(masterUtxo, stateInputUnlocker);
+  b.addInput(masterUtxo, stateInputUnlocker, (masterUtxo as Partial<UnlockableUtxo>).options);
   dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
   for (const cs of priorCoSpends) b.addInput(cs.utxo, cs.unlocker);
   b.addOutput({ to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
@@ -132,7 +132,7 @@ export async function extractGraphBlockhashRead(
     const i = b.inputs.length;
     b.addInput({ txid: (0x8000 + i).toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n }, inertUnlocker);
   }
-  b.addInput(masterUtxo, stateInputUnlocker);
+  b.addInput(masterUtxo, stateInputUnlocker, (masterUtxo as Partial<UnlockableUtxo>).options);
   dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
   const priorByIndex = new Map(prior.map((p) => [base + p.slotOrdinal, p]));
   while (b.inputs.length <= base + targetOrdinal) {
@@ -246,7 +246,7 @@ export async function resolveIndirectBlockhashCoSpends(
     const b = new CovenantTransactionBuilder({ provider: host.inner.provider });
     b.locktime = MAX_HEIGHT_LOCKTIME;
     const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(host.inner as any, 0, host.categoryId));
-    b.addInput(masterUtxo, stateInputUnlocker);
+    b.addInput(masterUtxo, stateInputUnlocker, (masterUtxo as Partial<UnlockableUtxo>).options);
     dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
     for (const input of front) b.addInput(input, input.unlocker);
     b.addOutput({ to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });

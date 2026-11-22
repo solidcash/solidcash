@@ -172,6 +172,7 @@ import {
   type ValueChunkWriteDescriptor,
   ValueChunkWriteStagingSession,
   valueChunkWriteResourceIdentity,
+  assertMasterSequence,
 } from './StatefulTransactionBuilder.js';
 import type { StandInCaller } from './stb-materialize-caller-edge-outputs.js';
 import { legacyIsPublishJobEventName } from './legacy-planning-heuristics.js';
@@ -5515,7 +5516,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (guard++ > n) throw new Error('keccak256 stateful preimage extraction did not converge.');
       const probe = new CovenantTransactionBuilder({ provider: this.inner.provider });
       if ((probeCtx.locktime ?? 0) > 0) probe.setLocktime(probeCtx.locktime!);
-      probe.addInput(masterUtxo, trailing.unlocker);
+      probe.addInput(masterUtxo, trailing.unlocker, (masterUtxo as Partial<UnlockableUtxo>).options);
       dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
       frontRegion.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
       const recreates: Output[] = [];
@@ -7026,6 +7027,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     args: any[],
     overrides?: {
       masterUtxo?: Utxo; dataNftUtxos?: Utxo[]; externalCalls?: ExternalCallInfo[];
+      /** The master input's nSequence (`setSequence`, for `this.age`), carried into every probe that spends it. */
+      masterSequence?: number;
       calls?: CallInfo[];
       entryKeyOverrides?: Map<number, bigint | boolean | Uint8Array>;
       externalEntryKeyOverrides?: Map<number, bigint | boolean | Uint8Array>;
@@ -15011,6 +15014,7 @@ export class StatefulFunctionCall {
       || this.externalCallInfos.length > 0 || (this.callInfos.length > 0 && !proxyDelegate)
       || this.registryExternalStateOverrides.size > 0 || this.emitReturnFlag
       || this.containerDepositAmount !== 0n || this.locktimeOverride !== undefined
+      || this.sequenceOverride !== undefined
       || this.splitFundingConfig !== undefined || this.mergeConfig !== undefined
       || (proxyDelegate !== undefined && (this.callerLockingBytecode !== undefined
         || this.messageBusUpgradeTarget !== undefined));
@@ -15070,6 +15074,20 @@ export class StatefulFunctionCall {
 
   setLocktime(locktime: number): this {
     this.locktimeOverride = locktime;
+    return this;
+  }
+
+  // nSequence of the contract's master input, for `require(this.age >= n)`: OP_CHECKSEQUENCEVERIFY reads the
+  // master input's own sequence, which otherwise keeps the default (relative lock disabled).
+  private sequenceOverride?: number;
+
+  /**
+   * Set the master input's nSequence to a BIP68 value, for `this.age` checks: a block count, or `(1 << 22) | units` for
+   * 512-second units. Only an ordinary call takes it; split/merge and composed calls refuse it.
+   */
+  setSequence(sequence: number): this {
+    assertMasterSequence(sequence);
+    this.sequenceOverride = sequence;
     return this;
   }
 
@@ -15496,6 +15514,7 @@ export class StatefulFunctionCall {
     const builder = await buildStatefulFunctionCallImpl({
       compilerRoute: this.compilerRoute,
       functionName: this.functionName,
+      sequenceOverride: this.sequenceOverride,
       parentContract: this.parentContract,
       trySplitMergeBuild: () => this._trySplitMergeBuild(),
       busRowComposition: () => buildBusRowComposition({
@@ -15558,6 +15577,7 @@ export class StatefulFunctionCall {
     return sendWithoutLogicalNonceImpl({
       functionName: this.functionName,
       locktimeOverride: this.locktimeOverride,
+      sequenceOverride: this.sequenceOverride,
       parentContract: this.parentContract,
       trySplitMergeBuild: () => (this as any)._trySplitMergeBuild(),
       sendRawBuilder: (b) => this._sendRawBuilder(b),

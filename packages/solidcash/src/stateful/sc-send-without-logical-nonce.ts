@@ -23,6 +23,7 @@ import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js
 export interface SendWithoutLogicalNonceHost {
   functionName?: string;
   locktimeOverride?: number;
+  sequenceOverride?: number;
   parentContract?: StatefulContract;
   trySplitMergeBuild(): Promise<TransactionBuilder | undefined>;
   sendRawBuilder(builder: TransactionBuilder): Promise<TransactionDetails>;
@@ -342,8 +343,16 @@ export async function buildBusRowComposition(
 export async function sendWithoutLogicalNonce(
   host: SendWithoutLogicalNonceHost,
 ): Promise<TransactionDetails> {
+  // `setSequence` reaches only the ordinary stateful builder; refuse the routes that build their own transaction rather
+  // than drop the sequence there.
+  const refuseSequence = (route: string): void => {
+    if (host.sequenceOverride !== undefined) {
+      throw new Error(`setSequence is not supported for ${route} calls; only an ordinary stateful call sets it`);
+    }
+  };
   const splitMergeBuilder = await host.trySplitMergeBuild();
   if (splitMergeBuilder) {
+    refuseSequence('split/merge');
     // Split/merge bypass the debug step (covenant scripts don't fully validate
     // in the debug VM due to mock source output limitations).
     return host.sendRawBuilder(splitMergeBuilder);
@@ -358,6 +367,10 @@ export async function sendWithoutLogicalNonce(
     const typedCallbackCalls = (await prepareTypedCallbackGraph(host))?.calls;
     const stb = typedCallbackCalls ? undefined : await host.applyOverrides();
     if (host.locktimeOverride !== undefined) stb?.setLocktime(host.locktimeOverride);
+    if (host.sequenceOverride !== undefined) stb?.setSequence(host.sequenceOverride);
+    if (typedCallbackCalls || (stb as { __preparedAtomicCalls?: unknown } | undefined)?.__preparedAtomicCalls) {
+      refuseSequence('composed');
+    }
     try {
       const preparedAtomicCalls = typedCallbackCalls ?? (stb as StatefulTransactionBuilder & {
         __preparedAtomicCalls?: readonly PreparedAtomicMessageBusCall[];

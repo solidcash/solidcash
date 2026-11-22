@@ -225,6 +225,7 @@ Other pending-call methods:
 | `.withValue(amount)` | Deposit satoshis into the satoshi container (`payable` functions only; `msg.value`) |
 | `.withMaxFee(satoshis)` | Refuse a transaction whose fee exceeds this ceiling |
 | `.setLocktime(locktime)` | Set the transaction's nLocktime, for `tx.time` checks |
+| `.setSequence(sequence)` | Set the master input's nSequence to a BIP68 value, for `this.age` checks (ordinary calls only; split/merge and composed calls refuse it) |
 | `.emitReturn()` | Publish the return value in a return-event output that off-chain readers can decode |
 | `.buildUnsigned()` | Return the covenant transaction without funding or signatures, for an external wallet to complete |
 

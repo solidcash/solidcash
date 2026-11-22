@@ -3,7 +3,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { Utxo } from '../interfaces.js';
+import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { OnChainState } from './StateReader.js';
 
 export interface ResolveCreateBuilderMasterAndDataNftsInput {
@@ -13,6 +13,7 @@ export interface ResolveCreateBuilderMasterAndDataNftsInput {
   onChainState: OnChainState;
   overrides?: {
     masterUtxo?: Utxo;
+    masterSequence?: number;
     dataNftUtxos?: Utxo[];
     omitLocalFeeTail?: boolean;
     blockBase?: number;
@@ -40,7 +41,12 @@ export function resolveCreateBuilderMasterAndDataNfts(
     throw new Error('Master UTXO not found on-chain');
   }
 
-  const masterUtxo = overrides?.masterUtxo ?? onChainState.masterUtxo!;
+  const chosenMaster = overrides?.masterUtxo ?? onChainState.masterUtxo!;
+  // `this.age` checks the master's own nSequence, so every probe that spends the master needs the call's sequence.
+  const masterUtxo = overrides?.masterSequence === undefined ? chosenMaster : {
+    ...chosenMaster,
+    options: { ...(chosenMaster as Partial<UnlockableUtxo>).options, sequence: overrides.masterSequence },
+  } as Utxo;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
     const state = onChainState.state as Record<string, unknown> | undefined;

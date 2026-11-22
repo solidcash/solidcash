@@ -173,7 +173,7 @@ export async function resolveStatefulEcrecoverLoop(
     const next = calls.length;
     const probe = new CovenantTransactionBuilder({ provider: host.vmProvider });
     if (locktime > 0) probe.setLocktime(locktime);
-    probe.addInput(masterUtxo, stateInputUnlocker);
+    probe.addInput(masterUtxo, stateInputUnlocker, (masterUtxo as Partial<UnlockableUtxo>).options);
     dataNftUtxos.forEach((utxo, index) => probe.addInput(utxo, dataNftUnlockers[index]));
     // One placeholder past the most calls a probe follows: a run that reads it makes more.
     const ahead = MAX_RECOVERY_LOOP_ITERATIONS + 1 - next;

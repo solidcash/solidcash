@@ -4,16 +4,17 @@ A patch release of 0.51.0 for one SDK fix: creating a contract through a deploye
 
 ## Where things are
 
-- Branch `release/0.51.1`, worktree `/Code/cashscript/.worktrees/release-0.51.1`, forked from `v0.51.0`
-  (`eda85a88d`). **Not pushed, not tagged, not published.** Pushing, tagging `v0.51.1` and publishing are the user's
-  to start.
+- **SolidCash 0.51.1 is out.** Branch `release/0.51.1`, forked from `v0.51.0` (`eda85a88d`), ends at `a61d95d89`,
+  which is tagged `v0.51.1`. The branch and the tag are on `origin`, and npm serves all six packages at 0.51.1 as
+  `latest` (checked 2026-11-22). The worktree `.worktrees/release-0.51.1` is removed; the branch remains.
 - The commits on top of `v0.51.0`:
   - `fix(solidcash): create through a deployer with an external wallet`: the fix and its test.
   - `chore(release): version 0.51.1`: all six packages, their internal ranges (`^0.51.1`), the compiler's version
     and the copies tests pin. `scripts/bump.py` here made it. Pragmas keep `^0.51.0`, which 0.51.1 satisfies.
   - `docs(release): ...`: `CHANGELOG.md` and `website/docs/releases/release-notes.md`.
   - `docs(wip): ...`: this file and `scripts/`.
-- `master` has moved on since 0.51.0 (the post-0.51.0 work). The fix is not on it yet; see "After the release".
+- `master` merged `release/0.51.1` in `7287ee028` (2026-11-22), on top of the post-0.51.0 work, so it holds the fix.
+  Only `CHANGELOG.md` conflicted: master's Unreleased section stays above 0.51.1.
 
 ## The fix
 
@@ -84,9 +85,8 @@ what this branch holds.
 
 ## After the release
 
-- **Master:** cherry-pick the fix onto master (or `post-0.51.0`). `deployer.ts`, `sc-deploy-from.ts` and
-  `StatefulContract.ts` have moved there since 0.51.0, so expect conflicts. The creation check's code is unchanged on
-  master `703ba7574`.
+- **Master:** done by the merge `7287ee028`, not a cherry-pick. `StatefulContract.ts` merged on its own, and master
+  had not changed `deployer.ts` or `sc-deploy-from.ts` since 0.51.0.
 - **SolidPool:**
   - move `@solidcash/*` to 0.51.1;
   - rebuild its artifacts, since their compiler version changes;

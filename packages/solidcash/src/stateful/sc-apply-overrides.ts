@@ -458,7 +458,13 @@ export async function applyOverrides(
       || host.locktimeOverride !== undefined
       || host.sequenceOverride !== undefined;
     if (reDerive && hasNewContext) {
-      const reResult = await reDerive(builder);
+      // Derive the transfers again unless the user supplied them: the initial probe ran without this
+      // context (for example the locktime), so it may have failed before learning them.
+      const reResult = await reDerive(builder, {
+        deriveTransfers: host.transfers.length === 0,
+        deriveTokenTransfers: host.tokenContainerTransfers.length === 0
+          && host.tokenContainerTransferNfts.length === 0,
+      });
       derived = reResult.state;
       (builder as any).__vmErrored = reResult.vmErrored;
       (builder as any).__derivationError = reResult.derivationError;

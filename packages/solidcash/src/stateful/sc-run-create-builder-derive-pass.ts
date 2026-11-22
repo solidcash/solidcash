@@ -452,11 +452,21 @@ export async function runCreateBuilderDerivePass(
     const ei = emitInfos.length > 0 ? emitInfos : undefined;
     const rni = requiredNftIndices;
     const dci = delegatecallInputIndex;
-    // Re-derive callback: does NOT pass transfer params - when re-deriving after user
-    // provides manual transfers, we work with whatever transfers are already in the builder.
-    (builder as any).__reDerive = async (stb: StatefulTransactionBuilder) => (
+    const reTransferCount = derivTransferCount;
+    const reTokenOps = derivTokenOps;
+    // Re-derive callback. By default it does NOT pass transfer params: when re-deriving after the user
+    // provides manual transfers, we work with whatever transfers are already in the builder. A caller
+    // whose call has no manual transfers asks for them to be derived again, because the first pass may
+    // have stopped before reaching them (for example a `tx.time` check before `.setLocktime()` applied).
+    (builder as any).__reDerive = async (
+      stb: StatefulTransactionBuilder,
+      options: { deriveTransfers?: boolean; deriveTokenTransfers?: boolean } = {},
+    ) => (
       host.deriveFullTransactionState(stb, rni, ecGroups, ecCalls, ea, ei,
-        eventBlockLayoutForDerive, undefined, undefined, dci, osGroups, false, onChainState.state)
+        eventBlockLayoutForDerive,
+        options.deriveTransfers ? reTransferCount : undefined,
+        options.deriveTokenTransfers ? reTokenOps : undefined,
+        dci, osGroups, false, onChainState.state)
     );
   }
 }

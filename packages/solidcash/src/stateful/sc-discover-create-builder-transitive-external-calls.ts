@@ -128,7 +128,7 @@ export type SharedMethodBatchBuilder = (
 /**
  * For each direct nested callee with its own externalCalls, resolve C from B's
  * connect-time registry, load C's master/data NFTs, and append transitive groups.
- * Circular A→B→A auto-resolution fails closed. The direct callees are the groups from
+ * Circular A->B->A auto-resolution fails closed. The direct callees are the groups from
  * `firstDirectIndex` up to `directGroupCount` (a compat call's callee groups follow the typed ones' callees).
  */
 export async function discoverCreateBuilderTransitiveExternalCalls(

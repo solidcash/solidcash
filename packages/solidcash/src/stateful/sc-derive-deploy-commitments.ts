@@ -45,6 +45,7 @@ import {
   getTokenContainerAddress,
   getValueChunkLockingBytecode,
 } from './covenant-helpers.js';
+import { probeRequireStatement } from './external-return-encoding.js';
 import { reduceProbeTrace } from './faithful-probe-trace.js';
 import { evalComputedKey } from './route-expression-key.js';
 import {
@@ -1030,6 +1031,15 @@ export async function deriveDeployCommitments<T extends Artifact>(
       const vmStack = failedStep === undefined
         ? ''
         : ` (stack: ${failedStep.stack.slice(-4).map((item) => binToHex(item)).join(', ')})`;
+      // A `require` in the constructor stops the probe before any state is written. Name its source site and
+      // error, as a failing call after deployment does, instead of leaving only the VM error.
+      const requirement = constructorAbi?.selector === undefined
+        ? undefined
+        : probeRequireStatement([artifact], constructorAbi.selector, failedStep?.ip);
+      const requireSite = requirement === undefined
+        ? ''
+        : `; failing require in ${requirement.contractName ?? 'contract'}:${requirement.line}`
+          + `${requirement.message ? ` (${requirement.message})` : ''}`;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE
         && failedStep) {
         console.error('constructor-probe-failure', {
@@ -1048,6 +1058,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
         + 'constructor. Ensure the constructor writes all '
         + 'state variables.'
         + (vmError === undefined ? '' : ` VM error${vmLocation}: ${vmError}${vmStack}`)
+        + requireSite
         + unplannedCause,
       );
     }

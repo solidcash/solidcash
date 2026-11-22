@@ -107,7 +107,8 @@ describe('ContractFactory genesis funding selection', () => {
     await provider.addUtxo(signer.getAddress(), big);
 
     const artifact = compileString('contract Vault() { int n; function bump() { this.n = this.n + 1; } }');
-    const vault: any = await new ContractFactory(artifact, signer).deploy({ initialState: { n: 0n }, initialBalance: 200_000n });
+    const vault: any = await new ContractFactory(artifact, signer)
+      .deploy({ initialState: { n: 0n }, initialBalance: 200_000n });
 
     expect(vault.categoryId).toBe(big.txid);
     expect(await vault.satoshiContainer.getBalance()).toBe(200_000n);

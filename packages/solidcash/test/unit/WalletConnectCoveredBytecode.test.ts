@@ -28,7 +28,10 @@ function walletSign(wc: any, privateKey: Uint8Array): Uint8Array {
     if (!sourceOutput.contract) return;
     const preimage = generateSigningSerializationBch(
       { inputIndex, sourceOutputs: wc.sourceOutputs, transaction },
-      { coveredBytecode: sourceOutput.contract.redeemScript, signingSerializationType: Uint8Array.of(SIGHASH_ALL_UTXOS_FORKID) },
+      {
+        coveredBytecode: sourceOutput.contract.redeemScript,
+        signingSerializationType: Uint8Array.of(SIGHASH_ALL_UTXOS_FORKID),
+      },
     );
     const signature = secp256k1.signMessageHashSchnorr(privateKey, hash256(preimage)) as Uint8Array;
     input.unlockingBytecode = hexToBin(binToHex(input.unlockingBytecode)

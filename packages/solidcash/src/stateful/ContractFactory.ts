@@ -437,8 +437,10 @@ export class ContractFactory<T extends Artifact = Artifact> {
         const { genesisOutpointKey } = await import('./genesis-reservations.js');
         const named = [overrides.nativeToken?.funding]
           .flatMap((coin) => (coin === undefined ? [] : [genesisOutpointKey(coin.txid, coin.vout)]));
+        // The genesis coin funds the whole deployment, initial balance included. Leaving the balance out of the floor
+        // lets a fresher coin that covers only the records and the fee win, and the deployment then fails.
         fundingUtxo = await selectGenesisFundingUtxo(
-          signer, deployArtifact, new Set(named), 1 + verifierCount, poolSatoshis,
+          signer, deployArtifact, new Set(named), 1 + verifierCount, poolSatoshis + (overrides.initialBalance ?? 0n),
         );
       }
       funder = funder ?? signer.unlockP2PKH();

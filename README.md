@@ -54,6 +54,8 @@ npm install @solidcash/solidcash
 
 ```ts
 import { Contract, ... } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
+// in tests: import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 ```
 
 Using the SolidCash SDK, you can import contract artifact files, create new instances of these contracts, and interact with these instances:

@@ -931,44 +931,34 @@ export async function orchestrateCreateBuilderExternalCalls(
     // Discover and build transitive external call groups (B->C chains).
     // For each direct group, check if B's called function also has external calls.
     // If so, resolve B's external calls from B's connect-time registry and add them.
-    await discoverCreateBuilderTransitiveExternalCallsImpl(
-      host.categoryId,
-      externalCallUtxoGroups,
-      groupMetas,
-      directGroupCount,
-      async (shared, next, callee) => buildSharedMethodExternalBatch(
-        { buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a) },
-        shared,
-        next,
-        callee,
-        {
-          artifact: host.inner.artifact,
-          state: callerStateSnapshot ?? onChainState?.state,
-          inputs: abiFunction?.inputs ?? [],
-          selfAddress: publicSelfAddress,
-          identity: publicSelfIdentity,
-        },
-      ),
-    );
-    // No called contract's own blockhash(n) read gets a slot of its oracle pool, only a plain coin at its block-hash
-    // slot: refuse the call by name before a transitive callee's region is laid out or the transaction is derived.
-    refuseCreateBuilderNestedBlockhashReads(externalCallUtxoGroups);
-    // Nor is the callee of a called contract's low-level call ever discovered: refuse that call by name as well.
-    await refuseCreateBuilderNestedLowLevelCalls(externalCallUtxoGroups);
-    // A transitive callee whose run reads a region right after its block (a walk, loop side-cars, the chunks it writes)
-    // gets the block a direct callee gets, with the region after it. A return probe runs only this function's input.
-    if (overrides?.returnProbeOnly !== true) {
-      await appendCreateBuilderTransitiveCalleeRegionsImpl(
-        {
-          block: nestedBlockHost,
-          ...(overrides?.sharedSidecarPool !== undefined && { sharedSidecarPool: overrides.sharedSidecarPool }),
-        },
-        externalCallUtxoGroups, groupMetas, directGroupCount,
-      );
-    }
+    const discoverTransitive = (firstDirectIndex: number, directEnd: number): Promise<void> => (
+      discoverCreateBuilderTransitiveExternalCallsImpl(
+        host.categoryId,
+        externalCallUtxoGroups,
+        groupMetas,
+        directEnd,
+        async (shared, next, callee) => buildSharedMethodExternalBatch(
+          { buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a) },
+          shared,
+          next,
+          callee,
+          {
+            artifact: host.inner.artifact,
+            state: callerStateSnapshot ?? onChainState?.state,
+            inputs: abiFunction?.inputs ?? [],
+            selfAddress: publicSelfAddress,
+            identity: publicSelfIdentity,
+          },
+        ),
+        firstDirectIndex,
+      ));
+    await discoverTransitive(0, directGroupCount);
 
-    // A compat call's callee follows every typed group and fills no caller ABI slot; the caller reads it through its
-    // call-input witness. Its msg.sender is the caller a typed call presents.
+    // A compat call's callee follows every typed group and the contracts those call, and fills no caller ABI slot;
+    // the caller reads it through its call-input witness. Its msg.sender is the caller a typed call presents. Then
+    // discovery follows the calls each such callee makes, as a typed call's callee's, and the refusals below cover
+    // its run and theirs; their groups answer that callee, no typed callsite of the entry.
+    const compatGroupStart = externalCallUtxoGroups.length;
     for (const [ordinal, compat] of compatCalls.entries()) {
       await materializeDirectCalleeGroup(externalCalls.length + ordinal, compat.ec, compat.callInfo);
       const group = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
@@ -976,6 +966,49 @@ export async function orchestrateCreateBuilderExternalCalls(
       groupMetas.push({
         ecSlot: directGroupEcSlot(compat.ec, group), callerCategoryId: host.categoryId, parentGroupIndex: -1,
       });
+    }
+    const compatGroupEnd = externalCallUtxoGroups.length;
+    if (compatGroupEnd > compatGroupStart) {
+      await discoverTransitive(compatGroupStart, compatGroupEnd);
+      for (let index = compatGroupEnd; index < externalCallUtxoGroups.length; index++) {
+        const parent = externalCallUtxoGroups[groupMetas[index].parentGroupIndex];
+        externalCallUtxoGroups[index].underLowLevelCallIndex = parent?.edgeLowLevelCallIndex
+          ?? parent?.underLowLevelCallIndex;
+      }
+    }
+
+    // No called contract's own blockhash(n) read gets a slot of its oracle pool, only a plain coin at its block-hash
+    // slot: refuse the call by name before a transitive callee's region is laid out or the transaction is derived.
+    refuseCreateBuilderNestedBlockhashReads(externalCallUtxoGroups);
+    // Nor is the callee of a called contract's low-level call ever discovered: refuse that call by name as well.
+    await refuseCreateBuilderNestedLowLevelCalls(externalCallUtxoGroups);
+    // A transitive callee whose run reads a region right after its block (a walk, loop side-cars, the chunks it writes)
+    // gets the block a direct callee gets, with the region after it. So does one whose call publishes a record, when a
+    // low-level call's callee follows every block on the low-level path: the tail band of call records would otherwise
+    // come before that callee's outputs. A return probe runs only this function's input.
+    if (overrides?.returnProbeOnly !== true) {
+      const lowLevelBandCall = (abiFunction?.lowLevelCalls ?? []).findIndex((row, index) => (
+        row.callMode !== 'delegatecall' && (overrides?.calls?.[index] as { type?: string } | undefined)?.type === 'stateful'
+        && !compatCalls.some((call) => call.callIndex === index)));
+      await appendCreateBuilderTransitiveCalleeRegionsImpl(
+        {
+          block: nestedBlockHost,
+          ...(overrides?.sharedSidecarPool !== undefined && { sharedSidecarPool: overrides.sharedSidecarPool }),
+          ...(lowLevelBandCall >= 0 && {
+            lowLevelBand: `the callee of ${host.inner.artifact.contractName}.${abiFunction!.name}'s low-level call `
+              + `${lowLevelBandCall}`,
+          }),
+          // A block's funder comes from the shared pool, which only a direct callee's funder slots allocated.
+          prepareFunders: async () => {
+            if (sharedFunderPool !== undefined || !host.signer) return;
+            const coins: Utxo[] = earlySignerUtxos ?? await signerFundingCoins(host.signer);
+            sharedFunderPool = coins.filter((coin) => !coin.token)
+              .map((coin) => ({ ...coin, unlocker: host.signer.unlockP2PKH() }));
+            sharedFunderSnapshot = [...sharedFunderPool];
+          },
+        },
+        externalCallUtxoGroups, groupMetas, directGroupCount,
+      );
     }
 
     // _externalCallInputBase: runtime param (needed for mutual A<->B calls)

@@ -128,7 +128,8 @@ export type SharedMethodBatchBuilder = (
 /**
  * For each direct nested callee with its own externalCalls, resolve C from B's
  * connect-time registry, load C's master/data NFTs, and append transitive groups.
- * Circular A→B→A auto-resolution fails closed.
+ * Circular A→B→A auto-resolution fails closed. The direct callees are the groups from
+ * `firstDirectIndex` up to `directGroupCount` (a compat call's callee groups follow the typed ones' callees).
  */
 export async function discoverCreateBuilderTransitiveExternalCalls(
   primaryCategoryId: string,
@@ -136,8 +137,9 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
   groupMetas: ExternalGroupMeta[],
   directGroupCount: number,
   buildSharedMethodBatch?: SharedMethodBatchBuilder,
+  firstDirectIndex = 0,
 ): Promise<void> {
-  for (let directIdx = 0; directIdx < directGroupCount; directIdx++) {
+  for (let directIdx = firstDirectIndex; directIdx < directGroupCount; directIdx++) {
     const directGroup = externalCallUtxoGroups[directIdx];
     const bContract = directGroup.externalContract as TransitiveExternalContract;
     const bAbi = bContract.inner.artifact.abi;

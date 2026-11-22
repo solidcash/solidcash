@@ -3,11 +3,13 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { keccakComputeLockingBytecode, keccakComputeLockingBytecodeShifted, type AbiFunction } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { buildKeccakComputeSidecar, scanKeccakBatchReads } from '../keccak/keccakComputeSidecar.js';
 import { computeSideCarStandIn } from './stateful-abi-resolve.js';
+import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
 
 export interface ResolveStatefulKeccakLoopHost {
   readonly categoryId: string;
@@ -112,6 +114,12 @@ export async function resolveStatefulKeccakLoop(
     if (batch === undefined || batch.length === 0) return [new Uint8Array(0)];
     return batch.map((preimage) => preimage ?? new Uint8Array(0));
   };
+  // A fixed mapping write before the loop pins its node at its entry slot's output where it runs, so the probe has to
+  // recreate that slot as written to reach the loop. Each front output's expected commitment is read off the probe's
+  // own trace and the same probe runs again with it, once per front slot at most.
+  const frontStart = 1 + dataNftUtxos.length;
+  const frontOutputs = frontRegionInputs.map((input) => host.frontRegionRecreate(input));
+  let frontRelearns = 0;
   for (let k = 1; k <= MAX_ITERS + 1; k++) {
     // Probe one side-car past the known band: a read there names another side-car the code reaches.
     if (k > slots.length + 1) break;
@@ -142,13 +150,31 @@ export async function resolveStatefulKeccakLoop(
     dataNftUtxos.forEach((u, i) => probe.addOutput({
       to: dataNftUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
     }));
-    frontRegionInputs.forEach((u) => probe.addOutput(host.frontRegionRecreate(u))); // self-preserving recreate
+    frontOutputs.forEach((output) => probe.addOutput(output)); // self-preserving recreate, or a learned write
     trailingPredecessors.outputs.forEach((out) => probe.addOutput(out));
     for (const rec of recreates) probe.addOutput({ ...rec, to: lock });
     trailingSuccessors?.outputs.forEach((out) => probe.addOutput(out));
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = host.generateLibauthSourceOutputs(probe.inputs);
     const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
+    const pins = extractCommitmentMapFromTrace(trace as AuthenticationProgramStateCommon[], {
+      min: frontStart, max: frontStart + frontOutputs.length,
+    });
+    let relearned = false;
+    for (const [outputIndex, expected] of pins) {
+      const output = frontOutputs[outputIndex - frontStart];
+      const nft = output?.token?.nft;
+      if (output === undefined || nft === undefined || nft.commitment === expected) continue;
+      frontOutputs[outputIndex - frontStart] = {
+        ...output, token: { ...output.token!, nft: { ...nft, commitment: expected } },
+      };
+      relearned = true;
+    }
+    if (relearned && frontRelearns < frontOutputs.length) {
+      frontRelearns += 1;
+      k -= 1;
+      continue;
+    }
     const debugReads = scanKeccakBatchReads(trace, keccakInputBase, k, ordinals);
     let learned = false;
     let reachedNew = false;

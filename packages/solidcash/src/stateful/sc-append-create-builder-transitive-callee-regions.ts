@@ -56,6 +56,15 @@ export interface AppendCreateBuilderTransitiveCalleeRegionsHost {
   readonly block: AssembleCreateBuilderNestedCalleeBlockHost;
   /** The view the build lists the shared side-car pool (salt 0) through, when it has one (a creation's). */
   readonly sharedSidecarPool?: NetworkProvider;
+  /**
+   * The low-level call whose callee, co-spent on the low-level path, the transaction places right after every
+   * external call's block, named for a refusal; absent when it has none. That callee's outputs are placed after the
+   * tail band of call records, while its inputs follow the blocks, so a record in that band would take its master's
+   * output index. A transitive callee whose call publishes a record then gets its record's slot in a block of its own.
+   */
+  readonly lowLevelBand?: string;
+  /** Fill the shared funder pool, when the build has none yet, before a block of a transitive callee takes a funder. */
+  prepareFunders?(): Promise<void>;
 }
 
 /**
@@ -63,7 +72,10 @@ export interface AppendCreateBuilderTransitiveCalleeRegionsHost {
  * after its block, the way a direct callee's block is laid out: its master, its records and its call record's slot
  * held open with an input, then the region where C's covenant reads it. The regions are the collection walk an
  * iteration reads, one shared side-car per iteration of a keccak256 loop, and the old chunks of the dynamic state it
- * writes (its new chunks are learned from its run once its record is, as a direct callee's are).
+ * writes (its new chunks are learned from its run once its record is, as a direct callee's are). Beside a low-level
+ * call's callee (`lowLevelBand`), a C whose call publishes a record gets the same block with no region, so its record
+ * sits at its own slot rather than in the tail band, which would put the low-level callee's outputs one index after
+ * its inputs.
  *
  * C's master follows B's block, where B reads it, so only C's own block and regions grow. Every check stays C's: its
  * covenant reads each region relative to its own master and checks every entry, side-car and chunk. A shape this layout
@@ -88,18 +100,25 @@ export async function appendCreateBuilderTransitiveCalleeRegions(
       || !isDirectConventionArtifact(artifact) || !isDirectConventionArtifact(parentArtifact)
       || group.compilerRoute !== undefined || parent.compilerRoute !== undefined) continue;
     const fn = selectedFunction(artifact, group);
-    const region = fn === undefined ? undefined : PLACED_REGIONS.find(([field]) => publishes(fn, field))?.[1];
-    if (fn === undefined || region === undefined) continue;
+    if (fn === undefined || group.blockInputs !== undefined) continue;
+    // The record is published for a caller that reads it, and always for a function that returns.
+    const publishesRecord = meta.ecSlot.hasReturnValues === true || (fn.outputs?.length ?? 0) > 0;
+    const placedRegion = PLACED_REGIONS.find(([field]) => publishes(fn, field))?.[1];
+    // No region, only a record that would otherwise go to the tail band before the low-level callee's outputs.
+    const recordOnly = placedRegion === undefined && host.lowLevelBand !== undefined && publishesRecord;
+    const region = placedRegion ?? (recordOnly ? 'its call record' : undefined);
+    if (region === undefined) continue;
     const label = `${artifact.contractName}.${fn.name}`;
     const caller = `${parentArtifact.contractName}.${parent.functionName}`;
     const refuse = (what: string): never => {
-      throw new Error(`The call of ${label} cannot be laid out: ${what}`);
+      throw new Error(`The call of ${label} cannot be laid out${recordOnly ? ` beside ${host.lowLevelBand}` : ''}: `
+        + what);
     };
 
     if (group.sharedGroupIndex !== undefined
       || groups.some((other, at) => at !== index && other.sharedGroupIndex === index)) {
       refuse(`another call of ${artifact.contractName} in this transaction shares its block, so ${region} has no `
-        + 'block of its own to follow');
+        + `block of its own to ${recordOnly ? 'sit in' : 'follow'}`);
     }
     if (meta.ecSlot.occurrence === 'loop' || meta.ecSlot.loopArrayVar !== undefined) {
       refuse(`${caller} calls it in a loop, and one block of its own cannot hold ${region} for each call`);
@@ -128,8 +147,6 @@ export async function appendCreateBuilderTransitiveCalleeRegions(
     const state = await contract.getFullState();
     const master = group.masterUtxo as Utxo;
     const internalArgs: Record<string, FunctionArgument> = {};
-    // The record is published for a caller that reads it, and always for a function that returns.
-    const publishesRecord = meta.ecSlot.hasReturnValues === true || (fn.outputs?.length ?? 0) > 0;
     const ctx = {
       callerReadsRecord: meta.ecSlot.hasReturnValues === true,
       bBlockInputs: undefined as UnlockableUtxo[] | undefined,
@@ -157,11 +174,12 @@ export async function appendCreateBuilderTransitiveCalleeRegions(
       publicSelfIdentity: group.callerIdentity
         ?? { categoryId: parent.categoryId, lockingBytecode: parent.externalContract.inner.lockingBytecode },
     };
+    await host.prepareFunders?.();
     // A funder's coin is seeded by its group's position, so two callees' block funders stay distinct.
     await assembleCreateBuilderNestedCalleeBlockInputs({ ...host.block, currentGroupCount: () => index }, ctx);
     if (ctx.bBlockInputs === undefined || !ctx.bReturnEventInBlock) {
       refuse(publishesRecord
-        ? `its block does not come out with its call record at its slot, where ${region} follows it`
+        ? `its block does not come out with its call record at its slot${recordOnly ? '' : `, where ${region} follows it`}`
         : 'its call publishes no record, and the SDK lays out a transitive callee\'s block only with its record');
     }
     let block = ctx.bBlockInputs!;

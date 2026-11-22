@@ -267,6 +267,11 @@ export interface ExternalCallUtxoGroup {
   edgeDelegateGroupIndex?: number;
   /** F1: this low-level group answers call `i` of the entry, whose `__internal__lowLevelCallEdgeOutputIdx<i>` it fills. */
   edgeLowLevelCallIndex?: number;
+  /**
+   * The entry's low-level call `i` whose callee, run as a direct group (a compat call's), makes this call, itself or
+   * through a contract it calls: this group answers a call of that callee's, no typed callsite of the entry.
+   */
+  underLowLevelCallIndex?: number;
   /** One reached call of a direct multi-call (direct-call-batch.ts): the frame its record answers. */
   callBatchUnit?: DirectCallBatchUnit;
   /** The unit spending the callee master through its multi-call entry: the frames that spend runs. */

@@ -12,14 +12,15 @@ was run, what the user decided, and every item still open, with pointers. The sc
 - **master** merged `release/0.51.0` (`5b9c9d712`), then took `eda85a88d`, which gives testing, solidhat and
   create-solidhat the pack rules utils and solidc have. Before the merge, master was at `a04d90c7c`, which
   `release/0.51.0` already contained.
-- **`post-0.51.0`** (worktree `/Code/cashscript/.worktrees/post-0.51.0`) carries the work after the release:
-  - the `gitHead` fields dropped;
-  - the lint cleared;
-  - the publishing notes;
-  - this handoff;
-  - then the open items below.
+- **master is the working line again** (2026-11-22). Work lands on master directly. Master carries:
+  - what `post-0.51.0` carried up to `703ba7574`: the `gitHead` fields dropped, the lint cleared, the publishing
+    notes, this handoff and the open items landed after the release;
+  - the 0.51.1 release (merge `7287ee028`; see `docs/wip/release-0.51.1/HANDOFF.md`);
+  - the reviewed part of wave 1 (see "Wave 1" under the open items).
 
-  Master moves to it only by a fast-forward. Neither is pushed past the tag.
+  `post-0.51.0` and the lander's `land-4` are retired: their commits after `703ba7574` were the wave-1 note and the
+  lander's copies of the agents' commits, and master took the reviewed ones from the agents' branches. Master is not
+  pushed past `v0.51.0`.
 - **`release/0.51.0`** (worktree `/Code/cashscript/.worktrees/release-0.51.0`) was the release candidate:
   `deployer-spec` at `7d8fb3900`, merged with master (`6c32f972a`), then a raw-call probe fix (`ed9de1ad9`), a stale
   debug dump removed (`f9ca3e948`), the 0.51.0 version (`d0d7718b3`) and the docs. It is not pushed; master holds it.
@@ -240,6 +241,43 @@ spec status is in `docs/wip/deployer-coins/solidcash-new-through-deployer-coins.
 below. Each worked on its own branch, and the lander landed the result. None is still running. What they found and
 left is listed under the classes further down.
 
+**Wave 1 (2026-11-17) and its landing (2026-11-22).** The user asked to "continue with open items until the spec is
+fully implemented soundly and securely". Five agents worked the soundness debt, one branch each from `703ba7574`:
+`sdk-failclosed`, `fe-inheritance`, `fe-eval-order`, `target-6b`, `fe-storage-inliner`. The session stopped
+mid-wave: the lander's `land-4` union never ran, and four of the agents' worktrees keep uncommitted edits. On
+2026-11-22 the user asked to land only sound changes ("not some sloppy, obscure or transient stuff. everything must
+be motivated and substantiated"). Each of the 20 committed changes was reviewed by reading. The lander worktree
+`land-5` merged the reviewed ones by branch cut and master merged `land-5`:
+
+- Landed: `sdk-failclosed` to `994301113` (`6e8b10b7a`, `e86392907`, `994301113`), `fe-inheritance` to `370dac380`,
+  `target-6b` to `1d08fd8c5`, and `410e24db1` alone (TARGET-7, picked as `eee5c659d` because it follows held
+  commits). CHANGELOG.md and the ledger's "Call targets" have them.
+- Checks on `land-5`: `yarn build`; eslint on the 19 changed files; 8 solidc files (238 passed) and 35 solidcash
+  files (318 passed), each once, none skipped: every landed commit's own test, the neighbours the reviews named, the
+  0.51.1 fix's test, the tests of the contracts whose bytes moved and the files that pin `evmCompat` sizes. The corpus
+  (352 `.scash`) and the external Solidity corpus (644 files, `evmCompat`) against master: nothing newly refused or
+  newly compiling, no ABI moved; the byte moves are TARGET-7's (the ledger has the numbers).
+- Held, with the review's reason (each needs rework from master):
+  - `sdk-failclosed`: `23fb49bb1` refuses a listed call of a multi-call frame under a false guard, which
+    `planDirectCallBatches` drops and builds (`callCountsCallerEdge` is false for every `callOrdinal` frame);
+    `03fcf1c58` builds on it and adds a dead `{ loop: true }` branch to `ListedCallNotMadeError`; `ee9011033` needs
+    `23fb49bb1`; `010aa8176` is sound but sits behind them.
+  - `fe-inheritance`: `8d8eb9fd8` renames base-constructor parameters without walking call options, so
+    `v.deposit{value: amount}()` in a base constructor loses `amount` or sends the derived one's; its byte moves are
+    unstated and the spec's A4.1 and A16.5 rows still name the old refusals. `0f94f6c0b` has no test of its own.
+  - `fe-eval-order`: all three. `17c6e1d62` refuses `uint a = arr[arr.length-1] += v;`, which compiled correctly;
+    `6a69ea7eb` refuses `(x.push(), x.push()) = (0, 0)`, failing `storage-collections.test.ts`; `968ec9bc9` refuses
+    `_pending(pools[pid]) + bonus` with a view helper.
+  - `target-6b`: `fc114ef85` gives a call through a copy its own callee slot even with no write (the ledger has the
+    case); `a7a3cf38e` builds on it.
+  - `fe-storage-inliner`: all three. `0862cc059` leaves the shape it was found from failing and unrecorded, with test
+    scaffolding for uncommitted cases; `4afd2011d` misses a nested loop's local; `4989c1663` refuses imported
+    containers' entries, leaves empty blocks that change lowering, and takes a key's type by contract name.
+- Recorded gaps the reviews found in landed or held work: a write before a fixed keccak256 argument the SDK cannot
+  read is not learned (`994301113`); a raw call to a `callBatch` callee under a true guard fails at preflight, input
+  2 (`ee9011033`); a loop over an array of targets whose calls return values fails at preflight on its own
+  (`010aa8176`).
+
 **Landed after the release** (on `post-0.51.0`):
 
 - **The two known issues from 0.50.0** (`f5185b232`, `071e8a69c`), both reproduced on 0.51.0 first.
@@ -406,7 +444,10 @@ Under `/Code/cashscript/.worktrees`:
 
 **Keep:**
 
-- `post-0.51.0`, the line after the release;
+- the wave-1 worktrees `fe-eval-order`, `fe-inheritance`, `fe-storage-inliner` and `sdk-failclosed`, whose
+  uncommitted edits are unreviewed, and `census-0x51` (an uncommitted event-NFT carrier change in code generation);
+- `post-0.51.0`, `land-4` and `target-6b`, retired lines whose branches hold the held commits, until the user says
+  otherwise;
 - `release-0.51.0` and `deployer-spec`, until the user says otherwise;
 - `release-review`, until the conformance review has been read: it holds the review's tests and their verdicts.
 

@@ -5,11 +5,20 @@
 ### Security
 
 - An expression-form delegatecall, `(bool ok, bytes data) = impl.delegatecall(input)`, was not pinned to its
-  implementation (DELEGATE-1, in 0.51.0 and, by reading, 0.50.x). A spender could co-spend other code, or none, and
-  set the calling contract's state at will. It is now pinned as the statement form `impl.delegatecall(input);` always
-  was. A contract that uses the expression form compiles to new bytes: recompile and redeploy it. The same pin now
-  covers the forwarder through which a split contract's read-only function returns from its facet. The statement
+  implementation (DELEGATE-1, in 0.51.0 and 0.51.1 and, by reading, 0.50.x). A spender could co-spend other code, or
+  none, and set the calling contract's state at will. It is now pinned as the statement form `impl.delegatecall(input);`
+  always was. A contract that uses the expression form compiles to new bytes: recompile and redeploy it. The same pin
+  now covers the forwarder through which a split contract's read-only function returns from its facet. The statement
   form, library calls and the SDK's default proxy were not affected.
+- A co-spent callee stood for a 20-byte identity whenever its lock projected to it (TARGET-7, in 0.51.0 and 0.51.1).
+  A P2SH20 lock carrying the HASH160 of a contract's P2SH32 lock projects to that contract's identity, and anyone can
+  spend it with the contract's public redeem bytecode. So a spender could answer a call in the callee's place, with no
+  miner, where no selector is bound: a typed call through a one-method interface, and the `call` and `delegatecall`
+  checks. A raw 20-byte or zero-padded 32-byte lock, which a miner can include, matched too. A co-spent callee now
+  stands for a 20-byte identity only as a P2SH32 lock or a P2PKH lock; an address the caller holds keeps every form,
+  and a P2SH20 contract is called through its lock. The check is in every `evmCompat` build that calls through such an
+  identity, and in a native low-level call's 20-byte target branch. Those contracts compile to new bytes: recompile
+  and redeploy them.
 
 ### Fixed
 
@@ -48,6 +57,19 @@
   The SDK decides a called contract's guard in that contract's own frame, with the block clock, the mapping entries
   the guard reads and the results of its earlier calls. The late pass and the delegatecall path now read the block
   clock too, and state a skipped single call as not made.
+- A statement-form value call through a stored struct field, such as `split.to.call{value: v}("")`, crashed code
+  generation. It now compiles and pays the field it names.
+- A Solidity base constructor's parameters no longer stand in for names in the base's other functions. With
+  `contract C is B(5)`, a base function whose parameter, local or state variable shared a constructor parameter's
+  name read the constructor's argument: `twice(uint v) { return v * 2; }` returned 10 for `twice(3)`.
+- An `evmCompat` function that makes a typed call to a contract that calls on, beside a low-level call whose stateful
+  callee runs on the low-level path, now builds: the callee that discovery finds holds its call record in its own
+  block. Its covenant refused such a spend at input 0.
+- A compat call's stateful callee now goes through transitive discovery, so the calls it makes are found, laid out
+  and decided. A compat callee that reads `blockhash(n)`, makes a low-level call with a payload, or calls a contract
+  that reads `blockhash(n)` is refused by name before anything is sent; such spends failed at the VM.
+- A fixed sorted-mapping insert, update or read before a keccak256 loop now builds: the loop's probe co-spends the
+  entry's coin and learns the node a write pins.
 
 ### Changed
 

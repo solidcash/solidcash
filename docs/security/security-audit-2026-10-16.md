@@ -1853,6 +1853,29 @@ profile.
       the target stale. The EACC MarketplaceV1 to V3 ports (`payStartJob`) and a framed proxy test were refused,
       although 0.51.0 compiles them. The check now compares field paths (`a54d42e9e`). The regression was on the
       local master only, never pushed.
+- **TARGET-7** (HIGH, VM-confirmed; found 2026-11-17, after 0.51.0; `eee5c659d`, picked from `410e24db1`; test
+  `CompatCalleeIdentity.e2e.test.ts`). A co-spent callee stood for a 20-byte identity whenever its lock projected to
+  it (`compileAddressToEvmIdentity`): a P2SH32 lock's HASH160, the hash a P2PKH or P2SH20 lock carries, or a 20-byte or
+  zero-padded 32-byte lock as itself. A P2SH20 lock carrying the HASH160 of a contract's P2SH32 lock projects to that
+  contract's identity, and anyone can spend it: its redeem script is the contract's P2SH32 lock, which the contract's
+  public redeem bytecode satisfies. On the VM, a reader calling `IOracle.price()` through `IOracle(address(id))`
+  accepted such a coin as the oracle's master, holding a minting token of a category the spender made. So a spender
+  answered the call in the callee's place with no miner, wherever no selector is bound: a typed call through a
+  one-method interface, and the `call` and `delegatecall` checks. This supersedes the LOW "needs a miner" rating the
+  Open list gave the 20-byte form. A candidate now stands for a 20-byte identity only as a P2SH32 lock (its HASH160)
+  or a P2PKH lock (its key hash), each of which takes a preimage or the key to make for another's identity
+  (`compileLockToEvmIdentity`); an address argument the caller holds keeps every form. The check serves the callee
+  identity check after the body, the raw compat call, and a native low-level call's 20-byte target branch. 0.51.0 and
+  0.51.1 carry the old projection. The test failed 2 of 3 before the fix.
+  - Bytes: the landing's corpus comparison (2026-11-22) moved no ABI and refused nothing new. Of the 644 external
+    Solidity files under `evmCompat`, 110 contracts shrank (93,413 bytes in all) and 75 grew (2,442 bytes, at most
+    249), since the narrower check is emitted at each site where the old projection was one shared helper. Three
+    native corpus contracts with low-level calls shrank (528 bytes). None crossed the 10,000-byte input limit.
+- The crash the Open list kept after TARGET-6, not a soundness issue (`1d08fd8c5`, tests
+  `LowLevelCallSiteTarget.test.ts`, `LowLevelCallSiteTarget.e2e.test.ts`). A statement-form value call through a stored
+  struct field (`split.to.call{value: v}("");`) crashed code generation (`structType` undefined in `visitFieldAccess`):
+  the type checker skipped a low-level call's target. It now types a field read at the root of the target, under
+  casts, and the call pays the field it names.
 
 ### By design, with a warning
 
@@ -1877,8 +1900,9 @@ profile.
     value correctly, but the call is not flagged `targetWrittenBeforeCall`.
   - A struct local initialized from a state element is treated as a storage pointer. A call through a field of a
     memory copy, made after a write of that field, binds the written value, where the EVM uses the copy.
-  - A statement-form value call through a stored struct field (`split.to.call{value: v}("");`) crashes code
-    generation (`structType` undefined in `visitFieldAccess`). This predates TARGET-6.
+  - The struct-field value call crash is fixed (see Fixed). `target-6b`'s fixes for the two items above
+    (`fc114ef85`, `a7a3cf38e`) were held at the 2026-11-22 landing: a call through a copy got its own callee slot even
+    with no write, so `IToken t = itoken; itoken.f(); t.g();` no longer built as two frames of one callee spend.
 - The genesis body's check after the body still reads the variable, so a constructor that writes its target after
   the call fails closed.
 - Two calls through one variable reassigned between them share one callee identity and are refused when the two
@@ -1887,8 +1911,12 @@ profile.
   to a stateful callee. The selector and runtime ternary registers are tested (`da0fa686b`).
 - (LOW, needs a miner) Outputs whose locking bytecode is empty, or 20 bytes long, are non-standard but valid in a
   block. The low-level call pins, the compat identity check and every loop dispatch now refuse an empty target or
-  element (`b3a9ae4a4`, `aede82dd5`). Under `evmCompat`, `compileAddressToEvmIdentity` still projects a 20-byte lock
-  to itself, so a 20-byte coin a miner includes could stand for an EVM address.
+  element (`b3a9ae4a4`, `aede82dd5`). A co-spent callee no longer stands for a 20-byte identity as a 20-byte lock, nor
+  as a P2SH20 one, which needed no miner (TARGET-7).
+- Not checked yet: a message-bus graph target row (`GenerateTargetTraversal.ts`, the "rooted emission row" check
+  after a 20-byte producer result) still maps the row's full lock to an identity with `compileAddressToEvmIdentity`,
+  so a P2SH20 or 20-byte row lock would match. The row comes from the authenticated graph transcript; whether a
+  spender can choose its lock decides whether TARGET-7 reaches it.
 - A message-bus participant compiled direct-only cannot pay: no route binds its value, and compose lays out no
   satoshi container or payment outputs for it, so the graph planner refuses a function of it that declares a
   payment. Before `45f85306e` such a payment was dropped silently and the composition built.

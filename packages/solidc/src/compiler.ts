@@ -2068,7 +2068,8 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     }
     if (node instanceof InstantiationNode) {
       needsSpecialMethodPruning = true;
-      hasContractInstantiation = true;
+      // A built-in locking bytecode class (`new LockingBytecodeP2PKH(hash)`) builds an output, not a contract.
+      if (!(Object.values(Class) as string[]).includes(node.identifier.name)) hasContractInstantiation = true;
       if (hasEffectiveCallValue(node.callOptions?.value)) deploysWithValue = true;
     } else if (node instanceof ContractReferenceNode
       || (node instanceof TypeIntrospectionNode

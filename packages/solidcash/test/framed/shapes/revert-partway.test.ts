@@ -432,8 +432,8 @@ describe('a revert with a declared error carrying arguments', () => {
     const line = lineOf(text, 'revert Rejected');
 
     // The compiler's own warning, verbatim, naming the line of the revert.
-    const warning = `Warning: revert with custom error is a no-op in SolidCash at line ${line}. `
-      + 'Error arguments are type-checked but not evaluated; the script simply fails unconditionally.';
+    const warning = `Warning: revert with a custom error fails the spend but carries no revert data in SolidCash at line ${line}. `
+      + 'Error arguments are type-checked but not evaluated; the error name and parameters are artifact metadata only.';
     expect(logged).toContain(warning);
 
     // The artifact publishes the error's name, signature and declared parameters; the values passed at the site

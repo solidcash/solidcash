@@ -1235,7 +1235,11 @@ function mergeParent(
         child, parent.name, ctorParams.length, invocation.args.length,
       );
     }
-    subs = new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]]));
+    // A native contract's parameters are contract-level names that every function of it reads, so its inherited
+    // functions read the invocation's arguments in their place. A Solidity constructor's parameters are in scope in
+    // that constructor only: in any other function the name means that function's own parameter or local, or a state
+    // variable, and substituting the argument for it changed what the function computes.
+    if (parent.parameters.length > 0) subs = new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]]));
   } else if (evmCompat && !child.isAbstract
     && parent.parameters.length === 0 && ctorParams.length > 0
     && !child.implements.some((other) =>

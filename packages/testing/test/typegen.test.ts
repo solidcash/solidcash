@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
-import { compileFileMulti } from '@solidcash/solidc';
+import { compileFile, compileFileMulti } from '@solidcash/solidc';
 import { resolveConfig } from '../src/config.js';
 import { compileSolidityProject } from '../src/project-compiler.js';
 import { generateTypechainTargets } from '../src/typegen.js';
@@ -257,6 +257,108 @@ describe('TypeChain-compatible generation', () => {
       cacheDir: path.join(root, 'cache', 'solidcash'),
       targets: [{ target: 'ethers6', outDir: path.join(root, 'typechain-types') }],
     })).toThrow(/multiple distinct artifacts/);
+  });
+  it('merges the copies of an imported interface and contract that each importing root emits', () => {
+    const root = project();
+    const contractsDir = path.join(root, 'contracts');
+    const artifactsDir = path.join(root, 'artifacts', 'solidcash');
+    fs.mkdirSync(contractsDir, { recursive: true });
+    fs.writeFileSync(path.join(contractsDir, 'IFoo.scash'),
+      'pragma solidcash ^0.51.0;\ninterface IFoo {\n    public int x;\n}\n');
+    fs.writeFileSync(path.join(contractsDir, 'B.scash'),
+      'pragma solidcash ^0.51.0;\ncontract B() {\n    int y;\n    function bump() {\n        this.y = this.y + 1;\n    }\n}\n');
+    fs.writeFileSync(path.join(contractsDir, 'A.scash'), `pragma solidcash ^0.51.0;
+import "./IFoo.scash";
+import "./B.scash";
+enum Mode { Off, On }
+contract A(address foo, address b) {
+    int seen;
+    function sync() {
+        int next = IFoo(foo).x + B(b).y;
+        require(next > this.seen);
+        this.seen = next;
+    }
+}
+`);
+    // The compile task's layout: every artifact of each root, imports included, under the root's own directory, plus
+    // the root's flat copy. A's copies of IFoo and B carry A's source, A's enum and a debug map over A's source.
+    for (const file of ['A.scash', 'B.scash', 'IFoo.scash']) {
+      const nested = path.join(artifactsDir, 'contracts', file);
+      fs.mkdirSync(nested, { recursive: true });
+      for (const [name, value] of Object.entries(compileFileMulti(path.join(contractsDir, file)))) {
+        fs.writeFileSync(path.join(nested, `${name}.json`), JSON.stringify(value));
+      }
+      fs.writeFileSync(path.join(artifactsDir, file.replace('.scash', '.json')),
+        JSON.stringify(compileFile(path.join(contractsDir, file))));
+    }
+    const outDir = path.join(root, 'typechain-types');
+    generateTypechainTargets({ artifactsDir, contractsDir, cacheDir: path.join(root, 'cache'),
+      targets: [{ target: 'ethers6', outDir }] });
+    const iface = fs.readFileSync(path.join(outDir, 'contracts', 'IFoo.ts'), 'utf8');
+    expect(iface).toContain('export class IFoo__factory');
+    expect(iface).toContain("from '../../artifacts/solidcash/contracts/IFoo.scash/IFoo.artifact.js'");
+    expect(iface).not.toContain('export type Mode');
+    expect(fs.readFileSync(path.join(outDir, 'contracts', 'B.ts'), 'utf8'))
+      .toContain("from '../../artifacts/solidcash/contracts/B.scash/B.artifact.js'");
+    const contract = fs.readFileSync(path.join(outDir, 'contracts', 'A.ts'), 'utf8');
+    expect(contract).toContain('export class A__factory');
+    expect(contract).toContain('export type Mode = 0n | 1n;');
+  });
+  it('merges the copies of a subdirectory declaration that two roots import', () => {
+    const root = project();
+    const contractsDir = path.join(root, 'contracts');
+    const artifactsDir = path.join(root, 'artifacts', 'solidcash');
+    fs.mkdirSync(path.join(contractsDir, 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(contractsDir, 'lib', 'IFoo.scash'),
+      'pragma solidcash ^0.51.0;\ninterface IFoo {\n    public int x;\n}\n');
+    const reader = (name: string): string => `pragma solidcash ^0.51.0;
+import "./lib/IFoo.scash";
+contract ${name}(address foo) {
+    int seen;
+    function sync() {
+        int next = IFoo(foo).x;
+        require(next > this.seen);
+        this.seen = next;
+    }
+}
+`;
+    // Only top-level sources compile, so neither copy of IFoo is its declaring file's own.
+    for (const name of ['A', 'C']) {
+      const file = `${name}.scash`;
+      fs.writeFileSync(path.join(contractsDir, file), reader(name));
+      const nested = path.join(artifactsDir, 'contracts', file);
+      fs.mkdirSync(nested, { recursive: true });
+      for (const [declaration, value] of Object.entries(compileFileMulti(path.join(contractsDir, file)))) {
+        fs.writeFileSync(path.join(nested, `${declaration}.json`), JSON.stringify(value));
+      }
+    }
+    const outDir = path.join(root, 'typechain-types');
+    generateTypechainTargets({ artifactsDir, contractsDir, cacheDir: path.join(root, 'cache'),
+      targets: [{ target: 'ethers6', outDir }] });
+    const iface = fs.readFileSync(path.join(outDir, 'contracts', 'lib', 'IFoo.ts'), 'utf8');
+    expect(iface).toContain('export class IFoo__factory');
+    // No copy is the owner's and both nest equally deep, so the first in path order binds.
+    expect(iface).toContain("from '../../../artifacts/solidcash/contracts/A.scash/IFoo.artifact.js'");
+  });
+  it('rejects two roots\' copies that differ below the top-level source', () => {
+    const root = project();
+    writeFixture(root, artifact());
+    const owner = artifact();
+    // An importing root's copy may differ in its top-level source, never in nested ABI metadata.
+    const imported = {
+      ...owner,
+      source: 'import "./nested/Counter.scash"; contract Root {}',
+      abi: [{ ...owner.abi[0], inputs: [{ ...owner.abi[0].inputs[0], source: { kind: 'state', name: 'amount' } }] }],
+    } as unknown as Artifact;
+    const importer = path.join(root, 'artifacts', 'solidcash', 'contracts', 'Root.scash');
+    fs.mkdirSync(importer, { recursive: true });
+    fs.writeFileSync(path.join(importer, 'Counter.json'), JSON.stringify(imported));
+    expect(() => generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6', outDir: path.join(root, 'typechain-types') }],
+    })).toThrow(/multiple distinct artifacts named "Counter"/);
   });
   it('regenerates cached bindings when an obsolete generated contract remains', () => {
     const root = project();

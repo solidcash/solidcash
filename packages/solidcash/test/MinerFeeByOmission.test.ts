@@ -242,6 +242,20 @@ contract Counter() {
     const { pool, alice } = await setup(1, SOURCE.replaceAll('30000', '1000'), 1_000n);
     await expect(pool.connect(alice).call.take(alice.getAddress()).send()).rejects.toThrow(/below the minimum relay fee/);
   });
+
+  it('lets a wallet with no coin call such an entry', async () => {
+    const { provider, pool, bob } = await setup(1);
+    const empty = provider.getCachedSigner(3);
+    expect(await empty.getUtxos()).toHaveLength(0);
+    await pool.connect(empty).call.take(bob.getAddress()).send();
+    expect((await bob.getUtxos()).filter((coin) => coin.satoshis === PAY)).toHaveLength(1);
+    expect(await pool.satoshiContainer.getBalance()).toBe(0n);
+  });
+
+  it('still refuses a wallet with no coin for an entry that needs one', async () => {
+    const { counter } = await wallet([]);
+    await expect(counter.call.bump().send()).rejects.toThrow(/token-free fee UTXO/);
+  });
 });
 
 describe('the production profile', () => {

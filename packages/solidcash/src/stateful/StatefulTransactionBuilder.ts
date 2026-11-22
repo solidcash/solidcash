@@ -7065,6 +7065,14 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * True when the entry pays the miner from its satoshi container (`this.payMinerFee`). Such an entry takes nobody's
+   * coin, so the connected signer gives no fee input.
+   */
+  paysOwnMinerFee(): boolean {
+    return this.blockLayout?.minerFee !== undefined;
+  }
+
+  /**
    * Check if the satoshi container is fully drained (all satoshis transferred out).
    */
   isSatoshiContainerDrained(): boolean {

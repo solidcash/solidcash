@@ -302,7 +302,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           contracts++;
         }
         // Backward-compat flat artifact (the file's primary contract, by file name) for direct `import` usage.
-        const primary = compileFile(full, compilerOptions);
+        // The same file was just compiled above, which printed its warnings; this second compile keeps quiet.
+        const primary = compileFile(full, { ...compilerOptions, suppressWarnings: true });
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(
           path.join(outputDir, fn.replace('.scash', '.artifact.ts')),

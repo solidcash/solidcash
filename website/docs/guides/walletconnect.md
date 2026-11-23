@@ -116,6 +116,14 @@ async function unlockHodlVault() {
 }
 ```
 
+In a contract with more than one function, each function runs as a defined function (`OP_INVOKE`), and a
+signature checked inside it covers that function's body, not the whole redeem script. The transaction object's
+`contract.redeemScript` carries the bytecode the signature covers, so a wallet that signs over `contract.redeemScript`
+signs correctly. A wallet that signs over the last push of the unlocking bytecode, the full redeem script, cannot sign
+inside such a function. Authorizing with a P2PKH input from the user's own address instead is safe only when the
+contract also checks that input's sighash type (`ALL`, or `ALL|UTXOS`) and fixes the outputs. Otherwise a `SINGLE`,
+`NONE` or `ANYONECANPAY` signature made for another transaction can be replayed.
+
 ### Wallet Interaction
 
 To send the `WcTransactionObject` to the user's wallet, use `@walletconnect/sign-client`.

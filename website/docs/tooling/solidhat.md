@@ -176,6 +176,9 @@ uses EVM encoding. `.sol` sources compile in this mode even when `evmCompat` is 
 makes recovered identities native BCH P2PKH addresses; `ecrecover: 'evm'`, the default under `evmCompat`, returns
 conventional 20-byte EVM addresses.
 
+`evmCompat` changes the bytecode, and so the address, of a contract that plain `solidc` would compile without it.
+Compile, fund and call a contract with the same options; each artifact records them under `compiler.options`.
+
 `solidhat compile` takes two limits from the selected network instead of the config: `maximumInputBytes` is the
 network's input-script limit, and `commitmentLimit` is at most the network's NFT commitment limit. A network that
 publishes no limits gives 10,000 and 128 bytes. See [Test under real limits](#test-under-real-limits).

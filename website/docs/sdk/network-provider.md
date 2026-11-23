@@ -58,6 +58,10 @@ interface TokenDetails {
 }
 ```
 
+`category` is hex in display order, as wallets and explorers show it. A contract's raw `tokenCategory` is in
+consensus byte order, the reverse, so pass a category to a `bytes32` argument as `hexToBin(category).reverse()`; see
+[tokenCategory encoding](/docs/guides/cashtokens#tokencategory-encoding).
+
 #### Example
 ```ts
 const userUtxos = await provider.getUtxos(userAddress)

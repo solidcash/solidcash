@@ -482,7 +482,7 @@ describe('bound route without its verifier: an honest batch inserting two keys i
     const { bus } = await connect(provider, artifact, {});
     await bus.call.put(5n, 7n).send();
     await bus.call.put(9n, 1n).send();
-    // 11 and 12 both fall after 9: one predecessor is relinked for two new nodes.
+    // 11 and 12 both fall after 9, so one node is relinked for two new nodes.
     const spend = spendOf(await bus.batch([{ function: 'putPair', args: [11n, 4n, 12n, 3n] }]).build());
     state = { bus, spend, failures: failures(createVirtualMachineBch2026ForProvider(provider), spend) };
     // The require each failure stopped at, by its instruction pointer.
@@ -493,8 +493,8 @@ describe('bound route without its verifier: an honest batch inserting two keys i
     }));
   }, 300_000);
 
-  // Fails today: the mint bound counts inserts as predecessors relinked in place, one here for two new nodes.
-  it.fails('settles the batch', () => {
+  // Two new nodes after one spent node: the route's node count must still admit the honest batch.
+  it('settles the batch', () => {
     expect(state.failures).toEqual([]);
   });
 });

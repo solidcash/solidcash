@@ -3,8 +3,8 @@
  *
  * Before this fix `this.transfer(child, v)` paid the child's master lock, whose pin requires the category on the
  * spending input: a coin paid there can never be spent. The first case checks the payment lands on the child's
- * satoshi container and that a later call of the child spends it. The second records where a `{value:}` call to
- * a stateful contract lands today; the plan does not change it, and the test states what it found.
+ * satoshi container and that a later call of the child spends it. The second checks that a `{value:}` call to a
+ * stateful contract pays no output of its own: the value rides the record the call reads.
  */
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringMulti } from '../direct-compile.js';
@@ -154,10 +154,10 @@ contract Factory {
     expect(await mock.getUtxos(containerAddress)).toHaveLength(0);
   });
 
-  it('a call with {value: v} pins its transfer at the address operand (B2.1, D1)', () => {
-    // D1's finding stands for a value-carrying call: its transfer is pinned at the address as given, which for a
-    // stateful callee is the master lock (stuck), never a container lock. The routed new-result payment above is
-    // the contrasting case: that one derives the container lock, and this one publishes no routing recipe.
+  it('a call with {value: v} pays no output at the address operand: the value rides its record (D1)', () => {
+    // D1's finding was that such a call pinned its payment at the callee's address, its master lock, where the coin
+    // is stuck. The call now reads its callee's record, which digests the value: the satoshi container is the source,
+    // no transfer slot is reserved, and the call publishes its value for the builder to pay the callee's container.
     const artifact = compileString(`
 interface ICallee { function poke() external; }
 contract Caller {
@@ -165,12 +165,11 @@ contract Caller {
     function sendTo(address target) { ICallee(target).poke{value: 1000}(); d = 1; }
 }`, { allowUnsafeOperations: true, messageBus: false } as never);
     const fn = artifact.abi.find((entry) => entry.name === 'sendTo')!;
-    // The value transfer and the call's own transfer carrier both occupy a transfer slot; the satoshi container is
-    // the source, and neither transfer names a container destination.
-    expect(fn.transferCount).toBe(2);
-    expect(fn.blockLayout?.slots.filter((slot) => slot.kind === 'transfer')).toHaveLength(2);
+    expect(fn.transferCount ?? 0).toBe(0);
+    expect(fn.blockLayout?.slots.filter((slot) => slot.kind === 'transfer')).toHaveLength(0);
     expect(fn.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer')).toBe(true);
-    expect(fn.transfers ?? []).toHaveLength(0);
+    expect(fn.externalCalls?.[0]?.callValue).toEqual({ kind: 'literal', value: '1000', type: 'bigint' });
+    expect(fn.externalCalls?.[0]?.hasReturnValues).toBe(true);
   });
 
   it('a payment to a stateful contract value that is not a new result is refused (B2.3)', () => {

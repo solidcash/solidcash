@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
   encodeDataPush, encodeTransaction, hexToBin, vmNumberToBigInt,
@@ -13,28 +13,15 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
 
 /**
  * A typed call that pays value, `ISingle(v).deposit{value: 3000}(id)`, to a stateful callee in the direct convention
- * (docs/security/security-audit-2026-10-16.md, "Call targets", Open: no e2e sent one). What binds the callee's run to
- * the call, through a one-method and a two-method interface:
- * - the method: a two-method interface checks the callee's selector. A one-method interface checks none, and the
- *   caller does not read fix B's void record for a call with value;
- * - the arguments: the caller binds the callee's trailing pushes;
- * - the value: the caller pays it at the callee's master lock, where no script can spend it, and the callee counts
- *   msg.value at its satoshi container, which the payment never reaches;
- * - the caller: it reads nothing of the callee's run, so one run answers two callers.
- * The body rewrites the target after the call, so the identity check and the payment read the call-site register.
- *
- * The SDK builds no such call today: its derivation probe of the caller's run fails an OP_VERIFY (f6f38efd6 dropped
- * VoidCallArguments' value case for the same failure). The first row pins that; every other row is an `it.fails`
- * stating what must hold once the call is built, so the file passes today. Once the first row fails, rerun: a row of
- * a binding present today (the payment, the selector, the arguments, the control) then fails, so make it an `it`; a
- * row of a missing one still passes, its attack settling: assert that with `not.toBe('ACCEPTED')` until a fix lands.
+ * (docs/security/security-audit-2026-10-16.md, "Call targets"). The caller reads the callee's record, whose digest
+ * names the method, the arguments, the reader (the caller's input) and the value. The caller takes the value from its
+ * satoshi container with no output of its own; the builder pays it into the callee's satoshi container, and the callee
+ * digests what its container received. So the record binds, through a one-method and a two-method interface alike:
+ * - the method and the arguments;
+ * - the value: a spend that pays the callee less than its caller sent is refused;
+ * - the caller: one callee run answers one caller.
+ * The body rewrites the target after the call, so the identity check reads the call-site register.
  */
-
-// A8 refuses a send that pays a stateful master lock, as these calls do today; lift it so the VM judges every spend.
-vi.mock('../../src/stateful/master-lock-payment.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/stateful/master-lock-payment.js')>(),
-  refusePaymentsToStatefulMasters: async (): Promise<void> => undefined,
-}));
 
 const SOURCE = `pragma solidcash >=0.8.0;
 interface ISingle { function deposit(int id) external; }
@@ -56,6 +43,11 @@ contract SingleCaller() {
     v = w;
     this.calls = this.calls + 1;
   }
+  function fundLess(address v, address w, int id) public {
+    ISingle(v).deposit{value: 2999}(id);
+    v = w;
+    this.calls = this.calls + 1;
+  }
   function fundOther(address v, address w, int id) public {
     ISingleOther(v).other{value: 3000}(id);
     v = w;
@@ -66,6 +58,11 @@ contract MultiCaller() {
   int calls;
   function fund(address v, address w, int id) public {
     IMulti(v).deposit{value: 3000}(id);
+    v = w;
+    this.calls = this.calls + 1;
+  }
+  function fundLess(address v, address w, int id) public {
+    IMulti(v).deposit{value: 2999}(id);
     v = w;
     this.calls = this.calls + 1;
   }
@@ -82,8 +79,8 @@ const BALANCE = 50_000n;
 const TIMEOUT = 300_000;
 
 const KINDS = [
-  { name: 'one-method', caller: 'SingleCaller', selectorChecked: false },
-  { name: 'two-method', caller: 'MultiCaller', selectorChecked: true },
+  { name: 'one-method', caller: 'SingleCaller' },
+  { name: 'two-method', caller: 'MultiCaller' },
 ] as const;
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -178,21 +175,18 @@ const inputOfCoin = (coins: readonly Coin[], category: string, capability: strin
   .findIndex((coin) => ofCategory(coin.token?.category, category) && coin.token?.nft?.capability === capability);
 const outputWith = (tx: Tx, lock: string, category: string): number => tx.outputs.findIndex((output) => (
   binToHex(output.lockingBytecode) === lock && ofCategory(output.token?.category, category)));
+const paysTo = (output: TxOutput, lock: Uint8Array): boolean => output.token === undefined
+  && binToHex(output.lockingBytecode) === binToHex(lock);
 
-/** The one output that pays the call's value: no token, a 35-byte lock, VALUE satoshis. */
-function paymentOutput(tx: Tx): number {
-  const found = tx.outputs.flatMap((output, index) => (output.token === undefined && output.valueSatoshis === VALUE
-    && output.lockingBytecode.length === 35 ? [index] : []));
-  expect(found).toHaveLength(1);
-  return found[0]!;
-}
-
-/** `into` with the run of the callee of `category` taken from `from`, a build of the same layout spending its coins. */
-function withCalleeRun(into: Tx, from: Tx, coins: readonly Coin[], category: string): Tx {
+/**
+ * `into` with the run of `vault` taken from `from`, a build of the same layout spending the same coins: the vault's
+ * unlockings, its outputs and the value paid into its satoshi container.
+ */
+function withCalleeRun(into: Tx, from: Tx, coins: readonly Coin[], vault: Deployed): Tx {
   const tx = structuredClone(into);
-  const inputs = coins.flatMap((coin, index) => (ofCategory(coin.token?.category, category) ? [index] : []));
-  const outputsOf = (of: Tx): number[] => of.outputs
-    .flatMap((output, index) => (ofCategory(output.token?.category, category) ? [index] : []));
+  const inputs = coins.flatMap((coin, index) => (ofCategory(coin.token?.category, vault.category) ? [index] : []));
+  const outputsOf = (of: Tx): number[] => of.outputs.flatMap((output, index) => (
+    ofCategory(output.token?.category, vault.category) || paysTo(output, vault.container) ? [index] : []));
   expect(inputs.length).toBeGreaterThan(0);
   expect(outputsOf(from)).toEqual(outputsOf(into));
   for (const index of inputs) {
@@ -266,7 +260,7 @@ function moveContainer(unlocking: Uint8Array, inputOf: (index: number) => number
   return encodeAuthenticationInstructions(instructions as any);
 }
 
-interface Merged { readonly tx: Tx; readonly inputOf: (index: number) => number }
+interface Merged { readonly tx: Tx; readonly inputOf: (index: number) => number; readonly base: number }
 
 /**
  * `a` with every input and output of `b` after it, both lists of `a` first padded to one length so each block of `b`
@@ -336,39 +330,27 @@ async function merge(
     - tx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
   const needed = 2n * BigInt(encodeTransaction(tx).length + 100);
   if (fee < needed) tx.inputs.push(await funderCoin(provider, needed - fee + 1000n));
-  return { tx, inputOf };
+  return { tx, inputOf, base };
 }
 
 /**
- * Points the edge or record of `category` under `lock` at its reader's input, `deposit(ID)` read at `reader`. A build
- * whose records name no reader digests none (its `callRecordDigest` takes no reader), so the commitment stays.
+ * Points the edge (value 0) or record (value VALUE) of `category` under `lock` at its reader's input: `deposit(ID)`
+ * read at `reader`. An edge digests no value; a record, the value its call sent.
  */
-function readAt(tx: Tx, lock: string, category: string, reader: number): void {
+function readAt(tx: Tx, lock: string, category: string, reader: number, value = 0n): void {
   const at = outputWith(tx, lock, category);
   if (at < 0) return;
-  const digest = (callRecordDigest as (...args: unknown[]) => Uint8Array | undefined)(
-    abiOf(artifacts().Vault, 'deposit'), [ID], {}, 0, reader,
-  )!;
+  const digest = callRecordDigest(abiOf(artifacts().Vault, 'deposit'), [ID], {}, 0, reader, value)!;
   const commitment = tx.outputs[at]!.token!.nft!.commitment;
   tx.outputs[at]!.token!.nft!.commitment = Uint8Array.of(...digest, ...commitment.slice(31));
 }
 
-describe.each(KINDS)('a typed {value:} call through a $name interface', ({ caller: callerName, selectorChecked }) => {
+describe.each(KINDS)('a typed {value:} call through a $name interface', ({ caller: callerName }) => {
   const callerArtifact = (): Artifact => artifacts()[callerName]!;
   const vaultOf = (provider: Provider): Promise<Deployed> => deploy(provider, artifacts().Vault, { total: 0n, last: 0n });
   const callerOf = (provider: Provider): Promise<Deployed> => deploy(provider, callerArtifact(), { calls: 0n }, BALANCE);
 
-  it('is not built today: the derivation probe of the caller\'s run fails an OP_VERIFY', async () => {
-    const provider = createTestProvider();
-    const vault = await vaultOf(provider);
-    const caller = await callerOf(provider);
-    await expect(callOf(caller, vault, 'fund', 'deposit')())
-      .rejects.toThrow(/VM failed at ip \d+ opcode \d+: Program failed an OP_VERIFY operation/);
-  }, TIMEOUT);
-
-  // Missing once built (c): the value lands at the callee's master lock, and the callee counts msg.value at its
-  // satoshi container, so it credits nothing.
-  it.fails('settles an honest call: the callee credits the value and its satoshi container gains it', async () => {
+  it('settles an honest call: the callee credits the value and its satoshi container gains it', async () => {
     const provider = createTestProvider();
     const vault = await vaultOf(provider);
     const caller = await callerOf(provider);
@@ -377,67 +359,42 @@ describe.each(KINDS)('a typed {value:} call through a $name interface', ({ calle
     expect((await vault.sc.getState()).last).toBe(ID);
     expect((await vault.sc.getState()).total).toBe(VALUE);
     expect(await balanceAt(provider, vault.container)).toBe(VALUE);
+    expect(await balanceAt(provider, caller.container)).toBe(BALANCE - VALUE);
   }, TIMEOUT);
 
-  // Present: the caller pins the lock it pays, read from the call-site register, and the amount
-  // (emitTransferCovenantVerification).
-  it.fails('refuses the value paid to the target written after the call, or one satoshi less', async () => {
-    const provider = createTestProvider();
-    const vault = await vaultOf(provider);
-    const caller = await callerOf(provider);
-    const tx = await capture(provider, callOf(caller, vault, 'fund', 'deposit'));
-    const callerInput = inputOfCoin(await coinsOf(provider, tx), caller.category, 'minting');
-    const paid = paymentOutput(tx);
-    const toWritten = structuredClone(tx);
-    toWritten.outputs[paid]!.lockingBytecode = FUNDER;
-    expectScriptRejection(await outcomeOf(provider, toWritten), callerInput);
-    const less = structuredClone(tx);
-    less.outputs[paid]!.valueSatoshis = VALUE - 1n;
-    expectScriptRejection(await outcomeOf(provider, less), callerInput);
-    expect(await outcomeOf(provider, tx)).toBe('ACCEPTED');
-  }, TIMEOUT);
-
-  // Two methods, present: the caller checks the callee's selector (emitExternalCallVerification). One method,
-  // missing (a): no selector is checked, and fix B's void record is not read for a call with value.
-  it.fails(`refuses a callee run of another method${selectorChecked ? ': the caller checks its selector' : ''}`,
-    async () => {
-      const provider = createTestProvider();
-      const vault = await vaultOf(provider);
-      const caller = await callerOf(provider);
-      const honest = await capture(provider, callOf(caller, vault, 'fund', 'deposit'));
-      const other = await capture(provider, callOf(caller, vault, 'fundOther', 'other'));
-      const coins = await coinsOf(provider, honest);
-      const tx = withCalleeRun(honest, other, coins, vault.category);
-      expectScriptRejection(await outcomeOf(provider, tx), inputOfCoin(coins, caller.category, 'minting'));
-    }, TIMEOUT);
-
-  // Present: the caller binds the callee's trailing pushes (emitDirectCallArgumentBinding).
-  it.fails('refuses a callee run on another argument', async () => {
+  /** The honest call with the vault's run in its place, taken from an honest call of `entry` naming `method`. */
+  const transplanted = async (
+    entry: string, method: string, id = ID,
+  ): Promise<{ provider: Provider; tx: Tx; callerInput: number }> => {
     const provider = createTestProvider();
     const vault = await vaultOf(provider);
     const caller = await callerOf(provider);
     const honest = await capture(provider, callOf(caller, vault, 'fund', 'deposit'));
-    const other = await capture(provider, callOf(caller, vault, 'fund', 'deposit', ID + 1n));
+    const other = await capture(provider, callOf(caller, vault, entry, method, id));
     const coins = await coinsOf(provider, honest);
-    const tx = withCalleeRun(honest, other, coins, vault.category);
-    expectScriptRejection(await outcomeOf(provider, tx), inputOfCoin(coins, caller.category, 'minting'));
+    return {
+      provider,
+      tx: withCalleeRun(honest, other, coins, vault),
+      callerInput: inputOfCoin(coins, caller.category, 'minting'),
+    };
+  };
+
+  it('refuses a callee run of another method: the record names the method', async () => {
+    const { provider, tx, callerInput } = await transplanted('fundOther', 'other');
+    expectScriptRejection(await outcomeOf(provider, tx), callerInput);
   }, TIMEOUT);
 
-  // Missing (c): nothing ties the callee's msg.value to the value its caller pays.
-  it.fails('refuses a spend whose callee receives none of the value its caller pays', async () => {
-    const provider = createTestProvider();
-    const vault = await vaultOf(provider);
-    const caller = await callerOf(provider);
-    const tx = await capture(provider, callOf(caller, vault, 'fund', 'deposit'));
-    // What the spend pays the callee's satoshi container goes to the spender instead.
-    for (const output of tx.outputs) {
-      if (binToHex(output.lockingBytecode) === binToHex(vault.container)) output.lockingBytecode = FUNDER;
-    }
-    expect(await outcomeOf(provider, tx)).toContain('mandatory-script-verify-flag-failed');
+  it('refuses a callee run on another argument: the record names the arguments', async () => {
+    const { provider, tx, callerInput } = await transplanted('fund', 'deposit', ID + 1n);
+    expectScriptRejection(await outcomeOf(provider, tx), callerInput);
   }, TIMEOUT);
 
-  // The control of the next row: two callers, two callee runs.
-  it.fails('settles two callers merged into one transaction, each with a callee of its own', async () => {
+  it('refuses a spend paying the callee less than its caller sent: the record names the value', async () => {
+    const { provider, tx, callerInput } = await transplanted('fundLess', 'deposit');
+    expectScriptRejection(await outcomeOf(provider, tx), callerInput);
+  }, TIMEOUT);
+
+  it('settles two callers merged into one transaction, each with a callee of its own', async () => {
     const provider = createTestProvider();
     const first = await vaultOf(provider);
     const second = await vaultOf(provider);
@@ -452,34 +409,40 @@ describe.each(KINDS)('a typed {value:} call through a $name interface', ({ calle
     // A2 moved: its edge and its callee's record name the input it now reads at.
     const reader = inputOf(inputOfCoin(await coinsOf(provider, b), a2.category, 'minting'));
     readAt(tx, '5161', a2.category, reader);
-    readAt(tx, '51', second.category, reader);
+    readAt(tx, '51', second.category, reader, VALUE);
 
     expect(await outcomeOf(provider, tx)).toBe('ACCEPTED');
     expect((await a1.sc.getState()).calls).toBe(1n);
     expect((await a2.sc.getState()).calls).toBe(1n);
-    expect((await first.sc.getState()).last).toBe(ID);
-    expect((await second.sc.getState()).last).toBe(ID);
+    expect((await first.sc.getState()).total).toBe(VALUE);
+    expect((await second.sc.getState()).total).toBe(VALUE);
   }, TIMEOUT);
 
-  // Missing (d): the caller reads nothing of its callee's run, so one run answers two callers. A record that names
-  // its reader (sec-record-reader) binds only a call that reads it.
-  it.fails('refuses two callers answered by one callee run', async () => {
+  it('refuses two callers answered by one callee run: the record names its reader', async () => {
     const provider = createTestProvider();
     const vault = await vaultOf(provider);
     const a1 = await callerOf(provider);
     const a2 = await callerOf(provider);
     const a = await capture(provider, callOf(a1, vault, 'fund', 'deposit'));
     const b = await capture(provider, callOf(a2, vault, 'fund', 'deposit'));
-    const { tx, inputOf } = await merge(
+    const { tx, inputOf, base } = await merge(
       provider, a, b, new Map([[a2.category, abiOf(callerArtifact(), 'fund')]]), new Set([binToHex(a2.container)]),
       vault.category,
     );
     const second = inputOf(inputOfCoin(await coinsOf(provider, b), a2.category, 'minting'));
     readAt(tx, '5161', a2.category, second);
-    // The vault runs once: its outputs are those of A1's call.
-    const vaultOutputs = (of: Tx): number => of.outputs
-      .filter((output) => ofCategory(output.token?.category, vault.category)).length;
-    expect(vaultOutputs(tx)).toBe(vaultOutputs(a));
+    // The vault runs once, A1's run: the spender keeps the value A2 took from its container.
+    tx.outputs.forEach((output, index) => {
+      if (index >= base && paysTo(output, vault.container)) output.lockingBytecode = FUNDER;
+    });
     expectScriptRejection(await outcomeOf(provider, tx), second);
+    expect((await vault.sc.getState()).total).toBe(0n);
   }, TIMEOUT);
+});
+
+describe('a typed {value:} call that reads no record of its callee', () => {
+  it('is refused by name: nothing would bind its value to the callee', () => {
+    const source = SOURCE.replace('ISingle(v).deposit{value: 3000}(id);', 'ISingle(msg.sender).deposit{value: 3000}(id);');
+    expect(() => compileStringMulti(source)).toThrow(/sends \{value:\} with ISingle\.deposit\(\), which reads no record/);
+  });
 });

@@ -6,7 +6,7 @@ import { createTxVerifier } from '@mem-cash/validation';
 import { compileStringMulti } from '../direct-compile.js';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 
 /**
@@ -15,15 +15,17 @@ import { generateLibauthSourceOutputs } from '../../src/utils.js';
  * digest of its call record (`namesCallRecordArguments`): a void call reads no record (`emitVoidCallRecordRead`
  * returns early) and a returning call reads its record without comparing the digest. Through a single-function
  * interface it checks no selector either (`needsSelectorVerification` needs two methods), so nothing binds the method
- * the co-spent callee runs. Through a multi-function interface the caller's selector check binds it.
+ * the co-spent callee runs. Through a multi-function interface the caller's selector check binds it, and a call naming
+ * its arguments binds it by its record's digest (fix B's `digest || 0x01` when void, D50's when returning).
  *
  * The caller has an entry per callee method: `oneA` calls A and `oneB` calls B, each through a single-function
- * interface, and `twoA`, `twoB` do the same through one interface naming both. The SDK builds the honest spend of
- * each from the same coins. The spliced spend is B's honest spend with the caller's unlocking taken from A's: the
- * caller runs the entry naming A while the callee runs B and pins B's record. Every other byte is B's honest spend,
- * so only the caller's checks can refuse it. (A standalone build of B spliced into A's spend, as in
- * AuditSingleInterfaceMethodBinding, is refused by the callee itself since fix B: its standalone run expects no
- * record of its category, and A's record is one.) mem-cash BCH_2026_05, mocknet only.
+ * interface, `twoA` and `twoB` do the same through one interface naming both, and `Named` passes the argument. The SDK
+ * builds the honest spend of each from the same coins. The spliced spend is B's honest spend with the caller's
+ * unlocking and its own outputs (its state and, for a named call, the F1 edge committing to its call) taken from A's:
+ * the caller runs the entry naming A while the callee runs B and pins B's record. Each party's bytes are those of the
+ * spend it ran, so only the caller's checks of the callee can refuse it. (A standalone build of B spliced into A's
+ * spend, as in AuditSingleInterfaceMethodBinding, is refused by the callee itself since fix B: its standalone run
+ * expects no record of its category, and A's record is one.) mem-cash BCH_2026_05, mocknet only.
  */
 
 interface Shape {
@@ -53,6 +55,11 @@ contract Caller() {
   function oneB(address a) { IWithdraw(a).withdraw(); this.calls = this.calls + 1; }
   function twoA(address a) { IVault(a).deposit(); this.calls = this.calls + 1; }
   function twoB(address a) { IVault(a).withdraw(); this.calls = this.calls + 1; }
+}
+contract Named() {
+  int calls;
+  function oneA(address a, int v) { IDeposit(a).deposit(v); this.calls = this.calls + 1; }
+  function oneB(address a, int v) { IWithdraw(a).withdraw(v); this.calls = this.calls + 1; }
 }`,
   a: 'deposit',
   b: 'withdraw',
@@ -76,6 +83,11 @@ contract Caller() {
   function oneB(address a) { int r = IPeek(a).peek(); this.last = r; }
   function twoA(address a) { int r = IBook(a).take(); this.last = r; }
   function twoB(address a) { int r = IBook(a).peek(); this.last = r; }
+}
+contract Named() {
+  int last;
+  function oneA(address a, int v) { int r = ITake(a).take(v); this.last = r; }
+  function oneB(address a, int v) { int r = IPeek(a).peek(v); this.last = r; }
 }`,
   a: 'take',
   b: 'peek',
@@ -112,17 +124,19 @@ const firstPush = (unlocking: Uint8Array): string => binToHex(
 const selector = (d: Deployed, name: string): string => binToHex(
   hexToBin(d.arts.Callee.abi.find((entry: any) => entry.name === name).selector),
 );
+/** An F1 edge carrier (`OP_1 OP_NOP`): a named call's own output, committing to the call it makes. */
+const isEdge = (output: any): boolean => binToHex(output.lockingBytecode) === '5161';
 
-async function deploy(shape: Shape): Promise<Deployed> {
+async function deploy(shape: Shape, caller = 'Caller'): Promise<Deployed> {
   const provider = createTestProvider();
   const arts = artifactsOf(shape);
   const calleeBase = new Contract(arts.Callee, [], { provider });
   const { categoryId: calleeCat } = await setupStatefulUtxos(
     provider, calleeBase, arts.Callee.stateLayout!, shape.calleeState, { saltContract: true },
   );
-  const callerBase = new Contract(arts.Caller, [], { provider });
+  const callerBase = new Contract(arts[caller], [], { provider });
   const { categoryId: callerCat } = await setupStatefulUtxos(
-    provider, callerBase, arts.Caller.stateLayout!, shape.callerState, { saltContract: true },
+    provider, callerBase, arts[caller].stateLayout!, shape.callerState, { saltContract: true },
   );
   return {
     arts,
@@ -134,28 +148,40 @@ async function deploy(shape: Shape): Promise<Deployed> {
   };
 }
 
-/** The honest spend of the caller's `entry`, its callee co-spent running `method(3)`. */
-async function spend(d: Deployed, entry: string, method: string): Promise<Spend> {
-  const call = await d.caller[entry](d.calleeAddr).withExternalCall(d.callee, method, [3n]).build();
+/** The honest spend of the caller's `entry` (given 3 when `named`), its callee co-spent running `method(3)`. */
+async function spend(d: Deployed, entry: string, method: string, named = false): Promise<Spend> {
+  const args = named ? [d.calleeAddr, 3n] : [d.calleeAddr];
+  const call = await d.caller[entry](...args).withExternalCall(d.callee, method, [3n]).build();
   return { tx: call.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(call.inputs) };
 }
 
-/** `b` with the caller's unlocking from `a`: the caller runs a's entry beside the callee's run of b's method. */
+/** `b` with the caller's unlocking and own outputs from `a`: the caller runs a's entry, the callee b's method. */
 function splice(a: Spend, b: Spend, callerCat: string): Spend {
   const inputs = b.tx.inputs.map((input: any, index: number) => (ofCategory(b.sourceOutputs[index], callerCat)
     ? { ...input, unlockingBytecode: a.tx.inputs[index].unlockingBytecode } : input));
-  return { tx: { ...b.tx, inputs }, sourceOutputs: b.sourceOutputs };
+  const outputs = b.tx.outputs.map((output: any, index: number) => (ofCategory(output, callerCat)
+    ? a.tx.outputs[index] : output));
+  return { tx: { ...b.tx, inputs, outputs }, sourceOutputs: b.sourceOutputs };
 }
 
-/** Both spends take the same coins and leave the caller the same outputs; the callee runs A in `a`, B in `b`. */
+/**
+ * Both spends take the same coins and give the caller its outputs at the same places, equal but for a named call's
+ * edge; the callee runs A in `a` and B in `b`.
+ */
 function expectOnlyTheMethodDiffers(d: Deployed, shape: Shape, a: Spend, b: Spend): void {
   const outpoint = (input: any): string => `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`;
   expect(b.tx.inputs.map(outpoint)).toEqual(a.tx.inputs.map(outpoint));
-  const callerOutputs = (s: Spend): string[] => s.tx.outputs.filter((output: any) => ofCategory(output, d.callerCat))
+  const own = (s: Spend): number[] => s.tx.outputs.flatMap((output: any, index: number) => (
+    ofCategory(output, d.callerCat) ? [index] : []));
+  expect(b.tx.outputs.length).toBe(a.tx.outputs.length);
+  expect(own(a).length).toBeGreaterThan(0);
+  expect(own(b)).toEqual(own(a));
+  const state = (s: Spend): string[] => own(s).map((index) => s.tx.outputs[index])
+    .filter((output: any) => !isEdge(output))
     .map((output: any) => `${binToHex(output.lockingBytecode)}:${output.valueSatoshis}:`
       + `${output.token.nft?.capability}:${binToHex(output.token.nft?.commitment ?? Uint8Array.of())}`);
-  expect(callerOutputs(a).length).toBeGreaterThan(0);
-  expect(callerOutputs(b)).toEqual(callerOutputs(a));
+  expect(state(a).length).toBeGreaterThan(0);
+  expect(state(b)).toEqual(state(a));
   const callee = master(a, d.calleeCat);
   expect(callee).toBeGreaterThanOrEqual(0);
   expect(firstPush(a.tx.inputs[callee].unlockingBytecode)).toBe(selector(d, shape.a));
@@ -181,10 +207,17 @@ function runVm({ tx, sourceOutputs }: Spend): { success: boolean; error?: string
     : { success: false, error: [result.error, result.debugMessage].filter(Boolean).join(': ') };
 }
 
-describe('a call that leaves its arguments to the callee binds the method it names (VM)', () => {
+/** The VM refuses the spend by a script failure at input `index`. */
+function expectRefusedAt(result: { success: boolean; error?: string }, index: number): void {
+  expect(result.success).toBe(false);
+  expect(result.error ?? '').toContain('mandatory-script-verify-flag-failed');
+  expect(result.error ?? '').toContain(`error in evaluating input index ${index}:`);
+}
+
+describe('the method a direct call names, against a callee running another of the same arity (VM)', () => {
   for (const shape of SHAPES) {
-    describe(`${shape.name}: ${shape.a}() beside ${shape.b}(int v)`, () => {
-      it('settles the honest call through a single-function interface, and the other method\'s', async () => {
+    describe(`${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
+      it(`settles the honest ${shape.a}() through a single-function interface, and ${shape.b}()`, async () => {
         const d = await deploy(shape);
         const a = await spend(d, 'oneA', shape.a);
         const b = await spend(d, 'oneB', shape.b);
@@ -197,24 +230,33 @@ describe('a call that leaves its arguments to the callee binds the method it nam
       // spliced spend SETTLES on today's code while the caller takes B's run for A's (for `void`, a withdrawal for a
       // deposit; for `returning`, a free read for a paid one). it.fails keeps the file green and turns red once a fix
       // binds the method; drop `.fails` then.
-      it.fails('refuses a co-spent callee running another method of the same arity (single-function)', async () => {
+      it.fails(`refuses ${shape.a}() co-spent with ${shape.b} (single-function interface)`, async () => {
         const d = await deploy(shape);
         const a = await spend(d, 'oneA', shape.a);
         const r = runVm(splice(a, await spend(d, 'oneB', shape.b), d.callerCat));
-        expect(r.success).toBe(false);
-        expectScriptRejection(r.error ?? '', master(a, d.callerCat));
+        expectRefusedAt(r, master(a, d.callerCat));
       }, 300_000);
 
-      it('refuses it through a multi-function interface, at the caller', async () => {
+      it(`refuses ${shape.a}() co-spent with ${shape.b} at the caller (multi-function interface)`, async () => {
         const d = await deploy(shape);
         const a = await spend(d, 'twoA', shape.a);
         const b = await spend(d, 'twoB', shape.b);
         expectOnlyTheMethodDiffers(d, shape, a, b);
         expect(runVm(a)).toEqual({ success: true });
         expect(runVm(b)).toEqual({ success: true });
-        const r = runVm(splice(a, b, d.callerCat));
-        expect(r.success).toBe(false);
-        expectScriptRejection(r.error ?? '', master(a, d.callerCat));
+        expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
+      }, 300_000);
+
+      // Fix B (void) and D50 (returning): the caller reads the callee's record by the digest of the call it names, so
+      // B's record, digested under B's selector, fails that comparison at the caller's input.
+      it(`refuses ${shape.a}(v) co-spent with ${shape.b} at the caller (single-function, named)`, async () => {
+        const d = await deploy(shape, 'Named');
+        const a = await spend(d, 'oneA', shape.a, true);
+        const b = await spend(d, 'oneB', shape.b, true);
+        expectOnlyTheMethodDiffers(d, shape, a, b);
+        expect(runVm(a)).toEqual({ success: true });
+        expect(runVm(b)).toEqual({ success: true });
+        expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
       }, 300_000);
     });
   }

@@ -45,10 +45,11 @@ function expectRecordPin(artifact: Artifact, name: string): void {
 
 describe('a returning entry never skips its return covenant', () => {
   it('refuses a body that consumed its return witness', () => {
-    const error = diagnostic(() => compileValueless('contract C { function pair() public pure'
-      + ' returns (bytes memory, bytes memory) { return (abi.encodePacked(), abi.encodePacked()); } }'));
+    // The frame holds the reader witness too, so it takes a third missing result to reach the return witness.
+    const error = diagnostic(() => compileValueless('contract C { function triple() public pure returns (bytes memory,'
+      + ' bytes memory, bytes memory) { return (abi.encodePacked(), abi.encodePacked(), abi.encodePacked()); } }'));
     expect(error.code).toBe('RETURN_RESULT_UNBOUND');
-    expect(error.context).toMatchObject({ function: 'pair', consumed: '__internal__returnOutputIdx' });
+    expect(error.context).toMatchObject({ function: 'triple', consumed: '__internal__returnOutputIdx' });
   });
 
   it('refuses a body that consumed its call digest', () => {

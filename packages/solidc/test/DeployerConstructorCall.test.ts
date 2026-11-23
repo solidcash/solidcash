@@ -441,7 +441,10 @@ describe('A7: create binds the record it accepts to the callee', () => {
     const x = masters(caller.deployer!).x;
     const calleeMaster = masters(callee.deployer!, 7);
     const tag = new Uint8Array([...x.slice().reverse(), 0, 0, (options.tagGIn ?? DEPLOYER_INPUT) & 0xff, 0]);
-    const unlock = createUnlockingBytecode('p2sh32', calleeMaster.redeem, [Uint8Array.of(0x05), tag, Uint8Array.of(9)]);
+    // The argument, the genesis call, the reader (none: a tagged record names its reader by X) and the record's output.
+    const unlock = createUnlockingBytecode('p2sh32', calleeMaster.redeem, [
+      Uint8Array.of(0x05), tag, Uint8Array.of(0x81), Uint8Array.of(9),
+    ]);
     const run = calleeRun({
       callee, calleeSeed: 7, callerX: x.slice().reverse(), callerSlot: 0, gIn: DEPLOYER_INPUT, gOut: OUTBASE,
       unlock: options.calleeUnlock?.(unlock) ?? unlock, inputIndex: 7, returnIndex: 9,

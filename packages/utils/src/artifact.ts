@@ -2504,8 +2504,9 @@ export interface Artifact {
    * caller whose edge it is), after the selector. As a caller the contract digests its own `OP_INPUTINDEX`, for the
    * records it reads and the edges it pins; an entry digests its run with the reader its `CALL_RECORD_READER_INPUT`
    * witness names, where it takes that witness (a kernel direct participant's entries take none). So one record
-   * answers one input. A record answering a constructor is bound by its tag instead. Absent on artifacts compiled
-   * before; the SDK does not mix the two in one call.
+   * answers one input. A record answering a constructor is bound by its tag instead. Set only on a contract that
+   * digests a call (an entry takes that witness, reads a record or pins an edge), so a stateless artifact keeps its
+   * shape. Absent on artifacts compiled before; the SDK does not mix the two in one call.
    */
   callRecordReader?: boolean;
   /** The `genesisCalls` option the contract was compiled with. */

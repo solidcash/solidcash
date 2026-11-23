@@ -111,7 +111,6 @@ export const defaultProxyArtifact: Artifact = {
     ]
   },
   "callRecords": "returning",
-  "callRecordReader": true,
   "genesisCalls": true,
   "fingerprint": "9409f84049d30725f1645436351e1302c105404350d278a55e5b24be829db56b",
   "stateLayout": {

@@ -177,7 +177,8 @@ export function assertCallSelectorScheme(
  * or its callee reads `msg.sender` and so requires the caller's edge, whose digest is the call's. A caller names its
  * reader where its artifact says `callRecordReader`; the callee's run names one where its entry takes the reader
  * witness (an artifact compiled before has none, nor does a kernel direct participant's entry). The two never
- * digest alike, and a caller that accepted an unbound record would let two callers read one run.
+ * digest alike, and a caller that accepted an unbound record would let two callers read one run. A callee whose
+ * artifact holds no entry of the method (a proxy, whose implementation runs it) is left to its run.
  */
 export function assertCallRecordReaderScheme(
   call: ExternalCallAbi, caller: Pick<Artifact, 'callRecordReader'>,
@@ -186,8 +187,8 @@ export function assertCallRecordReaderScheme(
   const callerNamesReader = caller.callRecordReader === true;
   const method = call.rawFunctionName ?? call.functionName;
   const entries = callee.abi.filter((entry) => entry.name === method);
-  const calleeNamesReader = entries.length === 0 ? callee.callRecordReader === true
-    : entries.some((entry) => callRecordNamesReader(entry));
+  if (entries.length === 0) return;
+  const calleeNamesReader = entries.some((entry) => callRecordNamesReader(entry));
   if (callerNamesReader === calleeNamesReader) return;
   const readsRecord = call.hasReturnValues === true && call.opaqueReturn !== true;
   const calleeReadsSender = entries.some((entry) => entry.usesMsgSender === true);

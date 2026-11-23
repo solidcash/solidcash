@@ -971,7 +971,7 @@ export async function fixCreateBuilderDelegateUnlockers(
             ? group.externalContract.inner.createCompilerRouteUnlocker(
               group.compilerRoute.abiFunction, group.compilerRoute.selector,
             )(...encodedArgs)
-            : group.externalContract.inner.unlock[group.functionName]!(...encodedArgs),
+            : group.externalContract.inner.unlockerFor(bFunc as AbiFunction)(...encodedArgs),
         };
         if (group.blockInputs && group.blockLayout) {
           const masterOffset = group.blockLayout.slots.find((slot) => slot.kind === 'master')?.offset ?? 0;

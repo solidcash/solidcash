@@ -9,6 +9,7 @@ import {
   canonicalSelectorType, isEvmNotationScalarType,
   type ComputeSideCarRecipesAbi,
   ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature, type ExternalCallOrdinalAbi,
+  CALL_RECORD_READER_INPUT,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { version } from '../version.js';
@@ -48,6 +49,9 @@ import {
 } from '../deploymentRecipes.js';
 import { computeExpressionSiteKey } from '../ast/Location.js';
 import { GlobalFunction } from '../ast/Globals.js';
+
+/** A caller witness of a call the contract digests: the output of a record it reads, or of an edge it pins. */
+const DIGESTING_WITNESS = /^__internal__(?:externalReturnOutputIdx\d*|(?:lowLevelC|c)allEdgeOutputIdx\d+)$/;
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -5063,8 +5067,10 @@ export function generateArtifact(
     debug,
     ...(directCompile && isStateful && { callRecords: compilerOptions.callRecords ?? 'returning' as const }),
     // A direct compile's call digests name their reader (CALL_RECORD_READER_INPUT): it digests its own input as a
-    // caller, a kernel direct participant too, whose entries take no reader witness.
-    ...(directCompile && { callRecordReader: true }),
+    // caller, a kernel direct participant too, whose entries take no reader witness. Said where the contract digests
+    // a call: an entry takes the reader witness, reads a record or pins an edge.
+    ...(directCompile && abi.some((fn) => fn.inputs.some((input) => input.name === CALL_RECORD_READER_INPUT
+      || DIGESTING_WITNESS.test(input.name))) && { callRecordReader: true }),
     ...(directCompile && isStateful && { genesisCalls: compilerOptions.genesisCalls !== false }),
     ...(contract.recordSound !== undefined && { recordSound: contract.recordSound }),
     ...(functionBodies && { functionBodies }),

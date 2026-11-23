@@ -949,7 +949,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
   messageBusVerifierLock?: Uint8Array;
   /**
-   * Bound route, a graph one's included: one route-local row counter per handler whose row may rewrite records in the
+   * Bound route, graph and proxy ones included: one route-local row counter per handler whose row may rewrite records in the
    * participant block, which its selector branch increments. `all`: any record; `trailing`: any record of the
    * trailing band; `bandStates`: the dynamic state whose chunk locks it rewrites there; `collections`: the sorted
    * collections it writes, whose `lanes` (route entry slots, stamped once the handler's physical lanes are known) it

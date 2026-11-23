@@ -62788,9 +62788,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * no bound lock keeps the census alone.
    *
    * On a proxy's block (a delegate route) the records are the proxy's: the base is the proxy master the route's
-   * prologue and binder authenticate (`__internal__proxyMasterIndex`, emitMasterInputIndex) and the category its own.
-   * Such a route takes no claim flags: a graph one skips `__internal__graphBlockSize` as above, and any other one
-   * skipping its verifier by index picks its window at run time (emitParticipantSizedWindow). Stack neutral.
+   * prologue and binder authenticate (`__internal__proxyMasterIndex`, emitMasterInputIndex) and the category its own;
+   * every slot of the route's layout is based there, so it takes claims like any other route. Without them (an
+   * unbound compile) a graph one skips `__internal__graphBlockSize` as above, and any other one skipping its verifier
+   * by index picks its window at run time (emitParticipantSizedWindow). Stack neutral.
    */
   private emitRouteOutsideBlockRecordPin(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     const verifierLock = node.messageBusVerifierLock;
@@ -62812,8 +62813,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const trailingBase = node.blockLayout?.trailingBase;
     const bandLocks = inBlock && trailingBase !== undefined ? this.routeBandLockClaims(node) : undefined;
     // The entries' plain walks and pinned counts take the same helper (contractRoutePinsByIndex). Its mask is a graph
-    // route's claims, or else the window.
-    if ((!inBlock || graphSized) && bandLocks === undefined && byIndex && this.invokeParkedRecordPin(() => {
+    // route's claims, or else the window. A route on a proxy's block keeps the inline pass.
+    const proxyBlock = node.parameters.some((parameter) => parameter.name === '__internal__proxyMasterIndex');
+    if ((!inBlock || graphSized) && bandLocks === undefined && byIndex && !proxyBlock && this.invokeParkedRecordPin(() => {
       if (inBlock) {
         this.emitRouteBlockClaims(node, blockSize, loc);
         this.popFromStack();

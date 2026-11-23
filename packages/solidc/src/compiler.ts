@@ -12678,9 +12678,9 @@ function synthesizeMessageBusRoute(
   const routeHasDynamicWriter = eligible.some(handlerWritesDynamicState);
   // C3: a selector branch counts the rows of a handler whose row may rewrite records inside the participant block,
   // and the record pin holds every own-category record there that no row that ran claims 1:1, with or without the
-  // verifier, which holds a record no row touched only to a composer's resource row. A graph route takes them too.
-  // A proxy route and a framed build keep the census alone.
-  const recordClaimRoute = !isDelegateRoute && compilerOptions.composition !== 'framed'
+  // verifier, which holds a record no row touched only to a composer's resource row. A graph route and a proxy route
+  // (its layout based at the proxy master) take them too. A framed build keeps the census alone.
+  const recordClaimRoute = compilerOptions.composition !== 'framed'
     && (!!compilerOptions.__messageBusVerifierProgram
       || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true);
   const routeRecordClaims: NonNullable<FunctionDefinitionNode['messageBusRecordClaims']> = [];

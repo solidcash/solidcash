@@ -79,7 +79,7 @@ contract Overloaded(bytes20 owner) {
     provider.addUtxo(contract.address, utxo);
 
     const wc: any = new TransactionBuilder({ provider })
-      .addInput(utxo, contract.unlock['spend(pubkey,sig,int)'](placeholderPublicKey(), placeholderSignature(), 1_000n))
+      .addInput(utxo, contract.unlock['spend(pubkey,sig,int256)'](placeholderPublicKey(), placeholderSignature(), 1_000n))
       .addOutput({ to: contract.address, amount: 59_000n })
       .generateWcTransactionObject({ broadcast: false });
     expect(wc.sourceOutputs[0].contract.abiFunction.inputs).toHaveLength(3);

@@ -225,7 +225,8 @@ export function initializeProject(options: InitOptions = {}): InitResult {
         skipped,
         readmeFile,
         projectReadme(
-          String(mergedPackage.name ?? basename(directory)), compatibility, template, manager, includeSample, runtimeExtension,
+          String(mergedPackage.name ?? basename(directory)), compatibility, template, manager, includeSample,
+          runtimeExtension,
         ),
         false,
       );

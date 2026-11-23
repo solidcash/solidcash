@@ -589,13 +589,16 @@ export async function expandResolveCreateBuilderExternalCalls(
   // proofs above did not run for it. A listed call the function makes only under a guard is decided here as a resolved
   // call's is. One whose guard reads false, or that no frame decides, is refused by name unless the function's own
   // covenant refuses a skipped call (it counts the caller edges it pins): its listed callee, co-spent, would run
-  // without being called. A message-bus route binds each row it runs instead.
+  // without being called. A message-bus route binds each row it runs instead. The published guard of a counted frame
+  // of a multi-call spend is left to planDirectCallBatches, which drops a frame its guard skips and refuses one it
+  // cannot decide; it plans a fixed frame, or one under an unpublished guard, as made, so those are decided here.
   if (overrideExternalCalls && externalCalls && !isBusCompiledEntry(artifact, abiFunction?.selector)) {
     const guarded = externalCalls.flatMap((ec, index) => {
       const callee = overrideExternalCalls[index]?.externalContract;
       if (callee === undefined || overrideExternalCalls[index]?.absentCallee === true) return [];
       if (!(ec.conditionUnpublished === true && ec.condition === undefined)
         && !(ec.occurrence === 'conditional' && ec.condition !== undefined)) return [];
+      if (ec.callOrdinal !== undefined && 'counted' in ec.callOrdinal && ec.condition !== undefined) return [];
       return callCountsCallerEdge(ec, abiFunction, callee) ? [] : [{ ec, callee }];
     });
     const conditions = guarded.flatMap(({ ec }) => (ec.condition === undefined ? [] : [ec.condition]));

@@ -4,7 +4,8 @@
  * whether R makes the call: the guard is decided as for a resolved call. A raw call to a callee that reads no
  * msg.sender carries no caller edge, so nothing in R's covenant would refuse T running uncalled: such a listed call is
  * refused by name, before sending, when its guard reads false or cannot be decided, and made when the guard holds.
- * Each sent transaction is checked by the VM.
+ * R's typed calls to T, made more than once, run as frames of T's multi-call spend, planned from R's loops and guards:
+ * a frame they skip is left out, with no refusal. Each sent transaction is checked by the VM.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -22,9 +23,10 @@ import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.j
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
 const source = (setSelector: string): string => `pragma solidcash ^0.51.0;
-  interface IT { function set(int h, int c) external; }
+  interface IT { function set(int h, int c) external; function get() external view returns (int); }
   contract T { int height; int clock; int calls;
-    function set(int h, int c) external { height = h; clock = c; calls = calls + 1; } }
+    function set(int h, int c) external { height = h; clock = c; calls = calls + 1; }
+    function get() external view returns (int) { return calls; } }
   contract R { int runs;
     function rawIf(address t, bool make) external {
       if (make) {
@@ -44,6 +46,11 @@ const source = (setSelector: string): string => `pragma solidcash ^0.51.0;
       for (int i = 0; i < n; i++) { t.set(5, 5); }
       runs = runs + 1;
     }
+    function typedIf(IT t, bool make) external {
+      int seen = t.get();
+      if (make) { t.set(3, 3); }
+      runs = runs + 1 + seen;
+    }
   }`;
 
 // With `callBatch`, T carries its multi-call entry, through which R's calls in a loop run as frames of one spend.
@@ -56,6 +63,8 @@ let serial = 0x7e00;
 const nextTxid = (): string => (serial++).toString(16).padStart(64, '0');
 
 type Sent = { transaction: ReturnType<typeof decodeTransactionUnsafe>; sourceOutputs: any[] };
+/** Each of R's calls as `withExternalCall(T, functionName, args)` lists it. */
+type Listed = ReadonlyArray<readonly [functionName: string, args: unknown[]]>;
 type TState = { height?: bigint; clock?: bigint; calls?: bigint };
 
 const same = (left: Uint8Array, right: Uint8Array): boolean => binToHex(left) === binToHex(right);
@@ -63,8 +72,8 @@ const spends = (sent: Sent, lock: Uint8Array): boolean => sent.sourceOutputs
   .some((output) => same(output.lockingBytecode, lock));
 
 interface Chain {
-  /** R's function `name`, sent by a wallet with T listed explicitly as the callee of R's call. */
-  outcome(name: string, args: unknown[], listed: unknown[]): Promise<{ text: string; error?: unknown }>;
+  /** R's function `name`, sent by a wallet with T listed explicitly as the callee of each of R's calls, in order. */
+  outcome(name: string, args: unknown[], listed: Listed): Promise<{ text: string; error?: unknown }>;
   sentCount(): number;
   tState(): Promise<Required<TState>>;
   runs(): Promise<bigint>;
@@ -115,10 +124,12 @@ async function chain(callBatch = false): Promise<Chain> {
     return { height: state.height ?? 0n, clock: state.clock ?? 0n, calls: state.calls ?? 0n };
   };
   const outcome = async (
-    name: string, args: unknown[], listed: unknown[],
+    name: string, args: unknown[], listed: Listed,
   ): Promise<{ text: string; error?: unknown }> => {
     try {
-      await (r.contract.connect(wallet) as any).call[name](...args).withExternalCall(t.contract, 'set', listed).send();
+      let call = (r.contract.connect(wallet) as any).call[name](...args);
+      for (const [functionName, callArgs] of listed) call = call.withExternalCall(t.contract, functionName, callArgs);
+      await call.send();
       const last = sent[sent.length - 1]!;
       expect(createVirtualMachineBch2026ForProvider(provider).verify(last as never)).toBe(true);
       expect(spends(last, rLock)).toBe(true);
@@ -136,12 +147,12 @@ describe('R\'s raw call to T, with T listed by withExternalCall(), under a guard
   it('makes the listed call when its guard holds, and refuses it by name, before sending, when the guard is false',
     async () => {
       const c = await chain();
-      const made = await c.outcome('rawIf', [c.tLock, true], [3n, 3n]);
+      const made = await c.outcome('rawIf', [c.tLock, true], [['set', [3n, 3n]]]);
       expect(made.text).toBe('sent; T spent; T 3/3/1');
       expect(await c.runs()).toBe(1n);
 
       const before = c.sentCount();
-      const skipped = await c.outcome('rawIf', [c.tLock, false], [3n, 3n]);
+      const skipped = await c.outcome('rawIf', [c.tLock, false], [['set', [3n, 3n]]]);
       expect(skipped.text).toMatch(/^refused: R\.rawIf's call of T\.set \(line \d+\) is listed with withExternalCall\(\), /);
       expect(skipped.text).toContain('`make`');
       expect(skipped.error).toBeInstanceOf(ListedCallNotMadeError);
@@ -155,19 +166,34 @@ describe('R\'s raw call to T, with T listed by withExternalCall(), under a guard
   it('a listed typed call in a loop: T stays unspent when the loop does not turn, and is called when it turns once',
     async () => {
       const c = await chain(true);
-      const skipped = await c.outcome('typedTimes', [c.tLock, 0n], [5n, 5n]);
+      const skipped = await c.outcome('typedTimes', [c.tLock, 0n], [['set', [5n, 5n]]]);
       expect(skipped.text).toBe('sent; T not spent; T 0/0/0');
       expect(await c.runs()).toBe(1n);
 
-      const made = await c.outcome('typedTimes', [c.tLock, 1n], [5n, 5n]);
+      const made = await c.outcome('typedTimes', [c.tLock, 1n], [['set', [5n, 5n]]]);
       expect(made.text).toBe('sent; T spent; T 5/5/1');
       expect(await c.runs()).toBe(2n);
+    });
+
+  // get() and set() form a counted frame group of T's multi-call spend. With the guard false the planner drops the
+  // listed set's frame: T runs get() alone, as a standalone spend, and set() does not run.
+  it('a listed typed call of a frame group under a false guard is left out: T runs only the call R makes',
+    async () => {
+      const c = await chain(true);
+      const made = await c.outcome('typedIf', [c.tLock, true], [['get', []], ['set', [3n, 3n]]]);
+      expect(made.text).toBe('sent; T spent; T 3/3/1');
+      expect(await c.runs()).toBe(1n);
+
+      // get() reads calls = 1, so R's runs goes from 1 to 3; T keeps 3/3/1.
+      const skipped = await c.outcome('typedIf', [c.tLock, false], [['get', []], ['set', [3n, 3n]]]);
+      expect(skipped.text).toBe('sent; T spent; T 3/3/1');
+      expect(await c.runs()).toBe(3n);
     });
 
   it('refuses by name, before sending, a listed call under a guard the compiler cannot publish', async () => {
     const c = await chain();
     const before = c.sentCount();
-    const { text, error } = await c.outcome('rawNever', [c.tLock], [4n, 4n]);
+    const { text, error } = await c.outcome('rawNever', [c.tLock], [['set', [4n, 4n]]]);
     expect(text).toMatch(/^refused: R\.rawNever's call of T\.set \(line \d+\) cannot be built: it runs only under a /);
     expect(error).toBeInstanceOf(CallGuardUndecidedError);
     expect(c.sentCount()).toBe(before);

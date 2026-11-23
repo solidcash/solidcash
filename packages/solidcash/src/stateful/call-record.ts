@@ -14,6 +14,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { MixedCallRecordReaderError, MixedCompileModeCallError } from '../Errors.js';
+import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 
 export const CALL_RECORD_DIGEST_BYTES = 31;
@@ -79,6 +80,61 @@ export function callRecordDigest(
     parts.push(bytes.length & 0xff, (bytes.length >> 8) & 0xff, ...bytes);
   }
   return sha256(Uint8Array.from(parts)).slice(0, CALL_RECORD_DIGEST_BYTES);
+}
+
+/** A caller's witness of the argument at a position its call at a callsite leaves to the callee. */
+export const CALL_ARGUMENT_WITNESS = /^__internal__callArgument(\d+)_(\d+)$/;
+
+/** A co-spent call: the method its callee runs and the arguments it runs on. */
+interface CallRecordGroup {
+  readonly functionName: string;
+  readonly functionArgs: readonly unknown[];
+  readonly logicalFunctionName?: string;
+  readonly logicalFunctionArgs?: readonly unknown[];
+  readonly logicalArtifact?: Artifact;
+  readonly externalContract?: { readonly inner?: { readonly artifact?: Artifact } };
+}
+
+/**
+ * A caller's witness of an argument its call leaves to the callee (CALL_ARGUMENT_WITNESS): that argument of the method
+ * `group` runs, as the callee's record digests it. The caller digests it with the arguments it names, so the record
+ * binds the method and every argument. Undefined when the argument cannot be encoded.
+ */
+export function leftCallArgumentWitness(group: CallRecordGroup, position: number): Uint8Array | undefined {
+  const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+  const functionName = group.logicalFunctionName ?? group.functionName;
+  const input = artifact?.abi.find((entry) => entry.name === functionName)?.inputs[position];
+  if (artifact === undefined || input === undefined || input.name.startsWith('__internal__')
+    || input.type === 'sig') return undefined;
+  const args = group.logicalFunctionArgs ?? group.functionArgs;
+  try {
+    const encoded = encodeFunctionArgument(
+      args[position] as FunctionArgument, input.type, artifact.structs ?? artifact.stateLayout?.structs,
+    );
+    return encoded instanceof Uint8Array ? encoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Sets, by name, each witness of an argument a call of `abiFunction` leaves to its callee, from the group co-spent at
+ * that callsite (`edgeEcSlot`, a top-level call's published callsite). A witness with no such group keeps its value.
+ */
+export function fillLeftCallArgumentWitnesses(
+  args: readonly FunctionArgument[], abiFunction: Pick<AbiFunction, 'inputs'>,
+  groups: readonly (CallRecordGroup & { readonly edgeParentIndex?: number; readonly edgeEcSlot?: number })[],
+): FunctionArgument[] {
+  let filled = [...args];
+  for (const input of abiFunction.inputs) {
+    const witness = CALL_ARGUMENT_WITNESS.exec(input.name);
+    if (witness === null) continue;
+    const group = groups.find((candidate) => (candidate.edgeParentIndex ?? -1) < 0
+      && candidate.edgeEcSlot === Number(witness[1]));
+    const value = group === undefined ? undefined : leftCallArgumentWitness(group, Number(witness[2]));
+    if (value !== undefined) filled = materializeInternalFunctionArgument(filled, abiFunction.inputs, input.name, value);
+  }
+  return filled;
 }
 
 /**

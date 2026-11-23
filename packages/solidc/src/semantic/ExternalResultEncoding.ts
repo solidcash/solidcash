@@ -120,6 +120,13 @@ export const namesCallRecordArguments = (parameterTypes: readonly Type[], argume
   parameterTypes.every((type, index) => type === PrimitiveType.SIG || index < argumentCount);
 
 /**
+ * The caller's witness of the argument at `position` (a function value counted as its address and selector) that its
+ * call at `callsite` leaves to the callee: the caller digests it with the arguments it names.
+ */
+export const callArgumentWitnessName = (callsite: number, position: number): string =>
+  `__internal__callArgument${callsite}_${position}`;
+
+/**
  * A result a call record may carry only as its SHA256, so the caller takes the bytes from a preimage witness: one
  * whose encoding may exceed the record's inline capacity.
  */

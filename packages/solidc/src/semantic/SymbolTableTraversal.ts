@@ -134,7 +134,9 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
-import { externalResultMayNeedPreimage, namesCallRecordArguments } from './ExternalResultEncoding.js';
+import {
+  callArgumentWitnessName, externalResultMayNeedPreimage, namesCallRecordArguments,
+} from './ExternalResultEncoding.js';
 import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
 import {
@@ -4853,8 +4855,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         // callee's attested void record: mark the slot to carry a record. Its callee emits `digest || 0x01`
         // universally, so the caller can always read one. A call through an interface naming several functions
         // reads it too, in place of its selector check: the digest names the method, the arguments and the reader,
-        // so two callers cannot both take one run of it. One that leaves arguments to its callee digests nothing and
-        // keeps its selector check.
+        // so two callers cannot both take one run of it. One that leaves arguments to its callee digests them from
+        // witnesses (leftCallArgumentPositions); where the caller takes none it keeps its selector check.
         // The exploit this closes exists for every ungrouped single-interface void call, not only an explicit
         // messageBus:false opt-out. An inferred (auto) compile direct-lowers a call it does not route - `messageBus`
         // is folded to true for auto, so the mode, not that flag, says whether lowering is direct. Bind for disabled
@@ -4879,8 +4881,8 @@ export default class SymbolTableTraversal extends AstTraversal {
             // As emitCallerCallRecordDigest counts them: a function value passes as its address and selector.
             const digested = recordMethod.parameterTypes.flatMap((type) => (type instanceof FunctionType
               && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
-            if (slot.needsSelectorVerification && (slot.sourceCallNode === undefined
-              || !namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length))) continue;
+            if (slot.needsSelectorVerification && (slot.sourceCallNode === undefined || (!this.takesLeftCallArguments()
+              && !namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length)))) continue;
             // The void record is read by the digest of this method's selector and arguments; set it here so the
             // read always has one, including where the generic returning-slot pass does not reach this slot
             // (e.g. a callee dispatched through its own multi-call entry).
@@ -5459,6 +5461,20 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.symbolTables[0].set(Symbol.variable(edgeIdxParam));
         this.symbolTables[0].get(edgeIdxName)?.references.push({ name: edgeIdxName } as IdentifierNode);
         this.pushToStack(edgeIdxParam);
+      }
+      // A call leaving arguments to its callee takes each one its record digests as a witness, which the SDK fills
+      // from the callee's arguments: the record then binds the method and every argument (leftCallArgumentPositions).
+      for (const slot of this.takesLeftCallArguments() ? node.externalCalls : []) {
+        for (const position of this.leftCallArgumentPositions(slot)) {
+          const name = callArgumentWitnessName(slot.slotIndex, position);
+          const param = new ParameterNode(new BytesType(), name);
+          param.location = node.location;
+          param.syntheticallyUsed = true;
+          node.parameters.push(param);
+          this.symbolTables[0].set(Symbol.variable(param));
+          this.symbolTables[0].get(name)?.references.push({ name } as IdentifierNode);
+          this.pushToStack(param);
+        }
       }
     }
 
@@ -16537,6 +16553,35 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.symbolTables[0].get('__internal__genesisCall')
       ?.references.push({ name: '__internal__genesisCall' } as IdentifierNode);
     this.pushToStack(parameter);
+  }
+
+  /**
+   * Whether a caller takes the arguments its calls leave to their callees as witnesses (leftCallArgumentPositions):
+   * a direct compile, where void calls read records too. A framed body, a message-bus compile, a kernel direct
+   * participant and the deployer program bind such calls otherwise or take no such witness.
+   */
+  private takesLeftCallArguments(): boolean {
+    const busMode = (this.compilerOptions as CompilerOptions
+    & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
+    return (busMode === 'disabled' || busMode === 'auto') && this.compilerOptions.composition !== 'framed'
+      && this.compilerOptions.messageBusDirectParticipant !== true
+      && (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram === undefined;
+  }
+
+  /**
+   * The arguments a call leaves to its callee that its record digests, by position as emitCallerCallRecordDigest
+   * counts them (a function value as its address and selector), each but a `sig`. The caller digests each from a
+   * witness (callArgumentWitnessName), so the record binds the method and every argument, as for a call naming them.
+   * None for a call naming them all, one reading no record by its digest, or one a loop runs per target.
+   */
+  private leftCallArgumentPositions(slot: ExternalCallSlot): number[] {
+    if (!slot.hasReturnValues || slot.callRecordSelector === undefined || slot.sourceCallNode === undefined
+      || slot.opaqueReturn || slot.runtimeSelector || slot.selectorArrayVar || slot.fnPtrCall || slot.loopArrayVar
+      || slot.inlineLoopDispatch || slot.batchInvocations || !this.interfaceMap.has(slot.interfaceName)) return [];
+    const declared = (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
+      && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
+    const named = slot.sourceCallNode.parameters.length;
+    return declared.flatMap((type, position) => (position >= named && type !== PrimitiveType.SIG ? [position] : []));
   }
 
   /**

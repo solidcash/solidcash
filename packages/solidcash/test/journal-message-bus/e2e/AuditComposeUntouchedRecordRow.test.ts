@@ -379,7 +379,7 @@ contract LaneCoordinator() {
  * compose carrying the implementation as its executor (participant-verifiers transport). The coordinator's own
  * `side[9]`, which the compose does not spend, sits at a pad of the proxy's block under its own resource row.
  */
-async function proxyScenario(): Promise<Omit<ComposeScenario, 'mint' | 'insert'>> {
+async function proxyScenario(): Promise<Omit<ComposeScenario, 'insert'>> {
   const provider = createMessageBusCapstoneTestProvider();
   const signer = new Signer(new Uint8Array(32).fill(0x47), provider);
   for (let index = 0; index < 20; index += 1) {
@@ -402,8 +402,10 @@ async function proxyScenario(): Promise<Omit<ComposeScenario, 'mint' | 'insert'>
   deployed.implementation._registerResolvedExternal('ILaneBus', bus);
   const callsite = delegate!.abi.find((entry) => entry.name === 'poke')?.externalCalls?.[0];
   expect(callsite).toMatchObject({ functionName: 'put', interfaceName: 'ILaneBus' });
+  let changeLock: Uint8Array | undefined;
   const compose = async (): Promise<TransactionBuilder> => {
     const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
+    changeLock = funder.unlocker.generateLockingBytecode();
     return messageBus.compose({
       preparedCalls: [
         {
@@ -413,17 +415,27 @@ async function proxyScenario(): Promise<Omit<ComposeScenario, 'mint' | 'insert'>
         { contract: bus, functionName: 'put', args: [5n, 9n], callsiteId: callsite!.callsiteId },
       ],
       funder,
-      changeAddress: funder.unlocker.generateLockingBytecode(),
+      changeAddress: changeLock,
     }).build();
   };
   const {
-    honest, honestFailures, control, attack, lane,
+    honest, honestFailures, control, attack, lane, victim, lock, forged,
   } = await untouchedRecord(
     provider, compose, deployed.implementation.inner.artifact, deployed.proxy.inner, deployed.proxy.categoryId,
     'side',
   );
-  console.log('compose untouched proxy record', { lane, control, attack });
-  return { provider, honest: { builder: honest, failures: honestFailures }, control, attack, lane };
+  // A second side[9] node of the proxy's, in place of the change output, as on the bus.
+  const minted = await compose();
+  const lockOf = (to: string | Uint8Array): string => binToHex(typeof to === 'string' ? addressToLockScript(to) : to);
+  const change = minted.outputs.findIndex((output) => lockOf(output.to) === binToHex(changeLock!));
+  expect(change, 'the compose pays change').toBeGreaterThanOrEqual(0);
+  minted.outputs[change] = {
+    to: lock, amount: minted.outputs[change]!.amount,
+    token: { ...victim.token!, nft: { capability: 'mutable', commitment: forged } },
+  };
+  const mint = failures(minted);
+  console.log('compose untouched proxy record', { lane, control, attack, mint });
+  return { provider, honest: { builder: honest, failures: honestFailures }, control, attack, mint, lane };
 }
 
 describe('compose path: a resource row may rewrite a record no row touched', () => {
@@ -477,7 +489,7 @@ describe('compose path on a graph route: a resource row may rewrite a record no 
 });
 
 describe('compose path on a proxy\'s block: a resource row may rewrite a record no row touched', () => {
-  let state: Omit<ComposeScenario, 'mint' | 'insert'>;
+  let state: Omit<ComposeScenario, 'insert'>;
   beforeAll(async () => { state = await proxyScenario(); }, 300_000);
 
   it('settles the honest compose, and the control that declares an untouched entry unchanged', async () => {
@@ -486,8 +498,13 @@ describe('compose path on a proxy\'s block: a resource row may rewrite a record 
     await expect(state.provider.sendRawTransaction(state.honest.builder.build())).resolves.toMatch(TXID);
   }, 300_000);
 
-  // Expected to fail while a delegate route takes no claims: its pin skips the participant's whole block.
-  it.fails('refuses an untouched entry rewritten under a declared resource row', () => {
+  // The delegate route keeps the claims of its rows on the proxy's block; it skipped the whole block before, and the
+  // rewrite settled at 408104413.
+  it('refuses an untouched entry rewritten under a declared resource row', () => {
     expect(state.attack).not.toEqual([]);
+  });
+
+  it('refuses a node of the proxy\'s minted with no input beside the honest row', () => {
+    expect(state.mint).not.toEqual([]);
   });
 });

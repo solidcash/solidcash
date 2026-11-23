@@ -2217,9 +2217,15 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     off graph routes (taken in step B2, see "Inputless mint"); the typed-call narrowing is VM-checked on honest
     composes only, as an attack on a caller's own block was inconclusive: in a route that mixes a scalar handler
     with a keyed one (X94) every row reserves the entry lane, and the control was refused there too (input 0).
-  - Proxy routes (a delegate route takes no claims either): not built. Under the participant-verifiers transport,
-    which the KernelProxy*Compose tests use, the construction needs only the proxy setup. Under
-    `messageBusProxyForwardEnvelope` the envelope rides in two carriers, the executor's route frame and the proxy
-    master's copy (compose-assemble.ts), and the attack must rebuild both.
+  - Proxy routes (step C, participant-verifiers transport): VM-confirmed at `408104413`. A deployProxy root caller's
+    own untouched entry, rewritten at a pad of the proxy's block under a declared resource row, settled on every
+    input: a delegate route took no claims and its pin skipped the participant's whole block. (A plain driver calling
+    a proxy could not build its honest compose, so the proxy is the root caller, as in the KernelProxy*Compose tests.)
+    Fixed in `065341ecf`: a delegate route takes claims like any bound route. A compiler-owned delegate route bases
+    every slot of its layout at the authenticated proxy master, the base its pin measures from, so the masks line up;
+    it keeps the inline pass and, with claims, the mint bound. The proxy describe refuses the rewrite and a mint in
+    place of the change output (both at the executor input). Not built: the `messageBusProxyForwardEnvelope`
+    transport, whose envelope rides in two carriers, the executor's route frame and the proxy master's copy
+    (compose-assemble.ts); its route takes the same claims.
   - Cost of a verifier path where one is used: one verifier input of at least 9,000 B unlocking bytecode
     (`MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES`) and a deployed verifier UTXO per transaction.

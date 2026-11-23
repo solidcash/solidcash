@@ -61,4 +61,32 @@ describe('WalletConnect covered bytecode for OP_INVOKE functions', () => {
     const result = createVirtualMachineBch2026().verify({ sourceOutputs: wc.sourceOutputs, transaction });
     expect(result).toBe(true);
   });
+
+  it('a wallet signature on the second overload of a name covers that overload\'s body', () => {
+    const overloaded = `pragma solidcash >=0.8.0;
+contract Overloaded(bytes20 owner) {
+  function spend(pubkey pk, sig s) { require(hash160(pk) == owner); require(checkSig(s, pk)); }
+  function spend(pubkey pk, sig s, int floor) {
+    require(tx.outputs[0].value >= floor); require(hash160(pk) == owner); require(checkSig(s, pk));
+  }
+}`;
+    const artifact = compileString(overloaded);
+    const privateKey = Uint8Array.from({ length: 32 }, (_, i) => (i === 31 ? 9 : 0x44));
+    const publicKey = secp256k1.derivePublicKeyCompressed(privateKey) as Uint8Array;
+    const provider = new MockNetworkProvider();
+    const contract: any = new Contract(artifact, [hash160(publicKey)], { provider });
+    const utxo = { ...randomUtxo(), satoshis: 60_000n };
+    provider.addUtxo(contract.address, utxo);
+
+    const wc: any = new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock['spend(pubkey,sig,int)'](placeholderPublicKey(), placeholderSignature(), 1_000n))
+      .addOutput({ to: contract.address, amount: 59_000n })
+      .generateWcTransactionObject({ broadcast: false });
+    expect(wc.sourceOutputs[0].contract.abiFunction.inputs).toHaveLength(3);
+
+    const transaction = decodeTransaction(walletSign(wc, privateKey));
+    if (typeof transaction === 'string') throw new Error(transaction);
+    const result = createVirtualMachineBch2026().verify({ sourceOutputs: wc.sourceOutputs, transaction });
+    expect(result).toBe(true);
+  });
 });

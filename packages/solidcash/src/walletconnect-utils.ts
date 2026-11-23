@@ -33,8 +33,12 @@ export function getWcContractInfo(input: UnlockableUtxo): WcContractInfo | {} {
   // If the input does not have a contract unlocker, return an empty object
   if (!(isContractUnlocker(input.unlocker))) return {};
   const contract = input.unlocker.contract;
-  const abiFunctionName = input.unlocker.abiFunction?.name;
-  const abiFunction = contract.artifact.abi.find(abi => abi.name === abiFunctionName);
+  const own = input.unlocker.abiFunction;
+  const abiFunctionName = own?.name;
+  // An overloaded name has several entries; the unlocker's selector names the one this input runs.
+  const abiFunction = (own?.selector === undefined ? undefined
+    : contract.artifact.abi.find((abi) => abi.selector === own.selector))
+    ?? contract.artifact.abi.find((abi) => abi.name === abiFunctionName);
   if (!abiFunction) {
     throw new Error(`ABI function ${abiFunctionName} not found in contract artifact`);
   }

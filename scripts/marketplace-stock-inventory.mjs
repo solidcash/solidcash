@@ -93,7 +93,9 @@ console.log('measurement. This static inventory does not claim deployability; no
 console.log('stock limits. The enlarged semantic fixture remains unchanged.\n');
 console.log('Limits come from the pinned libauth consensus objects in `node_modules/@bitauth/libauth/build/lib/vm/');
 console.log('instruction-sets/bch/{2023,2025,2026}/*consensus.js`; BCH_SPEC is a separate internal-evaluation profile.');
-console.log('Pin: `1cf4b432864b3a4ed9f33d1992355d7286f3dab8` (root package.json).\n');
+const libauthPin = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  .devDependencies?.['@bitauth/libauth']?.split('#')[1] ?? 'unknown';
+console.log(`Pin: \`${libauthPin}\` (root package.json).\n`);
 console.log('| Input artifact | SHA-256 of JSON |');
 console.log('| --- | --- |');
 artifacts.forEach(({ artifact, digest }) => console.log(`| ${artifact.contractName} | ${digest} |`));

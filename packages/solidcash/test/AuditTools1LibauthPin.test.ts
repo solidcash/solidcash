@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const PIN = '1cf4b432864b3a4ed9f33d1992355d7286f3dab8';
+const PIN = 'ff49a75a5a2c5a60419206636808b37e3354f528';
 const manifests = [
   '../../solidc/package.json',
   '../../solidcash/package.json',

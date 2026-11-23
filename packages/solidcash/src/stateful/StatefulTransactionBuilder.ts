@@ -565,6 +565,7 @@ import {
   appendCallerEdges, appendStandInCaller, type StandInCaller,
 } from './stb-materialize-caller-edge-outputs.js';
 import { refusePaymentsToStatefulMasters } from './master-lock-payment.js';
+import { appendCallValueDeposits } from './stb-append-call-value-deposits.js';
 import { appendUnslottedPoolCoSpends } from './block-oracle-reader-selection.js';
 import {
   getChunkableValueWriteBand as getChunkableValueWriteBandImpl,
@@ -2177,6 +2178,7 @@ export class StatefulTransactionBuilder {
       pendingTokenContainerDeposits: this.pendingTokenContainerDeposits,
       runtimeLoopTransferOutputs: this.runtimeLoopTransferOutputs,
       containerDepositAmount: this.containerDepositAmount,
+      callValueSent: this.externalCallUtxoGroups.reduce((sum, group) => sum + (group.callValue ?? 0n), 0n),
       entryPlaceholderFillThreshold: () => this.entryPlaceholderFillThreshold(),
       isTokenContainerDrained: (categoryId) => this.isTokenContainerDrained(categoryId),
     };
@@ -5705,7 +5707,7 @@ export class StatefulTransactionBuilder {
       const artifact = unlocker.contract.artifact as Artifact;
       return callRecordDigest(unlocker.abiFunction, unlocker.params, {
         structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
-      });
+      }, 0, undefined, this.containerDepositAmount);
     }
     // A proxy entry forwards its call: the implementation it delegates to runs that call on this state, and its
     // record answers it.
@@ -5753,7 +5755,7 @@ export class StatefulTransactionBuilder {
     if (args === undefined) return undefined;
     return callRecordDigest(abiFunction, args, {
       structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
-    }, 0, reader);
+    }, 0, reader, group.callValue ?? 0n);
   }
 
   /**
@@ -6975,6 +6977,7 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, result);
+    appendCallValueDeposits(this.externalCallUtxoGroups, result);
     if (this.standInCaller !== undefined) appendStandInCaller(this.standInCaller, result);
     return result;
   }
@@ -7680,6 +7683,7 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, finalBuilder);
+    appendCallValueDeposits(this.externalCallUtxoGroups, finalBuilder);
 
     // A8: a payment to a stateful contract's master lock could never be spent.
     await refusePaymentsToStatefulMasters(provider, finalBuilder.inputs, finalBuilder.outputs);

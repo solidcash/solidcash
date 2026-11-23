@@ -4290,6 +4290,7 @@ function buildFunctionAbiMetadata(
           ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
           // Publish false too: absence denotes a legacy artifact, not a proven value-free edge.
           callValueEffect: rawCall && (func.graphRawCallValueEffect === true || hasExternalCallValueEffect(ec)),
+          ...(ec.callValueInRecord && ec.callValueSource && { callValue: ec.callValueSource }),
           ...(ec.opaqueReturn && { opaqueReturn: true }),
           ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
           ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
@@ -4760,6 +4761,7 @@ export function generateArtifact(
         ? 'compact-pushdata-v1' : externalResultEncoding(func.returnTypes, compilerOptions),
     }),
     ...(func.settlesCallRecord === true && { callRecord: true }),
+    ...(func.recordDigestsValue === true && { callRecordValue: true }),
     ...(func.callBatchRow === true && { callBatchRow: true }),
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),

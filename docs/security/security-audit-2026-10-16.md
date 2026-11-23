@@ -1372,7 +1372,8 @@ needs VM evidence, `rejectedWith` has no source fallback).
     `AuditSingleInterfaceMethodBinding.test.ts` has no `it.fails` since: the honest call settles and the same-arity
     and wider co-spends are refused (3/3, run 2026-11-23). Left, by reading: a call that leaves an argument to the
     callee (`f()` for `f(pubkey)`) digests no record, so its method stays unbound as before fix B; a typed
-    `{value:}` call is outside fix B's marking and its method binding is unchecked.
+    `{value:}` call is outside fix B's marking and its method binding is unchecked. Both fixed 2026-11-23: see
+    "Security completion (2026-11-23)" (S3a, and a typed `{value:}` call).
 
 - A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
   itself). acd85975b requires each element to differ from every single pointer call's witness, but the covenant does
@@ -1948,7 +1949,8 @@ profile.
 - Two calls through one variable reassigned between them share one callee identity and are refused when the two
   values differ (fail closed).
 - A `{value:}` payment through a call-site register has no test of its own: no e2e sends a typed `{value:}` call
-  to a stateful callee. The selector and runtime ternary registers are tested (`da0fa686b`).
+  to a stateful callee. The selector and runtime ternary registers are tested (`da0fa686b`). Closed 2026-11-23: such
+  a call now rides its callee's record and is tested ("Security completion (2026-11-23)").
 - (LOW, needs a miner) Outputs whose locking bytecode is empty, or 20 bytes long, are non-standard but valid in a
   block. The low-level call pins, the compat identity check and every loop dispatch now refuse an empty target or
   element (`b3a9ae4a4`, `aede82dd5`). A co-spent callee no longer stands for a 20-byte identity as a 20-byte lock, nor
@@ -2096,3 +2098,31 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   caller-isolated splices show fix B binds at the caller (the earlier `AuditSingleInterfaceMethodBinding` refusals came
   from the callee's own record count). Left: framed, message-bus, kernel-participant and deployer compiles and loops
   keep the no-digest read (Open, above).
+- **A typed `{value:}` call to a stateful callee bound no run** (branch `sec-value-call-fix`). In the direct
+  convention `t.deposit{value: v}(x)` paid `v` with a transfer its caller pinned at the target as given: a stateful
+  callee's master lock, which no script spends, while the callee counts msg.value at its satoshi container. The call
+  was outside fix B's marking, so through a one-method interface nothing bound the method its callee ran, nor the
+  amount, nor which caller one run answered; the SDK could not build it (its derivation never learned the pinned
+  output). `TypedValueCallBinding.e2e.test.ts` recorded each shape.
+  - Fix: the value rides the record the call reads. The caller reads its callee's record (void calls included) and
+    digests `v` after the arguments, 8 bytes little-endian when not zero; it takes `v` from its satoshi container with
+    no output of its own, counted in the container's bound, and a nonzero `v` requires the container's coin at its
+    slot. A callee entry that takes value (payable, or reading msg.value) digests what its run received: its
+    container's gain plus its own sends; an entry that takes none digests nothing, so a value call to it fails closed.
+    A call that reads no record by a fixed digest (a pointer or runtime selector, a loop, a target such as
+    `msg.sender`) is refused by name under `messageBus: false` (`CALL_VALUE_UNBOUND`). The artifact publishes
+    `callRecordValue` on such an entry and the value's source (`callValue`) on the call; the SDK pays `v` into the
+    callee's container.
+  - SDK fault found on the way, older than the fix: a callee block placed before the caller's own outputs pads the
+    caller's block by copying its inputs, the container's coin among them, and the container's change was appended
+    after it, so the payer paid the coin's value into the container a second time. The change now takes the copy's
+    place. A transfer or token container beside a callee block meets the same copies and fails closed.
+  - Tests: `TypedValueCallBinding.e2e.test.ts` (one-method and two-method interfaces: the honest call with one coin
+    each container and the payer paying the fee; another method, argument or a smaller value refused at the caller;
+    two callers on one run refused), `VoidCallArguments.test.ts` (its value row), `StatefulAddressPayment.e2e.test.ts`
+    (D1: no transfer slot).
+  - Open: a `__raw__` call or `.call{value:}` to a stateful target still pays the target's lock, which a stateful
+    master's never spends: an honest send is refused by A8, a hand-built one burns the caller's value. A callee
+    compiled with the bus on settles no compact record and digests no value, so a value call to it fails closed.
+    Nested value calls (A to B to C), a deposit below dust and a loop's value `new` beside a value call (the loop's
+    container check does not count the call's value) are not handled.

@@ -1026,6 +1026,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Codegen: this entry's return carrier is the record of the direct call it answers. */
   settlesCallRecord?: boolean;
 
+  /** Codegen: this entry's record digests the value its run received (ABI `callRecordValue`). */
+  recordDigestsValue?: boolean;
+
   /** Semantic analysis: this entry may run as a frame of the multi-call entry (semantic/CallBatch.ts). */
   callBatchCandidate?: boolean;
 
@@ -3093,6 +3096,8 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
+  /** Its `{value:}` rides the record the call reads, with no transfer (ExternalCallSlot.callValueInRecord). */
+  callValueInRecord?: boolean;
   // Set when this call on a freshly-deployed local was folded into the deploy genesis (no co-spend): the
   // node is inert - skipped by external-call collection and codegen.
   foldedIntoDeploy?: boolean;
@@ -3330,6 +3335,13 @@ export interface ExternalCallSlot {
   rawReadsRecord?: boolean;
   /** The source call carries an effective `{ value: ... }` transfer. Retained independently of cloned AST nodes. */
   callValueEffect?: boolean;
+  /**
+   * A direct typed call whose `{value:}` rides the record it reads: the caller takes the value from its satoshi
+   * container with no output of its own, and the record's digest names it, so the callee's container received it.
+   */
+  callValueInRecord?: boolean;
+  /** Where the SDK reads the value of a `callValueInRecord` call, as an argument source. */
+  callValueSource?: ExternalCallArgSource;
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
   // Set by visitExternalFunctionCall when a loop call over a calldata/param address array with an opaque return
   // (the MultiCall pattern) is emitted INLINE per-iteration (co-spend + return read keyed on the live index).

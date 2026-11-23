@@ -2,15 +2,16 @@
  * A record no row touched, rewritten in a participant block on the compose path
  * (docs/security/security-audit-2026-10-16.md, "Security completion (2026-11-23)", "Compose path").
  *
- * Once its verifier ran, a bound route claims its whole verified block (emitRouteBlockClaims), so it holds no in-block
+ * Once its verifier ran, a bound route claimed its whole verified block (emitRouteBlockClaims), so it held no in-block
  * record a row did not touch. The verifier holds each own-category mutable endpoint there to a manifest resource row
  * (kind 1, mode 0: the exact input and output commitment) and to the endpoint count, but no resource row to an
- * executed handler effect. So a composer who writes the manifest can declare a rewrite of an untouched record.
+ * executed handler effect. So a composer who writes the manifest declared a rewrite of an untouched record, and it
+ * settled (VM-confirmed at f3e5026c9). The route now keeps the claims of the rows that ran, cut to its physical block.
  *
  * The honest compose runs `put(5, 9)` on the bus beside its verifier. The control adds `side[9]` at the bus block's
  * unused lane, recreated unchanged, with the resource row that declares it: every input settles, so the envelope and
  * verifier rebinding below are sound. The attack is the control with the entry's value rewritten, row and output
- * alike. It is `it.fails` until a fix lands: today every input accepts it.
+ * alike: the route refuses it.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -290,8 +291,8 @@ describe('compose path: a resource row may rewrite a record no row touched', () 
     await expect(state.provider.sendRawTransaction(state.honest.builder.build())).resolves.toMatch(TXID);
   }, 300_000);
 
-  // Fails today: the verifier holds the entry to the declared row, and the route claims its whole verified block.
-  it.fails('refuses an untouched entry rewritten under a declared resource row', () => {
+  // No row of this compose claims the lane, so the route pins the entry there whatever the verifier's row declares.
+  it('refuses an untouched entry rewritten under a declared resource row', () => {
     expect(state.attack).not.toEqual([]);
   });
 });

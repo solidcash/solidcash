@@ -2178,14 +2178,26 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   same fix (claims inside the verifier's window, and the exact bound). A framed build skips this census and settles
   records through its frames' declared views and the validator, a different model these paths do not reach; it was
   not evaluated for an analogous gap.
-- **Compose path: a route trusts the verifier for its whole block** (open, source-traced 2026-11-23, needs a VM test).
-  Once its verifier ran, a bound route claims its whole verified block (`emitRouteBlockClaims`), so it holds no
-  in-block record a row did not touch. The verifier holds each own-category mutable endpoint in the block only to a
-  manifest resource row (kind 1, mode 0 pins the exact input and output commitment, compiler.ts verifier body) and to
-  the endpoint count, and it ties invocation rows (kind 0) to the local batch, but no resource row to an executed
-  handler effect: the rows carry no parent and the SDK builds them from the transaction it built (graph.ts). A
-  composer who writes the manifest can therefore declare a rewrite of a record no row touched, and nothing refuses
-  it. The whole-block snapshot holds a block only when every row of it is static. So routing the residual shapes
-  through the verifier would not make them sound, and the same reading reaches every bound route on the compose
-  path. Cost of the verifier path where it is used: one verifier input of at least 9,000 B unlocking bytecode
-  (`MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES`) and a deployed verifier UTXO per transaction.
+- **COMPOSE-RECORD-1: a declared resource row rewrites a record no row touched** (CRITICAL; VM-confirmed 2026-11-23,
+  mocknet, `AuditComposeUntouchedRecordRow.test.ts` at `f3e5026c9`; fixed in this series). Once its verifier ran, a
+  bound non-graph route claimed its whole verified block (`emitRouteBlockClaims`), so it held no in-block record a
+  row did not touch. The verifier holds each own-category mutable endpoint in the block only to a manifest resource
+  row (kind 1; mode 0 pins the exact input and output commitment) and to the endpoint count. It ties invocation rows
+  (kind 0) to the local batch, but no resource row to an executed handler effect: the rows carry no parent and the
+  SDK builds them from the transaction it built (graph.ts). The binding digest covers the manifest, so the composer
+  who writes the manifest also writes the rows (compiler.ts:13695, the binder's commitment check). Evidence: an
+  honest compose (a driver row calling the bus's `put`) settles; a control declaring an untouched `side` entry
+  unchanged at the bus block's unused lane settles; the same build with that entry's commitment one byte off under
+  its declared row settled on every input. A spender who composes any call to a contract rewrites any of its records
+  in the participant block that no row touches (a token balance, an owner field kept in an entry). The whole-block
+  snapshot holds a block only when every row of it is static.
+  - Fix: once the verifier ran, the route keeps the claims of the rows that ran (1a-1c), cut to the physical
+    `__internal__participantBlockSize` slots its binding digest proves (`claimed mod (1 << size)`), instead of
+    claiming them all; the band's lock test ends at the same size. The exact mint bound already applies there. The
+    attack row now asserts the refusal; the honest compose and the control settle.
+  - Liveness risk: a compose whose SDK layout moves a record no row claims to another index is now refused.
+  - Bytes: about -2 B on each bound non-graph route (the verifier branch shrinks), plus about 15 B in the band test
+    where a dynamic-state writer exists.
+  - Open: graph and proxy routes take no claims (see "Graph, proxy and framed routes").
+  - Cost of a verifier path where one is used: one verifier input of at least 9,000 B unlocking bytecode
+    (`MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES`) and a deployed verifier UTXO per transaction.

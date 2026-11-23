@@ -62859,7 +62859,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_RSHIFTNUM, loc);
       this.emit(encodeInt(2n), loc);
       this.emit(Op.OP_MOD, loc);             // [claimed, i, claimedAt]
-      if (bandLocks !== undefined) this.emitRouteBandLockClaim(trailingBase!, blockSize, loc);
+      if (bandLocks !== undefined) {
+        this.emitRouteBandLockClaim(trailingBase!, blockSize, this.getStackIndex(ACTIVE_VERIFIER_INDEX, true) >= 0
+          && !node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory'), loc);
+      }
     } else {
       this.emit(Op.OP_DUP, loc);
       emitSize();
@@ -62948,9 +62951,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[locks, claimed, i, claimedAt]` -> `[locks, claimed, i, claimedAt']`: an input the claims leave pinned that sits
-   * in the trailing band `[trailingBase, blockSize)` is claimed where its lock is one of `locks`.
+   * in the trailing band `[trailingBase, blockSize)` is claimed where its lock is one of `locks`. With `physical`,
+   * the band ends at the participant's physical block once the verifier ran (emitRouteBlockClaims).
    */
-  private emitRouteBandLockClaim(trailingBase: number, blockSize: number, loc: SingleLocationData): void {
+  private emitRouteBandLockClaim(
+    trailingBase: number, blockSize: number, physical: boolean, loc: SingleLocationData,
+  ): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOTIF, loc);
     this.emit(Op.OP_DROP, loc);
@@ -62958,7 +62964,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_SUB, loc);
     this.emit(encodeInt(BigInt(trailingBase)), loc);
-    this.emit(encodeInt(BigInt(blockSize)), loc);
+    if (physical) {
+      this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emitPickTrackedFromBottom(PARTICIPANT_BLOCK_SIZE, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(encodeInt(BigInt(blockSize)), loc);
+      this.emit(Op.OP_ENDIF, loc);
+    } else this.emit(encodeInt(BigInt(blockSize)), loc);
     this.emit(Op.OP_WITHIN, loc);            // [locks, claimed, i, inBand]
     this.emit(Op.OP_IF, loc);
     // The untracked i sits above the tracked frame.
@@ -63047,10 +63062,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * as `lanes`, or every lane of the collection where none were), or the trailing band. A lane no such row claims
    * stays pinned, as a read brings it back at its own index. Each offset belongs to one group, so the masks add.
    * A row that may rewrite any of them claims the whole compile-time block. Once the verifier ran
-   * (`__internal__activeVerifierIndex` >= 0), the claim is exactly the block its census counts, the physical
-   * `__internal__participantBlockSize` slots, which its binding digest proves: `(1 << size) - 2`, replacing the rest.
-   * A local-caller route runs its verifier only for a lifecycle row, so it takes that row's flag alone.
-   * Bit 0, the master, stays clear.
+   * (`__internal__activeVerifierIndex` >= 0) the claims are cut to the physical `__internal__participantBlockSize`
+   * slots its binding digest proves; they are not widened to them, as the verifier holds a record no row touched
+   * only to a resource row the composer writes. A local-caller route runs its verifier only for a lifecycle row, so
+   * it takes that row's flag alone. Bit 0, the master, stays clear.
    */
   private emitRouteBlockClaims(node: FunctionDefinitionNode, blockSize: number, loc: SingleLocationData): void {
     const claims = node.messageBusRecordClaims ?? [];
@@ -63122,17 +63137,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     }
     if (local) return;
-    // On chain an index >= 0 ran the binder (routeVerifierSkipsByIndex), whose digest proves the size (>= 1).
+    // On chain an index >= 0 ran the binder (routeVerifierSkipsByIndex), whose digest proves the size (>= 1). The
+    // verifier holds a record no row touched only to the composer's resource row, so the claims stay those of the
+    // rows that ran, cut to the physical block: [claimed] -> [claimed mod (1 << size)].
     this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc);
     this.emit(encodeInt(0n), loc);
     this.emit(Op.OP_GREATERTHANOREQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
     this.emit(encodeInt(1n), loc);
     this.emitPickTrackedFromBottom(PARTICIPANT_BLOCK_SIZE, loc);
     this.emit(Op.OP_LSHIFTNUM, loc);
-    this.emit(encodeInt(2n), loc);
-    this.emit(Op.OP_SUB, loc);
+    this.emit(Op.OP_MOD, loc);
     this.emit(Op.OP_ENDIF, loc);
   }
 

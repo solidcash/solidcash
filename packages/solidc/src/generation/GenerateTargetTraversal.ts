@@ -62669,14 +62669,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * C3 mint bound, bound non-graph route: the census leaves a handler-managed collection to its handlers, which
    * count its outputs only where they run, and the output scan admits a node at the collection's lock. So the
-   * collection's address takes no output beyond its inputs except the nodes the rows that ran may insert, one per
-   * fixed write of their handler (`inserts`) for each row its counter counted. A row that may rewrite any record,
-   * or inserts from a loop, lifts the bound for the run. A collection the route's own batch or runtime-loop census
-   * counts is left to it. Stack neutral.
+   * outputs at the collection's address are exactly its inputs there plus the nodes this run inserted. A sorted
+   * delete removes no node (visitMappingDelete), and an insert relinks its predecessor in place: the node spent at an
+   * index comes back there with another `next`, which an update, a read or a soft delete keeps. The pin holds every
+   * node no row claims and a row's consumer holds each one it spends, so these relinks, counted at run time, are the
+   * inserts. Any other change to the count (an insert whose predecessor comes back elsewhere, as a loop's or a kept
+   * batch's does, or a lifecycle row's) is refused here by name, never let through. A collection the route's kept
+   * batch or runtime-loop census counts is left to it. Stack neutral.
    */
   private emitRouteCollectionMintBounds(node: FunctionDefinitionNode, loc: SingleLocationData): void {
-    const claims = node.messageBusRecordClaims;
-    if (claims === undefined) return;
+    if (node.messageBusRecordClaims === undefined) return;
     const counted = new Set([
       ...(node.sortedBatchInfo ?? []).map((batch) => batch.collection), ...this.vmapRuntimeCollections(node),
     ]);
@@ -62684,18 +62686,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const name = this.entrySlots[slotIndex]?.collection;
       return name === undefined || counted.has(name) ? [] : [name];
     }))].filter((name) => this.collectionDefinitions.some((collection) => collection.name === name && collection.sorted));
-    const allFlags = claims.flatMap((claim) => (claim.all === true ? [claim.flag] : []));
     for (const collection of collections) {
       const signature = this.vmapCollectionSignature(collection);
       if (signature === undefined) throw new Error(`message-bus mint bound: no signature for '${collection}'`);
-      const inserters = claims.filter((claim) => claim.collections?.includes(collection) ?? false);
-      const gate = [...allFlags, ...inserters.flatMap((claim) => ((claim.inserts?.[collection] ?? -1) < 0
-        ? [claim.flag] : []))];
-      gate.forEach((flag, index) => {
-        this.emitPickTrackedFromBottom(flag, loc);
-        if (index > 0) this.emit(Op.OP_BOOLOR, loc);
-      });
-      if (gate.length > 0) this.emit(Op.OP_NOTIF, loc);
       const addr = `(__route_mint_addr_${collection})`;
       this.emitMasterInputIndex(loc);
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -62703,26 +62696,74 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(addr);
       this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
       this.stack[0] = addr;
-      this.emitCountAtLock(false, loc);
+      this.emitRelinkedInputCount(loc);
       this.emit(Op.OP_TOALTSTACK, loc);
       this.emitCountAtLock(true, loc);
-      this.emit(Op.OP_FROMALTSTACK, loc);    // [addr, outputs, inputs]
-      for (const claim of inserters) {
-        const count = claim.inserts?.[collection] ?? -1;
-        if (count <= 0) continue;
-        this.emitPickTrackedFromBottom(claim.flag, loc);
-        if (count > 1) {
-          this.emit(encodeInt(BigInt(count)), loc);
-          this.emit(Op.OP_MUL, loc);
-        }
-        this.emit(Op.OP_ADD, loc);
-      }
-      this.emit(Op.OP_LESSTHANOREQUAL, loc);
-      this.emit(Op.OP_VERIFY, loc);
+      this.emit(Op.OP_FROMALTSTACK, loc);    // [addr, outputs, inputs + inserts]
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      this.requires.push({
+        ip: this.getMostRecentInstructionPointer(),
+        line: node.location.start.line,
+        message: `an output at '${collection}' that no insert of this run made`,
+      });
       this.emit(Op.OP_DROP, loc);
       this.popFromStack();
-      if (gate.length > 0) this.emit(Op.OP_ENDIF, loc);
     }
+  }
+
+  /**
+   * `[addr]` -> `[addr, n]`, n untracked: the inputs locked to addr, plus those of them whose output at the same index
+   * is locked to addr with another `next` (the commitment's second 32 bytes): a relinked predecessor.
+   */
+  private emitRelinkedInputCount(loc: SingleLocationData): void {
+    const next = (commitment: Op): void => {
+      this.emit(commitment, loc);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);
+    };
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);                // [addr, n, i]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    next(Op.OP_UTXOTOKENCOMMITMENT);         // [addr, n, i, nextIn]
+    this.emit(Op.OP_OVER, loc);
+    next(Op.OP_OUTPUTTOKENCOMMITMENT);       // [addr, n, i, nextIn, nextOut]
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_SWAP, loc);              // [addr, n, i]
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
   }
 
   /**

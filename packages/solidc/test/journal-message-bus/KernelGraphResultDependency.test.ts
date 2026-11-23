@@ -1,11 +1,11 @@
 import { execFileSync } from 'child_process';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import {
-  bytecodeToAsm, encodeInt, Op, scriptToBytecode,
+  bytecodeToScript, decodeInt, Op, type Script, scriptToAsm,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../src/compiler.js';
-import { compileAddressToEvmIdentity } from '../../src/generation/utils.js';
+import { compileLockToEvmIdentity } from '../../src/generation/utils.js';
 
 const KERNEL = {
   forceStateful: true,
@@ -77,26 +77,38 @@ describe('kernel graph result dependencies', () => {
     expect(artifact.bytecode.replace(/\s+/g, '')).toContain('OP_INVOKE');
 
     const invokeDebug = artifact.debug.invokeDebug ?? {};
-    // The 12-zero-byte prefix check may be outlined into its own helper once the contract pushes that word twice.
-    const zeroWord = binToHex(scriptToBytecode([new Uint8Array(12)]));
-    const [head, tail] = binToHex(scriptToBytecode(compileAddressToEvmIdentity())).split(zeroWord);
-    const projection = new RegExp(`^${head}(?:${zeroWord}|(?:5[1-9a-f]|60|01[0-9a-f]{2})8a)${tail}$`);
-    const projectionHelper = Object.entries(invokeDebug)
-      .find(([, entry]) => projection.test(entry.bytecode));
-    expect(projectionHelper).toBeDefined();
-    const projectionInvocation = bytecodeToAsm(scriptToBytecode([
-      encodeInt(BigInt(projectionHelper![0])), Op.OP_INVOKE,
-    ]));
+    const invokedId = (element: Script[number]): number | undefined => {
+      if (element instanceof Uint8Array) return element.length <= 4 ? Number(decodeInt(element)) : undefined;
+      return element >= Op.OP_1 && element <= Op.OP_16 ? element - Op.OP_1 + 1 : undefined;
+    };
+    // A body with each `<id> OP_INVOKE` of an outlined helper replaced by the helper's body, so a span reads the same
+    // whichever parts of it the optimizer outlined.
+    const inlined = (bytecode: Uint8Array): Script => {
+      const body: Script = [];
+      for (const element of bytecodeToScript(bytecode)) {
+        const id = element === Op.OP_INVOKE && body.length > 0 ? invokedId(body[body.length - 1]) : undefined;
+        const helper = id === undefined ? undefined : invokeDebug[String(id)];
+        if (helper === undefined) {
+          body.push(element);
+        } else {
+          body.pop();
+          for (const inner of inlined(hexToBin(helper.bytecode))) body.push(inner);
+        }
+      }
+      return body;
+    };
     const handlerBody = Object.values(invokeDebug)
       .find((entry) => entry.name === '__message_bus_handler_apply');
     expect(handlerBody).toBeDefined();
-    const handlerAsm = bytecodeToAsm(hexToBin(handlerBody!.bytecode));
+    const handlerAsm = scriptToAsm(inlined(hexToBin(handlerBody!.bytecode)));
     const rawSelector = calls[1].rawSelector!;
+    // The row's lock stands for the producer-result address only as a P2SH32 or a P2PKH lock, and the full lock is
+    // then framed as the raw edge's target.
     expect(handlerAsm).toMatch(new RegExp([
       'OP_2 OP_SPLIT OP_SWAP OP_BIN2NUM OP_SPLIT OP_DROP OP_DUP',
-      projectionInvocation,
+      scriptToAsm(compileLockToEvmIdentity()),
       'OP_2 OP_PICK OP_EQUALVERIFY OP_NIP OP_ENDIF',
-      '\\S+ OP_INVOKE 00 OP_CAT',
+      '(?:\\S+ ){1,9}?00 OP_CAT',
       `${rawSelector} OP_CAT`,
     ].join(' ')));
   });

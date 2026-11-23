@@ -629,12 +629,12 @@ task('run', 'Run a script with the SolidCash HRE available as the `hre` global')
   });
 
 task('deploy', 'Compile and run the conventional deployment script')
-  .addPositionalParam('script', 'Deployment script path (defaults to scripts/deploy.ts or .js)')
+  .addPositionalParam('script', 'Deployment script path (defaults to scripts/deploy.ts, .mjs or .js)')
   .addFlag('no-compile', 'Skip compilation before running the deployment script')
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     try {
       if (args['no-compile'] !== true) await hre.run('compile');
-      await runScript(args.script, hre, ['scripts/deploy.ts', 'scripts/deploy.js']);
+      await runScript(args.script, hre, ['scripts/deploy.ts', 'scripts/deploy.mjs', 'scripts/deploy.js']);
     } finally {
       await disconnectProvider(hre);
     }

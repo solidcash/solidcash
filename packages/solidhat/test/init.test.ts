@@ -56,6 +56,25 @@ describe('initializeProject', () => {
     expect(pkg.scripts['solidhat:deploy']).toBe('solidhat deploy');
   });
 
+  it('writes the config and deploy script as .mjs for a Node that cannot load TypeScript', () => {
+    const parent = temporaryDirectory('plain-node');
+    initializeProject({ cwd: parent, target: 'plain', install: false, nodeLoadsTypeScript: false });
+    const directory = join(parent, 'plain');
+    expect(existsSync(join(directory, 'solidcash.config.mjs'))).toBe(true);
+    expect(existsSync(join(directory, 'solidcash.config.ts'))).toBe(false);
+    expect(existsSync(join(directory, 'scripts', 'deploy.mjs'))).toBe(true);
+    expect(existsSync(join(directory, 'test', 'Counter.test.ts'))).toBe(true);
+    expect(existsSync(join(directory, 'vitest.solidhat.config.ts'))).toBe(true);
+    const readme = readFileSync(join(directory, 'README.md'), 'utf8');
+    expect(readme).toContain('solidcash.config.mjs');
+    expect(readme).toContain('scripts/deploy.mjs');
+
+    const typed = temporaryDirectory('typed-node');
+    initializeProject({ cwd: typed, target: 'typed', install: false, nodeLoadsTypeScript: true });
+    expect(existsSync(join(typed, 'typed', 'solidcash.config.ts'))).toBe(true);
+    expect(existsSync(join(typed, 'typed', 'scripts', 'deploy.ts'))).toBe(true);
+  });
+
   it('does not point the README at sample files that --no-sample left out', () => {
     const parent = temporaryDirectory('no-sample');
     initializeProject({ cwd: parent, target: 'bare', sample: false, install: false });

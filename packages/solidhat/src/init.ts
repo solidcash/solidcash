@@ -24,6 +24,16 @@ export interface InitOptions {
   dryRun?: boolean;
   sample?: boolean;
   compatibility?: Partial<CompatibilityTarget>;
+  /**
+   * Whether the Node that runs the project can load TypeScript files; this Node's `process.features.typescript` by
+   * default. Without it, the TypeScript template writes its config and deploy script, which plain Node imports, as
+   * `.mjs` (their content is plain JavaScript); tests and the Vitest config stay TypeScript.
+   */
+  nodeLoadsTypeScript?: boolean;
+}
+
+function nodeLoadsTypeScript(): boolean {
+  return Boolean((process.features as { typescript?: unknown }).typescript);
 }
 
 export interface InitResult {
@@ -107,6 +117,7 @@ function sampleDeployment(target: CompatibilityTarget): string {
 
 function projectReadme(
   name: string, target: CompatibilityTarget, template: Template, manager: PackageManager, includeSample: boolean,
+  runtimeExtension: 'ts' | 'mjs' | 'js',
 ): string {
   // `--no-sample` (or `empty`) writes no Counter files, so the README must not point at them.
   const sample = !includeSample
@@ -115,7 +126,7 @@ function projectReadme(
   const install = manager === 'yarn' ? 'yarn' : `${manager} install`;
   const run = (script: string): string => (manager === 'npm' ? `npm run ${script}` : `${manager} ${script}`);
   const extension = template === 'javascript' ? 'js' : 'ts';
-  return `# ${name}\n\nA SolidCash project powered by [SolidHat](https://www.npmjs.com/package/@solidcash/solidhat).\n\n## Get started\n\n\`\`\`sh\n${install}\n${run('solidhat:compile')}\n${run('solidhat:test')}\n${run('solidhat:deploy')} -- --network regtest\n\`\`\`\n\n${sample}\n\n## Project layout\n\n\`\`\`text\ncontracts/                 SolidCash source files\ntest/                      Vitest contract tests\nscripts/deploy.${extension}          Network-selectable deployment script\nsolidcash.config.${extension}        Compiler, paths, and network settings\nvitest.solidhat.config.${extension}  Hardhat/Ethers compatibility aliases\nartifacts/solidcash/        Generated contract artifacts\ntypechain-types/            Generated Ethers ${target.ethers} contract bindings\n\`\`\`\n\nThe incremental compile cache lives in \`~/.cache/solidcash\`, outside the project.\n\nThis project targets Hardhat ${target.hardhat} and Ethers ${target.ethers} compatibility through the tree-shakeable \`@solidcash/solidhat/hardhat${target.hardhat}\` and \`@solidcash/solidhat/ethers${target.ethers}\` entry points.\n\n## Commands\n\n- \`${run('solidhat:compile')}\` compiles the whole dependency graph, reuses unchanged roots, and updates bindings.\n- \`${run('solidhat:typegen')}\` regenerates bindings from existing artifacts.\n- \`${run('solidhat:test')}\` compiles first, then runs tests with \`vitest.solidhat.config.${extension}\`.\n- \`${run('solidhat:deploy')} -- --network regtest\` runs the conventional deployment script against BCHN regtest.\n- \`${run('solidhat:clean')}\` removes generated artifacts, cache data, and configured bindings.\n\nEVM artifacts and Hardhat configuration can coexist with these namespaced outputs.\n`;
+  return `# ${name}\n\nA SolidCash project powered by [SolidHat](https://www.npmjs.com/package/@solidcash/solidhat).\n\n## Get started\n\n\`\`\`sh\n${install}\n${run('solidhat:compile')}\n${run('solidhat:test')}\n${run('solidhat:deploy')} -- --network regtest\n\`\`\`\n\n${sample}\n\n## Project layout\n\n\`\`\`text\ncontracts/                 SolidCash source files\ntest/                      Vitest contract tests\nscripts/deploy.${runtimeExtension.padEnd(3)}         Network-selectable deployment script\nsolidcash.config.${runtimeExtension.padEnd(3)}       Compiler, paths, and network settings\nvitest.solidhat.config.${extension}  Hardhat/Ethers compatibility aliases\nartifacts/solidcash/        Generated contract artifacts\ntypechain-types/            Generated Ethers ${target.ethers} contract bindings\n\`\`\`\n\nThe incremental compile cache lives in \`~/.cache/solidcash\`, outside the project.\n\nThis project targets Hardhat ${target.hardhat} and Ethers ${target.ethers} compatibility through the tree-shakeable \`@solidcash/solidhat/hardhat${target.hardhat}\` and \`@solidcash/solidhat/ethers${target.ethers}\` entry points.\n\n## Commands\n\n- \`${run('solidhat:compile')}\` compiles the whole dependency graph, reuses unchanged roots, and updates bindings.\n- \`${run('solidhat:typegen')}\` regenerates bindings from existing artifacts.\n- \`${run('solidhat:test')}\` compiles first, then runs tests with \`vitest.solidhat.config.${extension}\`.\n- \`${run('solidhat:deploy')} -- --network regtest\` runs the conventional deployment script against BCHN regtest.\n- \`${run('solidhat:clean')}\` removes generated artifacts, cache data, and configured bindings.\n\nEVM artifacts and Hardhat configuration can coexist with these namespaced outputs.\n`;
 }
 
 function gitignore(current = ''): string {
@@ -184,6 +195,8 @@ export function initializeProject(options: InitOptions = {}): InitResult {
   const hardhatDetected = CONFIG_FILES.some((name) => existsSync(join(directory, name)));
   const template = options.template ?? 'typescript';
   const typescript = template !== 'javascript';
+  // Plain Node imports the config and the deploy script; a Node that cannot load TypeScript gets them as `.mjs`.
+  const runtimeExtension = !typescript ? 'js' : (options.nodeLoadsTypeScript ?? nodeLoadsTypeScript()) ? 'ts' : 'mjs';
   const manager = options.packageManager ?? detectPackageManager(directory);
   const plans: PlannedFile[] = [];
   const skipped: string[] = [];
@@ -211,14 +224,19 @@ export function initializeProject(options: InitOptions = {}): InitResult {
         plans,
         skipped,
         readmeFile,
-        projectReadme(String(mergedPackage.name ?? basename(directory)), compatibility, template, manager, includeSample),
+        projectReadme(
+          String(mergedPackage.name ?? basename(directory)), compatibility, template, manager, includeSample, runtimeExtension,
+        ),
         false,
       );
     }
   }
 
-  const configName = typescript ? 'solidcash.config.ts' : 'solidcash.config.js';
-  planFile(plans, skipped, join(directory, configName), configTemplate(typescript ? 'ts' : 'js', compatibility), options.force ?? false);
+  const configName = `solidcash.config.${runtimeExtension}`;
+  planFile(
+    plans, skipped, join(directory, configName), configTemplate(runtimeExtension === 'ts' ? 'ts' : 'js', compatibility),
+    options.force ?? false,
+  );
   planFile(
     plans,
     skipped,
@@ -237,7 +255,7 @@ export function initializeProject(options: InitOptions = {}): InitResult {
     planFile(plans, skipped, join(directory, 'contracts', 'Counter.scash'), SAMPLE_CONTRACT, options.force ?? false);
     const testName = template === 'javascript' ? 'Counter.test.js' : 'Counter.test.ts';
     planFile(plans, skipped, join(directory, 'test', testName), sampleTest(compatibility), options.force ?? false);
-    const deployName = template === 'javascript' ? 'deploy.js' : 'deploy.ts';
+    const deployName = `deploy.${runtimeExtension}`;
     planFile(
       plans, skipped, join(directory, 'scripts', deployName), sampleDeployment(compatibility), options.force ?? false,
     );

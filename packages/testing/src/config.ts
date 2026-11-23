@@ -1,8 +1,8 @@
 /**
  * Config surface for the SolidCash harness (HARDHAT-PARITY.md WS1). Mirrors hardhat.config: paths, networks,
  * a default network, and the test mnemonic/accounts. `defineConfig` is the typed identity helper; `loadConfig`
- * dynamically imports `solidcash.config.{ts,js,mjs}` from a directory (the CLI runs under tsx so a .ts config
- * loads directly).
+ * dynamically imports `solidcash.config.{ts,js,mjs}` from a directory. The CLI runs under plain Node, so a .ts config
+ * loads only where Node strips types (22.18 and later, or `--experimental-strip-types`).
  */
 import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
@@ -374,6 +374,19 @@ function withTrustedCache(config: SolidcashConfig, configDir: string): Solidcash
 }
 
 /** Load and resolve the config from `dir` (empty config if none found). */
+/** Import a config file, naming the fix when this Node cannot load a TypeScript one. */
+async function importConfig(file: string): Promise<Record<string, unknown>> {
+  try {
+    return await import(pathToFileURL(file).href) as Record<string, unknown>;
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ERR_UNKNOWN_FILE_EXTENSION' && file.endsWith('.ts')) {
+      throw new Error(`${file} is TypeScript, which this Node (${process.version}) cannot load: use Node 22.18 or `
+        + 'later, or rename it to .mjs if it holds plain JavaScript (a generated config does).');
+    }
+    throw error;
+  }
+}
+
 export async function loadConfig(dir: string = process.cwd()): Promise<ResolvedConfig> {
   const file = findConfigFile(dir);
   if (!file) return resolveConfig({});
@@ -382,7 +395,7 @@ export async function loadConfig(dir: string = process.cwd()): Promise<ResolvedC
     warnedPlanted.add(`load:${file}`);
     console.warn(`SolidCash: loading ${file}, which is not in ${resolve(dir)}.`);
   }
-  const mod = await import(pathToFileURL(file).href);
+  const mod = await importConfig(file);
   const exported = (mod.default ?? mod.config ?? {}) as SolidcashConfig & HardhatCompatConfig;
   const isHardhat = HARDHAT_CONFIG_BASENAMES.some((name) => file.endsWith(name));
   const user = isHardhat ? fromHardhatConfig(exported) : exported;

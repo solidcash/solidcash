@@ -120,7 +120,7 @@ const artifactsOf = (shape: Shape): any => {
 
 const ofCategory = (output: any, category: string): boolean => output?.token !== undefined
   && [category, binToHex(hexToBin(category).reverse())].includes(binToHex(output.token.category));
-const master = (spend: Spend, category: string): number => spend.sourceOutputs.findIndex((output: any) => (
+const master = (run: Spend, category: string): number => run.sourceOutputs.findIndex((output: any) => (
   ofCategory(output, category) && output.token.nft?.capability === 'minting'));
 const firstPush = (unlocking: Uint8Array): string => binToHex(
   (decodeAuthenticationInstructions(unlocking)[0] as { data?: Uint8Array }).data ?? Uint8Array.of(),

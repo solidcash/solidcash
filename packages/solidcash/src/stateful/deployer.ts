@@ -337,13 +337,14 @@ const vmapWitness = (field: string, slotIndex: number): string => `__internal__v
 
 /**
  * Internal witnesses of an entry's frame that name an input or an output of the transaction, not an offset in its block
- * (the covenant reads them with `OP_PICK` and introspects at that index directly). A frame built with the master at
- * input 0 holds each as an offset from the master.
+ * (the covenant reads them with `OP_PICK` and introspects at that index directly, or, for the reader a call record
+ * names, digests the input of the master that makes the call). A frame built with the master at input 0 holds each as
+ * an offset from the master.
  */
 const TRANSACTION_INDEX_WITNESS = new RegExp('^__internal__(?:returnOutputIdx|externalReturnOutputIdx\\d*'
   + '|externalCallInputBase|extcallMasterIdx\\d+|extcallAnchorIdx\\d+|callEdgeOutputIdx\\d+|blockOracleInputIndex'
   + '|blockhashInputIndex|dynamicChunkInputBase|dynamicChunkOutputBase|valueChunkOutputBase|vmapBatchPredOut_\\d+'
-  + '|externalOutStateInputBase)$');
+  + '|externalOutStateInputBase|callRecordReader)$');
 
 /** The covenant parameters of a coin's unlocker that name the input of the master it serves, or an output. */
 const COVENANT_INDEX_PARAMETER = new Set(['masterInputIndex', 'outputIndex']);
@@ -1838,8 +1839,33 @@ function settleCalleeRun(options: {
   const { master, block, outputs } = options;
   const vm = createVirtualMachineBch2026ForProvider(options.provider);
   const lockHex = (to: string | Uint8Array): string => (typeof to === 'string' ? to : binToHex(to));
+  // A call record names its reader's input, so the records of the calls the callee's block makes moved with the block:
+  // each master of another category in the block pins its records (an `OP_TRUE` carrier of its category) from its own
+  // run there.
+  const nestedMasters = block.inputs.flatMap((input, offset) => {
+    const token = input?.utxo.token;
+    return offset > 0 && token?.nft?.capability === 'minting' && token.category !== block.categoryId
+      ? [{ inputIndex: master + offset, category: token.category }] : [];
+  });
+  const pinNestedRecords = (transaction: Transaction, sourceOutputs: Transaction['outputs']): boolean => {
+    let pinned = false;
+    for (const { inputIndex, category } of nestedMasters) {
+      const trace = evaluateFaithfulOrDebugTrace(options.provider, { transaction, sourceOutputs, inputIndex } as never);
+      const expected = extractCommitmentMapFromTrace(trace, { min: 0, max: transaction.outputs.length }, true);
+      for (const [index, commitment] of expected) {
+        const output = outputs[index];
+        const nft = output?.token?.nft;
+        if (output === undefined || nft === undefined || nft.capability !== 'none' || output.token?.category !== category
+          || lockHex(output.to) !== '51' || nft.commitment === commitment) continue;
+        nft.commitment = commitment;
+        pinned = true;
+      }
+    }
+    return pinned;
+  };
   for (let round = 0; round < 64; round += 1) {
     const { transaction, sourceOutputs } = options.build();
+    if (pinNestedRecords(transaction, sourceOutputs)) continue;
     const trace = evaluateFaithfulOrDebugTrace(
       options.provider, { transaction, sourceOutputs, inputIndex: master } as never,
     );

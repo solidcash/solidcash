@@ -15,7 +15,9 @@
  *
  * The second describe compiles the bus and the driver as graph routes (`messageBusGraphContext`). A graph route
  * skipped its whole verifier-proven block and the attack settled (VM-confirmed at 97d38ed48); it now keeps the claims
- * of its rows, cut to that block, and the route refuses it.
+ * of its rows, cut to that block, and the route refuses it. Both describes also mint a node with no input beside the
+ * honest row, which the route's mint bound refuses. The third puts the victim in a proxy's block, on the delegate
+ * route an implementation runs for the proxy's records.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -26,9 +28,9 @@ import { compileString } from '@solidcash/solidc';
 import {
   buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, scriptToBytecode, sha256,
 } from '@solidcash/utils';
-import { Contract, type TransactionBuilder } from '../../../src/index.js';
+import { Contract, Signer, type TransactionBuilder } from '../../../src/index.js';
 import type { ContractUnlocker, UnlockableUtxo, Utxo } from '../../../src/interfaces.js';
-import { StatefulContract } from '../../../src/stateful/index.js';
+import { StatefulContract, getContractFactory, upgrades } from '../../../src/stateful/index.js';
 import * as messageBus from '../../../src/message-bus/index.js';
 import {
   decodeAtomicMessageEnvelope, encodeAtomicMessageEnvelope, type AtomicRow,
@@ -188,6 +190,113 @@ interface ComposeScenario {
   lane: number;
 }
 
+interface UntouchedRecord {
+  honest: TransactionBuilder;
+  honestFailures: ReturnType<typeof failures>;
+  control: ReturnType<typeof failures>;
+  attack: ReturnType<typeof failures>;
+  lane: number;
+  victim: Utxo;
+  lock: Uint8Array;
+  forged: string;
+  masterOf: (builder: TransactionBuilder) => number;
+}
+
+/**
+ * The honest compose and, built from fresh composes, the control and the attack: an entry of `collection` that the
+ * compose does not spend, put at a pad of the holder's block no row uses (`routeArtifact`'s route describes the
+ * block), declared under its own resource row, recreated unchanged or with its value one bit off.
+ */
+async function untouchedRecord(
+  provider: Provider, compose: () => Promise<TransactionBuilder>, routeArtifact: Artifact,
+  owner: Contract, categoryId: string, collection: string,
+): Promise<UntouchedRecord> {
+  const honest = await compose();
+  const honestFailures = failures(honest);
+
+  // The holder's block: its minting master and its span in the manifest.
+  const masterOf = (builder: TransactionBuilder): number => builder.inputs.findIndex((input) =>
+    input.token?.nft?.capability === 'minting' && input.token.category === categoryId);
+  const manifest = decodeAtomicMessageEnvelope(carriedEnvelope(honest).envelope);
+  const baseOf = (participant: number): number => manifest.participants.slice(0, participant)
+    .reduce((base, current) => base + current.actualSize, 0);
+  const master = masterOf(honest);
+  const holder = manifest.participants.findIndex((_participant, index) => baseOf(index) === master);
+  expect(holder, 'the holder block starts at its master').toBeGreaterThanOrEqual(0);
+  const blockSize = manifest.participants[holder]!.actualSize;
+  // A handler-managed lane of the collection no row of this compose uses: a token-less pad in and out.
+  const routeEntries = routeArtifact.messageBus!.route.entryAccesses ?? [];
+  const collectionSlots = new Set(routeEntries.flatMap((access, index) =>
+    (access.collection === collection ? [access.slotIndex ?? index] : [])));
+  const lanes = routeArtifact.messageBus!.route.blockLayout!.slots
+    .filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined && collectionSlots.has(slot.slotIndex))
+    .map((slot) => slot.offset);
+  const free = (offset: number): boolean => offset > 0 && offset < blockSize
+    && honest.inputs[master + offset]?.token === undefined && honest.outputs[master + offset]?.token === undefined;
+  // A lane if one is left to a pad, else any pad of the block: no row of the compose uses either.
+  const lane = lanes.find(free) ?? Array.from({ length: blockSize }, (_unused, offset) => offset).find(free);
+  expect(lane, 'the compose leaves a pad in the holder block').toBeDefined();
+
+  // An entry the compose does not spend, with the redeem of its entry covenant's write flag.
+  const redeem = scriptToBytecode(buildEntryNftCovenantScript(
+    hexToBin(categoryId), computeCollectionHash(resolveCollectionSignature(owner.artifact, collection)),
+    directConventionMasterLock(owner),
+  ));
+  const lock = addressToLockScript(getEntryNftAddress(owner, categoryId, collection));
+  expect(binToHex(encodeLockingBytecodeP2sh32(hash256(redeem)))).toBe(binToHex(lock));
+  const spent = new Set(honest.inputs.map((input) => `${input.txid}:${input.vout}`));
+  const victim = (await provider.getUtxos(getEntryNftAddress(owner, categoryId, collection)))
+    .find((utxo) => utxo.token?.nft?.capability === 'mutable' && !spent.has(`${utxo.txid}:${utxo.vout}`)) as Utxo;
+  expect(victim, 'an untouched entry').toBeDefined();
+
+  /** The compose with the victim at the unused lane, recreated with `commitment`, and the row declaring it. */
+  const declared = async (commitment: string): Promise<TransactionBuilder> => {
+    const builder = await compose();
+    const at = masterOf(builder) + lane!;
+    const input: UnlockableUtxo = {
+      ...victim,
+      unlocker: {
+        generateLockingBytecode: () => lock,
+        generateUnlockingBytecode: () => Uint8Array.from([
+          ...encodeDataPush(encodeIntegerValue(BigInt(masterOf(builder)))),
+          ...encodeDataPush(encodeIntegerValue(1n)),
+          ...encodeDataPush(redeem),
+        ]),
+      },
+    };
+    builder.inputs[at] = input;
+    builder.outputs[at] = {
+      to: lock, amount: victim.satoshis,
+      token: { ...victim.token!, nft: { capability: 'mutable', commitment } },
+    };
+    const current = decodeAtomicMessageEnvelope(carriedEnvelope(builder).envelope);
+    const row: AtomicRow = {
+      kind: 1, owner: holder, consumer: holder, slot: lane!, mode: 0,
+      sourceOffset: lane!, targetOffset: lane!, selectorHex: '00000000', position: lane!,
+      parent: 0xffff, depth: 0, subtreeEnd: lane!, subjectHex: binToHex(lock),
+      // In the VM's byte order, as compose-semantic-effects writes a resource row's category.
+      argsHex: `${binToHex(hexToBin(categoryId).reverse())}01`,
+      resultHex: victim.token!.nft!.commitment, effectHex: commitment,
+    };
+    const target = (candidate: AtomicRow): number => baseOf(candidate.consumer) + candidate.targetOffset;
+    const rows = [...current.rows];
+    let position = rows.findIndex((candidate) => candidate.kind === 1 && target(candidate) > target(row));
+    if (position < 0) {
+      position = rows.reduce((last, candidate, index) => (candidate.kind <= 1 ? index : last), -1) + 1;
+    }
+    rows.splice(position, 0, row);
+    rebindEnvelope(builder, { ...current, rows });
+    return builder;
+  };
+  const original = victim.token!.nft!.commitment;
+  const forged = original.slice(0, -2) + (parseInt(original.slice(-2), 16) ^ 1).toString(16).padStart(2, '0');
+  const control = failures(await declared(original));
+  const attack = failures(await declared(forged));
+  return {
+    honest, honestFailures, control, attack, lane: lane!, victim, lock, forged, masterOf,
+  };
+}
+
 /**
  * The honest compose, the control and the attack, the bus and the driver compiled as graph routes or as bound leaf
  * routes: `side[9]` at a pad of the bus block no row uses, declared under its own resource row, unchanged or with its
@@ -225,87 +334,9 @@ async function composeScenario(graph: boolean): Promise<ComposeScenario> {
       changeAddress: changeLock,
     }).build();
   };
-  const honest = await compose();
-  const honestFailures = failures(honest);
-
-  // The bus block: its minting master and its span in the manifest.
-  const masterOf = (builder: TransactionBuilder): number => builder.inputs.findIndex((input) =>
-    input.token?.nft?.capability === 'minting' && input.token.category === categoryId);
-  const manifest = decodeAtomicMessageEnvelope(carriedEnvelope(honest).envelope);
-  const baseOf = (participant: number): number => manifest.participants.slice(0, participant)
-    .reduce((base, current) => base + current.actualSize, 0);
-  const master = masterOf(honest);
-  const busParticipant = manifest.participants.findIndex((_participant, index) => baseOf(index) === master);
-  expect(busParticipant, 'the bus block starts at its master').toBeGreaterThanOrEqual(0);
-  const blockSize = manifest.participants[busParticipant]!.actualSize;
-  // A handler-managed side lane no row of this compose uses: a token-less pad in and out.
-  const routeEntries = busArtifact.messageBus!.route.entryAccesses ?? [];
-  const sideSlots = new Set(routeEntries.flatMap((access, index) =>
-    (access.collection === 'side' ? [access.slotIndex ?? index] : [])));
-  const lanes = busArtifact.messageBus!.route.blockLayout!.slots
-    .filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined && sideSlots.has(slot.slotIndex))
-    .map((slot) => slot.offset);
-  const free = (offset: number): boolean => offset > 0 && offset < blockSize
-    && honest.inputs[master + offset]?.token === undefined && honest.outputs[master + offset]?.token === undefined;
-  // A side lane if one is left to a pad, else any pad of the block: no row of the compose uses either.
-  const lane = lanes.find(free) ?? Array.from({ length: blockSize }, (_unused, offset) => offset).find(free);
-  expect(lane, 'the compose leaves a pad in the bus block').toBeDefined();
-
-  // side[9], which the compose does not spend, with the redeem of its entry covenant's write flag.
-  const redeem = scriptToBytecode(buildEntryNftCovenantScript(
-    hexToBin(categoryId), computeCollectionHash(resolveCollectionSignature(busArtifact, 'side')),
-    directConventionMasterLock(bus.inner),
-  ));
-  const lock = addressToLockScript(getEntryNftAddress(bus.inner, categoryId, 'side'));
-  expect(binToHex(encodeLockingBytecodeP2sh32(hash256(redeem)))).toBe(binToHex(lock));
-  const spent = new Set(honest.inputs.map((input) => `${input.txid}:${input.vout}`));
-  const victim = (await provider.getUtxos(getEntryNftAddress(bus.inner, categoryId, 'side')))
-    .find((utxo) => utxo.token?.nft?.capability === 'mutable' && !spent.has(`${utxo.txid}:${utxo.vout}`)) as Utxo;
-  expect(victim, 'an untouched side entry').toBeDefined();
-
-  /** The compose with the victim at the unused lane, recreated with `commitment`, and the row declaring it. */
-  const declared = async (commitment: string): Promise<TransactionBuilder> => {
-    const builder = await compose();
-    const at = masterOf(builder) + lane!;
-    const input: UnlockableUtxo = {
-      ...victim,
-      unlocker: {
-        generateLockingBytecode: () => lock,
-        generateUnlockingBytecode: () => Uint8Array.from([
-          ...encodeDataPush(encodeIntegerValue(BigInt(masterOf(builder)))),
-          ...encodeDataPush(encodeIntegerValue(1n)),
-          ...encodeDataPush(redeem),
-        ]),
-      },
-    };
-    builder.inputs[at] = input;
-    builder.outputs[at] = {
-      to: lock, amount: victim.satoshis,
-      token: { ...victim.token!, nft: { capability: 'mutable', commitment } },
-    };
-    const current = decodeAtomicMessageEnvelope(carriedEnvelope(builder).envelope);
-    const row: AtomicRow = {
-      kind: 1, owner: busParticipant, consumer: busParticipant, slot: lane!, mode: 0,
-      sourceOffset: lane!, targetOffset: lane!, selectorHex: '00000000', position: lane!,
-      parent: 0xffff, depth: 0, subtreeEnd: lane!, subjectHex: binToHex(lock),
-      // In the VM's byte order, as compose-semantic-effects writes a resource row's category.
-      argsHex: `${binToHex(hexToBin(categoryId).reverse())}01`,
-      resultHex: victim.token!.nft!.commitment, effectHex: commitment,
-    };
-    const target = (candidate: AtomicRow): number => baseOf(candidate.consumer) + candidate.targetOffset;
-    const rows = [...current.rows];
-    let position = rows.findIndex((candidate) => candidate.kind === 1 && target(candidate) > target(row));
-    if (position < 0) {
-      position = rows.reduce((last, candidate, index) => (candidate.kind <= 1 ? index : last), -1) + 1;
-    }
-    rows.splice(position, 0, row);
-    rebindEnvelope(builder, { ...current, rows });
-    return builder;
-  };
-  const original = victim.token!.nft!.commitment;
-  const forged = original.slice(0, -2) + (parseInt(original.slice(-2), 16) ^ 1).toString(16).padStart(2, '0');
-  const control = failures(await declared(original));
-  const attack = failures(await declared(forged));
+  const {
+    honest, honestFailures, control, attack, lane, victim, lock, forged, masterOf,
+  } = await untouchedRecord(provider, () => compose(), busArtifact, bus.inner, categoryId, 'side');
 
   // Beside the honest row, a second side[9] node with no input spent for it, in place of the change output, whose
   // satoshis it carries: inputs and outputs stay one to one, as the verifier requires, and the value balances.
@@ -332,8 +363,67 @@ async function composeScenario(graph: boolean): Promise<ComposeScenario> {
     }),
   });
   return {
-    provider, honest: { builder: honest, failures: honestFailures }, control, attack, mint, insert, lane: lane!,
+    provider, honest: { builder: honest, failures: honestFailures }, control, attack, mint, insert, lane,
   };
+}
+
+const BANK = `contract LaneBank() {
+  mapping(int => int) bal;
+  function credit(int k, int v) public { this.bal[k] = this.bal[k] + v; require(true); }
+}`;
+
+const BANK_DRIVER = `interface ILaneBank { function credit(int k, int v) external; }
+contract LaneBankDriver(address bank) {
+  function poke() public { ILaneBank(bank).credit(2, 5); require(true); }
+}`;
+
+/**
+ * The same on a proxy's block: a driver calls `credit(2, 5)` on a deployProxy LaneBank, the compose carrying the
+ * implementation as its executor (participant-verifiers transport), and `bal[9]`, which the compose does not spend,
+ * sits at a pad of the proxy's block under its own resource row.
+ */
+async function proxyScenario(): Promise<Omit<ComposeScenario, 'mint' | 'insert'>> {
+  const provider = createMessageBusCapstoneTestProvider();
+  const signer = new Signer(new Uint8Array(32).fill(0x47), provider);
+  for (let index = 0; index < 20; index += 1) {
+    await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+  }
+  const bankArtifact = compileString(BANK, KERNEL);
+  expect(bankArtifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'credit'))
+    .toMatchObject({ eligible: true });
+  const bank = await upgrades.deployProxy(getContractFactory(bankArtifact, signer), {}, { initializer: false });
+  const dispatch = bank as unknown as { credit(key: bigint, value: bigint): { send(): Promise<unknown> } };
+  await dispatch.credit(2n, 10n).send();
+  await dispatch.credit(9n, 1n).send();
+  const driverArtifact = compileString(BANK_DRIVER, KERNEL);
+  const { contract: driver } = await connect(provider, driverArtifact, [hexToBin(bank.proxy.inner.lockingBytecode)]);
+  driver._registerResolvedExternal('ILaneBank', bank.proxy);
+  const callsite = driverArtifact.abi.find((entry) => entry.name === 'poke')?.externalCalls
+    ?.find((call) => call.functionName === 'credit');
+  expect(callsite?.callsiteId).toBeDefined();
+  const compose = async (): Promise<TransactionBuilder> => {
+    const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
+    return messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'poke', args: [] },
+        {
+          contract: bank.proxy, functionName: 'credit', args: [2n, 5n], callsiteId: callsite!.callsiteId,
+          executionArtifact: bank.implementation.inner.artifact, executor: bank.implementation,
+        },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    }).build();
+  };
+  const {
+    honest, honestFailures, control, attack, lane,
+  } = await untouchedRecord(
+    provider, compose, bank.implementation.inner.artifact, bank.proxy.inner, bank.proxy.categoryId, 'bal',
+  );
+  console.log('compose untouched proxy record', { lane, control, attack });
+  return { provider, honest: { builder: honest, failures: honestFailures }, control, attack, lane };
 }
 
 describe('compose path: a resource row may rewrite a record no row touched', () => {
@@ -383,5 +473,21 @@ describe('compose path on a graph route: a resource row may rewrite a record no 
   // The graph route's mint bound, as the leaf route's: before it, nothing counted the bus's nodes and the mint settled.
   it('refuses a node minted at the collection with no input beside the honest row', () => {
     expect(state.mint).not.toEqual([]);
+  });
+});
+
+describe('compose path on a proxy\'s block: a resource row may rewrite a record no row touched', () => {
+  let state: Omit<ComposeScenario, 'mint' | 'insert'>;
+  beforeAll(async () => { state = await proxyScenario(); }, 300_000);
+
+  it('settles the honest compose, and the control that declares an untouched entry unchanged', async () => {
+    expect(state.honest.failures, 'honest compose').toEqual([]);
+    expect(state.control, 'control: the entry recreated unchanged under its row').toEqual([]);
+    await expect(state.provider.sendRawTransaction(state.honest.builder.build())).resolves.toMatch(TXID);
+  }, 300_000);
+
+  // Expected to fail while a delegate route takes no claims: its pin skips the participant's whole block.
+  it.fails('refuses an untouched entry rewritten under a declared resource row', () => {
+    expect(state.attack).not.toEqual([]);
   });
 });

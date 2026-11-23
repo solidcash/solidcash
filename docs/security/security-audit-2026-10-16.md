@@ -1396,11 +1396,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   2026-10-26, source-traced).
 
 - One run shared by two callers where no digest is checked (2026-11-23, residual of the one-reader fix in D50
-  Fixed). A call naming fewer arguments than its method declares reads its record with no digest check (below), and
-  an opaque read checks none, so two callers making such a call can still share one run. A kernel direct
-  participant's records name no reader, so a direct caller refuses them (fail closed). The SDK's reader binding for
-  a call a nested proxy makes (a proxy one contract calls, delegating to an implementation) is written from the code
-  and no test runs it (a wrong binding fails closed).
+  Fixed). A call naming fewer arguments than its method declares reads its record with no digest check (below), an
+  opaque read checks none, and neither does a call whose method is chosen at run time (a function pointer, a selector
+  table: its callee's reader is pinned to none), so two callers making such a call can still share one run. A kernel
+  direct participant's records name no reader, so a direct caller refuses them (fail closed). The SDK's reader
+  binding for a call a nested proxy makes (a proxy one contract calls, delegating to an implementation) is written
+  from the code and no test runs it (a wrong binding fails closed).
 
 - Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
   than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot

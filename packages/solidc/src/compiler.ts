@@ -7084,38 +7084,70 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
 
 /**
  * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. `all` where its
- * effects can reach any record, `trailing` where it may consume a record in the trailing band (dynamic state, an
- * array, a chunked value, a loop, a delete), and the sorted collections whose fixed entry slots it names.
+ * effects can reach any record; for the trailing band, `band` `any` where it may consume a sorted collection's chunked
+ * value there (a value chunk's lock depends on the entry's slot and value version), else the dynamic state it writes,
+ * whose chunk locks it rewrites there, and `bandCollections`, whose entry locks it may consume there (a non-sorted
+ * collection's records, or every collection it touches where it has a loop or a delete); and the sorted collections
+ * it writes, whose fixed entry slots it may rewrite. A sorted entry or dynamic state the row only
+ * reads comes back at its own index (the SDK keeps a read-only entry's commitment, a journal flushes only a written
+ * cache, read-only chunks lead the band 1:1), which is what the pin requires, so a read claims none of them.
+ * A typed external call claims nothing of its own: the callee runs as its own row, in its own block, and a call back
+ * into this contract is another row with its own claims. A low-level `call` or `staticcall` to another address runs
+ * its callee the same way; a value it carries moves out of the tokenless satoshi container, no record. A delegatecall
+ * runs other code on this contract's records, and a low-level call to `address(this)` lowers to an internal call in
+ * the same row (LowerSelfLowLevelCalls, which may run after route synthesis), so both claim all.
  */
+/** `address(this)` or `payable(this)` as the AstBuilder writes it: a cast to address over the input's own lock. */
+function isSelfAddressExpression(node: unknown): boolean {
+  if (!(node instanceof CastNode) || !(node.type instanceof AddressType)) return false;
+  const inner = node.expression;
+  return inner instanceof UnaryOpNode && inner.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+    && inner.expression instanceof NullaryOpNode && inner.expression.operator === NullaryOperator.INPUT_INDEX;
+}
+
 function messageBusRecordClaim(
   footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
   collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, lifecycle: boolean,
-): { all: boolean; trailing: boolean; collections: string[] } {
-  const claim = {
-    all: lifecycle || footprint.unknown || footprint.effects.includes('external-call'), trailing: false,
-  };
+): { all: boolean; band?: 'any' | string[]; bandCollections?: string[]; collections: string[] } {
+  const reach = { all: lifecycle || footprint.unknown, anyBand: false, sweeps: false };
+  const bandStates = new Set<string>();
+  const bandCollections = new Set<string>();
+  const touched = new Set<string>();
   const named = new Set<string>();
+  const writes = new Set(footprint.writes);
   for (const resource of [...footprint.reads, ...footprint.writes]) {
     const [kind, name] = resource.split(':');
+    const written = writes.has(resource);
     if (kind === 'state') {
-      if (dynamicState.has(name)) claim.trailing = true;
+      if (written && dynamicState.has(name)) bandStates.add(name);
     } else if (kind === 'collection') {
       const collection = collections.get(name);
-      if (collection?.sorted !== true) claim.trailing = true;
-      else {
-        named.add(name);
-        if (isChunkableValueType(collection.innermostValueType)) claim.trailing = true;
-      }
+      touched.add(name);
+      if (collection === undefined) reach.anyBand = true;
+      else if (collection.sorted === true && isChunkableValueType(collection.innermostValueType)) reach.anyBand = true;
+      else if (collection.sorted !== true) bandCollections.add(name);
+      if (collection?.sorted === true && written) named.add(name);
     }
   }
-  for (const member of closure) {
-    walkInvocationAst(member.body, (node) => {
-      if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
-        || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) claim.trailing = true;
-      else if (node instanceof AssemblyStatementNode) claim.all = true;
-    });
-  }
-  return { ...claim, collections: [...named] };
+  const visit = (node: unknown): void => {
+    if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+      || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) reach.sweeps = true;
+    else if (node instanceof AssemblyStatementNode) reach.all = true;
+    else if (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode) {
+      if (node.callMode === 'delegatecall' || isSelfAddressExpression(node.targetExpression)) reach.all = true;
+    } else if (node instanceof MethodCallNode && ['call', 'staticcall', 'delegatecall'].includes(node.methodName)
+      && (node.methodName === 'delegatecall' || isSelfAddressExpression(node.object))) {
+      reach.all = true;
+    }
+  };
+  for (const member of closure) walkInvocationAst(member.body, visit);
+  if (reach.sweeps) for (const name of touched) bandCollections.add(name);
+  const band = reach.anyBand ? 'any' : bandStates.size > 0 ? [...bandStates].sort() : undefined;
+  return {
+    all: reach.all, ...(band !== undefined ? { band } : {}),
+    ...(!reach.anyBand && bandCollections.size > 0 ? { bandCollections: [...bandCollections].sort() } : {}),
+    collections: [...named],
+  };
 }
 
 function synthesizeMessageBusRoute(
@@ -12665,24 +12697,17 @@ function synthesizeMessageBusRoute(
       && dynamicState.has(resource.slice('state:'.length)));
   };
   const routeHasDynamicWriter = eligible.some(handlerWritesDynamicState);
-  // C3, bound route without its verifier: a selector branch sets a route-local flag for the records its handler may
-  // rewrite inside the participant block, and the record pin holds every other own-category record there 1:1. A
-  // graph route always runs its verifier; a proxy route, and a framed build, keep the census alone.
-  const recordClaimRoute = !graphExecutionContext && !isDelegateRoute && compilerOptions.composition !== 'framed'
+  // C3: a selector branch counts the rows of a handler whose row may rewrite records inside the participant block,
+  // and the record pin holds every own-category record there that no row that ran claims 1:1, with or without the
+  // verifier, which holds a record no row touched only to a composer's resource row. A graph route and a proxy route
+  // (its layout based at the proxy master) take them too. A framed build keeps the census alone.
+  const recordClaimRoute = compilerOptions.composition !== 'framed'
     && (!!compilerOptions.__messageBusVerifierProgram
       || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true);
-  const routeRecordClaims: Array<{ flag: string; all?: true; trailing?: true; collection?: string }> = [];
-  const recordClaimFlags = new Map<FunctionDefinitionNode, string[]>();
+  const routeRecordClaims: NonNullable<FunctionDefinitionNode['messageBusRecordClaims']> = [];
+  // A counter of an earlier synthesis attempt names nothing in this route.
+  for (const fn of contract.functions) fn.messageBusRecordClaimFlag = undefined;
   if (recordClaimRoute) {
-    const flagByClaim = new Map<string, string>();
-    const flagOf = (key: string, claim: { all?: true; trailing?: true; collection?: string }): string => {
-      const known = flagByClaim.get(key);
-      if (known !== undefined) return known;
-      const flag = `__message_bus_claim_${flagByClaim.size}`;
-      flagByClaim.set(key, flag);
-      routeRecordClaims.push({ flag, ...claim });
-      return flag;
-    };
     const claimAllModifiers = new Set([
       FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.SPLIT,
       FunctionModifier.MERGE, FunctionModifier.UNSAFE,
@@ -12693,11 +12718,18 @@ function synthesizeMessageBusRoute(
       const claim = messageBusRecordClaim(eligibleFootprint(fn), closure, collectionByName, dynamicState,
         kernelLifecycleHandlers.has(fn) || kernelDeploymentHandlers.has(fn)
           || fn.modifiers.some((modifier) => claimAllModifiers.has(modifier)));
-      const flags = claim.all ? [flagOf('all', { all: true })] : [
-        ...(claim.trailing ? [flagOf('trailing', { trailing: true })] : []),
-        ...claim.collections.map((name) => flagOf(`collection:${name}`, { collection: name })),
-      ];
-      if (flags.length > 0) recordClaimFlags.set(fn, flags);
+      if (!claim.all && claim.band === undefined && claim.bandCollections === undefined
+        && claim.collections.length === 0) continue;
+      // The handler's own lanes are stamped on this claim once the route's physical entry slots are assigned.
+      const flag = `__message_bus_claim_${routeRecordClaims.length}`;
+      fn.messageBusRecordClaimFlag = flag;
+      routeRecordClaims.push(claim.all ? { flag, all: true } : {
+        flag,
+        ...(claim.band === 'any' ? { trailing: true as const } : {}),
+        ...(Array.isArray(claim.band) ? { bandStates: claim.band } : {}),
+        ...(claim.bandCollections !== undefined ? { bandCollections: claim.bandCollections } : {}),
+        ...(claim.collections.length > 0 ? { collections: claim.collections } : {}),
+      });
     }
   }
   const buildDecodeAndCall = (
@@ -12712,7 +12744,8 @@ function synthesizeMessageBusRoute(
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
       const dynamicWriteFlag = (routeHasDynamicWriter && handlerWritesDynamicState(fn)
         ? '__message_bus_dynamic_write_active = 1;' : '')
-        + (recordClaimFlags.get(fn) ?? []).map((flag) => ` ${flag} = 1;`).join('');
+        + (recordClaimRoute && fn.messageBusRecordClaimFlag !== undefined
+          ? ` ${fn.messageBusRecordClaimFlag} = ${fn.messageBusRecordClaimFlag} + 1;` : '');
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
@@ -18125,6 +18158,33 @@ function compileResolvedAst(
           && prior.collection === entry.collection
           && prior.keyParams.length === entry.keyParams.length)
         .map((prior) => prior.slotIndex);
+    }
+  }
+  // C3 record claims: a handler that writes a sorted collection claims its own lanes of it, the route entry slots
+  // its fixed accesses project to (alternatives included), and the earlier lanes a runtime alias may move a write to.
+  // A written collection it projects no lane of keeps every lane of it.
+  for (const route of ast.contract.functions) {
+    if (!route.messageBusRoute || !route.messageBusRecordClaims) continue;
+    const entries = (route.entryAccesses ?? []).filter((entry) => !entry.inLoop);
+    for (const claim of route.messageBusRecordClaims) {
+      const collections = claim.collections;
+      if (collections === undefined) continue;
+      const projected = new Set(ast.contract.functions
+        .filter((fn) => fn !== route && fn.messageBusRecordClaimFlag === claim.flag)
+        .flatMap((fn) => [
+          ...(fn.messageBusPhysicalEntrySlots ?? []), ...(fn.messageBusPhysicalEntrySlotAlternatives?.flat() ?? []),
+        ]));
+      const lanes = new Set<number>();
+      for (const entry of entries) {
+        if (!collections.includes(entry.collection) || !projected.has(entry.slotIndex)) continue;
+        lanes.add(entry.slotIndex);
+        for (const prior of entry.runtimeAliasPriorSlots ?? []) lanes.add(prior);
+      }
+      for (const collection of collections) {
+        if (entries.some((entry) => entry.collection === collection && lanes.has(entry.slotIndex))) continue;
+        for (const entry of entries) if (entry.collection === collection) lanes.add(entry.slotIndex);
+      }
+      claim.lanes = [...lanes].sort((left, right) => left - right);
     }
   }
   const typeCheckStarted = Date.now();

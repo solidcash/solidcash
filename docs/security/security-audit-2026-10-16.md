@@ -1440,6 +1440,36 @@ needs VM evidence, `rejectedWith` has no source fallback).
   protocol, and the state-access path does not pin the master commitment (2026-07 LOW, no impact today).
 - Routes without a verifier: the trailing band counts as claimed as a whole once a trailing row runs, and an unused slot
   of a collection a run handler names is not pinned.
+  - Status: FIXED 2026-11-23, residuals open (see "Security completion (2026-11-23)", "Routes without a verifier").
+  - VM-CONFIRMED EXPLOITABLE (both clauses), 2026-11-23, mocknet
+    (`packages/solidcash/test/journal-message-bus/e2e/AuditRouteUnusedClaimedSlot.test.ts`, attack rows `it.fails`).
+    On a standalone batch (verifier index -1; a local-caller route takes the same claims, not measured) the C3 pin
+    skips every offset a row that ran claims (`emitRouteBlockClaims`, GTT:62602-62613; flags per handler,
+    compiler.ts:7090, 12671-12715): the whole trailing band, or every handler-managed lane of a named collection.
+    Nothing else holds a record there: the census skips a handler-managed collection (GTT:62376-62395), the route
+    leaves its lanes to the handlers (GTT:61318), a row checks only the lane it uses, and a scalar sorted write counts
+    only outputs at its address (GTT:35912), and drops even that where another lane of the collection has alias
+    priors (GTT:35631-35650; compiler.ts:18123 gives a route's second lane one), consistent with the two-lane rows.
+    Measured: beside a batch of a `bytes` setter, an entry of a collection only another handler writes, put at the last
+    trailing slot, is rewritten or burnt; in a route with a second lane of that collection (a two-key reader), beside
+    a `check` row and beside a `put` row an entry in the unused lane is rewritten or burnt. The same trailing slot
+    beside a `put` batch, which claims no trailing record, is refused. Adjacent, same test: beside the setter batch a
+    second node of the entry, minted with no input, is accepted: the output scan admits any lock the contract mints at
+    (GTT:63338, 63431), and nothing counts a handler-managed collection's address unless its writer runs with an exact
+    count.
+  - FIX DESIGN (not implemented: it is cross-cutting). Claim at run time what the rows consumed, not whole groups: a
+    route-frame bitmask threaded through the handlers as `__internal__scalarEntryInsertCount` is, to which each
+    consumer ORs the offsets it settles (a fixed or journal lane, a band run: dynamic chunks, runtime-loop and iteration
+    entries, value chunks, insert predecessors). The pin then skips only own | used, the participant block once the
+    verifier ran, and the block for an `all` row. A consumer left out refuses honest spends (fail closed), which the
+    bus e2e suites find. Outputs need their own bound: per handler-managed collection, outputs at its address equal
+    inputs there plus inserts minus deletes, counted the same way. Estimate: ~8-15 B per consumer site (less through
+    one shared helper), ~10-15 B per invoked handler for the threaded mask, ~45-60 B per handler-managed collection for
+    the output bound; the claim flags (~10-15 B each) go away. Bytes move on every route carrying
+    `messageBusRecordClaims` (bound, non-graph, non-proxy, non-framed census path) and, for the output bound, every
+    route with a handler-managed collection. Needs the journal-message-bus e2e suites and the release battery
+    (user-gated). Narrower measures (a row claims only its handler's own lanes; the band admits only the locks its
+    claimers consume) leave the rest open.
 - CRYPTO-4: dynamic and value chunks have no migration path.
 - A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
 
@@ -2128,3 +2158,124 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     compiled with the bus on settles no compact record and digests no value, so a value call to it fails closed.
     Nested value calls (A to B to C), a deposit below dust and a loop's value `new` beside a value call (the loop's
     container check does not count the call's value) are not handled.
+- **Routes without a verifier** (HIGH; `db7d6956a`, `f7c265628`, `1be7b3797`; the "Open" line of "Fix pass
+  2026-10-22", VM-confirmed there). On a bound non-graph route run without its verifier (a standalone batch, a
+  local-caller route), the C3 pin skipped whole claim groups: the trailing band once a row that may use it ran, and
+  every handler-managed lane of a collection a row named. A record at a claimed offset no row used was rewritten or
+  burnt beside a dynamic-state writer (band), a reader or a writer (lane). Claims now shrink to what a row may
+  rewrite:
+  - 1a: a read claims nothing; its record comes back at its own index, which the pin requires. Paths checked: a
+    fixed lane's input and output index (both `emitBlockSlotIndex('entry')`), the collection journal (a cache flushes
+    only after a mutating helper), pooled and alias lanes, the SDK's kept read-only commitment, read-only dynamic
+    chunks leading the band 1:1. A handler-managed lane no claim names is pinned (it fell back to the route's own).
+  - 1b: one route-local row counter per claiming handler; a writer claims only its own lanes (its projected lanes
+    and alternatives, and their runtime alias priors).
+  - 1c: a row whose only band use is writing dynamic state admits, in the band, only the chunk locks of the dynamic
+    state the route writes (the route settles all of them once a writer ran, with exact chunk counts).
+  - Test: `AuditRouteUnusedClaimedSlot.test.ts` (honest setNote, put and check batches settle and are sent; a side
+    entry rewritten or burnt at an unused trailing slot beside setNote, and in an unused lane beside check and put,
+    is refused; the same trailing slot beside put, which claims no band, is refused).
+  - R1 (step D, `bb918ee1d`): a row with a loop (`while`, `do`, a collection iteration) or a delete (mapping or
+    array) claims, in the band, only the entry locks of the collections it touches (`bandCollections`), one band-lock
+    group per such row beside the dynamic-state writers' group. Test: the drop rows of
+    `AuditRouteUnusedClaimedSlot.test.ts` (an `other` entry rewritten at an unused trailing slot beside a drop batch
+    is refused; the honest drop batch settles).
+  - R3 (step D, `88fc180e9`): a low-level `call` or `staticcall` to another address claims nothing of its own, as a
+    typed call (step B): its callee runs as its own row in its own block, a call back is another row with its own
+    claims, and a value it carries leaves the tokenless satoshi container, which the pin never parks.
+  - Residual (any lock in the band): a row that reads or writes a sorted collection with a chunkable value (bytes,
+    string, an array or a struct with one), or writes dynamic state where some state the route writes keeps no chunk
+    lock of its own (not `isDynamic`). A value chunk's lock is built from the entry's slot and its value version's
+    root (`valueChunkSignature(collection, slot, root)`), so no compile-time list names it; admitting chunks by lock
+    would take the run's own list of consumed chunk locks. Such a row leaves every own-category record in the band
+    unpinned when it runs.
+  - Residual (lanes, R2): a writer's row claims all of its own lanes, alternatives and alias priors included, even
+    where a run writes one; a written collection it projects no lane of keeps every lane of it. Narrowing that needs
+    the lanes a run writes, recorded at run time.
+  - Residual (whole block, the rest of R3): a row still claims its whole block where it is a lifecycle row (a kernel
+    lifecycle or deployment handler, or a `deploy`, `upgrade`, `selfdestruct`, `split`, `merge` or `unsafe`
+    modifier), has an unknown effect (a call through a function pointer), inline assembly, a `delegatecall` (a
+    library call lowered to one included), or a low-level call to `address(this)` (lowered to an internal call in the
+    same row). In this repository: UniswapV2.scash (createPair deploys) and marketplace.scash in the SDK fixtures;
+    upgrade_mapping.scash, upgrade_counter_data_nft.scash, selfdestruct_counter.scash, proxy_delegatecall.scash and
+    asm_simple.scash in the compiler's valid-contract-files.
+  - Bytes: bound non-graph census-path routes only; a read-only handler's flag goes (about 10-15 B), a dynamic-state
+    writer adds the band lock check (about 60-90 B). Direct entries, graph and proxy routes, framed builds: unchanged.
+- **Inputless mint at a handler-managed collection** (HIGH; `dffcec4ac`, made exact in `6d6a6913f`; found 2026-11-23
+  beside "Routes without a verifier", same test). The census leaves a collection an admitted handler names to its
+  handlers, which count its outputs only where they run, and the output scan admits an own-category mutable output
+  at any lock the contract mints records at. With the master's minting NFT in the transaction, beside any row,
+  including an honest update, a spender minted a node at its address with no input: a second node for an existing
+  key, read as its value. On a bound non-graph route each such collection's outputs now equal its inputs plus the
+  inserts the run made, counted at run time. A sorted delete removes no node (it writes the default), and an insert
+  relinks its predecessor in place, so the inserts are the inputs whose output at the same index is a node with
+  another `next`; an update adds nothing. Nothing lifts the bound: an insert whose predecessor comes back elsewhere
+  (a loop's) and a lifecycle row that changes the node count are refused at it, named in the requires ("an output
+  at '<collection>' that no insert of this run made"). A first version (`dffcec4ac`) allowed each writer row one node
+  of slack, which an honest update left to a forger.
+  - Test: the inputless mint rows of `AuditRouteUnusedClaimedSlot.test.ts` (beside setNote, check, and an honest
+    update, insert and delete in a route where `put` keeps no output count of its own; the insert and delete settle).
+  - Graph routes (step B2): VM-confirmed at `338fd0e64` (`AuditComposeUntouchedRecordRow.test.ts`, graph describe).
+    Beside an honest put row of a graph compose, the node minted in place of the change output (which kept the
+    inputs and outputs one to one) settled on every input: a graph route took no mint bound, and its verifier holds
+    the outputs only to that one-to-one shape (`require(tx.outputs.length == tx.inputs.length)`, compiler.ts) and
+    to the composer's resource rows. An appended node is refused by that shape rule alone, which a composer meets by
+    replacing an output. Fixed in `42132653e`: the bound runs on every bound route with claims, a graph route's
+    included; it reads only the transaction, so a graph clone's rows count as any row. The same file's leaf and graph
+    describes now refuse the mint, and an honest compose inserting a cold key settles on both.
+  - Residual: at an offset a row claims but does not use (see "Routes without a verifier") a relink can be faked,
+    which those offsets already allow as a rewrite. A collection a kept route batch or a runtime-loop census counts is
+    left to it. Fail closed (liveness): a loop insert into a bounded collection, and a lifecycle row that moves or
+    destroys its nodes, are refused on a bound non-graph route.
+  - Bytes: about 70-110 B per such collection on a bound non-graph route (one input scan, one output scan).
+- **Graph, proxy and framed routes** (open, by reading only; 2026-11-23). These take no record claims and no mint
+  bound. A graph route's pin skips the verifier-proven block, and the verifier holds a participant's block byte for
+  byte only when every row of it is static; a proxy route's pin skips its whole compile-time block when no verifier
+  ran (`emitParticipantSizedWindow`). Both leave a handler-managed collection to its handlers in the census and
+  admit an output at its lock, so both can reach the unclaimed-slot and inputless-mint paths above; they need the
+  same fix (claims inside the verifier's window, and the exact bound). A framed build skips this census and settles
+  records through its frames' declared views and the validator, a different model these paths do not reach; it was
+  not evaluated for an analogous gap.
+- **COMPOSE-RECORD-1: a declared resource row rewrites a record no row touched** (CRITICAL; VM-confirmed 2026-11-23,
+  mocknet, `AuditComposeUntouchedRecordRow.test.ts` at `f3e5026c9`; fixed in this series). Once its verifier ran, a
+  bound non-graph route claimed its whole verified block (`emitRouteBlockClaims`), so it held no in-block record a
+  row did not touch. The verifier holds each own-category mutable endpoint in the block only to a manifest resource
+  row (kind 1; mode 0 pins the exact input and output commitment) and to the endpoint count. It ties invocation rows
+  (kind 0) to the local batch, but no resource row to an executed handler effect: the rows carry no parent and the
+  SDK builds them from the transaction it built (graph.ts). The binding digest covers the manifest, so the composer
+  who writes the manifest also writes the rows (compiler.ts:13695, the binder's commitment check). Evidence: an
+  honest compose (a driver row calling the bus's `put`) settles; a control declaring an untouched `side` entry
+  unchanged at the bus block's unused lane settles; the same build with that entry's commitment one byte off under
+  its declared row settled on every input. A spender who composes any call to a contract rewrites any of its records
+  in the participant block that no row touches (a token balance, an owner field kept in an entry). The whole-block
+  snapshot holds a block only when every row of it is static.
+  - Fix: once the verifier ran, the route keeps the claims of the rows that ran (1a-1c), cut to the physical
+    `__internal__participantBlockSize` slots its binding digest proves (`claimed mod (1 << size)`), instead of
+    claiming them all; the band's lock test ends at the same size. The exact mint bound already applies there. The
+    attack row now asserts the refusal; the honest compose and the control settle.
+  - Liveness risk: a compose whose SDK layout moves a record no row claims to another index is now refused.
+  - Bytes: about -2 B on each bound non-graph route (the verifier branch shrinks), plus about 15 B in the band test
+    where a dynamic-state writer exists.
+  - Graph routes: VM-confirmed 2026-11-23 at 97d38ed48 (the rewrite settled on every input: a graph route took no
+    claims and its pin skipped its whole verifier-proven block). Fixed (step B): a graph route takes the claims of its
+    rows like any bound route, its graph clones' lanes through their source handlers, cut once the verifier ran to
+    `__internal__graphBlockSize` (routePhysicalSize). It keeps the parked record pin it shares with the entries, which
+    now takes a mask: the route's claims, or an entry's block, `(1 << size) - 2`. A row's typed external call claims
+    nothing of its own (the callee runs as its own row in its own block, a call back is another row with its claims);
+    a low-level call, a delegatecall among them, claims all. The graph describe asserts the refusal (input 1). The
+    Publisher and the pooled callee stay within 10,000 B (their tests pass, no trim). Residuals: the mint bound was
+    off graph routes (taken in step B2, see "Inputless mint"); the typed-call narrowing is VM-checked on honest
+    composes only, as an attack on a caller's own block was inconclusive: in a route that mixes a scalar handler
+    with a keyed one (X94) every row reserves the entry lane, and the control was refused there too (input 0).
+  - Proxy routes (step C, participant-verifiers transport): VM-confirmed at `408104413`. A deployProxy root caller's
+    own untouched entry, rewritten at a pad of the proxy's block under a declared resource row, settled on every
+    input: a delegate route took no claims and its pin skipped the participant's whole block. (A plain driver calling
+    a proxy could not build its honest compose, so the proxy is the root caller, as in the KernelProxy*Compose tests.)
+    Fixed in `065341ecf`: a delegate route takes claims like any bound route. A compiler-owned delegate route bases
+    every slot of its layout at the authenticated proxy master, the base its pin measures from, so the masks line up;
+    it keeps the inline pass and, with claims, the mint bound. The proxy describe refuses the rewrite and a mint in
+    place of the change output (both at the executor input). Not built: the `messageBusProxyForwardEnvelope`
+    transport, whose envelope rides in two carriers, the executor's route frame and the proxy master's copy
+    (compose-assemble.ts); its route takes the same claims.
+  - Cost of a verifier path where one is used: one verifier input of at least 9,000 B unlocking bytecode
+    (`MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES`) and a deployed verifier UTXO per transaction.

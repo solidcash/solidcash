@@ -69,7 +69,8 @@ const replaced = (bytes: Uint8Array, from: Uint8Array, to: Uint8Array): { bytes:
   let count = 0;
   let at = 0;
   while (at + from.length <= bytes.length) {
-    if (from.every((byte, offset) => bytes[at + offset] === byte)) {
+    const here = at;
+    if (from.every((byte, offset) => bytes[here + offset] === byte)) {
       parts.push(bytes.slice(start, at), to);
       at += from.length;
       start = at;

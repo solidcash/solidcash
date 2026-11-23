@@ -10,13 +10,13 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 
 /**
- * Residual (security-audit-2026-10-16, "Open", "Direct call that leaves its arguments to the callee"). A direct call
- * naming fewer arguments than its method declares, `IDeposit(a).deposit()` for `deposit(int v)`, cannot compute the
- * digest of its call record (`namesCallRecordArguments`): a void call reads no record (`emitVoidCallRecordRead`
- * returns early) and a returning call reads its record without comparing the digest. Through a single-function
- * interface it checks no selector either (`needsSelectorVerification` needs two methods), so nothing binds the method
- * the co-spent callee runs. Through a multi-function interface the caller's selector check binds it, and a call naming
- * its arguments binds it by its record's digest (fix B's `digest || 0x01` when void, D50's when returning).
+ * A direct call naming fewer arguments than its method declares, `IDeposit(a).deposit()` for `deposit(int v)`, takes
+ * each argument it leaves to the callee that the callee's record digests as a witness (`__internal__callArgument`),
+ * which the SDK fills from the callee's arguments, and digests it with the ones it names. Its record then binds the
+ * method and every argument as for a call naming them (fix B's `digest || 0x01` when void, D50's when returning): a
+ * returning call compares the digest, and a void call reads the record, through a multi-function interface in place
+ * of its selector check. Before, such a call digested nothing, so through a single-function interface nothing bound
+ * the method its callee ran (security-audit-2026-10-16, "Direct call that leaves its arguments to the callee").
  *
  * The caller has an entry per callee method: `oneA` calls A and `oneB` calls B, each through a single-function
  * interface, `twoA` and `twoB` do the same through one interface naming both, and `Named` passes the argument. The SDK
@@ -35,6 +35,8 @@ interface Shape {
   b: string;
   calleeState: Record<string, bigint>;
   callerState: Record<string, bigint>;
+  // A returning call keeps its selector check through a multi-function interface; a void one reads its record instead.
+  keepsSelector: boolean;
 }
 
 const SHAPES: Shape[] = [{
@@ -65,6 +67,7 @@ contract Named() {
   b: 'withdraw',
   calleeState: { balance: 10n },
   callerState: { calls: 0n },
+  keepsSelector: false,
 }, {
   name: 'returning',
   // B returns what A returns, without adding v to the counter.
@@ -93,6 +96,7 @@ contract Named() {
   b: 'peek',
   calleeState: { counter: 5n },
   callerState: { last: 0n },
+  keepsSelector: true,
 }];
 
 interface Deployed {
@@ -124,6 +128,12 @@ const firstPush = (unlocking: Uint8Array): string => binToHex(
 const selector = (d: Deployed, name: string): string => binToHex(
   hexToBin(d.arts.Callee.abi.find((entry: any) => entry.name === name).selector),
 );
+/** The names of the hidden inputs of the caller's `entry` matching `pattern`. */
+const hidden = (d: Deployed, caller: string, entry: string, pattern: RegExp): string[] => d.arts[caller].abi
+  .find((fn: any) => fn.name === entry).inputs.map((input: any) => input.name as string)
+  .filter((name: string) => pattern.test(name));
+const LEFT_ARGUMENT = /^__internal__callArgument\d+_\d+$/;
+const SELECTOR = /^__internal__externalCallSelector\d*$/;
 /** An F1 edge carrier (`OP_1 OP_NOP`): a named call's own output, committing to the call it makes. */
 const isEdge = (output: any): boolean => binToHex(output.lockingBytecode) === '5161';
 
@@ -219,6 +229,8 @@ describe('the method a direct call names, against a callee running another of th
     describe(`${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
       it(`settles the honest ${shape.a}() through a single-function interface, and ${shape.b}()`, async () => {
         const d = await deploy(shape);
+        // The argument the call leaves to its callee is the caller's witness, which the SDK fills.
+        expect(hidden(d, 'Caller', 'oneA', LEFT_ARGUMENT)).toEqual(['__internal__callArgument0_0']);
         const a = await spend(d, 'oneA', shape.a);
         const b = await spend(d, 'oneB', shape.b);
         expectOnlyTheMethodDiffers(d, shape, a, b);
@@ -226,11 +238,10 @@ describe('the method a direct call names, against a callee running another of th
         expect(runVm(b)).toEqual({ success: true });
       }, 300_000);
 
-      // OPEN: through a single-function interface an args-left call checks no selector and no record digest, so the
-      // spliced spend SETTLES on today's code while the caller takes B's run for A's (for `void`, a withdrawal for a
-      // deposit; for `returning`, a free read for a paid one). it.fails keeps the file green and turns red once a fix
-      // binds the method; drop `.fails` then.
-      it.fails(`refuses ${shape.a}() co-spent with ${shape.b} (single-function interface)`, async () => {
+      // Without the witness the call checked no selector and no record digest here, and this spliced spend settled
+      // while the caller took B's run for A's (for `void`, a withdrawal for a deposit; for `returning`, a free read for
+      // a paid one). The caller now digests A's call, which B's record does not match.
+      it(`refuses ${shape.a}() co-spent with ${shape.b} at the caller (single-function interface)`, async () => {
         const d = await deploy(shape);
         const a = await spend(d, 'oneA', shape.a);
         const r = runVm(splice(a, await spend(d, 'oneB', shape.b), d.callerCat));
@@ -239,6 +250,8 @@ describe('the method a direct call names, against a callee running another of th
 
       it(`refuses ${shape.a}() co-spent with ${shape.b} at the caller (multi-function interface)`, async () => {
         const d = await deploy(shape);
+        expect(hidden(d, 'Caller', 'twoA', LEFT_ARGUMENT)).toEqual(['__internal__callArgument0_0']);
+        expect(hidden(d, 'Caller', 'twoA', SELECTOR).length > 0).toBe(shape.keepsSelector);
         const a = await spend(d, 'twoA', shape.a);
         const b = await spend(d, 'twoB', shape.b);
         expectOnlyTheMethodDiffers(d, shape, a, b);

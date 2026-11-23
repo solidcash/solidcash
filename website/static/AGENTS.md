@@ -440,8 +440,9 @@ try IRisky(target).compute() returns (int r) { this.last = r; } catch { this.las
 - Declared at file, contract, library or interface level; events can be overloaded. Each reached `emit` creates
   an immutable NFT output in the contract's category carrying the encoded arguments, not an EVM log.
 - Anyone may spend an event NFT after 144 blocks and recreate it unchanged. SDK event reads count one only when the
-  transaction that created it also outputs the contract's minting master, so such a copy is never a new event; a
-  provider that cannot serve that transaction makes the read throw `EventProvenanceError`.
+  transaction that created it spent the contract's minting master (an emit recreates it, a selfdestruct burns it) or
+  minted it at deployment, so such a copy is never a new event; a provider that cannot serve the transactions this
+  needs makes the read throw `EventProvenanceError`.
 - An `emit` in a counter loop creates one output per run. So does an `emit` in a `for` with a literal bound of at most
   64 runs: a direct or message-bus build unrolls that loop, and a framed body binds each `emit` where it makes it.
   Some loops the compiler can neither count from the call nor unroll, for example one that also changes its counter in

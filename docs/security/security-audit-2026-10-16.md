@@ -2165,6 +2165,14 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   of slack, which an honest update left to a forger.
   - Test: the inputless mint rows of `AuditRouteUnusedClaimedSlot.test.ts` (beside setNote, check, and an honest
     update, insert and delete in a route where `put` keeps no output count of its own; the insert and delete settle).
+  - Graph routes (step B2): VM-confirmed at `338fd0e64` (`AuditComposeUntouchedRecordRow.test.ts`, graph describe).
+    Beside an honest put row of a graph compose, the node minted in place of the change output (which kept the
+    inputs and outputs one to one) settled on every input: a graph route took no mint bound, and its verifier holds
+    the outputs only to that one-to-one shape (`require(tx.outputs.length == tx.inputs.length)`, compiler.ts) and
+    to the composer's resource rows. An appended node is refused by that shape rule alone, which a composer meets by
+    replacing an output. Fixed in `42132653e`: the bound runs on every bound route with claims, a graph route's
+    included; it reads only the transaction, so a graph clone's rows count as any row. The same file's leaf and graph
+    describes now refuse the mint, and an honest compose inserting a cold key settles on both.
   - Residual: at an offset a row claims but does not use (see "Routes without a verifier") a relink can be faked,
     which those offsets already allow as a rewrite. A collection a kept route batch or a runtime-loop census counts is
     left to it. Fail closed (liveness): a loop insert into a bounded collection, and a lifecycle row that moves or
@@ -2205,10 +2213,10 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     now takes a mask: the route's claims, or an entry's block, `(1 << size) - 2`. A row's typed external call claims
     nothing of its own (the callee runs as its own row in its own block, a call back is another row with its claims);
     a low-level call, a delegatecall among them, claims all. The graph describe asserts the refusal (input 1). The
-    Publisher and the pooled callee stay within 10,000 B (their tests pass, no trim). Residuals: the mint bound stays
-    off graph routes (not examined there); the typed-call narrowing is VM-checked on honest composes only, as an
-    attack on a caller's own block was inconclusive: in a route that mixes a scalar handler with a keyed one (X94)
-    every row reserves the entry lane, and the control was refused there too (input 0).
+    Publisher and the pooled callee stay within 10,000 B (their tests pass, no trim). Residuals: the mint bound was
+    off graph routes (taken in step B2, see "Inputless mint"); the typed-call narrowing is VM-checked on honest
+    composes only, as an attack on a caller's own block was inconclusive: in a route that mixes a scalar handler
+    with a keyed one (X94) every row reserves the entry lane, and the control was refused there too (input 0).
   - Proxy routes (a delegate route takes no claims either): not built. Under the participant-verifiers transport,
     which the KernelProxy*Compose tests use, the construction needs only the proxy setup. Under
     `messageBusProxyForwardEnvelope` the envelope rides in two carriers, the executor's route frame and the proxy

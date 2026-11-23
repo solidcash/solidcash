@@ -2198,6 +2198,15 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   - Liveness risk: a compose whose SDK layout moves a record no row claims to another index is now refused.
   - Bytes: about -2 B on each bound non-graph route (the verifier branch shrinks), plus about 15 B in the band test
     where a dynamic-state writer exists.
-  - Open: graph and proxy routes take no claims (see "Graph, proxy and framed routes").
+  - Graph routes: VM-confirmed 2026-11-23 (`AuditComposeUntouchedRecordRow.test.ts`, its graph describe, `it.fails`):
+    the honest compose and the control settle, and so does the rewrite, on every input. A graph route takes no claims
+    and its pin skips its whole verifier-proven block. Not fixed: claims there cost about 60-120 B a contract, and the
+    two graph-route fixtures held to the limit, KernelDirectNestedArrayPush's Publisher and AtomicMessageBusCompose's
+    pooled callee, were recorded at exactly 10,000 B of input (18860c4fd) and later trimmed to stay under (c0ed91e46,
+    e1b545fa1). No later margin is recorded. The budget is the user's call.
+  - Proxy routes (a delegate route takes no claims either): not built. Under the participant-verifiers transport,
+    which the KernelProxy*Compose tests use, the construction needs only the proxy setup. Under
+    `messageBusProxyForwardEnvelope` the envelope rides in two carriers, the executor's route frame and the proxy
+    master's copy (compose-assemble.ts), and the attack must rebuild both.
   - Cost of a verifier path where one is used: one verifier input of at least 9,000 B unlocking bytecode
     (`MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES`) and a deployed verifier UTXO per transaction.

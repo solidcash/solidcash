@@ -13,8 +13,9 @@
  * verifier rebinding below are sound. The attack is the control with the entry's value rewritten, row and output
  * alike: the route refuses it.
  *
- * The second describe compiles the bus and the driver as graph routes (`messageBusGraphContext`). A graph route takes
- * no claims and its pin skips its whole verifier-proven block, so its attack row is `it.fails` until it keeps them.
+ * The second describe compiles the bus and the driver as graph routes (`messageBusGraphContext`). A graph route
+ * skipped its whole verifier-proven block and the attack settled (VM-confirmed at 97d38ed48); it now keeps the claims
+ * of its rows, cut to that block, and the route refuses it.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -324,9 +325,8 @@ describe('compose path on a graph route: a resource row may rewrite a record no 
     await expect(state.provider.sendRawTransaction(state.honest.builder.build())).resolves.toMatch(TXID);
   }, 300_000);
 
-  // Fails today: a graph route takes no claims and its pin skips its whole verifier-proven block, while the verifier
-  // holds the entry only to the declared row. Turns red once a graph route keeps its row claims.
-  it.fails('refuses an untouched entry rewritten under a declared resource row', () => {
+  // No row of this compose claims the lane: the graph route pins the entry inside its verifier-proven block too.
+  it('refuses an untouched entry rewritten under a declared resource row', () => {
     expect(state.attack).not.toEqual([]);
   });
 });

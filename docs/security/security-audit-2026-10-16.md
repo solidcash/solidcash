@@ -2198,12 +2198,17 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   - Liveness risk: a compose whose SDK layout moves a record no row claims to another index is now refused.
   - Bytes: about -2 B on each bound non-graph route (the verifier branch shrinks), plus about 15 B in the band test
     where a dynamic-state writer exists.
-  - Graph routes: VM-confirmed 2026-11-23 (`AuditComposeUntouchedRecordRow.test.ts`, its graph describe, `it.fails`):
-    the honest compose and the control settle, and so does the rewrite, on every input. A graph route takes no claims
-    and its pin skips its whole verifier-proven block. Not fixed: claims there cost about 60-120 B a contract, and the
-    two graph-route fixtures held to the limit, KernelDirectNestedArrayPush's Publisher and AtomicMessageBusCompose's
-    pooled callee, were recorded at exactly 10,000 B of input (18860c4fd) and later trimmed to stay under (c0ed91e46,
-    e1b545fa1). No later margin is recorded. The budget is the user's call.
+  - Graph routes: VM-confirmed 2026-11-23 at 97d38ed48 (the rewrite settled on every input: a graph route took no
+    claims and its pin skipped its whole verifier-proven block). Fixed (step B): a graph route takes the claims of its
+    rows like any bound route, its graph clones' lanes through their source handlers, cut once the verifier ran to
+    `__internal__graphBlockSize` (routePhysicalSize). It keeps the parked record pin it shares with the entries, which
+    now takes a mask: the route's claims, or an entry's block, `(1 << size) - 2`. A row's typed external call claims
+    nothing of its own (the callee runs as its own row in its own block, a call back is another row with its claims);
+    a low-level call, a delegatecall among them, claims all. The graph describe asserts the refusal (input 1). The
+    Publisher and the pooled callee stay within 10,000 B (their tests pass, no trim). Residuals: the mint bound stays
+    off graph routes (not examined there); the typed-call narrowing is VM-checked on honest composes only, as an
+    attack on a caller's own block was inconclusive: in a route that mixes a scalar handler with a keyed one (X94)
+    every row reserves the entry lane, and the control was refused there too (input 0).
   - Proxy routes (a delegate route takes no claims either): not built. Under the participant-verifiers transport,
     which the KernelProxy*Compose tests use, the construction needs only the proxy setup. Under
     `messageBusProxyForwardEnvelope` the envelope rides in two carriers, the executor's route frame and the proxy

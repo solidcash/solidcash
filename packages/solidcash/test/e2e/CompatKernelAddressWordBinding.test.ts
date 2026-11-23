@@ -62,6 +62,13 @@ async function setup(): Promise<{ relay: StatefulContract; sink: StatefulContrac
   const covenantInputs = sourceOutputs.flatMap((output, index) => (
     binToHex(output.lockingBytecode).startsWith('76a914') ? [] : [index]));
   expect(covenantInputs).toContain(calleeIndex);
+  // The callee's void record digests the exact push it ran on, after the input index of its reader: another spelling
+  // of one address is another record. The honest record names the reader its spend named.
+  const recordOf = (arg: Uint8Array, reader: number): Uint8Array => Uint8Array.of(...sha256(Uint8Array.of(
+    0, 0, ...hexToBin(record.selector!), reader & 0xff, reader >> 8, arg.length, 0, ...arg)).slice(0, 31), 1);
+  const honest = binToHex(original.outputs[carrier].token!.nft!.commitment);
+  const reader = original.inputs.findIndex((_, index) => binToHex(recordOf(nativeLock, index)) === honest);
+  expect(reader).toBeGreaterThanOrEqual(0);
   const vm = createVirtualMachineBch2026ForProvider(provider);
   return {
     relay, sink,
@@ -70,9 +77,7 @@ async function setup(): Promise<{ relay: StatefulContract; sink: StatefulContrac
       transaction.inputs[calleeIndex].unlockingBytecode = Uint8Array.from([
         ...beforeArgument, ...encodeDataPush(arg), ...redeem,
       ]);
-      // The callee's void record digests the exact push it ran on: another spelling of one address is another record.
-      const digest = sha256(Uint8Array.of(0, 0, ...hexToBin(record.selector!), arg.length, 0, ...arg)).slice(0, 31);
-      transaction.outputs[carrier].token!.nft!.commitment = Uint8Array.of(...digest, 1);
+      transaction.outputs[carrier].token!.nft!.commitment = recordOf(arg, reader);
       return covenantInputs.map((inputIndex) => vm.stateSuccess(vm.evaluate({
         inputIndex, sourceOutputs, transaction,
       })) === true);

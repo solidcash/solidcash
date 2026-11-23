@@ -14,10 +14,11 @@ import { generateLibauthSourceOutputs } from '../../src/utils.js';
 /**
  * A received function pointer's caller pins the pushes of the callee it co-spends: the pointer's declared
  * arguments, the redeem, and ahead of the arguments the callee's hidden witnesses. A record-sound callee, which
- * `genesisCalls` (on by default, A7) makes of every qualifying contract, takes two: its record witness and then its
- * genesis call. The pin used to know only the first, so every call through a received pointer into such a callee
- * was refused at the caller. The genesis call of a call that is not a constructor's is empty, so the caller now
- * admits a second hidden push only when it is OP_0; a void pointer's record witness must still name none.
+ * `genesisCalls` (on by default, A7) makes of every qualifying contract, takes three: its record witness, the reader
+ * its record names, and then its genesis call. The pin used to know only the first, so every call through a received
+ * pointer into such a callee was refused at the caller. The genesis call of a call that is not a constructor's is
+ * empty, so the caller admits it only as OP_0; it checks no digest of a pointer call, so the reader must name none
+ * (-1), and so must a void pointer's record witness.
  *
  * Every honest call settles under the BCH 2026 standard VM. Each refusal edits the honest call's callee unlocking,
  * one push replaced or added, and the caller, input 0, must refuse it.
@@ -153,11 +154,11 @@ describe('a table of received pointers into a record-sound callee (VM)', () => {
     return { call, callee: selectorInput(call, selectorOf(handler, 'inc')) };
   }
 
-  it('settles the honest call: the record witness names none and the genesis call is empty', async () => {
+  it('settles the honest call: the record witness and the reader name none and the genesis call is empty', async () => {
     const { call, callee } = await build();
-    // The selector, the record witness, the genesis call, the argument and the redeem.
-    expect(pushes(call, callee).slice(1, 3)).toEqual([OP_1NEGATE, OP_0]);
-    expect(pushes(call, callee)).toHaveLength(5);
+    // The selector, the record witness, the reader, the genesis call, the argument and the redeem.
+    expect(pushes(call, callee).slice(1, 4)).toEqual([OP_1NEGATE, OP_1NEGATE, OP_0]);
+    expect(pushes(call, callee)).toHaveLength(6);
     const r = runVm(call);
     expect(r.error ?? 'ok').toBe('ok');
     expect(r.success).toBe(true);
@@ -165,20 +166,20 @@ describe('a table of received pointers into a record-sound callee (VM)', () => {
 
   it('settles it as well into a callee compiled without genesis calls', async () => {
     const { call, callee } = await build(GENESIS_OFF);
-    expect(pushes(call, callee)).toHaveLength(4);
+    expect(pushes(call, callee)).toHaveLength(5);
     expect(runVm(call).success).toBe(true);
   }, 300_000);
 
   it('refuses a genesis call that is not empty at the caller', async () => {
     const { call, callee } = await build();
-    const r = runVm(replacePush(call, callee, 2, TAG));
+    const r = runVm(replacePush(call, callee, 3, TAG));
     expect(r.success).toBe(false);
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
 
   it('refuses a genesis call of one byte at the caller', async () => {
     const { call, callee } = await build();
-    const r = runVm(replacePush(call, callee, 2, Uint8Array.of(0x80)));
+    const r = runVm(replacePush(call, callee, 3, Uint8Array.of(0x80)));
     expect(r.success).toBe(false);
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
@@ -190,9 +191,16 @@ describe('a table of received pointers into a record-sound callee (VM)', () => {
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
 
-  it('refuses a third push ahead of the argument at the caller, empty as it is', async () => {
+  it('refuses a reader that names an input at the caller', async () => {
     const { call, callee } = await build();
-    const r = runVm(insertPush(call, callee, 3, new Uint8Array()));
+    const r = runVm(replacePush(call, callee, 2, Uint8Array.of(1)));
+    expect(r.success).toBe(false);
+    expect(r.error ?? '').toMatch(/input index 0/);
+  }, 300_000);
+
+  it('refuses a fourth push ahead of the argument at the caller, empty as it is', async () => {
+    const { call, callee } = await build();
+    const r = runVm(insertPush(call, callee, 4, new Uint8Array()));
     expect(r.success).toBe(false);
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
@@ -211,7 +219,7 @@ describe('a received pointer parameter into a record-sound callee (VM)', () => {
 
   it('settles the honest call', async () => {
     const { call, callee } = await build();
-    expect(pushes(call, callee).slice(1, 3)).toEqual([OP_1NEGATE, OP_0]);
+    expect(pushes(call, callee).slice(1, 4)).toEqual([OP_1NEGATE, OP_1NEGATE, OP_0]);
     const r = runVm(call);
     expect(r.error ?? 'ok').toBe('ok');
     expect(r.success).toBe(true);
@@ -219,7 +227,7 @@ describe('a received pointer parameter into a record-sound callee (VM)', () => {
 
   it('refuses a genesis call that is not empty at the caller', async () => {
     const { call, callee } = await build();
-    const r = runVm(replacePush(call, callee, 2, TAG));
+    const r = runVm(replacePush(call, callee, 3, TAG));
     expect(r.success).toBe(false);
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
@@ -237,11 +245,11 @@ describe('a stored returning pointer into a record-sound callee (VM)', () => {
     return { call, callee: selectorInput(call, selectorOf(handler, 'inc')) };
   }
 
-  it('settles the honest call: the record witness names its record and the genesis call is empty', async () => {
+  it('settles the honest call: the record witness names its record, the reader none, an empty genesis call', async () => {
     const { call, callee } = await build();
     const calleePushes = pushes(call, callee);
     expect(calleePushes[1]).not.toBe(OP_1NEGATE);
-    expect(calleePushes[2]).toBe(OP_0);
+    expect(calleePushes.slice(2, 4)).toEqual([OP_1NEGATE, OP_0]);
     const r = runVm(call);
     expect(r.error ?? 'ok').toBe('ok');
     expect(r.success).toBe(true);
@@ -249,21 +257,21 @@ describe('a stored returning pointer into a record-sound callee (VM)', () => {
 
   it('settles it as well from a callee compiled without genesis calls', async () => {
     const { call, callee } = await build(GENESIS_OFF);
-    // The selector, the record witness, the two arguments and the redeem.
-    expect(pushes(call, callee)).toHaveLength(5);
+    // The selector, the record witness, the reader, the two arguments and the redeem.
+    expect(pushes(call, callee)).toHaveLength(6);
     expect(runVm(call).success).toBe(true);
   }, 300_000);
 
   it('refuses a genesis call that is not empty at the caller', async () => {
     const { call, callee } = await build();
-    const r = runVm(replacePush(call, callee, 2, TAG));
+    const r = runVm(replacePush(call, callee, 3, TAG));
     expect(r.success).toBe(false);
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
 
   it('refuses a push between the genesis call and the arguments at the caller, empty as it is', async () => {
     const { call, callee } = await build();
-    const r = runVm(insertPush(call, callee, 3, new Uint8Array()));
+    const r = runVm(insertPush(call, callee, 4, new Uint8Array()));
     expect(r.success).toBe(false);
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);

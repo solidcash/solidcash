@@ -2178,3 +2178,14 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   same fix (claims inside the verifier's window, and the exact bound). A framed build skips this census and settles
   records through its frames' declared views and the validator, a different model these paths do not reach; it was
   not evaluated for an analogous gap.
+- **Compose path: a route trusts the verifier for its whole block** (open, source-traced 2026-11-23, needs a VM test).
+  Once its verifier ran, a bound route claims its whole verified block (`emitRouteBlockClaims`), so it holds no
+  in-block record a row did not touch. The verifier holds each own-category mutable endpoint in the block only to a
+  manifest resource row (kind 1, mode 0 pins the exact input and output commitment, compiler.ts verifier body) and to
+  the endpoint count, and it ties invocation rows (kind 0) to the local batch, but no resource row to an executed
+  handler effect: the rows carry no parent and the SDK builds them from the transaction it built (graph.ts). A
+  composer who writes the manifest can therefore declare a rewrite of a record no row touched, and nothing refuses
+  it. The whole-block snapshot holds a block only when every row of it is static. So routing the residual shapes
+  through the verifier would not make them sound, and the same reading reaches every bound route on the compose
+  path. Cost of the verifier path where it is used: one verifier input of at least 9,000 B unlocking bytecode
+  (`MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES`) and a deployed verifier UTXO per transaction.

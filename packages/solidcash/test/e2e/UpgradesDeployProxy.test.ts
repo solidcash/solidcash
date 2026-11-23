@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { Signer } from '../../src/index.js';
+import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   deriveLogicalCreateAddress,
   getContractFactory,
@@ -9,7 +10,8 @@ import {
   upgrades,
 } from '../../src/stateful/index.js';
 import type { EventLog } from '../../src/stateful/index.js';
-import { encodeEventCommitment, parsePushdataCommitment } from '@solidcash/utils';
+import { addressToLockScript } from '../../src/utils.js';
+import { encodeEventCommitment, hash256, parsePushdataCommitment } from '@solidcash/utils';
 import { addProvenUtxo, createTestProvider, getTxOutputs } from '../test-util.js';
 
 // ethers/hardhat OpenZeppelin-upgrades-style proxy deploy for stateful contracts:
@@ -338,17 +340,40 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     const facade = (connected as unknown as {
       _events(): { getEventNftAddress(signature: string): string };
     })._events();
-    await signer.provider.addUtxo(facade.getEventNftAddress(detailedDef.signature), {
-      txid: 'd7'.repeat(32),
+    // A read counts an event coin only when its transaction also outputs the category's minting NFT, as an emit's
+    // does, so the seeded coin is given such a transaction.
+    const eventAddress = facade.getEventNftAddress(detailedDef.signature);
+    const category = hexToBin(proxy.proxy.categoryId);
+    const commitment = encodeEventCommitment(detailedDef.parameters, [7n, detail], implArtifact.structs);
+    const emitted = encodeTransaction({
+      version: 2,
+      locktime: 0,
+      inputs: [{
+        outpointIndex: 0,
+        outpointTransactionHash: hexToBin('d7'.repeat(32)),
+        sequenceNumber: 0xffffffff,
+        unlockingBytecode: Uint8Array.of(0x51),
+      }],
+      outputs: [{
+        lockingBytecode: addressToLockScript(eventAddress),
+        valueSatoshis: 1000n,
+        token: { category, amount: 0n, nft: { capability: 'none', commitment } },
+      }, {
+        lockingBytecode: Uint8Array.of(0x51),
+        valueSatoshis: 1000n,
+        token: { category, amount: 0n, nft: { capability: 'minting', commitment: Uint8Array.of() } },
+      }],
+    });
+    const txid = binToHex(hash256(emitted).reverse());
+    (signer.provider as MockNetworkProvider).indexer.storage.storeRawTx(txid, binToHex(emitted));
+    await signer.provider.addUtxo(eventAddress, {
+      txid,
       vout: 0,
       satoshis: 1000n,
       token: {
         category: proxy.proxy.categoryId,
         amount: 0n,
-        nft: {
-          capability: 'none',
-          commitment: binToHex(encodeEventCommitment(detailedDef.parameters, [7n, detail], implArtifact.structs)),
-        },
+        nft: { capability: 'none', commitment: binToHex(commitment) },
       },
     });
     const detailed = await connected.queryFilter('Detailed');

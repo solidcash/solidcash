@@ -16,6 +16,7 @@ import { hexToBin, binsAreEqual, binToHex } from '@bitauth/libauth/build/lib/for
 import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
 import type { Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { servedTransaction } from '../framed/deploy/own-coin.js';
 import { joinEventContinuations } from './event-chunks.js';
 
 export interface OnChainState {
@@ -346,6 +347,44 @@ export function parseEventCommitment(
   return result;
 }
 
+/** An event read the provider cannot prove: it serves no transaction for an event coin, or one without the coin. */
+export class EventProvenanceError extends Error {
+  constructor(readonly outpoint: string, reason: string) {
+    super(`Cannot prove event coin ${outpoint}: ${reason}`);
+    this.name = 'EventProvenanceError';
+  }
+}
+
+/**
+ * The listed coins an emit created, in order. An emit spends and recreates its contract's master, or a genesis mints
+ * it, so the coin's transaction also outputs a minting NFT of the category. The event covenant lets anyone spend the
+ * coin after its relative lock and recreate it unchanged without the master: that coin is a replay, not an event.
+ * Each transaction is read once per call. A coin the provider cannot prove refuses the read, so an event is neither
+ * counted unproven nor silently dropped.
+ */
+async function emittedEventCoins(
+  provider: NetworkProvider, categoryId: string, coins: readonly Utxo[],
+): Promise<Utxo[]> {
+  const category = categoryId.toLowerCase();
+  const transactions = new Map<string, ReturnType<typeof servedTransaction>>();
+  const emitted = await Promise.all(coins.map(async (coin) => {
+    const txid = coin.txid.toLowerCase();
+    const outpoint = `${txid}:${coin.vout}`;
+    if (!transactions.has(txid)) transactions.set(txid, servedTransaction(provider, txid));
+    const transaction = await transactions.get(txid)!;
+    if (transaction === undefined) throw new EventProvenanceError(outpoint, 'the provider serves no transaction for it');
+    if (typeof transaction === 'string') throw new EventProvenanceError(outpoint, transaction);
+    const token = transaction.outputs[coin.vout]?.token;
+    if (token?.nft === undefined || binToHex(token.category) !== category
+      || binToHex(token.nft.commitment) !== coin.token!.nft!.commitment.toLowerCase()) {
+      throw new EventProvenanceError(outpoint, 'its transaction holds no such NFT at that output');
+    }
+    return transaction.outputs.some((output) => output.token?.nft?.capability === 'minting'
+      && binToHex(output.token.category) === category);
+  }));
+  return coins.filter((_coin, index) => emitted[index]);
+}
+
 /**
  * The continuation commitments of this category's wide events (`txid:vout` -> commitment), read only when some
  * event's first commitment does not decode alone. Empty without a continuation address.
@@ -376,8 +415,9 @@ function eventPayload(utxo: Utxo, continuations: ReadonlyMap<string, string>): s
 }
 
 /**
- * Read events from chain by querying UTXOs at the event covenant address. A wide event's later chunks are read
- * from `continuationAddress` (`getEventNftContinuationAddress`) and joined to its first.
+ * Read events from chain by querying UTXOs at the event covenant address, counting only the coins an emit created
+ * (`emittedEventCoins`). A wide event's later chunks are read from `continuationAddress`
+ * (`getEventNftContinuationAddress`) and joined to its first, keyed by that first coin's own transaction.
  */
 export async function readEventsFromChain(
   provider: NetworkProvider,
@@ -389,14 +429,14 @@ export async function readEventsFromChain(
 ): Promise<ParsedEvent[]> {
   const utxos = await provider.getUtxos(eventAddress);
 
-  const heads = utxos
+  const heads = await emittedEventCoins(provider, categoryId, utxos
     .filter((utxo) => (
       utxo.token
       && utxo.token.category === categoryId
       && utxo.token.nft
       && utxo.token.nft.commitment.length > 0
     ))
-    .sort(compareChainPosition);
+    .sort(compareChainPosition));
   const continuations = await readEventContinuations(provider, continuationAddress, categoryId, heads,
     (commitment) => {
       try {
@@ -482,8 +522,8 @@ export function tryParseEventCommitment(
 }
 
 /**
- * Read anonymous events from chain. Queries the shared anonymous event address
- * and tries decoding each UTXO against all anonymous event definitions.
+ * Read anonymous events from chain. Queries the shared anonymous event address, keeps the coins an emit created
+ * (`emittedEventCoins`) and tries decoding each against all anonymous event definitions.
  */
 export async function readAnonymousEventsFromChain(
   provider: NetworkProvider,
@@ -496,12 +536,12 @@ export async function readAnonymousEventsFromChain(
   const utxos = await provider.getUtxos(anonymousAddress);
   const results: ParsedEvent[] = [];
 
-  const filtered = utxos.filter((utxo) => (
+  const filtered = await emittedEventCoins(provider, categoryId, utxos.filter((utxo) => (
     utxo.token
     && utxo.token.category === categoryId
     && utxo.token.nft
     && utxo.token.nft.commitment.length > 0
-  )).sort(compareChainPosition);
+  )).sort(compareChainPosition));
   const continuations = await readEventContinuations(provider, continuationAddress, categoryId, filtered,
     (commitment) => anonymousEventDefs.some((eventDef) =>
       tryParseEventCommitment(commitment, eventDef, structs) !== null));

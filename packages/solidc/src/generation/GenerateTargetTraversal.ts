@@ -54811,9 +54811,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((node): node is BranchNode => node instanceof BranchNode && node.elseBlock !== undefined)
       .map((branch) => ({ left: subtree(branch.ifBlock), right: subtree(branch.elseBlock!) })))
       .some(({ left, right }) => (left.has(write) && right.has(run)) || (right.has(write) && left.has(run)));
-    // The field paths of copy `name` that `write`, a write of it, changes, with what it carries over from a snapshot.
-    const copyPaths = (write: Node, name: string): FieldPath[] => (write instanceof AssignNode
-      && write.identifier.name === name ? this.rebuiltPaths(write.expression, this.carriedOver(write, snapshot)) : [[]]);
+    // The field paths of copy `name` that `write`, a write of it, changes, with what it carries over from a snapshot:
+    // from its top, or with `element` from the top of the element a write of one element places.
+    const copyPaths = (write: Node, name: string, element: boolean): FieldPath[] => {
+      if (element) {
+        return write instanceof ArrayAssignNode && write.name === name
+          ? this.rebuiltPaths(write.value, this.carriedOver(write, snapshot)) : [[]];
+      }
+      return write instanceof AssignNode && write.identifier.name === name
+        ? this.rebuiltPaths(write.expression, this.carriedOver(write, snapshot)) : [[]];
+    };
     // Whether a copy a target was traced through (VariableDefinitionNode.receiverCopies) can change at the target's
     // path between where it is taken and where the copy nearer the call is taken from it, or a run of the call for
     // the nearest: a write of the copy there, of it whole, or assembly.
@@ -54825,9 +54832,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return landed.some((write) => write.node !== copied
         && calls.some((run) => sharesLoop(write.node, run) || (write.end > from
           && write.end < (nearer === undefined ? at.get(run)! : subtreeEnd(nearer) + 1) && !apart(write.node, run)))
-        && (write.names === undefined || write.element === copy.local
-          || (write.names.includes(copy.local) && (copy.path === undefined
-            || copyPaths(write.node, copy.local).some((path) => fieldPathsOverlap(path, copy.path!))))));
+        && (write.names === undefined
+          || ((write.element === copy.local || write.names.includes(copy.local)) && (copy.path === undefined
+            || (write.element === copy.local && copy.element !== true)
+            || copyPaths(write.node, copy.local, copy.element === true)
+              .some((path) => fieldPathsOverlap(path, copy.path!))))));
     });
     // A target read from the stored value local copies were taken from is, as on the EVM, the value of the copy the
     // call reads where it runs: the stored value where the farthest copy was taken, as the copies changed since. The
@@ -54840,7 +54849,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!sourceWritten && !copiesWritten(copies, call)) return undefined;
       const copy = copies[0]!;
       const copied = declarations.get(copy.local);
-      const read = copied === undefined || redeclared.has(copy.local) || copy.path === undefined
+      const read = copied === undefined || redeclared.has(copy.local) || copy.path === undefined || copy.element
         ? undefined : this.readThroughCopy(copied, copy.path);
       if (read !== undefined) return read;
       const typed = (call instanceof ExternalFunctionCallNode || !(call instanceof Node))
@@ -55098,6 +55107,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * same entry (its entry slot, or keys naming the same stack values) or the same packed array element.
    */
   private sameLocation(read: ExpressionNode, write: Node): boolean {
+    if (write instanceof ArrayAssignNode) {
+      return read instanceof ArrayAccessNode && read.array instanceof IdentifierNode && read.array.name === write.name
+        && this.sameStableKeys([read.index], [write.index]);
+    }
     if (write instanceof StateAssignNode) return read instanceof StateAccessNode && read.name === write.name;
     if (write instanceof AssignNode) return read instanceof IdentifierNode && read.name === write.identifier.name;
     if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) {
@@ -55119,7 +55132,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** The keys naming the location `write` writes: an entry's keys, a packed array element's index. */
   private locationKeys(write: Node): readonly ExpressionNode[] {
     if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) return write.keys;
-    if (write instanceof StateArrayAssignNode) return [write.index];
+    if (write instanceof StateArrayAssignNode || write instanceof ArrayAssignNode) return [write.index];
     return [];
   }
 

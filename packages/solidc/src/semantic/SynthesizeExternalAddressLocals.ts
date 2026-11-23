@@ -98,8 +98,13 @@ const COMPILER_ALIAS = /^(__extaddr_|__extcap_)/;
 const ARGUMENT_BINDING = /^__(?:sp|rh|inl)\d+_/;
 /** A field path into a value, from its top or from an entry's top (`['roles', 'worker']`). */
 type FieldPath = readonly string[];
-/** A local copy a call's target was traced through, with the field path from it to the target (receiverCopies). */
-type ReceiverCopy = { readonly local: string; readonly path: FieldPath | undefined };
+/**
+ * A local copy a call's target was traced through, with the field path from it to the target, or from an element of
+ * it when `element` (receiverCopies); the path stops at an index below that.
+ */
+type ReceiverCopy = { readonly local: string; readonly path: FieldPath | undefined; readonly element?: true };
+/** The steps of a trace from a local to the target: field names, and null for an index. */
+type TraceSteps = readonly (string | null)[];
 /** The copies a trace passes through, nearest the call first; `recorded` when an earlier run kept them. */
 type CopyCapture = { copies: ReceiverCopy[]; recorded?: boolean };
 /** A body-top local this pass declares: its interface, its initializer and the copies its calls read. */
@@ -118,8 +123,11 @@ type BodyWritePlan = {
   arms: { left: Set<Node>; right: Set<Node> }[]; exits: { block: Set<Node>; before: Set<Node> }[];
   paths: Map<Node, Map<string, FieldPath[]>>;
 };
-/** The place a write writes: its root, the stack names its keys read, and the reads of it. */
-type Place = { root: string; keys: readonly string[]; isBase: (read: ExpressionNode) => boolean };
+/**
+ * The place a write writes: its root, the stack names its keys read, the reads of it, and whether it is an element of
+ * its root, whose paths start at the element.
+ */
+type Place = { root: string; keys: readonly string[]; isBase: (read: ExpressionNode) => boolean; element?: boolean };
 /** Whether a read of `base` at `read` carries over what a write places at `path`. */
 type Carried = (base: ExpressionNode, read: FieldPath, path: FieldPath) => boolean;
 
@@ -199,6 +207,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // The copies an earlier run of this pass traced its body-top locals through (VariableDefinitionNode.receiverCopies).
   private receiverCopies: Map<string, readonly ReceiverCopy[]> = new Map();
   private localStructTypes: Map<string, StructType> = new Map();
+  private localTypes: Map<string, Type> = new Map();
   // Each local's declaration: the one the traversal reached last, else the last in the body.
   private declarations: Map<string, Node> = new Map();
   private parameterTypes: Map<string, Type> = new Map();
@@ -370,6 +379,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     this.storageModifierLocals = new Set();
     this.receiverCopies = new Map();
     this.localStructTypes = new Map();
+    this.localTypes = new Map();
     this.declarations = new Map();
     this.parameterTypes = new Map(node.parameters.map((parameter) => [parameter.name, parameter.type]));
     this.currentBody = node.body;
@@ -1144,16 +1154,20 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   }
 
   /**
-   * Records local `name`, which a trace passes through at `path` from it to the target, when it holds a value of its
+   * Records local `name`, which a trace passes through by `steps` from it to the target, when it holds a value of its
    * own: the copies an earlier run kept for its local, or `name` itself as a copy (isCopyLocal).
    */
-  private captureLocal(capture: CopyCapture, name: string, path: FieldPath | undefined): void {
+  private captureLocal(capture: CopyCapture, name: string, steps: TraceSteps): void {
     const recorded = this.receiverCopies.get(name);
     if (recorded !== undefined) {
       capture.copies.push(...recorded);
       capture.recorded = true;
     } else if (this.isCopyLocal(name)) {
-      capture.copies.push({ local: name, path });
+      const element = steps[0] === null;
+      const below = element ? steps.slice(1) : steps;
+      const index = below.indexOf(null);
+      const path = (index < 0 ? below : below.slice(0, index)) as FieldPath;
+      capture.copies.push(element ? { local: name, path, element } : { local: name, path });
     }
   }
 
@@ -1184,7 +1198,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       if (node instanceof VariableDefinitionNode && node.receiverCopies) {
         this.receiverCopies.set(node.name, node.receiverCopies);
       }
-      if (node instanceof VariableDefinitionNode) this.declarations.set(node.name, node);
+      if (node instanceof VariableDefinitionNode) {
+        this.declarations.set(node.name, node);
+        this.localTypes.set(node.name, node.type);
+      }
       if (node instanceof VariableDefinitionNode && node.expression) {
         this.localInits.set(node.name, node.expression);
         if (node.type instanceof StructType) this.localStructTypes.set(node.name, node.type);
@@ -1314,24 +1331,22 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // Sound: a storage pointer is an alias to the same slots, and the local is single-assignment. Mutates in place
   // (the caller passes a clone); indices in the reached chain are params/literals (resolveChainType re-validates).
   private inlineStoragePtrBases(
-    expr: ExpressionNode, depth = 0, capture?: CopyCapture, path: readonly string[] | undefined = [],
+    expr: ExpressionNode, depth = 0, capture?: CopyCapture, steps: TraceSteps = [],
   ): ExpressionNode {
     if (depth > 24) return expr;
     if (expr instanceof IdentifierNode
       && (this.singleAssignLocals.has(expr.name) || this.storagePointerLocals.has(expr.name))
       && this.localInits.has(expr.name)) {
-      // A memory or value local is a copy, not an alias: record it with the path to the target.
-      if (capture !== undefined) this.captureLocal(capture, expr.name, path);
+      // A memory or value local is a copy, not an alias: record it with the steps to the target.
+      if (capture !== undefined) this.captureLocal(capture, expr.name, steps);
       return this.inlineStoragePtrBases(
-        cloneNode(this.localInits.get(expr.name)!) as ExpressionNode, depth + 1, capture, path,
+        cloneNode(this.localInits.get(expr.name)!) as ExpressionNode, depth + 1, capture, steps,
       );
     }
     if (expr instanceof FieldAccessNode) {
-      expr.expression = this.inlineStoragePtrBases(
-        expr.expression, depth + 1, capture, path === undefined ? undefined : [expr.name, ...path],
-      );
+      expr.expression = this.inlineStoragePtrBases(expr.expression, depth + 1, capture, [expr.name, ...steps]);
     } else if (expr instanceof ArrayAccessNode) {
-      expr.array = this.inlineStoragePtrBases(expr.array, depth + 1, capture, undefined);
+      expr.array = this.inlineStoragePtrBases(expr.array, depth + 1, capture, [null, ...steps]);
     }
     return expr;
   }
@@ -1367,8 +1382,9 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         && !plan.arms.some(({ left, right }) => (left.has(write.node) && right.has(call))
           || (right.has(write.node) && left.has(call)))
         && !plan.exits.some(({ block, before }) => before.has(write.node) && !block.has(call)));
-    const copyWritten = (index: number, from: number, to: number): boolean => plan.writes.some((write) =>
-      reaches(write, from, to) && this.writesLocal(write, copies[index]!.local, copies[index]!.path, plan));
+    const copyWritten = (index: number, from: number, to: number): boolean => plan.writes.some((write) => reaches(
+      write, from, to,
+    ) && this.writesLocal(write, copies[index]!.local, copies[index]!.path, plan, copies[index]!.element === true));
     // The stored value is its root at the target's path, read under its keys, each a stack variable or a state root.
     const reads = [{ name: read.root, path: read.path }, ...read.keys.map((key) => ({ name: key, path: [] }))];
     const storedWritten = plan.writes.some((write) => reaches(write, taken[taken.length - 1]!, callAt)
@@ -1378,8 +1394,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (!storedWritten && copies.every((_copy, index) => !copyWritten(
       index, taken[index]!, index === 0 ? callAt : taken[index - 1]! + 1,
     ))) return undefined;
+    // The call can read only a copy that holds the target at a field path of its own.
     let first = 0;
     while (first < copies.length - 1 && ARGUMENT_BINDING.test(copies[first]!.local)
+      && copies[first + 1]!.path !== undefined && copies[first + 1]!.element !== true
       && !copyWritten(first, taken[first]!, callAt) && !copyWritten(first + 1, taken[first]!, callAt)) first += 1;
     return copies.slice(first);
   }
@@ -1405,10 +1423,13 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         path.unshift(read.name);
         read = read.expression;
       } else if (read instanceof ArrayAccessNode || read instanceof TupleIndexOpNode) {
-        // Below an element, the path is taken from the array's own place.
         if (read instanceof ArrayAccessNode) readKey(read.index);
+        const array = read instanceof ArrayAccessNode ? read.array : read.tuple;
+        // An element of the root is read at its path below the element, as a write of an element places it; below an
+        // inner element, at the path of the array's own place.
+        if (array instanceof IdentifierNode || array instanceof StateAccessNode) return { root: array.name, path, keys };
         path = [];
-        read = read instanceof ArrayAccessNode ? read.array : read.tuple;
+        read = array;
       } else if (read instanceof MappingAccessNode) {
         read.keys.forEach(readKey);
         return { root: read.name, path, keys };
@@ -1549,10 +1570,30 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       return [node.name, this.rebuiltPaths(node.expression, this.carrier(place, node, plan), [], entry)];
     }
     if (node instanceof MappingFieldAssignNode) return [node.name, [[node.fieldName]]];
-    if (node instanceof StateArrayAssignNode || node instanceof DeleteStateNode || node instanceof MappingDeleteNode
-      || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
-      || node instanceof StateArrayDeleteNode) return [node.name, [[]]];
+    if (node instanceof StateArrayAssignNode) {
+      const place = this.elementPlace(node.name, node.index);
+      return [node.name, this.rebuiltPaths(node.value, this.carrier(place, node, plan), [],
+        elementOf(this.stateRoots.get(node.name)))];
+    }
+    if (node instanceof DeleteStateNode || node instanceof MappingDeleteNode || node instanceof StateArrayPushNode
+      || node instanceof StateArrayPopNode || node instanceof StateArrayDeleteNode) return [node.name, [[]]];
     return undefined;
+  }
+
+  /** The element of array `name` at `index`, a place whose paths start at the element. */
+  private elementPlace(name: string, index: ExpressionNode): Place {
+    const keys: string[] = [];
+    walkInvocationAst(index, (inner) => { if (inner instanceof IdentifierNode) keys.push(inner.name); });
+    const named = (array: ExpressionNode): boolean => (array instanceof IdentifierNode
+      || array instanceof StateAccessNode) && array.name === name;
+    return {
+      root: name,
+      keys,
+      element: true,
+      isBase: (read) => (read instanceof ArrayAccessNode && named(read.array) && sameKeys([read.index], [index]))
+        || (read instanceof MappingAccessNode && read.name === name && read.arrayIndex === undefined
+          && sameKeys(read.keys, [index])),
+    };
   }
 
   /** The state function `fn` may write (stateWritesOf over its body); any without a body or with a storage parameter. */
@@ -1578,18 +1619,33 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return written;
   }
 
-  /** Whether `write` can change stack variable `name` at `path`, or anywhere in it when `path` is undefined. */
-  private writesLocal(write: BodyWrite, name: string, path: FieldPath | undefined, plan: BodyWritePlan): boolean {
+  /**
+   * Whether `write` can change stack variable `name` at `path`, or anywhere in it when `path` is undefined. With
+   * `element`, the path is below an element of it: a write of one element (`name[i] = v`) changes the paths its value
+   * does not carry over from that element, and any other write of `name` all of them.
+   */
+  private writesLocal(
+    write: BodyWrite, name: string, path: FieldPath | undefined, plan: BodyWritePlan, element = false,
+  ): boolean {
     if (write.stack === 'any') return true;
     if (!write.stack.includes(name)) return false;
-    if (path === undefined) return true;
+    if (path === undefined || (element && !(write.node instanceof ArrayAssignNode && write.node.name === name))) {
+      return true;
+    }
+    const key = element ? `[]${name}` : name;
     const known = plan.paths.get(write.node) ?? new Map<string, FieldPath[]>();
     plan.paths.set(write.node, known);
-    let written = known.get(name);
+    let written = known.get(key);
     if (written === undefined) {
-      const type = this.localStructTypes.get(name) ?? this.parameterTypes.get(name) ?? this.stateRoots.get(name);
-      written = this.writtenPaths(write.node, name, type, plan);
-      known.set(name, written);
+      if (write.node instanceof ArrayAssignNode && element) {
+        const place = this.elementPlace(name, write.node.index);
+        written = this.rebuiltPaths(write.node.value, this.carrier(place, write.node, plan), [],
+          elementOf(this.localTypes.get(name) ?? this.parameterTypes.get(name)));
+      } else {
+        const type = this.localStructTypes.get(name) ?? this.parameterTypes.get(name) ?? this.stateRoots.get(name);
+        written = this.writtenPaths(write.node, name, type, plan);
+      }
+      known.set(key, written);
     }
     return written.some((changed) => fieldPathsOverlap(changed, path));
   }
@@ -1637,7 +1693,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       || (other.state.get(place.root) ?? []).some((written) => fieldPathsOverlap(written, path))
       || place.keys.some((key) => (other.state as ReadonlyMap<string, unknown>).has(key));
     return !plan.writes.some((other) => other.end > from && other.end < writeAt
-      && (this.writesLocal(other, name, read, plan) || this.writesLocal(other, place.root, path, plan)
+      && (this.writesLocal(other, name, read, plan) || this.writesLocal(other, place.root, path, plan, place.element)
         || place.keys.some((key) => this.writesLocal(other, key, [], plan)) || writesPlace(other)));
   }
 

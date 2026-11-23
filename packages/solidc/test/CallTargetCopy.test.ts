@@ -108,6 +108,36 @@ describe('a call through a local copy of a stored target', () => {
     expect(call?.targetWrittenBeforeCall).toBeUndefined();
   });
 
+  it('keeps the stored target\'s local past element writes of a cached array that carry the target over', () => {
+    // An array written in a branch is cached whole, and a field write of an element rebuilds that element of the
+    // cache (`__dlcache_jobs[k] = Job(1, __dlcache_jobs[k].worker, __dlcache_jobs[k].token, ..)`): the target sits
+    // below an element of the cache, at a field the rebuild carries over.
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      library SafeTransfer {
+        function safeTransfer(address token, address to, uint256 value) internal {
+          (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+          require(success && (data.length == 0 || abi.decode(data, (bool))), "TRANSFER_FAILED");
+        }
+      }
+      interface IToken { function transfer(address to, uint256 amount) external returns (bool); }
+      contract Board {
+        struct Job { uint8 state; address worker; address token; bool open; }
+        Job[] public jobs;
+        function take(uint256 jobId) external {
+          Job storage job = jobs[jobId];
+          if (job.open) {
+            job.state = 1;
+            job.worker = msg.sender;
+            IToken t = IToken(job.token);
+            SafeTransfer.safeTransfer(address(t), address(this), 5);
+          }
+        }
+      }`, OPTIONS);
+    const call = rawCallOf(artifact, 'take');
+    expect(call?.addressParam).toBeDefined();
+    expect(call?.addressParam).not.toContain('_via_');
+  });
+
   it('keeps the stored target\'s local past writes in a branch that returns before the call', () => {
     // A write in a branch that returns never reaches the call, so the copy holds the stored value there.
     const vaultCall = (artifact: Artifact): ExternalCallAbi | undefined => artifact.abi

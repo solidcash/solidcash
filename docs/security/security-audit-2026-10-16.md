@@ -2151,17 +2151,30 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     it uses one; a written collection it projects no lane of keeps every lane of it.
   - Bytes: bound non-graph census-path routes only; a read-only handler's flag goes (about 10-15 B), a dynamic-state
     writer adds the band lock check (about 60-90 B). Direct entries, graph and proxy routes, framed builds: unchanged.
-- **Inputless mint at a handler-managed collection** (HIGH; `dffcec4ac`; found 2026-11-23 beside "Routes without a
-  verifier", same test). The census leaves a collection an admitted handler names to its handlers, which count its
-  outputs only where they run, and the output scan admits an own-category mutable output at any lock the contract
-  mints records at. With the master's minting NFT in the transaction, beside a row that names no writer of the
-  collection a spender minted a node at its address with no input: a second node for an existing key, read as its
-  value. On a bound non-graph route each such collection's address now takes no output beyond its inputs except the
-  nodes the rows that ran may insert (their counter times their handler's fixed writes of it).
-  - Test: the inputless mint rows of `AuditRouteUnusedClaimedSlot.test.ts` (beside setNote, beside check).
-  - Residual: the bound is a worst case, not the exact `outputs == inputs + inserts - deletes`. Beside a writer row
-    that updates instead of inserting, or that deletes, a spender may mint up to that slack; a row that may rewrite
-    any record, or inserts from a loop, lifts the bound for its run. A collection a kept route batch or a runtime-loop
-    census counts is left to it. Graph and proxy routes and framed builds take no record claims and were not
-    evaluated for this mint.
-  - Bytes: about 45-85 B per such collection on a bound non-graph route.
+- **Inputless mint at a handler-managed collection** (HIGH; `dffcec4ac`, made exact in `6d6a6913f`; found 2026-11-23
+  beside "Routes without a verifier", same test). The census leaves a collection an admitted handler names to its
+  handlers, which count its outputs only where they run, and the output scan admits an own-category mutable output
+  at any lock the contract mints records at. With the master's minting NFT in the transaction, beside any row,
+  including an honest update, a spender minted a node at its address with no input: a second node for an existing
+  key, read as its value. On a bound non-graph route each such collection's outputs now equal its inputs plus the
+  inserts the run made, counted at run time. A sorted delete removes no node (it writes the default), and an insert
+  relinks its predecessor in place, so the inserts are the inputs whose output at the same index is a node with
+  another `next`; an update adds nothing. Nothing lifts the bound: an insert whose predecessor comes back elsewhere
+  (a loop's) and a lifecycle row that changes the node count are refused at it, named in the requires ("an output
+  at '<collection>' that no insert of this run made"). A first version (`dffcec4ac`) allowed each writer row one node
+  of slack, which an honest update left to a forger.
+  - Test: the inputless mint rows of `AuditRouteUnusedClaimedSlot.test.ts` (beside setNote, check, and an honest
+    update, insert and delete in a route where `put` keeps no output count of its own; the insert and delete settle).
+  - Residual: at an offset a row claims but does not use (see "Routes without a verifier") a relink can be faked,
+    which those offsets already allow as a rewrite. A collection a kept route batch or a runtime-loop census counts is
+    left to it. Fail closed (liveness): a loop insert into a bounded collection, and a lifecycle row that moves or
+    destroys its nodes, are refused on a bound non-graph route.
+  - Bytes: about 70-110 B per such collection on a bound non-graph route (one input scan, one output scan).
+- **Graph, proxy and framed routes** (open, by reading only; 2026-11-23). These take no record claims and no mint
+  bound. A graph route's pin skips the verifier-proven block, and the verifier holds a participant's block byte for
+  byte only when every row of it is static; a proxy route's pin skips its whole compile-time block when no verifier
+  ran (`emitParticipantSizedWindow`). Both leave a handler-managed collection to its handlers in the census and
+  admit an output at its lock, so both can reach the unclaimed-slot and inputless-mint paths above; they need the
+  same fix (claims inside the verifier's window, and the exact bound). A framed build skips this census and settles
+  records through its frames' declared views and the validator, a different model these paths do not reach; it was
+  not evaluated for an analogous gap.

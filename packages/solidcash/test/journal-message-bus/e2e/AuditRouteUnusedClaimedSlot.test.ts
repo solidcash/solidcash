@@ -14,9 +14,10 @@
  * - Collection lane: `compare` reads `side` at two keys, so the route holds a second handler-managed `side` lane.
  *   Beside a `check` batch an entry was rewritten in that lane, beside a `put` batch rewritten or burnt. A read now
  *   claims nothing, and a writer claims only its own handler's lanes.
- * - Inputless mint (no input, so no pin applies): beside a `setNote` or `check` batch a second `side` node was minted
- *   at the collection's lock. Its address now takes no output beyond its inputs except the nodes a writer row that
- *   ran may insert.
+ * - Inputless mint (no input, so no pin applies): beside a `setNote` or `check` batch, or an honest update, insert or
+ *   delete, a second `side` node was minted at the collection's lock. Its outputs now equal its inputs plus the
+ *   inserts the run made, counted from the predecessors relinked in place. `MintBook` adds a second `side` lane, so
+ *   `put` keeps no output count of its own and that bound alone refuses the mint.
  *
  * Each attack row asserts the route's refusal; the entry covenant alone accepts every one of these spends.
  */
@@ -50,6 +51,13 @@ const LANE = `contract LaneBook() {
   function put(int key, int value) public { this.side[key] = value; require(true); }
   function check(int key, int expected) public { require(this.side[key] == expected); }
   function compare(int a, int b) public { require(this.side[a] == this.side[b]); }
+}`;
+
+const MINT = `contract MintBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function compare(int a, int b) public { require(this.side[a] == this.side[b]); }
+  function drop(int key) public { delete this.side[key]; require(true); }
 }`;
 
 const KERNEL = {
@@ -390,5 +398,70 @@ describe('bound route without its verifier: a collection lane the collection cla
   // check inserts nothing, so side's address takes no output beyond its inputs.
   it('refuses a side node minted with no input beside a check batch', () => {
     expect(state.route.checkMint).not.toBe(true);
+  });
+});
+
+describe('bound route without its verifier: an inputless mint beside an honest update, insert and delete', () => {
+  const rows = {
+    update: { function: 'put', args: [5n, 8n] },
+    insert: { function: 'put', args: [11n, 4n] },
+    drop: { function: 'drop', args: [9n] },
+  } as const;
+  let state: {
+    bus: StatefulContract;
+    honest: Record<keyof typeof rows, ReturnType<typeof failures>>;
+    route: Record<keyof typeof rows, Verdict>;
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(MINT, { ...KERNEL, messageBusHandlers: ['put', 'compare', 'drop'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'compare', 'drop']));
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const spends = {
+      update: spendOf(await bus.batch([{ ...rows.update, args: [...rows.update.args] }]).build()),
+      insert: spendOf(await bus.batch([{ ...rows.insert, args: [...rows.insert.args] }]).build()),
+      drop: spendOf(await bus.batch([{ ...rows.drop, args: [...rows.drop.args] }]).build()),
+    };
+    // The forged node: side[9]'s, its last commitment byte flipped, appended with no input.
+    const victim = await victimOf(provider, artifact, bus, categoryId, spends.update);
+    const minted = (honest: Spend): Spend => ({
+      sourceOutputs: honest.sourceOutputs,
+      transaction: { ...honest.transaction, outputs: [...honest.transaction.outputs, rewritten(victim)] },
+    });
+    const keys = Object.keys(rows) as Array<keyof typeof rows>;
+    state = {
+      bus,
+      honest: Object.fromEntries(keys.map((key) => [key, failures(vm, spends[key])])) as typeof state.honest,
+      route: Object.fromEntries(keys.map((key) => [key,
+        verdict(vm, minted(spends[key]), masterOf(spends[key], victim))])) as typeof state.route,
+    };
+    console.log('inputless mint', state.route);
+  }, 300_000);
+
+  it('settles an honest update, insert and delete, and sends each', async () => {
+    expect(state.honest, 'honest batches').toEqual({ update: [], insert: [], drop: [] });
+    for (const row of Object.values(rows)) {
+      await expect(state.bus.batch([{ ...row, args: [...row.args] }]).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+    }
+  }, 300_000);
+
+  // An update relinks nothing, so it grants no node.
+  it('refuses a side node minted with no input beside an honest update', () => {
+    expect(state.route.update).not.toBe(true);
+  });
+
+  // The insert relinks one predecessor for its one new node; the forged node is a second.
+  it('refuses a side node minted with no input beside an honest insert', () => {
+    expect(state.route.insert).not.toBe(true);
+  });
+
+  // A delete writes the default and removes no node.
+  it('refuses a side node minted with no input beside a delete', () => {
+    expect(state.route.drop).not.toBe(true);
   });
 });

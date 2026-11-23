@@ -55,6 +55,16 @@
   call in a loop, through a pointer or a runtime selector, or to `msg.sender` is refused at compile time
   (`CALL_VALUE_UNBOUND`). A low-level `call{value:}` to a stateful contract still pays its lock: send value to a
   stateful contract through a typed call.
+- In a composed message-bus transaction a spender could rewrite any record of a participant that no handler of the
+  run touched, by declaring it in a resource row of the verifier's manifest (COMPOSE-RECORD-1, CRITICAL, in 0.51.1 and
+  earlier): once a route's verifier ran, the route treated its whole block as claimed. This held for ordinary, graph and
+  proxy routes. A route now holds every record of its block except those the rows that ran may write.
+- A message-bus route run without its verifier left records unheld at slots its rows claimed but did not use, so a
+  spender could rewrite or burn them, and a node of a mapping a handler manages could be minted with no input (in
+  0.51.1 and earlier). Rows now claim only what they may write, and each such collection's nodes must equal its inputs
+  plus the inserts of the run. Contracts with message-bus routes compile to new bytes. Some row kinds still claim
+  their whole block or band (lifecycle rows, function pointers, inline assembly, delegatecall, calls to
+  address(this), chunked values): see the security ledger.
 
 ### Fixed
 

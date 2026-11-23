@@ -4856,7 +4856,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // universally, so the caller can always read one. A call through an interface naming several functions
         // reads it too, in place of its selector check: the digest names the method, the arguments and the reader,
         // so two callers cannot both take one run of it. One that leaves arguments to its callee digests them from
-        // witnesses (leftCallArgumentPositions); where the caller takes none it keeps its selector check.
+        // witnesses (leftCallArgumentPositions); where the caller takes none it keeps its selector check. A call with
+        // `{value:}` reads it as well: nothing else binds its method through a one-method interface, and no record of
+        // one run answers two callers.
         // The exploit this closes exists for every ungrouped single-interface void call, not only an explicit
         // messageBus:false opt-out. An inferred (auto) compile direct-lowers a call it does not route - `messageBus`
         // is folded to true for auto, so the mode, not that flag, says whether lowering is direct. Bind for disabled
@@ -4871,7 +4873,6 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
             if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar) continue;
             if (slot.runtimeTernaryAddress || slot.addressIsMsgSender || slot.addressIsSelf) continue;
-            if (slot.callValueEffect) continue;
             if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
             if (slot.batchInvocations) continue;
             const calleeFns = this.getCalleeFunctions(slot.interfaceName);

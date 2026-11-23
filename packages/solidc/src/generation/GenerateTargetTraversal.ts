@@ -1110,6 +1110,8 @@ const ACTIVE_VERIFIER_INDEX = '__internal__activeVerifierIndex';
 const GRAPH_BLOCK_SIZE = '__internal__graphBlockSize';
 /** Any other bound route's physical block size, which its verifier's binding digest proves once it ran. */
 const PARTICIPANT_BLOCK_SIZE = '__internal__participantBlockSize';
+/** A bound route's C3 pin: the chunk locks its rows that ran may rewrite in the trailing band. */
+const ROUTE_BAND_LOCKS = '(__route_band_locks)';
 /** The tracked names of a route's mint bound operands, bottom first. */
 function routeMintBoundNames(bound: RouteMintBound): string[] {
   return [ROUTE_MINT_LO, ROUTE_MINT_HI, ...(bound.span ? [ROUTE_MINT_SPAN_START, ROUTE_MINT_SPAN_END] : []),
@@ -62732,6 +62734,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_2DROP, loc);
     this.popFromStack();
+    const trailingBase = node.blockLayout?.trailingBase;
+    const bandLocks = inBlock && trailingBase !== undefined ? this.routeBandLockClaims(node) : undefined;
+    if (bandLocks !== undefined) this.emitRouteBandLocks(bandLocks, loc);
     if (inBlock) this.emitRouteBlockClaims(node, blockSize, loc);
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);      // [i]
@@ -62751,6 +62756,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_RSHIFTNUM, loc);
       this.emit(encodeInt(2n), loc);
       this.emit(Op.OP_MOD, loc);             // [claimed, i, claimedAt]
+      if (bandLocks !== undefined) this.emitRouteBandLockClaim(trailingBase!, blockSize, loc);
     } else {
       this.emit(Op.OP_DUP, loc);
       emitSize();
@@ -62769,6 +62775,121 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.popFromStack();
     }
+    if (bandLocks !== undefined) {
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
+    }
+  }
+
+  /**
+   * The trailing band's lock-qualified claims: for each dynamic state a writer row may rewrite there, its chunk lock's
+   * collection hash and the row counters of the writers. Once any writer ran, the route settles every dynamic state
+   * it writes (emitDynamicWriteVerification), so each writer may move the chunks of all of them. Where one of them
+   * keeps no chunk lock of its own, the writers claim the whole band instead (emitRouteBlockClaims).
+   */
+  private routeBandLockClaims(node: FunctionDefinitionNode): { hashes: Uint8Array[]; flags: string[] } | undefined {
+    const flags = (node.messageBusRecordClaims ?? []).flatMap((claim) => (claim.bandStates !== undefined
+      && this.routeBandStatesHaveLocks(this.routeBandStates(node, claim.bandStates)) ? [claim.flag] : []));
+    if (flags.length === 0) return undefined;
+    const names = new Set((node.messageBusRecordClaims ?? [])
+      .flatMap((claim) => (flags.includes(claim.flag) ? this.routeBandStates(node, claim.bandStates!) : [])));
+    const hashes = [...names].map((name) => {
+      const variable = this.stateVariables.find((candidate) => candidate.name === name)!;
+      return computeCollectionHash(computeCollectionSignature(variable.name, variable.type.toString()));
+    });
+    return { hashes, flags };
+  }
+
+  /** The dynamic state a writer of `written` may rewrite in the trailing band: it, and every state the route writes. */
+  private routeBandStates(node: FunctionDefinitionNode, written: readonly string[]): string[] {
+    const readOnly = new Set(node.messageBusRouteReadOnlyDynamicResources ?? []);
+    return [...new Set([...written, ...[...this.pendingDynamicWrites.keys()].filter((name) => !readOnly.has(name))])];
+  }
+
+  /** Each named state keeps its records as chunks at a lock of its own. */
+  private routeBandStatesHaveLocks(names: readonly string[]): boolean {
+    return names.every((name) => this.stateVariables.some((variable) => variable.name === name && variable.isDynamic));
+  }
+
+  /**
+   * `[]` -> `[locks]`: where a writer row ran, the chunk lock of each dynamic state it may rewrite in the trailing
+   * band, 35 bytes apiece; else empty. Tracked as ROUTE_BAND_LOCKS.
+   */
+  private emitRouteBandLocks(
+    claims: { hashes: readonly Uint8Array[]; flags: readonly string[] }, loc: SingleLocationData,
+  ): void {
+    const base = '(__route_band_base)';
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack(base);
+    // [base, locks]. A rebuilt lock replaces one untracked copy of the base, as in emitMintableRecordLocks.
+    this.emit(Op.OP_0, loc);
+    claims.flags.forEach((flag, index) => {
+      this.emitPickTrackedFromBottom(flag, loc);
+      if (index > 0) this.emit(Op.OP_BOOLOR, loc);
+    });
+    this.emit(Op.OP_IF, loc);
+    for (const hash of claims.hashes) {
+      const saved = this.stack.slice();
+      this.emit(Op.OP_OVER, loc);
+      this.emitSortedEntryAddress(hash, loc);
+      this.stack.splice(0, this.stack.length, ...saved);
+      this.emit(Op.OP_CAT, loc);
+    }
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.popFromStack();
+    this.pushToStack(ROUTE_BAND_LOCKS);
+  }
+
+  /**
+   * `[locks, claimed, i, claimedAt]` -> `[locks, claimed, i, claimedAt']`: an input the claims leave pinned that sits
+   * in the trailing band `[trailingBase, blockSize)` is claimed where its lock is one of `locks`.
+   */
+  private emitRouteBandLockClaim(trailingBase: number, blockSize: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_SUB, loc);
+    this.emit(encodeInt(BigInt(trailingBase)), loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc);
+    this.emit(Op.OP_WITHIN, loc);            // [locks, claimed, i, inBand]
+    this.emit(Op.OP_IF, loc);
+    // The untracked i sits above the tracked frame.
+    this.emit(encodeInt(BigInt(this.getStackIndex(ROUTE_BAND_LOCKS) + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_SWAP, loc);              // [.., i, found, rest]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);              // [.., i, found, rest', lock]
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_SWAP, loc);              // [.., i, found', rest']
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);              // [locks, claimed, i, found]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -62881,7 +63002,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     };
     for (const [flags, mask] of laneMasks) addWhereRan(flags.split(' '), mask);
-    addWhereRan(claims.flatMap((claim) => (claim.trailing === true ? [claim.flag] : [])), bandMask);
+    // A band claim by written dynamic state admits only those chunk locks (routeBandLockClaims), unless one of the
+    // states has none of its own.
+    addWhereRan(claims.flatMap((claim) => (claim.trailing === true || (claim.bandStates !== undefined
+      && !this.routeBandStatesHaveLocks(this.routeBandStates(node, claim.bandStates))) ? [claim.flag] : [])),
+    bandMask);
     const allFlags = claims.flatMap((claim) => (claim.all === true ? [claim.flag] : []));
     allFlags.forEach((flag, index) => {
       this.emitPickTrackedFromBottom(flag, loc);

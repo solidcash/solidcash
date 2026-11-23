@@ -950,13 +950,14 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusVerifierLock?: Uint8Array;
   /**
    * Bound non-graph route: one route-local row counter per handler whose row may rewrite records inside the
-   * participant block, which its selector branch increments. `all`: any record; `trailing`: the trailing band;
-   * `collections`: the sorted collections it writes, whose `lanes` (route entry slots, stamped once the handler's
-   * physical lanes are known) it may rewrite. Empty when no handler claims any; absent where the C3 record pin keeps
-   * the whole block to the census.
+   * participant block, which its selector branch increments. `all`: any record; `trailing`: any record of the
+   * trailing band; `bandStates`: the dynamic state whose chunk locks it rewrites there; `collections`: the sorted
+   * collections it writes, whose `lanes` (route entry slots, stamped once the handler's physical lanes are known) it
+   * may rewrite. Empty when no handler claims any; absent where the C3 record pin keeps the whole block to the census.
    */
   messageBusRecordClaims?: Array<{
-    flag: string; all?: true; trailing?: true; collections?: readonly string[]; lanes?: readonly number[];
+    flag: string; all?: true; trailing?: true; bandStates?: readonly string[]; collections?: readonly string[];
+    lanes?: readonly number[];
   }>;
   /** Eligible handler of a bound route: its row counter in `messageBusRecordClaims`. */
   messageBusRecordClaimFlag?: string;

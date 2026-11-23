@@ -2223,6 +2223,11 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     replacing an output. Fixed in `42132653e`: the bound runs on every bound route with claims, a graph route's
     included; it reads only the transaction, so a graph clone's rows count as any row. The same file's leaf and graph
     describes now refuse the mint, and an honest compose inserting a cold key settles on both.
+  - Nodes only (`defac3a45`): the bound counts records at the address whose commitment is 64 bytes or more (slot,
+    `next`, value), on both sides, and splits for a relink only between two nodes. MixedScalarRouteX94's honest
+    all-scalar batch, on a route that reserves an entry slot, spends no node and leaves one record there with the
+    one-byte commitment `00` (the SDK's output for the inactive lane); counted, it was refused. A record that short
+    answers for no key and carries no link, as every read splits at 32 and 32. The SDK still writes that record.
   - Residual: at an offset a row claims but does not use (see "Routes without a verifier") a relink can be faked,
     which those offsets already allow as a rewrite. A collection a kept route batch or a runtime-loop census counts is
     left to it. Fail closed (liveness): a loop insert into a bounded collection, and a lifecycle row that moves or

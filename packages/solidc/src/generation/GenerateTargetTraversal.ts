@@ -62780,7 +62780,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * inserts. Any other change to the count (an insert whose predecessor comes back elsewhere, as a loop's or a kept
    * batch's does, or a lifecycle row's) is refused here by name, never let through. A collection the route's kept
    * batch or runtime-loop census counts is left to it. A graph route takes it too: its verifier holds the outputs
-   * only to the one-to-one shape and the composer's resource rows. Stack neutral.
+   * only to the one-to-one shape and the composer's resource rows. Only nodes count, on both sides
+   * (emitNodeAtLockTest): a shorter record at the address answers for no key and carries no link, and an honest
+   * all-scalar batch on a route that reserves an entry slot leaves one there, its inactive lane's output with a
+   * one-byte commitment. Stack neutral.
    */
   private emitRouteCollectionMintBounds(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     if (node.messageBusRecordClaims === undefined) return;
@@ -62803,7 +62806,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.stack[0] = addr;
       this.emitRelinkedInputCount(loc);
       this.emit(Op.OP_TOALTSTACK, loc);
-      this.emitCountAtLock(true, loc);
+      this.emitNodeOutputCount(loc);
       this.emit(Op.OP_FROMALTSTACK, loc);    // [addr, outputs, inputs + inserts]
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
       this.requires.push({
@@ -62817,8 +62820,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[addr]` -> `[addr, n]`, n untracked: the inputs locked to addr, plus those of them whose output at the same index
-   * is locked to addr with another `next` (the commitment's second 32 bytes): a relinked predecessor.
+   * `[addr]` -> `[addr, n]`, n untracked: the nodes spent at addr, plus those of them whose output at the same index is
+   * a node at addr with another `next` (the commitment's second 32 bytes): a relinked predecessor. A node is a record
+   * whose commitment holds a slot, a `next` and a value, 64 bytes at least (emitNodeAtLockTest).
    */
   private emitRelinkedInputCount(loc: SingleLocationData): void {
     const next = (commitment: Op): void => {
@@ -62834,11 +62838,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_TXINPUTCOUNT, loc);
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_1SUB, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(encodeInt(3n), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);
+    this.emitNodeAtLockTest(false, loc);
     this.emit(Op.OP_IF, loc);                // [addr, n, i]
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_1ADD, loc);
@@ -62847,11 +62847,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
     this.emit(Op.OP_LESSTHAN, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(encodeInt(3n), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);
+    this.emitNodeAtLockTest(true, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DUP, loc);
     next(Op.OP_UTXOTOKENCOMMITMENT);         // [addr, n, i, nextIn]
@@ -62864,6 +62860,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc);              // [addr, n, i]
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+  }
+
+  /**
+   * `[addr, n, i]` -> `[addr, n, i, isNode]`: input (or output) i is locked to addr with a commitment of 64 bytes at
+   * least, the slot, `next` and value of a node. A shorter record there is no node: every read splits the commitment
+   * at 32 and 32, so it can neither answer for a key nor carry a link.
+   */
+  private emitNodeAtLockTest(isOutput: boolean, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(isOutput ? Op.OP_OUTPUTTOKENCOMMITMENT : Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(64n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_BOOLAND, loc);
+  }
+
+  /** `[addr]` -> `[addr, count]`, count untracked: the outputs that are nodes at addr (emitNodeAtLockTest). */
+  private emitNodeOutputCount(loc: SingleLocationData): void {
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emitNodeAtLockTest(true, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOT, loc);

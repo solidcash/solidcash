@@ -4835,6 +4835,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0NOTEQUAL, locationData);
       this.emit(Op.OP_BOOLOR, locationData);
     }
+    // The value of calls whose `{value:}` rides their record leaves the container too: a nonzero one spends it.
+    if (this.getStackIndex(CALL_VALUE_SENT, true) >= 0) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(CALL_VALUE_SENT))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_0NOTEQUAL, locationData);
+      this.emit(Op.OP_BOOLOR, locationData);
+    }
     this.emit(Op.OP_IF, locationData);
     this.popFromStack();
   }
@@ -64046,8 +64053,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const minerFee = this.currentFunction.blockLayout?.minerFee;
     const singleContainer = this.hasSingleSatoshiContainer();
     const spendsContainer = minerFee !== undefined || singleContainer;
+    // A call whose `{value:}` rides its record takes the value from the container: a nonzero value requires the
+    // container's coin at its slot, so a spend cannot leave the coin and pay the value from elsewhere.
     if (!this.framedMaster && (this.pendingTransfers.length > 0 || this.deployerNewValues.length > 0
-      || this.getStackIndex(DEPLOYER_VALUE_SENT, true) >= 0 || spendsContainer)
+      || this.getStackIndex(DEPLOYER_VALUE_SENT, true) >= 0 || this.getStackIndex(CALL_VALUE_SENT, true) >= 0
+      || spendsContainer)
       && this.currentFunction.blockLayout && !this.graphTransferFlagActive) {
       // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
       // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot. A function

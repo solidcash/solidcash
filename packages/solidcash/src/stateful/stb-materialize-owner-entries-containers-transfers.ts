@@ -23,6 +23,7 @@ import type {
   TokenContainerTransferNftData,
   TransferData,
 } from './external-call-utxo-group.js';
+import { addressToLockScript } from '../utils.js';
 import { assignBalancedOutputAtOffset } from './writer-event-delegate-layout.js';
 import { fillerOutput } from './filler.js';
 
@@ -199,15 +200,28 @@ export function materializeOwnerEntriesContainersTransfers(
         + 'Either transfer all satoshis (fully drain) or leave at least the dust minimum.',
       );
     }
+    // A callee block materialized before this one pads the owner's block by copying the input at each offset, the
+    // container's coin among them. The container's output takes that copy's place: beside it, the copy would pay the
+    // coin's value into the container a second time, out of the payer's funding.
+    const containerOffset = host.blockLayout?.slots.find((slot) => slot.kind === 'satoshiContainer')?.offset;
+    const copy = containerOffset === undefined ? undefined : builder.outputs[containerOffset];
+    const copiedAt = copy !== undefined && copy.token === undefined
+      && copy.amount === host.satoshiContainerUtxo.satoshis
+      && binToHex(typeof copy.to === 'string' ? addressToLockScript(copy.to) : copy.to)
+        === binToHex(host.satoshiContainerUtxo.unlocker.generateLockingBytecode()) ? containerOffset : undefined;
+    const placeContainerOutput = (output: Output): void => {
+      if (copiedAt !== undefined) assignBalancedOutputAtOffset(builder.outputs, copiedAt, output);
+      else builder.addOutput(output);
+    };
     if (remainingAmount >= DUST_MINIMUM) {
-      builder.addOutput({
+      placeContainerOutput({
         to: satoshiContainerLockingBytecode,
         amount: remainingAmount,
       });
     } else {
       // Drained: a filler keeps the block layout's output positions. The container covenant pins it, and the
       // master counts it as no kept balance.
-      builder.addOutput(fillerOutput());
+      placeContainerOutput(fillerOutput());
     }
   }
 

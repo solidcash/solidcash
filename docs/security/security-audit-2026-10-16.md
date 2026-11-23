@@ -1395,13 +1395,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   the caller may name any callee there, as for a parameter's element, not only one the computation can reach (noted
   2026-10-26, source-traced).
 
-- One run shared by two callers where no record is read (2026-11-23, residual of the one-reader fix in D50 Fixed). A
-  void call through a multi-function interface reads no record (its callee's selector and arguments are bound from
-  the callee's unlocking, `0b94c0f13`), so two callers can still share one void run there; reading fix B's void record
-  for every void call would close it. An opaque read checks no digest (below). A kernel direct participant's records
-  name no reader, so a direct caller refuses them (fail closed). The SDK's reader binding for a call a delegated
-  implementation or a nested proxy makes is written from the code and no test runs it (a wrong binding fails closed).
-  With `callBatch: true`, `bcmr_padded_token` grows to 9,001 bytes and loses its multi-call entry by one byte.
+- One run shared by two callers where no digest is checked (2026-11-23, residual of the one-reader fix in D50
+  Fixed). A call naming fewer arguments than its method declares reads its record with no digest check (below), and
+  an opaque read checks none, so two callers making such a call can still share one run. A kernel direct
+  participant's records name no reader, so a direct caller refuses them (fail closed). The SDK's reader binding for
+  a call a nested proxy makes (a proxy one contract calls, delegating to an implementation) is written from the code
+  and no test runs it (a wrong binding fails closed).
 
 - Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
   than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot
@@ -1458,8 +1457,12 @@ Design: `docs/wip/call-records/DESIGN.md`.
   record keeps its form: its X names the one input that spends (X, 0). Artifacts publish `callRecordReader: true`, and
   the SDK refuses a call mixing them with earlier ones (`MixedCallRecordReaderError`). Test:
   `packages/solidcash/test/e2e/CallRecordSingleReader.e2e.test.ts` (returning and void: A1 -> T and A2 -> T merged so
-  T runs once are refused at A2's input; A1 -> T1 and A2 -> T2 merged the same way settle). Residuals: Open, "One
-  run shared by two callers where no record is read".
+  T runs once are refused at A2's input; A1 -> T1 and A2 -> T2 merged the same way settle). A void call through an
+  interface naming several methods read no record, its method bound by a selector witness: it now reads its callee's
+  void record in place of that check (`bc6e62f61`; a caller with one such call 2,009 -> 1,813 B), and its rows are
+  refused and settle the same way. A call an implementation makes behind the default proxy or a fallback proxy names
+  the implementation's input, and settles (rows in the same file). Residuals: Open, "One run shared by two callers
+  where no digest is checked".
 
 ### Open, or bound otherwise
 

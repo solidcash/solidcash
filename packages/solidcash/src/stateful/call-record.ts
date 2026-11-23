@@ -73,12 +73,19 @@ export function callRecordValueBytes(value: bigint): Uint8Array {
  */
 export function callRecordDigest(
   abiFunction: Pick<AbiFunction, 'inputs' | 'selector' | 'callRecordValue'>, params: readonly FunctionArgument[],
-  options: { readonly structs?: readonly StructDefinitionInfo[]; readonly enums?: readonly EnumDefinitionAbi[] } = {},
+  options: {
+    readonly structs?: readonly StructDefinitionInfo[]; readonly enums?: readonly EnumDefinitionAbi[];
+    /**
+     * Whether the digest names its reader. By default where the entry takes the reader witness, as the callee
+     * digests its run; a caller's edge names it where the caller digests its own input (`callRecordReader`).
+     */
+    readonly namesReader?: boolean;
+  } = {},
   ordinal = 0, reader: bigint | number = CALL_RECORD_NO_READER, value = 0n,
 ): Uint8Array | undefined {
   if (abiFunction.selector === undefined) return undefined;
   const parts: number[] = [ordinal & 0xff, (ordinal >> 8) & 0xff, ...hexToBin(abiFunction.selector)];
-  if (callRecordNamesReader(abiFunction)) parts.push(...callRecordReaderBytes(reader));
+  if (options.namesReader ?? callRecordNamesReader(abiFunction)) parts.push(...callRecordReaderBytes(reader));
   for (const [index, input] of abiFunction.inputs.entries()) {
     if (input.name.startsWith('__internal__') || input.type === 'sig') continue;
     const encoded = encodeFunctionArgument(params[index] as FunctionArgument, input.type, options.structs);
@@ -166,20 +173,24 @@ export function assertCallSelectorScheme(
 }
 
 /**
- * Refuses a call between an artifact whose records name their reader and one compiled before (an artifact without
- * `callRecordReader`), when the call digests: it reads a record its caller checks, or its callee reads `msg.sender`
- * and so requires the caller's edge, whose digest is the call's. The two never digest alike, and a caller that
- * accepted an unbound record would let two callers read one run.
+ * Refuses a call whose caller and callee digest it apart, when the call digests: it reads a record its caller checks,
+ * or its callee reads `msg.sender` and so requires the caller's edge, whose digest is the call's. A caller names its
+ * reader where its artifact says `callRecordReader`; the callee's run names one where its entry takes the reader
+ * witness (an artifact compiled before has none, nor does a kernel direct participant's entry). The two never
+ * digest alike, and a caller that accepted an unbound record would let two callers read one run.
  */
 export function assertCallRecordReaderScheme(
   call: ExternalCallAbi, caller: Pick<Artifact, 'callRecordReader'>,
   callee: Pick<Artifact, 'callRecordReader' | 'abi'>,
 ): void {
   const callerNamesReader = caller.callRecordReader === true;
-  if (callerNamesReader === (callee.callRecordReader === true)) return;
-  const readsRecord = call.hasReturnValues === true && call.opaqueReturn !== true;
   const method = call.rawFunctionName ?? call.functionName;
-  const calleeReadsSender = callee.abi.some((entry) => entry.name === method && entry.usesMsgSender === true);
+  const entries = callee.abi.filter((entry) => entry.name === method);
+  const calleeNamesReader = entries.length === 0 ? callee.callRecordReader === true
+    : entries.some((entry) => callRecordNamesReader(entry));
+  if (callerNamesReader === calleeNamesReader) return;
+  const readsRecord = call.hasReturnValues === true && call.opaqueReturn !== true;
+  const calleeReadsSender = entries.some((entry) => entry.usesMsgSender === true);
   if (!readsRecord && !calleeReadsSender) return;
   throw new MixedCallRecordReaderError(call.interfaceName, call.functionName, callerNamesReader);
 }

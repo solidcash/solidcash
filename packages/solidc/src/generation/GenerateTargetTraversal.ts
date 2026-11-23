@@ -1296,7 +1296,8 @@ const FORWARDED_WITNESS_DETAIL: Record<string, string> = {
  * Mirrors, as a pre-check, exactly what the argument loop below would abort on: an `__internal__*` identifier
  * argument that is a declared parameter of the target but is absent from the caller's stack. Function-pointer
  * references and constant expressions are excluded because `visitIdentifier` handles them before its stack
- * lookup. `__internal__returnOutputIdx` is excluded because the argument loop skips it.
+ * lookup. `__internal__returnOutputIdx`, the entry shift, the genesis call and the record's reader are excluded
+ * because the argument loop skips them (an internal call settles no record and answers no constructor).
  */
 function forwardedWitnessMiss(
   args: Node[],
@@ -1318,8 +1319,9 @@ function forwardedWitnessMiss(
     const name = arg.name;
     if (!name.startsWith('__internal__')) continue;
     if (name === '__internal__returnOutputIdx') continue;
-    if (targetFunc.parameters[i]?.name === '__internal__returnOutputIdx') continue;
-    if (targetFunc.parameters[i]?.name === CALL_BATCH_ROW_SHIFT) continue;
+    const target = targetFunc.parameters[i]?.name;
+    if (target === '__internal__returnOutputIdx' || target === CALL_BATCH_ROW_SHIFT
+      || target === '__internal__genesisCall' || target === CALL_RECORD_READER_INPUT) continue;
     if (arg.functionReference || constantExpressions.has(name)) continue;
     // Only a FORWARDED witness: one the target declares as a parameter. An `__internal__*` local the caller
     // computes itself is not forwarded and is not this failure.

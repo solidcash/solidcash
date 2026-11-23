@@ -134,11 +134,18 @@ describe('kernel nested fixed-array return materialization', () => {
 
     const producerResult = externalResultConsumedBy('ArrayConsumer');
     const intermediateResult = externalResultConsumedBy('ArrayInvoker');
-    // D50: each carrier is the record of its call, digest(method, arguments) || form 2 || SHA256(result).
+    // D50: each carrier is the record of its call, digest(method, arguments) || form 2 || SHA256(result). Each digest
+    // names its reader, the input of the contract that reads it.
+    const readerInput = (contractName: string): number => builder.inputs.findIndex((candidate) => (
+      'contract' in candidate.unlocker && candidate.unlocker.contract.artifact.contractName === contractName
+      && candidate.unlocker.abiFunction.inputs.some((argument) => argument.name === '__internal__externalReturnOutputIdx')
+    ));
     const readFn = producerArtifact.abi.find((fn) => fn.name === 'read')!;
     const consumeFn = consumerArtifact.abi.find((fn) => fn.name === 'consume')!;
-    const readDigest = callRecordDigest(readFn, []);
-    const consumeDigest = callRecordDigest(consumeFn, consumeFn.inputs.map((input) => (input.name === 'key' ? 7n : 0n)));
+    const readDigest = callRecordDigest(readFn, [], {}, 0, readerInput('ArrayConsumer'));
+    const consumeDigest = callRecordDigest(
+      consumeFn, consumeFn.inputs.map((input) => (input.name === 'key' ? 7n : 0n)), {}, 0, readerInput('ArrayInvoker'),
+    );
     if (!readDigest || !consumeDigest) throw new Error('read and consume publish selectors');
     expect(producerResult, `producer result output ${producerResult.outputIndex}`).toMatchObject({
       category: producerSetup.categoryId,

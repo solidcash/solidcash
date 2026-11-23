@@ -107,29 +107,35 @@ interface CapacityReading {
 // Again when a call through address(0) became a refusal (4030a5bc2): the target check of the first participant drops
 // its empty-target branch, so its input is 8 B smaller and 16 units cheaper (its budget 6,400 units lower) and the
 // transaction 8 B smaller in each convention; the worst input and its ratio are unchanged.
+// Again on 2026-11-23 with S2 on master: the sink's `run` takes and digests the reader its record names, so its code is
+// 5 B (kernel) and 6 B (legacy) larger (2,369 -> 2,374 B and 2,945 -> 2,951 B, measured with the witness left out and
+// in). The root's input is 94 B smaller and about 75,200 units of budget lower in each convention; its code is the
+// same with and without the witness (2,806 B kernel, 2,720 B legacy), so that part is another change on master since
+// the last pin. The transaction is 89 B (kernel) and 88 B (legacy) smaller; the worst input holds (legacy: its
+// verifier 4 units cheaper).
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_495, callManifestBytes: 294,
+    transactionBytes: 24_406, callManifestBytes: 294,
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      440_269, 388_424, 695, 957_089, 817_981, 27_321,
+      439_721, 388_434, 695, 957_089, 817_981, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_587_200, 2_001_600, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_512_000, 2_005_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_985, callManifestBytes: 294,
-    worstOperationCost: 2_373_927, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.3281442828707287,
+    transactionBytes: 24_897, callManifestBytes: 294,
+    worstOperationCost: 2_373_923, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.32814372995687274,
     inputOperationCosts: [
-      432_858, 412_982, 695, 2_373_927, 1_864_134, 27_321,
+      432_246, 412_994, 695, 2_373_923, 1_864_134, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_518_400, 2_462_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_443_200, 2_467_200, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

@@ -94,8 +94,9 @@ describe('kernel nested dynamic return preimages', () => {
     ).slice(2));
     expect(binToHex(preimage)).toBe(binToHex(expected));
     const returnOutputIndex = Number(unlocker.params[outputIndexArg]);
-    // D50: the carrier is the record of this call, digest(read) || form 2 || SHA256(result), past 96 bytes.
-    const digest = callRecordDigest(producerArtifact.abi.find((fn) => fn.name === 'read')!, []);
+    // D50: the carrier is the record of this call, digest(read) || form 2 || SHA256(result), past 96 bytes. The
+    // digest names its reader, the input of the consumer that reads it.
+    const digest = callRecordDigest(producerArtifact.abi.find((fn) => fn.name === 'read')!, [], {}, 0, consumerInputIndex);
     if (!digest) throw new Error('read publishes no selector');
     expect(expected.length).toBeGreaterThan(96);
     expect(transaction.outputs[returnOutputIndex]?.token?.nft?.commitment)

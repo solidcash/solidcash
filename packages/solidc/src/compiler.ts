@@ -7084,9 +7084,11 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
 
 /**
  * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. `all` where its
- * effects can reach any record; `band` for the trailing band: `any` record where it may consume one there (an array,
- * a chunked value, a loop, a delete), else the dynamic state it writes, whose chunk locks it rewrites there; and the
- * sorted collections it writes, whose fixed entry slots it may rewrite. A sorted entry or dynamic state the row only
+ * effects can reach any record; for the trailing band, `band` `any` where it may consume a sorted collection's chunked
+ * value there (a value chunk's lock depends on the entry's slot and value version), else the dynamic state it writes,
+ * whose chunk locks it rewrites there, and `bandCollections`, whose entry locks it may consume there (a non-sorted
+ * collection's records, or every collection it touches where it has a loop or a delete); and the sorted collections
+ * it writes, whose fixed entry slots it may rewrite. A sorted entry or dynamic state the row only
  * reads comes back at its own index (the SDK keeps a read-only entry's commitment, a journal flushes only a written
  * cache, read-only chunks lead the band 1:1), which is what the pin requires, so a read claims none of them.
  * A typed external call claims nothing of its own: the callee runs as its own row, in its own block, and a call back
@@ -7106,9 +7108,11 @@ function isSelfAddressExpression(node: unknown): boolean {
 function messageBusRecordClaim(
   footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
   collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, lifecycle: boolean,
-): { all: boolean; band?: 'any' | string[]; collections: string[] } {
-  const reach = { all: lifecycle || footprint.unknown, anyBand: false };
+): { all: boolean; band?: 'any' | string[]; bandCollections?: string[]; collections: string[] } {
+  const reach = { all: lifecycle || footprint.unknown, anyBand: false, sweeps: false };
   const bandStates = new Set<string>();
+  const bandCollections = new Set<string>();
+  const touched = new Set<string>();
   const named = new Set<string>();
   const writes = new Set(footprint.writes);
   for (const resource of [...footprint.reads, ...footprint.writes]) {
@@ -7118,16 +7122,16 @@ function messageBusRecordClaim(
       if (written && dynamicState.has(name)) bandStates.add(name);
     } else if (kind === 'collection') {
       const collection = collections.get(name);
-      if (collection?.sorted !== true) reach.anyBand = true;
-      else {
-        if (written) named.add(name);
-        if (isChunkableValueType(collection.innermostValueType)) reach.anyBand = true;
-      }
+      touched.add(name);
+      if (collection === undefined) reach.anyBand = true;
+      else if (collection.sorted === true && isChunkableValueType(collection.innermostValueType)) reach.anyBand = true;
+      else if (collection.sorted !== true) bandCollections.add(name);
+      if (collection?.sorted === true && written) named.add(name);
     }
   }
   const visit = (node: unknown): void => {
     if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
-      || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) reach.anyBand = true;
+      || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) reach.sweeps = true;
     else if (node instanceof AssemblyStatementNode) reach.all = true;
     else if (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode) {
       if (node.callMode === 'delegatecall' || isSelfAddressExpression(node.targetExpression)) reach.all = true;
@@ -7137,8 +7141,13 @@ function messageBusRecordClaim(
     }
   };
   for (const member of closure) walkInvocationAst(member.body, visit);
+  if (reach.sweeps) for (const name of touched) bandCollections.add(name);
   const band = reach.anyBand ? 'any' : bandStates.size > 0 ? [...bandStates].sort() : undefined;
-  return { all: reach.all, ...(band !== undefined ? { band } : {}), collections: [...named] };
+  return {
+    all: reach.all, ...(band !== undefined ? { band } : {}),
+    ...(!reach.anyBand && bandCollections.size > 0 ? { bandCollections: [...bandCollections].sort() } : {}),
+    collections: [...named],
+  };
 }
 
 function synthesizeMessageBusRoute(
@@ -12709,7 +12718,8 @@ function synthesizeMessageBusRoute(
       const claim = messageBusRecordClaim(eligibleFootprint(fn), closure, collectionByName, dynamicState,
         kernelLifecycleHandlers.has(fn) || kernelDeploymentHandlers.has(fn)
           || fn.modifiers.some((modifier) => claimAllModifiers.has(modifier)));
-      if (!claim.all && claim.band === undefined && claim.collections.length === 0) continue;
+      if (!claim.all && claim.band === undefined && claim.bandCollections === undefined
+        && claim.collections.length === 0) continue;
       // The handler's own lanes are stamped on this claim once the route's physical entry slots are assigned.
       const flag = `__message_bus_claim_${routeRecordClaims.length}`;
       fn.messageBusRecordClaimFlag = flag;
@@ -12717,6 +12727,7 @@ function synthesizeMessageBusRoute(
         flag,
         ...(claim.band === 'any' ? { trailing: true as const } : {}),
         ...(Array.isArray(claim.band) ? { bandStates: claim.band } : {}),
+        ...(claim.bandCollections !== undefined ? { bandCollections: claim.bandCollections } : {}),
         ...(claim.collections.length > 0 ? { collections: claim.collections } : {}),
       });
     }

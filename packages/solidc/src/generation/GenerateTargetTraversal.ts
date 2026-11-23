@@ -1112,6 +1112,11 @@ const GRAPH_BLOCK_SIZE = '__internal__graphBlockSize';
 const PARTICIPANT_BLOCK_SIZE = '__internal__participantBlockSize';
 /** A bound route's C3 pin: the chunk locks its rows that ran may rewrite in the trailing band. */
 const ROUTE_BAND_LOCKS = '(__route_band_locks)';
+/** A route's band-lock group: the row counters whose rows, where one ran, may rewrite records at these locks. */
+interface BandLockGroup {
+  flags: readonly string[];
+  hashes: readonly Uint8Array[];
+}
 /** The parked record pin's mask for a block of `size` slots: every offset but the master's, 0. */
 function parkedRecordPinMask(size: number): bigint {
   if (!Number.isSafeInteger(size) || size < 1) throw new Error(`parked record pin: block size ${size}`);
@@ -62907,22 +62912,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The trailing band's lock-qualified claims: for each dynamic state a writer row may rewrite there, its chunk lock's
-   * collection hash and the row counters of the writers. Once any writer ran, the route settles every dynamic state
-   * it writes (emitDynamicWriteVerification), so each writer may move the chunks of all of them. Where one of them
-   * keeps no chunk lock of its own, the writers claim the whole band instead (emitRouteBlockClaims).
+   * The trailing band's lock-qualified claims, as groups of row counters and the locks a row of any of them may
+   * rewrite there. The dynamic-state writers form one group with the chunk lock of each dynamic state the route
+   * writes: once any writer ran, the route settles all of them (emitDynamicWriteVerification), so each writer may move
+   * the chunks of all of them. Where one of them keeps no chunk lock of its own, the writers claim the whole band
+   * instead (emitRouteBlockClaims). Each row with `bandCollections` forms a group of its own with their entry locks.
    */
-  private routeBandLockClaims(node: FunctionDefinitionNode): { hashes: Uint8Array[]; flags: string[] } | undefined {
-    const flags = (node.messageBusRecordClaims ?? []).flatMap((claim) => (claim.bandStates !== undefined
+  private routeBandLockClaims(node: FunctionDefinitionNode): BandLockGroup[] | undefined {
+    const claims = node.messageBusRecordClaims ?? [];
+    const groups: BandLockGroup[] = [];
+    const flags = claims.flatMap((claim) => (claim.bandStates !== undefined
       && this.routeBandStatesHaveLocks(this.routeBandStates(node, claim.bandStates)) ? [claim.flag] : []));
-    if (flags.length === 0) return undefined;
-    const names = new Set((node.messageBusRecordClaims ?? [])
-      .flatMap((claim) => (flags.includes(claim.flag) ? this.routeBandStates(node, claim.bandStates!) : [])));
-    const hashes = [...names].map((name) => {
-      const variable = this.stateVariables.find((candidate) => candidate.name === name)!;
-      return computeCollectionHash(computeCollectionSignature(variable.name, variable.type.toString()));
-    });
-    return { hashes, flags };
+    if (flags.length > 0) {
+      const names = new Set(claims
+        .flatMap((claim) => (flags.includes(claim.flag) ? this.routeBandStates(node, claim.bandStates!) : [])));
+      groups.push({
+        flags,
+        hashes: [...names].map((name) => {
+          const variable = this.stateVariables.find((candidate) => candidate.name === name)!;
+          return computeCollectionHash(computeCollectionSignature(variable.name, variable.type.toString()));
+        }),
+      });
+    }
+    for (const claim of claims) {
+      if (claim.bandCollections === undefined || claim.trailing === true) continue;
+      groups.push({
+        flags: [claim.flag],
+        hashes: claim.bandCollections.map((name) => {
+          const signature = this.vmapCollectionSignature(name);
+          if (signature === undefined) throw new Error(`message-bus band claim: no signature for '${name}'`);
+          return computeCollectionHash(signature);
+        }),
+      });
+    }
+    return groups.length > 0 ? groups : undefined;
   }
 
   /** The dynamic state a writer of `written` may rewrite in the trailing band: it, and every state the route writes. */
@@ -62937,12 +62960,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[]` -> `[locks]`: where a writer row ran, the chunk lock of each dynamic state it may rewrite in the trailing
-   * band, 35 bytes apiece; else empty. Tracked as ROUTE_BAND_LOCKS.
+   * `[]` -> `[locks]`: for each group a row of which ran, the locks its rows may rewrite in the trailing band, 35
+   * bytes apiece; else empty. Tracked as ROUTE_BAND_LOCKS.
    */
-  private emitRouteBandLocks(
-    claims: { hashes: readonly Uint8Array[]; flags: readonly string[] }, loc: SingleLocationData,
-  ): void {
+  private emitRouteBandLocks(groups: readonly BandLockGroup[], loc: SingleLocationData): void {
     const base = '(__route_band_base)';
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -62950,19 +62971,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(base);
     // [base, locks]. A rebuilt lock replaces one untracked copy of the base, as in emitMintableRecordLocks.
     this.emit(Op.OP_0, loc);
-    claims.flags.forEach((flag, index) => {
-      this.emitPickTrackedFromBottom(flag, loc);
-      if (index > 0) this.emit(Op.OP_BOOLOR, loc);
-    });
-    this.emit(Op.OP_IF, loc);
-    for (const hash of claims.hashes) {
-      const saved = this.stack.slice();
-      this.emit(Op.OP_OVER, loc);
-      this.emitSortedEntryAddress(hash, loc);
-      this.stack.splice(0, this.stack.length, ...saved);
-      this.emit(Op.OP_CAT, loc);
+    for (const group of groups) {
+      group.flags.forEach((flag, index) => {
+        this.emitPickTrackedFromBottom(flag, loc);
+        if (index > 0) this.emit(Op.OP_BOOLOR, loc);
+      });
+      this.emit(Op.OP_IF, loc);
+      for (const hash of group.hashes) {
+        const saved = this.stack.slice();
+        this.emit(Op.OP_OVER, loc);
+        this.emitSortedEntryAddress(hash, loc);
+        this.stack.splice(0, this.stack.length, ...saved);
+        this.emit(Op.OP_CAT, loc);
+      }
+      this.emit(Op.OP_ENDIF, loc);
     }
-    this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_NIP, loc);
     this.popFromStack();
     this.pushToStack(ROUTE_BAND_LOCKS);

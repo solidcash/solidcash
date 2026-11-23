@@ -2143,12 +2143,30 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   - Test: `AuditRouteUnusedClaimedSlot.test.ts` (honest setNote, put and check batches settle and are sent; a side
     entry rewritten or burnt at an unused trailing slot beside setNote, and in an unused lane beside check and put,
     is refused; the same trailing slot beside put, which claims no band, is refused).
-  - Residual (any lock in the band, as before): a band claim made by a row that reads or writes an array or a sorted
-    collection with a chunked value, has a loop (`while`, `do`, a collection iteration) or a delete (mapping or array)
-    in its body, or writes dynamic state where some state the route writes keeps no chunk lock of its own (not
-    `isDynamic`). Such a row still leaves every own-category record in the band unpinned when it runs.
-  - Residual (lanes): a writer's row claims all of its own lanes, alternatives and alias priors included, even where
-    it uses one; a written collection it projects no lane of keeps every lane of it.
+  - R1 (step D, `bb918ee1d`): a row with a loop (`while`, `do`, a collection iteration) or a delete (mapping or
+    array) claims, in the band, only the entry locks of the collections it touches (`bandCollections`), one band-lock
+    group per such row beside the dynamic-state writers' group. Test: the drop rows of
+    `AuditRouteUnusedClaimedSlot.test.ts` (an `other` entry rewritten at an unused trailing slot beside a drop batch
+    is refused; the honest drop batch settles).
+  - R3 (step D, `88fc180e9`): a low-level `call` or `staticcall` to another address claims nothing of its own, as a
+    typed call (step B): its callee runs as its own row in its own block, a call back is another row with its own
+    claims, and a value it carries leaves the tokenless satoshi container, which the pin never parks.
+  - Residual (any lock in the band): a row that reads or writes a sorted collection with a chunkable value (bytes,
+    string, an array or a struct with one), or writes dynamic state where some state the route writes keeps no chunk
+    lock of its own (not `isDynamic`). A value chunk's lock is built from the entry's slot and its value version's
+    root (`valueChunkSignature(collection, slot, root)`), so no compile-time list names it; admitting chunks by lock
+    would take the run's own list of consumed chunk locks. Such a row leaves every own-category record in the band
+    unpinned when it runs.
+  - Residual (lanes, R2): a writer's row claims all of its own lanes, alternatives and alias priors included, even
+    where a run writes one; a written collection it projects no lane of keeps every lane of it. Narrowing that needs
+    the lanes a run writes, recorded at run time.
+  - Residual (whole block, the rest of R3): a row still claims its whole block where it is a lifecycle row (a kernel
+    lifecycle or deployment handler, or a `deploy`, `upgrade`, `selfdestruct`, `split`, `merge` or `unsafe`
+    modifier), has an unknown effect (a call through a function pointer), inline assembly, a `delegatecall` (a
+    library call lowered to one included), or a low-level call to `address(this)` (lowered to an internal call in the
+    same row). In this repository: UniswapV2.scash (createPair deploys) and marketplace.scash in the SDK fixtures;
+    upgrade_mapping.scash, upgrade_counter_data_nft.scash, selfdestruct_counter.scash, proxy_delegatecall.scash and
+    asm_simple.scash in the compiler's valid-contract-files.
   - Bytes: bound non-graph census-path routes only; a read-only handler's flag goes (about 10-15 B), a dynamic-state
     writer adds the band lock check (about 60-90 B). Direct entries, graph and proxy routes, framed builds: unchanged.
 - **Inputless mint at a handler-managed collection** (HIGH; `dffcec4ac`, made exact in `6d6a6913f`; found 2026-11-23

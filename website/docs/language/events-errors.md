@@ -145,6 +145,10 @@ Event NFTs are immutable (`none` capability), but they are not forced to remain 
 covenant enforces a 144-block relative delay and then permits anyone to spend them for cleanup. Consequently:
 
 - `queryEvents()` and `readEventsFromChain()` read the **current unspent event set** exposed by the provider;
+- the covenant constrains no output, so whoever spends an event NFT can recreate it unchanged under a new outpoint.
+  The readers count an event NFT only when the transaction that created it also outputs the contract's minting
+  master, as every emit does, so such a copy is never returned as an event. Each read fetches those transactions
+  through the provider's `getRawTransaction` and throws `EventProvenanceError` when the provider cannot serve one;
 - an application which needs permanent history must index event UTXOs before they are spent, or use a provider
   which retains spent-output history; and
 - block-range arguments on the ethers-compatible facade cannot reconstruct already-spent events from a UTXO-only

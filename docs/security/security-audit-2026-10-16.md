@@ -1437,6 +1437,35 @@ needs VM evidence, `rejectedWith` has no source fallback).
   protocol, and the state-access path does not pin the master commitment (2026-07 LOW, no impact today).
 - Routes without a verifier: the trailing band counts as claimed as a whole once a trailing row runs, and an unused slot
   of a collection a run handler names is not pinned.
+  - VM-CONFIRMED EXPLOITABLE (both clauses), 2026-11-23, mocknet
+    (`packages/solidcash/test/journal-message-bus/e2e/AuditRouteUnusedClaimedSlot.test.ts`, attack rows `it.fails`).
+    On a standalone batch (verifier index -1; a local-caller route takes the same claims, not measured) the C3 pin
+    skips every offset a row that ran claims (`emitRouteBlockClaims`, GTT:62602-62613; flags per handler,
+    compiler.ts:7090, 12671-12715): the whole trailing band, or every handler-managed lane of a named collection.
+    Nothing else holds a record there: the census skips a handler-managed collection (GTT:62376-62395), the route
+    leaves its lanes to the handlers (GTT:61318), a row checks only the lane it uses, and a scalar sorted write counts
+    only outputs at its address (GTT:35912), and drops even that where another lane of the collection has alias
+    priors (GTT:35631-35650; compiler.ts:18123 gives a route's second lane one), consistent with the two-lane rows.
+    Measured: beside a batch of a `bytes` setter, an entry of a collection only another handler writes, put at the last
+    trailing slot, is rewritten or burnt; in a route with a second lane of that collection (a two-key reader), beside
+    a `check` row and beside a `put` row an entry in the unused lane is rewritten or burnt. The same trailing slot
+    beside a `put` batch, which claims no trailing record, is refused. Adjacent, same test: beside the setter batch a
+    second node of the entry, minted with no input, is accepted: the output scan admits any lock the contract mints at
+    (GTT:63338, 63431), and nothing counts a handler-managed collection's address unless its writer runs with an exact
+    count.
+  - FIX DESIGN (not implemented: it is cross-cutting). Claim at run time what the rows consumed, not whole groups: a
+    route-frame bitmask threaded through the handlers as `__internal__scalarEntryInsertCount` is, to which each
+    consumer ORs the offsets it settles (a fixed or journal lane, a band run: dynamic chunks, runtime-loop and iteration
+    entries, value chunks, insert predecessors). The pin then skips only own | used, the participant block once the
+    verifier ran, and the block for an `all` row. A consumer left out refuses honest spends (fail closed), which the
+    bus e2e suites find. Outputs need their own bound: per handler-managed collection, outputs at its address equal
+    inputs there plus inserts minus deletes, counted the same way. Estimate: ~8-15 B per consumer site (less through
+    one shared helper), ~10-15 B per invoked handler for the threaded mask, ~45-60 B per handler-managed collection for
+    the output bound; the claim flags (~10-15 B each) go away. Bytes move on every route carrying
+    `messageBusRecordClaims` (bound, non-graph, non-proxy, non-framed census path) and, for the output bound, every
+    route with a handler-managed collection. Needs the journal-message-bus e2e suites and the release battery
+    (user-gated). Narrower measures (a row claims only its handler's own lanes; the band admits only the locks its
+    claimers consume) leave the rest open.
 - CRYPTO-4: dynamic and value chunks have no migration path.
 - A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
 

@@ -15,8 +15,9 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
  * A typed call that pays value, `ISingle(v).deposit{value: 3000}(id)`, to a stateful callee in the direct convention
  * (docs/security/security-audit-2026-10-16.md, "Call targets"). The caller reads the callee's record, whose digest
  * names the method, the arguments, the reader (the caller's input) and the value. The caller takes the value from its
- * satoshi container with no output of its own; the builder pays it into the callee's satoshi container, and the callee
- * digests what its container received. So the record binds, through a one-method and a two-method interface alike:
+ * satoshi container, which its check requires at its slot, with no output of its own; the builder pays it into the
+ * callee's satoshi container, and the callee digests what its container received. The payer pays only the fee and the
+ * outputs the call adds. So the record binds, through a one-method and a two-method interface alike:
  * - the method and the arguments;
  * - the value: a spend that pays the callee less than its caller sent is refused;
  * - the caller: one callee run answers one caller.
@@ -164,9 +165,6 @@ const coinsOf = (provider: Provider, tx: Tx): Promise<Coin[]> => Promise.all(tx.
   expect(coin, `input ${binToHex(input.outpointTransactionHash)}:${input.outpointIndex} spends a live coin`).toBeDefined();
   return coin as Coin;
 }));
-
-const balanceAt = async (provider: Provider, lock: Uint8Array): Promise<bigint> => (await provider
-  .getUtxosForLockingBytecode(lock)).reduce((sum, utxo) => sum + utxo.satoshis, 0n);
 
 const reversedHex = (hex: string): string => binToHex(hexToBin(hex).reverse());
 const ofCategory = (category: Uint8Array | string | undefined, hex: string): boolean => category !== undefined
@@ -350,16 +348,34 @@ describe.each(KINDS)('a typed {value:} call through a $name interface', ({ calle
   const vaultOf = (provider: Provider): Promise<Deployed> => deploy(provider, artifacts().Vault, { total: 0n, last: 0n });
   const callerOf = (provider: Provider): Promise<Deployed> => deploy(provider, callerArtifact(), { calls: 0n }, BALANCE);
 
-  it('settles an honest call: the callee credits the value and its satoshi container gains it', async () => {
+  it('settles an honest call: the caller\'s container pays the value into the vault\'s, the payer the fee', async () => {
     const provider = createTestProvider();
     const vault = await vaultOf(provider);
     const caller = await callerOf(provider);
-    await callOf(caller, vault, 'fund', 'deposit')();
+    const tx = await capture(provider, callOf(caller, vault, 'fund', 'deposit'));
+    const coins = await coinsOf(provider, tx);
+    // The payer, the mocknet funder, pays the fee and the outputs the call adds at new locks (its record, its edge),
+    // less the value the caller's container pays into the vault's: nothing of the value, nothing the contracts keep.
+    const lockOf = (bytecode: Uint8Array): string => binToHex(bytecode);
+    const sum = (amounts: readonly bigint[]): bigint => amounts.reduce((total, amount) => total + amount, 0n);
+    const spent = new Set(coins.map((coin) => lockOf(coin.lockingBytecode)));
+    const payer = lockOf(FUNDER);
+    const fee = sum(coins.map((coin) => coin.satoshis)) - sum(tx.outputs.map((output) => output.valueSatoshis));
+    const paid = sum(coins.filter((coin) => lockOf(coin.lockingBytecode) === payer).map((coin) => coin.satoshis))
+      - sum(tx.outputs.filter((output) => lockOf(output.lockingBytecode) === payer).map((output) => output.valueSatoshis));
+    const added = sum(tx.outputs.filter((output) => !spent.has(lockOf(output.lockingBytecode))
+      && lockOf(output.lockingBytecode) !== payer).map((output) => output.valueSatoshis));
+    expect(paid).toBe(fee + added - VALUE);
+
+    expect(await outcomeOf(provider, tx)).toBe('ACCEPTED');
     expect((await caller.sc.getState()).calls).toBe(1n);
     expect((await vault.sc.getState()).last).toBe(ID);
     expect((await vault.sc.getState()).total).toBe(VALUE);
-    expect(await balanceAt(provider, vault.container)).toBe(VALUE);
-    expect(await balanceAt(provider, caller.container)).toBe(BALANCE - VALUE);
+    // One coin each: the caller's container recreated less the value, the vault's container holding the value.
+    const held = async (lock: Uint8Array): Promise<bigint[]> => (await provider.getUtxosForLockingBytecode(lock))
+      .map((utxo) => utxo.satoshis);
+    expect(await held(caller.container)).toEqual([BALANCE - VALUE]);
+    expect(await held(vault.container)).toEqual([VALUE]);
   }, TIMEOUT);
 
   /** The honest call with the vault's run in its place, taken from an honest call of `entry` naming `method`. */

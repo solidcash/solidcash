@@ -22,7 +22,7 @@ export function appendCallValueDeposits(
     const lockHex = binToHex(lock);
     const existing = builder.outputs.findIndex((output, index) => !claimed.has(index) && output.token === undefined
       && output.amount === value && binToHex(output.to instanceof Uint8Array ? output.to
-        : addressToLockScript(output.to)) === lockHex);
+      : addressToLockScript(output.to)) === lockHex);
     if (existing >= 0) {
       claimed.add(existing);
       continue;

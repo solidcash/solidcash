@@ -47,6 +47,14 @@
 - A direct call passing fewer arguments than its method declares (`getAndIncrement()` for `getAndIncrement(pubkey,
   sig)`) did not bind which method its callee ran through a one-method interface (in 0.51.1 and earlier). The
   arguments it leaves are now digested with the named ones, from witnesses the SDK fills.
+- A typed call that pays value, `t.deposit{value: v}(x)`, to a stateful callee paid v to the callee's contract lock,
+  which no function of it can spend, and the callee credited whatever its container gained: the value was bound to
+  nothing (in 0.51.1 and earlier). The SDK refused such a send, so honest calls did not build, but a hand-built one
+  burned the caller's value. The callee's record now binds the value it received, the caller pays from its own
+  container into the callee's container, and a value call to a function that takes no value is refused. A value
+  call in a loop, through a pointer or a runtime selector, or to `msg.sender` is refused at compile time
+  (`CALL_VALUE_UNBOUND`). A low-level `call{value:}` to a stateful contract still pays its lock: send value to a
+  stateful contract through a typed call.
 
 ### Fixed
 

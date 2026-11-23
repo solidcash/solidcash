@@ -60,6 +60,12 @@ const MINT = `contract MintBook() {
   function drop(int key) public { delete this.side[key]; require(true); }
 }`;
 
+const PAIR = `contract PairBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function putPair(int a, int va, int b, int vb) public { this.side[a] = va; this.side[b] = vb; require(true); }
+}`;
+
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
   maximumInputBytes: 1_000_000, suppressWarnings: true,
@@ -463,5 +469,32 @@ describe('bound route without its verifier: an inputless mint beside an honest u
   // A delete writes the default and removes no node.
   it('refuses a side node minted with no input beside a delete', () => {
     expect(state.route.drop).not.toBe(true);
+  });
+});
+
+describe('bound route without its verifier: an honest batch inserting two keys into one gap', () => {
+  let state: { bus: StatefulContract; spend: Spend; failures: ReturnType<typeof failures> };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(PAIR, { ...KERNEL, messageBusHandlers: ['put', 'putPair'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'putPair']));
+    const { bus } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    // 11 and 12 both fall after 9: one predecessor is relinked for two new nodes.
+    const spend = spendOf(await bus.batch([{ function: 'putPair', args: [11n, 4n, 12n, 3n] }]).build());
+    state = { bus, spend, failures: failures(createVirtualMachineBch2026ForProvider(provider), spend) };
+    // The require each failure stopped at, by its instruction pointer.
+    const requires = artifact.debug?.requires ?? [];
+    console.log('two inserts into one gap', state.failures.map((failure) => {
+      const ip = Number(/\(ip (\d+)\)/.exec(failure.error)?.[1]);
+      return { ...failure, require: requires.find((entry) => entry.ip === ip || entry.ip === ip - 1)?.message };
+    }));
+  }, 300_000);
+
+  // Fails today: the mint bound counts inserts as predecessors relinked in place, one here for two new nodes.
+  it.fails('settles the batch', () => {
+    expect(state.failures).toEqual([]);
   });
 });

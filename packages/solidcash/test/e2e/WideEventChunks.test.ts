@@ -3,7 +3,7 @@ import { compileString as compileProduction } from '@solidcash/solidc';
 import { sha256 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Contract, TransactionBuilder } from '../../src/index.js';
+import { Contract, TransactionBuilder, type Utxo } from '../../src/index.js';
 import {
   StatefulContract,
   getEventNftAddress,
@@ -244,6 +244,17 @@ describe('events wider than one NFT commitment', () => {
     expect(result.txs).toHaveLength(1);
     expect(await provider.getUtxos(headAddress)).toHaveLength(1);
     expect(await provider.getUtxos(continuationAddress)).toHaveLength(1);
+    // The destroy reports both, with the height from which anyone may sweep them.
+    const young = result.leftBehind.filter((coin) => coin.spendableFromHeight !== undefined);
+    expect(young.map((coin) => coin.address).sort()).toEqual([continuationAddress, headAddress].sort());
+    const listed = [
+      ...await withHeights(provider).getUtxos(headAddress),
+      ...await withHeights(provider).getUtxos(continuationAddress),
+    ];
+    for (const coin of young) {
+      const confirmed = listed.find((utxo: Utxo) => `${utxo.txid}:${utxo.vout}` === coin.outpoint)!.blockHeight!;
+      expect(coin.spendableFromHeight).toBe(confirmed + 144);
+    }
   }, 300_000);
 
   it('destroy with listed heights still sweeps the event NFTs once their delay has passed', async () => {

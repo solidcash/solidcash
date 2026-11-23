@@ -336,6 +336,18 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
   const eventDelay = EVENT_NFT_RELATIVE_LOCK_SEQUENCE & 0xffff; // BIP-68: the low 16 bits count blocks
   const eventNftSpendable = (utxo: Utxo): boolean => utxo.blockHeight === undefined
     || (utxo.blockHeight > 0 && nextBlockHeight - utxo.blockHeight >= eventDelay);
+  // A younger one is reported with the height from which anyone may sweep it (none while unconfirmed).
+  const youngEvents: LeftBehindCoin[] = [];
+  const keepIfSpendable = (address: string) => (utxo: Utxo): boolean => {
+    if (eventNftSpendable(utxo)) return true;
+    youngEvents.push({
+      outpoint: `${utxo.txid}:${utxo.vout}`, address, satoshis: utxo.satoshis,
+      ...(utxo.token !== undefined && { token: utxo.token }),
+      ...(utxo.blockHeight !== undefined && utxo.blockHeight > 0
+        && { spendableFromHeight: utxo.blockHeight + eventDelay }),
+    });
+    return false;
+  };
   const eventNftInputs: Array<{ utxo: Utxo; eventSignature: string }> = [];
   for (const eventDef of contract.inner.artifact.events ?? []) {
     const isAnonymous = eventDef.anonymous === true;
@@ -345,7 +357,7 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
     try {
       const eventUtxos = await provider.getUtxos(eventAddress);
       const events = eventUtxos.filter(
-        (u) => u.token?.category === categoryId && u.token?.nft && eventNftSpendable(u),
+        (u) => u.token?.category === categoryId && u.token?.nft !== undefined && keepIfSpendable(eventAddress)(u),
       );
       for (const utxo of events) {
         eventNftInputs.push({ utxo, eventSignature: eventDef.signature });
@@ -364,7 +376,8 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
       );
       const continuationUtxos = await provider.getUtxos(continuationAddress);
       const chunks = continuationUtxos.filter(
-        (u) => u.token?.category === categoryId && u.token?.nft && eventNftSpendable(u),
+        (u) => u.token?.category === categoryId && u.token?.nft !== undefined
+          && keepIfSpendable(continuationAddress)(u),
       );
       for (const utxo of chunks) {
         eventContinuationInputs.push({ utxo, eventSignature: eventDef.signature });
@@ -378,7 +391,7 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
   // address's category. Anyone can send coins there; anything else is junk, left in place and reported, so it cannot
   // crowd the final batch or block the sweep on a token it carries. A listing error refuses: a container missed here
   // is stranded once the master is gone.
-  const leftBehind: LeftBehindCoin[] = [];
+  const leftBehind: LeftBehindCoin[] = [...youngEvents];
   const containersAt = async (address: string, isContainer: (utxo: Utxo) => boolean): Promise<Utxo[]> => (
     (await provider.getUtxos(address)).filter((utxo) => {
       if (isContainer(utxo)) return true;

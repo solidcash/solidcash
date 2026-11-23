@@ -198,6 +198,8 @@ export interface LeftBehindCoin {
   address: string;
   satoshis: bigint;
   token?: TokenDetails;
+  /** An event NFT younger than its 144-block relative lock: the height from which anyone may sweep it. */
+  spendableFromHeight?: number;
 }
 
 export interface UpgradeResult<T extends Artifact = Artifact> {
@@ -223,7 +225,10 @@ export interface DestroyOptions {
 export interface DestroyResult {
   txs: TransactionDetails[];          // 1 or more transactions
   totalReclaimed: bigint;             // total satoshis sent to recipient
-  /** Junk at a container address (not a container of it), left where nothing spends it once the master is gone. */
+  /**
+   * Coins left in place: junk at a container address (not a container of it), which nothing spends once the master is
+   * gone, and event NFTs younger than their relative lock, which the destroy could not spend yet.
+   */
   leftBehind: LeftBehindCoin[];
 }
 

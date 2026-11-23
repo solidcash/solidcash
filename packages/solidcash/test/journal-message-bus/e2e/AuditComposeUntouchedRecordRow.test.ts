@@ -16,8 +16,8 @@
  * The second describe compiles the bus and the driver as graph routes (`messageBusGraphContext`). A graph route
  * skipped its whole verifier-proven block and the attack settled (VM-confirmed at 97d38ed48); it now keeps the claims
  * of its rows, cut to that block, and the route refuses it. Both describes also mint a node with no input beside the
- * honest row, which the route's mint bound refuses. The third puts the victim in a proxy's block, on the delegate
- * route an implementation runs for the proxy's records.
+ * honest row, which the route's mint bound refuses. The third puts the victim in a proxy's block, the root caller's,
+ * on the delegate route its implementation runs for the proxy's records.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -367,20 +367,17 @@ async function composeScenario(graph: boolean): Promise<ComposeScenario> {
   };
 }
 
-const BANK = `contract LaneBank() {
-  mapping(int => int) bal;
-  function credit(int k, int v) public { this.bal[k] = this.bal[k] + v; require(true); }
-}`;
-
-const BANK_DRIVER = `interface ILaneBank { function credit(int k, int v) external; }
-contract LaneBankDriver(address bank) {
-  function poke() public { ILaneBank(bank).credit(2, 5); require(true); }
+const COORDINATOR = `interface ILaneBus { function put(int key, int value) external; }
+contract LaneCoordinator() {
+  mapping(int => int) side;
+  function seed(int key, int value) public { this.side[key] = this.side[key] + value; require(true); }
+  function poke(address bus, int key, int value) public { ILaneBus(bus).put(key, value); require(true); }
 }`;
 
 /**
- * The same on a proxy's block: a driver calls `credit(2, 5)` on a deployProxy LaneBank, the compose carrying the
- * implementation as its executor (participant-verifiers transport), and `bal[9]`, which the compose does not spend,
- * sits at a pad of the proxy's block under its own resource row.
+ * The same on a proxy's block: a deployProxy LaneCoordinator, the root caller, calls `put(5, 9)` on a LaneBus, the
+ * compose carrying the implementation as its executor (participant-verifiers transport). The coordinator's own
+ * `side[9]`, which the compose does not spend, sits at a pad of the proxy's block under its own resource row.
  */
 async function proxyScenario(): Promise<Omit<ComposeScenario, 'mint' | 'insert'>> {
   const provider = createMessageBusCapstoneTestProvider();
@@ -390,28 +387,30 @@ async function proxyScenario(): Promise<Omit<ComposeScenario, 'mint' | 'insert'>
       txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
     });
   }
-  const bankArtifact = compileString(BANK, KERNEL);
-  expect(bankArtifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'credit'))
-    .toMatchObject({ eligible: true });
-  const bank = await upgrades.deployProxy(getContractFactory(bankArtifact, signer), {}, { initializer: false });
-  const dispatch = bank as unknown as { credit(key: bigint, value: bigint): { send(): Promise<unknown> } };
-  await dispatch.credit(2n, 10n).send();
-  await dispatch.credit(9n, 1n).send();
-  const driverArtifact = compileString(BANK_DRIVER, KERNEL);
-  const { contract: driver } = await connect(provider, driverArtifact, [hexToBin(bank.proxy.inner.lockingBytecode)]);
-  driver._registerResolvedExternal('ILaneBank', bank.proxy);
-  const callsite = driverArtifact.abi.find((entry) => entry.name === 'poke')?.externalCalls
-    ?.find((call) => call.functionName === 'credit');
-  expect(callsite?.callsiteId).toBeDefined();
+  const busArtifact = compileString(BUS, { ...KERNEL, messageBusHandlers: ['put', 'check', 'compare'] });
+  const { contract: bus } = await connect(provider, busArtifact, []);
+  await bus.call.put(5n, 7n).send();
+  const implementationArtifact = compileString(COORDINATOR, KERNEL);
+  const delegate = implementationArtifact.delegateArtifact;
+  expect(delegate?.messageBus?.handlers.find((handler) => handler.name === 'poke')).toMatchObject({ eligible: true });
+  const deployed = await upgrades.deployProxy(
+    getContractFactory(implementationArtifact, signer), {}, { initializer: false },
+  );
+  const dispatch = deployed as unknown as { seed(key: bigint, value: bigint): { send(): Promise<unknown> } };
+  await dispatch.seed(5n, 7n).send();
+  await dispatch.seed(9n, 1n).send();
+  deployed.implementation._registerResolvedExternal('ILaneBus', bus);
+  const callsite = delegate!.abi.find((entry) => entry.name === 'poke')?.externalCalls?.[0];
+  expect(callsite).toMatchObject({ functionName: 'put', interfaceName: 'ILaneBus' });
   const compose = async (): Promise<TransactionBuilder> => {
     const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
     return messageBus.compose({
       preparedCalls: [
-        { contract: driver, functionName: 'poke', args: [] },
         {
-          contract: bank.proxy, functionName: 'credit', args: [2n, 5n], callsiteId: callsite!.callsiteId,
-          executionArtifact: bank.implementation.inner.artifact, executor: bank.implementation,
+          contract: deployed.proxy, functionName: 'poke', args: [bus.inner.lockingBytecode, 5n, 9n],
+          executionArtifact: deployed.implementation.inner.artifact, executor: deployed.implementation,
         },
+        { contract: bus, functionName: 'put', args: [5n, 9n], callsiteId: callsite!.callsiteId },
       ],
       funder,
       changeAddress: funder.unlocker.generateLockingBytecode(),
@@ -420,7 +419,8 @@ async function proxyScenario(): Promise<Omit<ComposeScenario, 'mint' | 'insert'>
   const {
     honest, honestFailures, control, attack, lane,
   } = await untouchedRecord(
-    provider, compose, bank.implementation.inner.artifact, bank.proxy.inner, bank.proxy.categoryId, 'bal',
+    provider, compose, deployed.implementation.inner.artifact, deployed.proxy.inner, deployed.proxy.categoryId,
+    'side',
   );
   console.log('compose untouched proxy record', { lane, control, attack });
   return { provider, honest: { builder: honest, failures: honestFailures }, control, attack, lane };

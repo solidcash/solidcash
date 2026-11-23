@@ -122,6 +122,7 @@ import {
   type KernelEntryJournalDirtyFinalBodyCandidate,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
+import { fillLeftCallArgumentWitnesses } from './call-record.js';
 import {
   KERNEL_JOURNAL_ACCESS_STREAMS,
   KERNEL_JOURNAL_RECORDS,
@@ -12916,6 +12917,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       finalArgs = materializeInternalFunctionArgument(
         finalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory,
       );
+    }
+    // A call leaving arguments to its callee digests them from witnesses: the co-spent callee's arguments.
+    if (abiFunction !== undefined) {
+      finalArgs = fillLeftCallArgumentWitnesses(finalArgs, abiFunction, externalCallUtxoGroups);
     }
 
     const stateUnlockers = buildCreateBuilderStateUnlockersImpl(

@@ -9,6 +9,7 @@ import type NetworkProvider from '../network/NetworkProvider.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { isPoolInfoInput } from '../oracle/pool/reader.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { CALL_ARGUMENT_WITNESS, leftCallArgumentWitness } from './call-record.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import { directCallBatchUnlocker } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -430,6 +431,14 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           : externalCallUtxoGroups[candidate.sharedGroupIndex] ?? candidate;
         bFinalArgs.push(physical === undefined ? 1n
           : BigInt(physical.blockInputs ? physical.blockInputs.length : 1 + physical.dataNftUtxos.length));
+      } else if (CALL_ARGUMENT_WITNESS.test(paramName)) {
+        // An argument this callee's own call leaves to its callee: that callee's argument, as its record digests it.
+        const [, callsite, position] = CALL_ARGUMENT_WITNESS.exec(paramName)!;
+        const slot = (bAbiFunc?.externalCalls ?? []).findIndex((call) => call.callsiteId === Number(callsite));
+        const child = slot < 0 ? undefined : calleeGroupForSlot(slot);
+        const value = child === undefined ? undefined
+          : leftCallArgumentWitness(externalCallUtxoGroups[child], Number(position));
+        if (value !== undefined) bFinalArgs.push(value);
       } else if (paramName.startsWith('__internal__externalCallSelector')) {
         // Resolve selector for child group's target function. An ordinary frame takes the callee of the slot's
         // callsite, as two calls can name functions of one name on two contracts; other frames match by name.

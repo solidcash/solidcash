@@ -276,8 +276,9 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
     // sha256(bytecode) of this tree without KCHAIN-1 (the C3 pin folded into the count), re-pinned on the 2026-11-05
     // landing: void records and the side-car guard (66fb63b0f) moved the first, the compute covenant it binds
     // (3a5eee42f) the second, KCHAIN-1 neither. The first was stale again by 07552ad33 (382aa683…) and moved once more
-    // when genesisCalls became the default (e7fe44e3a; compiled with genesisCalls: false it did not move).
-    expect(sha(fixed.bytecode)).toBe('107e70db7026f301a643c569de58309120bb34760f35d368a0c2e1de138c8e1f');
+    // when genesisCalls became the default (e7fe44e3a; compiled with genesisCalls: false it did not move), and again
+    // when each record named its reader (its void entry takes the reader witness).
+    expect(sha(fixed.bytecode)).toBe('3720445de2abc1ceec8b9c4d288f95c3cc910672f1c22795febe4603ced94a63');
     expect(sha(stateless.bytecode)).toBe('bd3f92d0ad764f649d381edce602e151b11471a50b21aaa548ac5e771ccd0a20');
     expect(fixed.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(false);
     expect(stateless.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(false);

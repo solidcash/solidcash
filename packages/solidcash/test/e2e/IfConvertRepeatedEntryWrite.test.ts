@@ -69,13 +69,14 @@ describe('if/else entry writes: an arm that writes one entry twice', () => {
     // Re-pinned 2026-11-14 to the current build: these were stale by 07552ad33, and e7fe44e3a moved them again. With
     // genesisCalls: false its code equals 07552ad33's but for O8 (the exact-stack check now first in every arm, the
     // shared helper renumbered behind it); with the default it also carries the genesis marker and header.
+    // Re-pinned again when each record named its reader: every void entry takes the reader witness.
     const before: Record<string, string> = {
       'k = k + 1; if (c) { m[k] = a; } else { m[k] = 5; }':
-        'f54d94acc741514c43275dfe759dc06073430668edec194affcf8e3b6df970bb',
+        'a1de13b7c61f0edc09eafe89c953219872925054fe72149a6818bc68b1c0adc8',
       'if (c) { m[k] = a; } else { n[k] = 5; }':
-        'eff2bd58d776509a07165b70e67e262bbce5639d89d7516f0f8f52b7eaea3f5d',
+        '07dc0d67169ecb975774cb50005b89795c3e87cb7acf4b4cf4da8da969042f9a',
       'k = k + 1; if (c) { m[k] = a; n[k] = 1; } else { m[k] = 5; }':
-        '730f226313edba6590ba1eda557f2c898d997da0af1d018fb5818fbf120f3581',
+        'bf284e858d525872e2464118759583702a0a76d394e7ebe6779ce880b41b127e',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);

@@ -80,6 +80,42 @@ contract C(pubkey pk) {
     expect(bytecode(source)).toBe(bytecode(source, { scalarReplaceStructLocals: false }));
   });
 
+  it('leaves a local alone when a state variable of its name is read before it (evmCompat)', () => {
+    const source = `pragma solidity ^0.8.0;
+contract C {
+    struct Pair { uint a; uint b; }
+    Pair v;
+    constructor() { v = Pair(1, 2); }
+    function f(uint x) public {
+        uint before = v.a;
+        {
+            Pair memory v = Pair(x, x + 1);
+            require(v.b > v.a);
+        }
+        require(before == 1);
+    }
+}`;
+    const options = { evmCompat: true };
+    expect(bytecode(source, options)).toBe(bytecode(source, { ...options, scalarReplaceStructLocals: false }));
+  });
+
+  it('leaves a local alone when its own initializer reads a state variable of its name (evmCompat)', () => {
+    const source = `pragma solidity ^0.8.0;
+contract C {
+    struct Pair { uint a; uint b; }
+    Pair v;
+    constructor() { v = Pair(1, 2); }
+    function f(uint x) public {
+        {
+            Pair memory v = Pair(v.a, x);
+            require(v.b > v.a);
+        }
+    }
+}`;
+    const options = { evmCompat: true };
+    expect(bytecode(source, options)).toBe(bytecode(source, { ...options, scalarReplaceStructLocals: false }));
+  });
+
   it('does not touch a struct with a nested struct or array field', () => {
     const source = `
 pragma solidcash ^0.51.0;

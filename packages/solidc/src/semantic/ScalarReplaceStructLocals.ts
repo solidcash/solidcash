@@ -139,9 +139,31 @@ export default class ScalarReplaceStructLocals extends AstTraversal {
         if (named.size !== fields.length || !fields.every((f) => named.has(f.name))) continue;
       }
       if (!this.onlyFieldReads(fn, def, new Set(fields.map((f) => f.name)))) continue;
+      if (!this.allMentionsInScope(fn, def)) continue;
       result.set(name, new Map(fields.map((f) => [f.name, `__sroa_${name}_${f.name}`])));
     }
     return result;
+  }
+
+  /**
+   * Every mention of the name is a mention of this local: each lies in the statements after its definition in the
+   * block that holds it. A mention before it, in its own initializer, or outside that block names another binding (a
+   * state variable under `evmCompat`), which the rewrite would otherwise turn into a read of this local's fields.
+   */
+  private allMentionsInScope(fn: FunctionDefinitionNode, def: VariableDefinitionNode): boolean {
+    let scope: Node[] | undefined;
+    walk(fn.body, (value) => {
+      if (scope !== undefined || !(value instanceof BlockNode)) return;
+      const index = (value.statements ?? []).indexOf(def as unknown as StatementNode);
+      if (index >= 0) scope = value.statements!.slice(index + 1) as unknown as Node[];
+    });
+    if (scope === undefined) return false;
+    const mentions = (root: unknown): number => {
+      let count = 0;
+      walk(root, (value) => { if (value instanceof IdentifierNode && value.name === def.name) count += 1; });
+      return count;
+    };
+    return mentions(fn) === scope.reduce((total, statement) => total + mentions(statement), 0);
   }
 
   /** Every mention of `def.name` in the function (outside its own definition) is the base of `name.field`. */

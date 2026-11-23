@@ -7090,9 +7090,19 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
  * reads comes back at its own index (the SDK keeps a read-only entry's commitment, a journal flushes only a written
  * cache, read-only chunks lead the band 1:1), which is what the pin requires, so a read claims none of them.
  * A typed external call claims nothing of its own: the callee runs as its own row, in its own block, and a call back
- * into this contract is another row with its own claims. A low-level call (a delegatecall runs other code on this
- * contract's records) claims all.
+ * into this contract is another row with its own claims. A low-level `call` or `staticcall` to another address runs
+ * its callee the same way; a value it carries moves out of the tokenless satoshi container, no record. A delegatecall
+ * runs other code on this contract's records, and a low-level call to `address(this)` lowers to an internal call in
+ * the same row (LowerSelfLowLevelCalls, which may run after route synthesis), so both claim all.
  */
+/** `address(this)` or `payable(this)` as the AstBuilder writes it: a cast to address over the input's own lock. */
+function isSelfAddressExpression(node: unknown): boolean {
+  if (!(node instanceof CastNode) || !(node.type instanceof AddressType)) return false;
+  const inner = node.expression;
+  return inner instanceof UnaryOpNode && inner.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+    && inner.expression instanceof NullaryOpNode && inner.expression.operator === NullaryOperator.INPUT_INDEX;
+}
+
 function messageBusRecordClaim(
   footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
   collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, lifecycle: boolean,
@@ -7118,9 +7128,11 @@ function messageBusRecordClaim(
   const visit = (node: unknown): void => {
     if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
       || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) reach.anyBand = true;
-    else if (node instanceof AssemblyStatementNode || node instanceof LowLevelCallNode
-      || node instanceof LowLevelCallStatementNode
-      || (node instanceof MethodCallNode && ['call', 'staticcall', 'delegatecall'].includes(node.methodName))) {
+    else if (node instanceof AssemblyStatementNode) reach.all = true;
+    else if (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode) {
+      if (node.callMode === 'delegatecall' || isSelfAddressExpression(node.targetExpression)) reach.all = true;
+    } else if (node instanceof MethodCallNode && ['call', 'staticcall', 'delegatecall'].includes(node.methodName)
+      && (node.methodName === 'delegatecall' || isSelfAddressExpression(node.object))) {
       reach.all = true;
     }
   };

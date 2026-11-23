@@ -54805,17 +54805,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         entries,
       };
     };
+    // The arms of each branch with two: a write in one reaches a call in the other only on a loop's next turn.
+    let arms: { left: Set<Node>; right: Set<Node> }[] | undefined;
+    const apart = (write: Node, run: Node): boolean => (arms ??= [...at.keys()]
+      .filter((node): node is BranchNode => node instanceof BranchNode && node.elseBlock !== undefined)
+      .map((branch) => ({ left: subtree(branch.ifBlock), right: subtree(branch.elseBlock!) })))
+      .some(({ left, right }) => (left.has(write) && right.has(run)) || (right.has(write) && left.has(run)));
+    // The field paths of copy `name` that `write`, a write of it, changes, with what it carries over from a snapshot.
+    const copyPaths = (write: Node, name: string): FieldPath[] => (write instanceof AssignNode
+      && write.identifier.name === name ? this.rebuiltPaths(write.expression, this.carriedOver(write, snapshot)) : [[]]);
     // Whether a copy a target was traced through (VariableDefinitionNode.receiverCopies) can change at the target's
-    // path between where it is taken and a run of the call: a write of the copy there, of it whole, or assembly.
-    const copiesWritten = (copies: ReceiverCopies, call: ExternalCallSlot | Node): boolean => copies.some((copy) => {
+    // path between where it is taken and where the copy nearer the call is taken from it, or a run of the call for
+    // the nearest: a write of the copy there, of it whole, or assembly.
+    const copiesWritten = (copies: ReceiverCopies, call: ExternalCallSlot | Node): boolean => copies.some((copy, index) => {
       const copied = declarations.get(copy.local);
       const from = copied === undefined ? -1 : subtreeEnd(copied);
+      const nearer = index === 0 ? undefined : declarations.get(copies[index - 1]!.local);
       const calls = runsOf(call);
       return landed.some((write) => write.node !== copied
-        && calls.some((run) => (write.end > from && write.end < at.get(run)!) || sharesLoop(write.node, run))
+        && calls.some((run) => sharesLoop(write.node, run) || (write.end > from
+          && write.end < (nearer === undefined ? at.get(run)! : subtreeEnd(nearer) + 1) && !apart(write.node, run)))
         && (write.names === undefined || write.element === copy.local
           || (write.names.includes(copy.local) && (copy.path === undefined
-            || localPaths(write.node, copy.local).some((path) => fieldPathsOverlap(path, copy.path!))))));
+            || copyPaths(write.node, copy.local).some((path) => fieldPathsOverlap(path, copy.path!))))));
     });
     // A target read from the stored value local copies were taken from is, as on the EVM, the value of the copy the
     // call reads where it runs: the stored value where the farthest copy was taken, as the copies changed since. The

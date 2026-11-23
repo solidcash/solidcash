@@ -44,6 +44,10 @@ import {
   ArrayDeleteNode,
   AssemblyStatementNode,
   IndirectCallNode,
+  BranchNode,
+  ReturnNode,
+  BreakNode,
+  ContinueNode,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, type Type,
@@ -105,8 +109,23 @@ type StateWrites = ReadonlyMap<string, readonly FieldPath[]> | 'any';
 const NO_STATE_WRITES: StateWrites = new Map();
 /** A write in a function body: where it lands (its subtree's last position), the stack names and state it writes. */
 type BodyWrite = { node: Node; end: number; stack: readonly string[] | 'any'; state: StateWrites };
-/** A body's nodes by position (walkInvocationAst order), its writes and its loops' nodes. */
-type BodyWritePlan = { at: Map<Node, number>; writes: BodyWrite[]; loops: Set<Node>[] };
+/**
+ * A body's nodes by position (walkInvocationAst order), its writes, its loops' nodes, the arms of each branch with
+ * two, and for each block that returns, its nodes and the nodes of its statements before the return.
+ */
+type BodyWritePlan = {
+  at: Map<Node, number>; writes: BodyWrite[]; loops: Set<Node>[];
+  arms: { left: Set<Node>; right: Set<Node> }[]; exits: { block: Set<Node>; before: Set<Node> }[];
+  paths: Map<Node, Map<string, FieldPath[]>>;
+};
+/** The place a write writes: its root, the stack names its keys read, and the reads of it. */
+type Place = { root: string; keys: readonly string[]; isBase: (read: ExpressionNode) => boolean };
+/** Whether a read of `base` at `read` carries over what a write places at `path`. */
+type Carried = (base: ExpressionNode, read: FieldPath, path: FieldPath) => boolean;
+
+function sameFieldPath(left: FieldPath, right: FieldPath): boolean {
+  return left.length === right.length && left.every((field, index) => field === right[index]);
+}
 
 /** Whether two field paths share a location: one is a prefix of the other. */
 function fieldPathsOverlap(left: FieldPath, right: FieldPath): boolean {
@@ -1319,12 +1338,12 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
 
   /**
    * The copies a call through a target traced through them goes through, the one it reads where it runs first, when
-   * a write before the call (or in a loop with it) can make them hold another value there than the stored value the
-   * trace reached: a write of that value at the target's path, or of a key it is read under, after the farthest copy
-   * is taken, or of a copy at its path after it is taken. undefined when none can: the call keeps the stored value's
-   * local, whose call site reads the stored value again after a write before the copy, the value the copy holds. A
-   * helper's argument binding nearer the call than a copy it equals where the call runs is passed over, so the calls
-   * through one copy share its local.
+   * a write that reaches the call can make them hold another value there than the stored value the trace reached: a
+   * write of that value at the target's path, or of a key it is read under, after the farthest copy is taken, or of
+   * a copy at its path after it is taken and before the copy nearer the call is taken from it. undefined when none
+   * can: the call keeps the stored value's local, whose call site reads the stored value again after a write before
+   * the copy, the value the copy holds. A helper's argument binding nearer the call than a copy it equals where the
+   * call runs is passed over, so the calls through one copy share its local.
    */
   private copiesWrittenFirst(
     capture: CopyCapture, stored: ExpressionNode, call: Node,
@@ -1335,29 +1354,34 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const plan = this.bodyWritePlan();
     const callAt = plan.at.get(call);
     const read = this.storedRead(stored);
-    const taken = copies.map((copy) => this.declarationEnd(copy.local, plan));
+    const declared = copies.map((copy) => this.declarations.get(copy.local));
+    const taken = declared.map((node) => (node !== undefined && plan.at.has(node)
+      ? this.subtreeEnd(node, plan.at) : undefined));
     if (callAt === undefined || read === undefined
       || taken.some((end) => end === undefined || end >= callAt)) return copies;
-    const lands = (write: BodyWrite, from: number): boolean => (write.end > from && write.end < callAt)
-      || plan.loops.some((inside) => inside.has(write.node) && inside.has(call));
-    const copyWritten = (index: number, from: number): boolean => plan.writes.some((write) => lands(write, from)
-      && this.writesLocal(write, copies[index]!.local, copies[index]!.path));
+    // A write reaches the call from where it lands, unless it is in another arm of a branch or followed by a return
+    // the call is not past; a write in a loop with the call reaches it on the next turn.
+    const reaches = (write: BodyWrite, from: number, to: number): boolean => plan.loops
+      .some((inside) => inside.has(write.node) && inside.has(call))
+      || (write.end > from && write.end < to
+        && !plan.arms.some(({ left, right }) => (left.has(write.node) && right.has(call))
+          || (right.has(write.node) && left.has(call)))
+        && !plan.exits.some(({ block, before }) => before.has(write.node) && !block.has(call)));
+    const copyWritten = (index: number, from: number, to: number): boolean => plan.writes.some((write) =>
+      reaches(write, from, to) && this.writesLocal(write, copies[index]!.local, copies[index]!.path, plan));
     // The stored value is its root at the target's path, read under its keys, each a stack variable or a state root.
     const reads = [{ name: read.root, path: read.path }, ...read.keys.map((key) => ({ name: key, path: [] }))];
-    const storedWritten = plan.writes.some((write) => lands(write, taken[taken.length - 1]!)
-      && reads.some(({ name, path }) => this.writesLocal(write, name, path) || write.state === 'any'
+    const storedWritten = plan.writes.some((write) => reaches(write, taken[taken.length - 1]!, callAt)
+      && reads.some(({ name, path }) => this.writesLocal(write, name, path, plan) || write.state === 'any'
         || (write.state.get(name) ?? []).some((written) => fieldPathsOverlap(written, path))));
-    if (!storedWritten && copies.every((_copy, index) => !copyWritten(index, taken[index]!))) return undefined;
+    // A copy matters until the copy nearer the call is taken from it, the nearest until the call.
+    if (!storedWritten && copies.every((_copy, index) => !copyWritten(
+      index, taken[index]!, index === 0 ? callAt : taken[index - 1]! + 1,
+    ))) return undefined;
     let first = 0;
     while (first < copies.length - 1 && ARGUMENT_BINDING.test(copies[first]!.local)
-      && !copyWritten(first, taken[first]!) && !copyWritten(first + 1, taken[first]!)) first += 1;
+      && !copyWritten(first, taken[first]!, callAt) && !copyWritten(first + 1, taken[first]!, callAt)) first += 1;
     return copies.slice(first);
-  }
-
-  /** Where the declaration of `name` the traversal reached last ends, in the body's write plan. */
-  private declarationEnd(name: string, plan: BodyWritePlan): number | undefined {
-    const declaration = this.declarations.get(name);
-    return declaration === undefined || !plan.at.has(declaration) ? undefined : this.subtreeEnd(declaration, plan.at);
   }
 
   /**
@@ -1397,36 +1421,58 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return undefined;
   }
 
-  /** The current body's nodes by position (walkInvocationAst order), its writes and its loops, built once a run. */
+  /**
+   * The current body's nodes by position (walkInvocationAst order), its writes, its loops, the arms of each branch
+   * with two, and the nodes each block runs before a return of its own (a block with no break or continue), built
+   * once a run. Each write's state is taken after the writes before it, which its snapshots are checked against.
+   */
   private bodyWritePlan(): BodyWritePlan {
     if (this.writePlan !== undefined) return this.writePlan;
     const at = new Map<Node, number>();
     const loops: Node[] = [];
+    const branches: BranchNode[] = [];
+    const blocks: BlockNode[] = [];
     walkInvocationAst(this.currentBody, (child) => {
       at.set(child, at.size);
       if (child instanceof WhileNode || child instanceof DoWhileNode || child instanceof CollectionIterationNode) {
         loops.push(child);
       }
+      if (child instanceof BranchNode && child.elseBlock !== undefined) branches.push(child);
+      if (child instanceof BlockNode) blocks.push(child);
     });
+    const nodesOf = (roots: readonly Node[]): Set<Node> => {
+      const nodes = new Set<Node>();
+      for (const root of roots) walkInvocationAst(root, (inner) => { nodes.add(inner); });
+      return nodes;
+    };
+    const exits: BodyWritePlan['exits'] = [];
+    for (const block of blocks) {
+      const statements = block.statements ?? [];
+      const returns = statements.findIndex((statement) => statement instanceof ReturnNode);
+      const inside = returns > 0 ? nodesOf([block]) : undefined;
+      if (inside === undefined || [...inside].some((node) => node instanceof BreakNode || node instanceof ContinueNode)) {
+        continue;
+      }
+      exits.push({ block: inside, before: nodesOf(statements.slice(0, returns)) });
+    }
+    const plan: BodyWritePlan = {
+      at,
+      writes: [],
+      loops: loops.map((loop) => nodesOf([loop])),
+      arms: branches.map((branch) => ({ left: nodesOf([branch.ifBlock]), right: nodesOf([branch.elseBlock!]) })),
+      exits,
+      paths: new Map(),
+    };
+    this.writePlan = plan;
     const locals = new Set([...this.currentParams, ...this.declarations.keys()]);
-    const writes: BodyWrite[] = [];
     for (const node of at.keys()) {
       const stack = this.stackWritesOf(node);
-      const state = this.stateWritesOf(node, locals);
+      const state = this.stateWritesOf(node, locals, plan);
       if (stack === 'any' || stack.length > 0 || state === 'any' || state.size > 0) {
-        writes.push({ node, end: this.subtreeEnd(node, at), stack, state });
+        plan.writes.push({ node, end: this.subtreeEnd(node, at), stack, state });
       }
     }
-    this.writePlan = {
-      at,
-      writes,
-      loops: loops.map((loop) => {
-        const inside = new Set<Node>();
-        walkInvocationAst(loop, (inner) => { inside.add(inner); });
-        return inside;
-      }),
-    };
-    return this.writePlan;
+    return plan;
   }
 
   private subtreeEnd(root: Node, at: ReadonlyMap<Node, number>): number {
@@ -1453,17 +1499,18 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   /**
    * The state `node` may write: its own write by field path, a state root it writes by name, what any function of the
    * contract or the file it may call by that name writes, and any for assembly or a call through a function value. A
-   * call no such function answers to is a builtin or an external call, which writes no state of this contract.
+   * call no such function answers to is a builtin or an external call, which writes no state of this contract. With
+   * the body's `plan`, a rebuild carries over what it reads from a snapshot of its place (snapshotCarries).
    */
-  private stateWritesOf(node: Node, locals: ReadonlySet<string>): StateWrites {
+  private stateWritesOf(node: Node, locals: ReadonlySet<string>, plan?: BodyWritePlan): StateWrites {
     if (node instanceof AssemblyStatementNode || node instanceof IndirectCallNode) return 'any';
-    const own = this.ownStateWrite(node);
+    const own = this.ownStateWrite(node, plan);
     if (own !== undefined) return new Map([own]);
     const stack = this.stackWritesOf(node);
     const roots = stack === 'any' || node instanceof VariableDefinitionNode ? []
       : stack.filter((name) => this.stateRoots.has(name));
     if (roots.length > 0) {
-      return new Map(roots.map((name) => [name, this.writtenPaths(node, name, this.stateRoots.get(name))]));
+      return new Map(roots.map((name) => [name, this.writtenPaths(node, name, this.stateRoots.get(name), plan)]));
     }
     let callees: readonly FunctionDefinitionNode[] = [];
     if (node instanceof FunctionCallNode) {
@@ -1482,19 +1529,24 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   }
 
   /** The state root `node` writes itself, with the field paths it changes (rebuiltPaths). */
-  private ownStateWrite(node: Node): [string, FieldPath[]] | undefined {
+  private ownStateWrite(node: Node, plan: BodyWritePlan | undefined): [string, FieldPath[]] | undefined {
     if (node instanceof StateAssignNode) {
-      const base = (read: ExpressionNode): boolean => (read instanceof IdentifierNode || read instanceof StateAccessNode)
-        && read.name === node.name;
-      return [node.name, this.rebuiltPaths(node.expression, base, [], this.stateRoots.get(node.name))];
+      const place: Place = { root: node.name, keys: [], isBase: (read) => (read instanceof IdentifierNode
+        || read instanceof StateAccessNode) && read.name === node.name };
+      return [node.name, this.rebuiltPaths(node.expression, this.carrier(place, node, plan), [],
+        this.stateRoots.get(node.name))];
     }
     if (node instanceof MappingAssignNode) {
       if (node.arrayIndex !== undefined || node.arrayPush || node.arrayPop) return [node.name, [[]]];
       let entry = this.stateRoots.get(node.name);
       for (let index = 0; index < node.keys.length; index += 1) entry = elementOf(entry);
-      const base = (read: ExpressionNode): boolean => read instanceof MappingAccessNode && read.name === node.name
-        && read.arrayIndex === undefined && sameKeys(read.keys, node.keys);
-      return [node.name, this.rebuiltPaths(node.expression, base, [], entry)];
+      const keys: string[] = [];
+      for (const key of node.keys) {
+        walkInvocationAst(key, (inner) => { if (inner instanceof IdentifierNode) keys.push(inner.name); });
+      }
+      const place: Place = { root: node.name, keys, isBase: (read) => read instanceof MappingAccessNode
+        && read.name === node.name && read.arrayIndex === undefined && sameKeys(read.keys, node.keys) };
+      return [node.name, this.rebuiltPaths(node.expression, this.carrier(place, node, plan), [], entry)];
     }
     if (node instanceof MappingFieldAssignNode) return [node.name, [[node.fieldName]]];
     if (node instanceof StateArrayAssignNode || node instanceof DeleteStateNode || node instanceof MappingDeleteNode
@@ -1527,37 +1579,81 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   }
 
   /** Whether `write` can change stack variable `name` at `path`, or anywhere in it when `path` is undefined. */
-  private writesLocal(write: BodyWrite, name: string, path: FieldPath | undefined): boolean {
+  private writesLocal(write: BodyWrite, name: string, path: FieldPath | undefined, plan: BodyWritePlan): boolean {
     if (write.stack === 'any') return true;
     if (!write.stack.includes(name)) return false;
-    const type = this.localStructTypes.get(name) ?? this.parameterTypes.get(name) ?? this.stateRoots.get(name);
-    return path === undefined || this.writtenPaths(write.node, name, type).some((paths) => fieldPathsOverlap(paths, path));
+    if (path === undefined) return true;
+    const known = plan.paths.get(write.node) ?? new Map<string, FieldPath[]>();
+    plan.paths.set(write.node, known);
+    let written = known.get(name);
+    if (written === undefined) {
+      const type = this.localStructTypes.get(name) ?? this.parameterTypes.get(name) ?? this.stateRoots.get(name);
+      written = this.writtenPaths(write.node, name, type, plan);
+      known.set(name, written);
+    }
+    return written.some((changed) => fieldPathsOverlap(changed, path));
   }
 
   /** The field paths of variable `name` of type `type` that `write`, a write of it, changes; all for most writes. */
-  private writtenPaths(write: Node, name: string, type: Type | undefined): FieldPath[] {
+  private writtenPaths(write: Node, name: string, type: Type | undefined, plan: BodyWritePlan | undefined): FieldPath[] {
     if (write instanceof MappingFieldAssignNode && write.name === name) return [[write.fieldName]];
     if (!(write instanceof AssignNode) || write.identifier.name !== name) return [[]];
-    const base = (read: ExpressionNode): boolean => (read instanceof IdentifierNode || read instanceof StateAccessNode)
-      && read.name === name;
-    return this.rebuiltPaths(write.expression, base, [], type);
+    const place: Place = { root: name, keys: [], isBase: (read) => (read instanceof IdentifierNode
+      || read instanceof StateAccessNode) && read.name === name };
+    return this.rebuiltPaths(write.expression, this.carrier(place, write, plan), [], type);
+  }
+
+  /** What a write of `place` carries over: a read of the place, or of a snapshot of it (snapshotCarries), at its path. */
+  private carrier(place: Place, write: Node, plan: BodyWritePlan | undefined): Carried {
+    return (base, read, path) => (place.isBase(base) ? sameFieldPath(read, path)
+      : plan !== undefined && base instanceof IdentifierNode
+        && this.snapshotCarries(base.name, read, path, place, write, plan));
   }
 
   /**
-   * The field paths a write changes when it places `value` at `path` of a value of type `type`: none for a read of the
-   * place it writes at that same path, each field of a rebuild by the struct's constructor by itself (the AstBuilder
-   * lowers a field write to `s = S(v, s.b)`), else all of `path`. As codegen's rebuiltPaths, without its snapshots.
+   * Whether a read of local `name` at `read` carries over what `write` places at `path` of `place`: `name` copies the
+   * place, or a field of it, at that path, it is taken before the write with no loop around the write alone, and
+   * nothing between them writes it there, the place there or a key of the place. Rebuilds read such snapshots
+   * (`S __mefw = m[k]; m[k] = S(__mefw.a, v)`), and a cache's flush writes its snapshot back whole.
    */
-  private rebuiltPaths(
-    value: ExpressionNode, isBase: (read: ExpressionNode) => boolean, path: FieldPath, type: Type | undefined,
-  ): FieldPath[] {
+  private snapshotCarries(
+    name: string, read: FieldPath, path: FieldPath, place: Place, write: Node, plan: BodyWritePlan,
+  ): boolean {
+    const declaration = this.declarations.get(name);
+    const initializer = this.localInits.get(name);
+    const writeAt = plan.at.get(write);
+    if (!this.singleAssignLocals.has(name) || !(declaration instanceof VariableDefinitionNode)
+      || initializer === undefined || writeAt === undefined || !plan.at.has(declaration)) return false;
+    let base: ExpressionNode = initializer;
+    const prefix: string[] = [];
+    while (base instanceof FieldAccessNode) {
+      prefix.unshift(base.name);
+      base = base.expression;
+    }
+    if (!place.isBase(base) || !sameFieldPath([...prefix, ...read], path)) return false;
+    const from = this.subtreeEnd(declaration, plan.at);
+    if (from >= writeAt || plan.loops.some((inside) => inside.has(write) && !inside.has(declaration))) return false;
+    const writesPlace = (other: BodyWrite): boolean => other.state === 'any'
+      || (other.state.get(place.root) ?? []).some((written) => fieldPathsOverlap(written, path))
+      || place.keys.some((key) => (other.state as ReadonlyMap<string, unknown>).has(key));
+    return !plan.writes.some((other) => other.end > from && other.end < writeAt
+      && (this.writesLocal(other, name, read, plan) || this.writesLocal(other, place.root, path, plan)
+        || place.keys.some((key) => this.writesLocal(other, key, [], plan)) || writesPlace(other)));
+  }
+
+  /**
+   * The field paths a write changes when it places `value` at `path` of a value of type `type`: none for what
+   * `carried` finds carried over, each field of a rebuild by the struct's constructor by itself (the AstBuilder
+   * lowers a field write to `s = S(v, s.b)`), else all of `path`. As codegen's rebuiltPaths.
+   */
+  private rebuiltPaths(value: ExpressionNode, carried: Carried, path: FieldPath, type: Type | undefined): FieldPath[] {
     let base: ExpressionNode = value;
     const read: string[] = [];
     while (base instanceof FieldAccessNode) {
       read.unshift(base.name);
       base = base.expression;
     }
-    if (isBase(base) && read.length === path.length && read.every((field, index) => field === path[index])) return [];
+    if (carried(base, read, path)) return [];
     const { name } = value instanceof FunctionCallNode ? value.identifier : { name: '' };
     if (!(type instanceof StructType) || !(value instanceof FunctionCallNode)
       || name.slice(name.lastIndexOf('.') + 1) !== type.name || value.parameters.length !== type.fields.length) {
@@ -1566,7 +1662,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return type.fields.flatMap((field, index) => {
       const argument = value.parameters[value.fieldNames === undefined ? index : value.fieldNames.indexOf(field.name)];
       return argument === undefined ? [[...path, field.name]]
-        : this.rebuiltPaths(argument, isBase, [...path, field.name], field.type);
+        : this.rebuiltPaths(argument, carried, [...path, field.name], field.type);
     });
   }
 

@@ -380,8 +380,8 @@ describe('compose path on a graph route: a resource row may rewrite a record no 
     expect(state.insert).toEqual([]);
   });
 
-  // Expected to fail before the graph route takes the mint bound: nothing else counts the bus's nodes.
-  it.fails('refuses a node minted at the collection with no input beside the honest row', () => {
+  // The graph route's mint bound, as the leaf route's: before it, nothing counted the bus's nodes and the mint settled.
+  it('refuses a node minted at the collection with no input beside the honest row', () => {
     expect(state.mint).not.toEqual([]);
   });
 });

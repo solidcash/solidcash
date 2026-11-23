@@ -62672,7 +62672,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * C3 mint bound, bound non-graph route: the census leaves a handler-managed collection to its handlers, which
+   * C3 mint bound, bound route: the census leaves a handler-managed collection to its handlers, which
    * count its outputs only where they run, and the output scan admits a node at the collection's lock. So the
    * outputs at the collection's address are exactly its inputs there plus the nodes this run inserted. A sorted
    * delete removes no node (visitMappingDelete), and an insert relinks its predecessor in place: the node spent at an
@@ -62680,10 +62680,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * node no row claims and a row's consumer holds each one it spends, so these relinks, counted at run time, are the
    * inserts. Any other change to the count (an insert whose predecessor comes back elsewhere, as a loop's or a kept
    * batch's does, or a lifecycle row's) is refused here by name, never let through. A collection the route's kept
-   * batch or runtime-loop census counts is left to it. A graph route takes claims but not this bound. Stack neutral.
+   * batch or runtime-loop census counts is left to it. A graph route takes it too: its verifier holds the outputs
+   * only to the one-to-one shape and the composer's resource rows. Stack neutral.
    */
   private emitRouteCollectionMintBounds(node: FunctionDefinitionNode, loc: SingleLocationData): void {
-    if (node.messageBusRecordClaims === undefined || this.routePhysicalSize(node) === GRAPH_BLOCK_SIZE) return;
+    if (node.messageBusRecordClaims === undefined) return;
     const counted = new Set([
       ...(node.sortedBatchInfo ?? []).map((batch) => batch.collection), ...this.vmapRuntimeCollections(node),
     ]);

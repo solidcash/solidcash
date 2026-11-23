@@ -25,9 +25,20 @@
   P2SH32 lock, which anyone can spend, could answer any call a route makes with a result no contract computed. The
   row's lock now stands for an identity only as a P2SH32 or a P2PKH lock. A contract whose message-bus route makes
   external calls compiles to new bytes: recompile and redeploy it.
+- An event NFT could be replayed in the SDK's reads (EVENT-REPLAY-1, in 0.51.1 and earlier). After its 144-block
+  relative lock anyone may spend an event NFT and recreate it unchanged at the event address, and `queryFilter`,
+  `queryEvents`, `on()`/`once()` and `readEventsFromChain` counted the copy as a new event, so an application crediting
+  deposits from events could credit one twice. A read now counts an event NFT only when the transaction that created
+  it spent the contract's minting master (an emit recreates it, a selfdestruct burns it). No covenant or address
+  changes. Reading events now needs the provider's `getRawTransaction` for those transactions; a provider that cannot
+  serve one (a node without a transaction index) makes the read throw `EventProvenanceError`.
 
 ### Fixed
 
+- A call listed with `withExternalCall()` or `withCall()` is refused by name when the calling function's guard skips
+  it (`ListedCallNotMadeError`) or cannot be decided when the transaction is built (`CallGuardUndecidedError`).
+  Before, the listed callee was spent and ran although the caller did not call it. A frame of a multi-call spend whose
+  guard reads false is left out, as an unlisted one is.
 - A low-level call made after a write of its target in the same function now pins and pays the written value, as
   the EVM calls it (TARGET-6). Before, `payee = p; payee.call{value: v}("")` paid the old payee, and
   `token = t; token.call(p)` required the old token. A call the compiler cannot read at its site is refused

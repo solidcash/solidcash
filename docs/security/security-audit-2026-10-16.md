@@ -15,7 +15,10 @@ and -5 on master; see "Oracle pools (2026-11-04)" at the end. Call targets (2026
 ways a spender could choose the callee of a call whose answer the caller uses, are fixed; TARGET-3, the computed
 target, is spender-chosen by design and now warned; TARGET-4, unchecked loop witnesses and view answers for targets
 the contract could check, and TARGET-5, raw calls answered without their callee and value calls that paid nothing,
-are fixed; see "Call targets (2026-11-15)" at the end. Container sums (2026-11-14): CONTAINER-SUM-1 (a runtime
+are fixed; see "Call targets (2026-11-15)" at the end. Security completion (2026-11-23): TARGET-7 in a message-bus
+graph route (VM-confirmed on the 0.51 code), event NFT replay in the SDK's readers (EVENT-REPLAY-1) and a listed call
+whose guard skips it are fixed; see "Security completion (2026-11-23)" at the end. Container sums (2026-11-14):
+CONTAINER-SUM-1 (a runtime
 loop's payments) and CONTAINER-SUM-2 (a kernel route's, VM-confirmed on 0.50.1) let a builder drain a second
 container coin, and are fixed; see "Container sums" at the end. After 0.51.0 (2026-11-16), two more are fixed:
 - TARGET-6, a low-level call bound to its target's value before the function wrote it; see "Call targets".
@@ -1360,6 +1363,14 @@ needs VM evidence, `rejectedWith` has no source fallback).
     suites / release battery), which is user-gated. Landing B is therefore coupled to the release battery; "run the
     battery" verifies B's broad settlement, updates the pins, and gates the release in one pass. Until then the
     accept-residual stands as the status quo (documented, regression-marked), now a choice rather than a necessity.
+  - FIXED 2026-10-28, ledgered 2026-11-23: fix B was merged as `3efd384bd` ("merge fix B + run battery"), with
+    follow-ups through `84572af10` (2026-11-12): `__construct`, the event census, the input base, external reads,
+    the auto-mode direct path, fallback/receive, delegatecall and kernel participants. A void entry of a stateful
+    direct contract pins `digest || 0x01`, and an ungrouped void call through a single-function interface reads it.
+    `AuditSingleInterfaceMethodBinding.test.ts` has no `it.fails` since: the honest call settles and the same-arity
+    and wider co-spends are refused (3/3, run 2026-11-23). Left, by reading: a call that leaves an argument to the
+    callee (`f()` for `f(pubkey)`) digests no record, so its method stays unbound as before fix B; a typed
+    `{value:}` call is outside fix B's marking and its method binding is unchecked.
 
 - A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
   itself). acd85975b requires each element to differ from every single pointer call's witness, but the covenant does
@@ -1881,9 +1892,12 @@ profile.
     no route and its verifier slot is any coin of the spender's, so nothing checks the answer its row carries. The
     row's lock now stands for an identity only as a P2SH32 or a P2PKH lock (`compileLockToEvmIdentity`). On the VM,
     the caller's verifier accepts a transcript naming either lock, the stand-in's own input evaluates true, and the
-    caller's route now refuses it; that the route accepted it before is by reading, as the old projection maps the
-    stand-in to the callee's identity. 0.51.0 and 0.51.1 carry the old projection. Bytes not measured: the row check
-    sheds 97 bytes before optimization, and can grow where the optimizer shared one projection body.
+    caller's route now refuses it. VM-confirmed on the released code: the same test, run once against master's
+    compiler (`af630cc60`, the 0.51.1 projection), passes the honest row, the control rewrite and the stand-in's own
+    input and verifier, and fails exactly where the caller's route must refuse the stand-in: it accepted it. 0.51.0
+    and 0.51.1 carry the old projection. Bytes (default options): 1 of 345 corpus contracts and 74 of 1,169 external
+    evmCompat contracts move, -291 to +97 bytes (median +2, net -843): a row check sheds 97 bytes before
+    optimization, and grows where the optimizer had shared one projection body. No compile result changes.
 - The crash the Open list kept after TARGET-6, not a soundness issue (`1d08fd8c5`, tests
   `LowLevelCallSiteTarget.test.ts`, `LowLevelCallSiteTarget.e2e.test.ts`). A statement-form value call through a stored
   struct field (`split.to.call{value: v}("");`) crashed code generation (`structType` undefined in `visitFieldAccess`):
@@ -1991,3 +2005,42 @@ Found on `post-0.51.0` while closing TARGET-6, and confirmed on the VM on the 0.
     The 352-file corpus compiles to the same bytes after the fix.
   - Versions: 0.50.1 has the same expression arm, by reading; it was not run on the VM. A contract that uses the
     expression form compiles to new bytes and must be redeployed.
+
+## Security completion (2026-11-23)
+
+Before the fixes after 0.51.1 are published, every open item a code change can close was worked. Each item below was
+read line by line, merged into one landing tree, and its tests and their neighbours ran once there (mocknet).
+
+- **TARGET-7 in a message-bus graph route** (HIGH; `7f8a966ff`): recorded under "Call targets" above, now
+  VM-confirmed on the released code.
+- **EVENT-REPLAY-1** (HIGH for an application that credits from events; `686e713ab`, `2217bf278`; found
+  2026-11-02 in the TRE v3 review, recorded then only in working notes). The event covenant's sweep path constrains
+  no output: after its 144-block relative lock anyone can spend an event NFT and recreate it unchanged at the event
+  address. `readEventsFromChain` and `readAnonymousEventsFromChain`, and through them `queryEvents`, `queryFilter`,
+  `on()`/`once()`, the proxy facade and the testing package's emit matcher, listed coins by category and commitment
+  and never checked the creating transaction, so a recreated copy read as a new event: an application crediting
+  deposits from events could credit one twice.
+  - Fix (reader side; no covenant or address moves): a read counts a coin only when its creating transaction spent
+    the category's minting master. Such a transaction outputs a minting NFT of the category (an emit recreates the
+    master, a genesis mints it), or one of its inputs spent one (a selfdestruct burns it; an emit inside a
+    selfdestruct compiles). A replay spends only the swept immutable copy. Transactions come from the provider's
+    `getRawTransaction`, hash-checked and cached per read; a coin the provider cannot prove throws
+    `EventProvenanceError`, so an event is neither counted unproven nor dropped silently. A wide event's
+    continuations join their proven head's own transaction.
+  - It rests on the own-category immutable output census (SEC-11/SEC-13) for the emits themselves; that census's
+    documented gaps are unchanged.
+  - Test: `EventNftReplay.test.ts` (a named, an anonymous and a selfdestruct's event each counted once, each
+    recreated copy not counted, an unprovable coin refused).
+  - Open (liveness, older): `StatefulContract.destroy` places no event output, so a selfdestruct that emits cannot
+    be sent through it.
+- **A listed call whose guard skips it** (SDK; `bc2874ba3`, `37b7f3977`, `c5cdd2575`, `cb01f8b61`, `2f687cd86`). A
+  call listed with `withExternalCall()` or `withCall()` was co-spent without its caller's guard being decided, so a
+  listed callee ran although the caller's `if` skipped the call. A caller that pins no edge for the call gives its
+  covenant nothing to refuse that run with. The SDK now refuses such a call by name (`ListedCallNotMadeError`,
+  `CallGuardUndecidedError`). A counted frame of a multi-call spend under a published guard is left to the frame
+  planner, which drops a frame its guard skips and refuses one it cannot decide. Tests: `RootListedCallGuard.e2e`,
+  `ListedLowLevelCallGuard.e2e`, `TailBandBesideLowLevelCall.e2e`. Open: a low-level call in a loop listed with
+  `withCall()` is decided by neither check. This is an SDK safeguard for an honest sender: a spender who builds
+  their own transaction can always run a callee's public entry directly.
+- The "Direct call argument binding, residuals" entry of "Fix pass 2026-10-22" still called fix B unmerged; it was
+  merged on 2026-10-28 (see the status line added there).

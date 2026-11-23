@@ -2053,6 +2053,16 @@ export function assertDeployabilityCertificate(
 }
 
 /**
+ * The entry witness naming the input index of the contract that reads its call record (`Artifact.callRecordReader`):
+ * the digest takes it as two little-endian bytes (`OP_NUM2BIN`). Unchecked by the entry: a record naming another
+ * input than its caller's is one no caller accepts.
+ */
+export const CALL_RECORD_READER_INPUT = '__internal__callRecordReader';
+
+/** The reader a record names when no contract reads it. Its two bytes, `01 80`, are no input index's. */
+export const CALL_RECORD_NO_READER = -1n;
+
+/**
  * Shared wire ABI for bounded kernel entry-journal transport. Each opaque `bytes` slot contains a canonical
  * encoded bytes[] vector. A maximum-size record is 150 bytes plus its two-byte element frame, so three records
  * stay below BCH's 520-byte item ceiling while four may not. Segment membership is ordinal-based and therefore
@@ -2479,6 +2489,13 @@ export interface Artifact {
   constructorWritesCollections?: boolean;
   /** Which entries publish a call record, on a contract compiled by this plan. */
   callRecords?: 'returning' | 'all';
+  /**
+   * True: a direct call digest names its reader, the input index of the contract that reads the record (or of the
+   * caller whose edge it is), after the selector. A caller digests its own `OP_INPUTINDEX` and an entry its
+   * `CALL_RECORD_READER_INPUT` witness, so one record answers one input. A record answering a constructor is bound
+   * by its tag instead. Absent on artifacts compiled before; the SDK does not mix the two in one call.
+   */
+  callRecordReader?: boolean;
   /** The `genesisCalls` option the contract was compiled with. */
   genesisCalls?: boolean;
   /**

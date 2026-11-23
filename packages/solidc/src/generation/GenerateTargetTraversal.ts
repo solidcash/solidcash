@@ -130,6 +130,7 @@ import {
   type AbiFunction,
   type AddressForm,
   type DeployerAbi,
+  CALL_RECORD_READER_INPUT,
 } from '@solidcash/utils';
 import {
   validateDefineEmission,
@@ -8640,22 +8641,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[.., prefix]` -> `[.., header]`, the prefix tracked on top: the start of this entry's record preimage, `ordinal ‖
-   * selector` for an ordinary call, or `ff ff ‖ X ‖ slot ‖ selector` for a constructor's call (A7). It checks the genesis
-   * call's size and, for a tag, that input g_in spends `(X, 0)`; a frame also requires its genesis call empty at call
-   * context 0 or more. The checks read only the genesis call, at its bottom ordinal, and the prefix, so every entry
-   * of the contract with the same tag size shares one function for them.
+   * selector ‖ reader` for an ordinary call (the reader its witness names, where the entry takes one), or `ff ff ‖ X ‖
+   * slot ‖ selector` for a constructor's call (A7), whose X names its one reader. It checks the genesis call's size and,
+   * for a tag, that input g_in spends `(X, 0)`; a frame also requires its genesis call empty at call context 0 or more.
+   * The checks read only the genesis call and the reader witness, at their bottom ordinals, and the prefix, so every
+   * entry of the contract with the same ordinals and tag size shares one function for them.
    */
   private emitGenesisHeader(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     const ordinal = this.stack.length - this.getStackIndex('__internal__genesisCall');
+    const reader = this.getStackIndex(CALL_RECORD_READER_INPUT, true) < 0 ? undefined
+      : this.stack.length - this.getStackIndex(CALL_RECORD_READER_INPUT);
     const size = node.usesMsgSender === true ? 46 : 36;
     const frame = this.callBatchFrame;
     // A frame hands the shared function its call context.
     if (frame) this.emitPickAt(this.getStackIndex(CALL_BATCH_CONTEXT), loc);
     const body = (t: GenerateTargetTraversalWithLocation, l: SingleLocationData): void => {
-      t.emitGenesisHeaderBody(ordinal, size, frame, l);
+      t.emitGenesisHeaderBody(ordinal, size, frame, l, reader);
     };
-    if (!this.invokeSharedEntryCheck(`genesisHeader:${ordinal}:${size}${frame ? ':frame' : ''}`, body, loc)) {
-      this.emitGenesisHeaderBody(ordinal, size, frame, loc);
+    const id = `genesisHeader:${ordinal}:${size}${reader === undefined ? '' : `:r${reader}`}${frame ? ':frame' : ''}`;
+    if (!this.invokeSharedEntryCheck(id, body, loc)) {
+      this.emitGenesisHeaderBody(ordinal, size, frame, loc, reader);
     }
     if (frame && this.obligationHook !== 'skip-genesis-frame') this.armObligations.genesisCall.add('frame');
     this.armObligations.genesisCall.add('size');
@@ -8666,9 +8671,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * The checks and the header of emitGenesisHeader: `[prefix]` -> `[header]`, or `[prefix, call context]` ->
-   * `[header]` for a frame. Reads the genesis call at its bottom ordinal, so a caller's frame above it shifts nothing.
+   * `[header]` for a frame. Reads the genesis call and the reader witness at their bottom ordinals, so a caller's frame
+   * above them shifts nothing.
    */
-  private emitGenesisHeaderBody(ordinal: number, size: number, frame: boolean, loc: SingleLocationData): void {
+  private emitGenesisHeaderBody(
+    ordinal: number, size: number, frame: boolean, loc: SingleLocationData, reader?: number,
+  ): void {
     const emit = (op: Op | Uint8Array): void => this.emit(op, loc);
     emit(Op.OP_DEPTH);
     emit(encodeInt(BigInt(ordinal)));
@@ -8725,6 +8733,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emit(Op.OP_CAT);                                              // [header]
     emit(Op.OP_ELSE);
     emit(frame ? Op.OP_2DROP : Op.OP_DROP);                       // [prefix]
+    if (reader !== undefined) {
+      // An ordinary preimage names its reader after the selector; a tagged one names it by X.
+      emit(Op.OP_DEPTH);
+      emit(encodeInt(BigInt(reader)));
+      emit(Op.OP_SUB);
+      emit(Op.OP_PICK);
+      emit(Op.OP_2);
+      emit(Op.OP_NUM2BIN);
+      emit(Op.OP_CAT);                                            // [prefix || reader]
+    }
     emit(Op.OP_ENDIF);
   }
 
@@ -11287,10 +11305,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // so skip the synthetic entry-point-only `__internal__returnOutputIdx` param - it is unused here (raw
       // return, no return event) and would otherwise leave the declared params at the wrong stack offsets.
       // Do NOT mutate node.parameters: the entry-point define shares this node and needs the full list.
-      // An internal call answers no constructor, so the genesis call is skipped likewise.
+      // An internal call answers no constructor, so the genesis call is skipped likewise, and no reader.
       for (const p of node.parameters) {
         if (p.name === '__internal__returnOutputIdx' || p.name === CALL_BATCH_ROW_SHIFT
-          || p.name === '__internal__genesisCall') continue;
+          || p.name === '__internal__genesisCall' || p.name === CALL_RECORD_READER_INPUT) continue;
         // A body an indirect call may enter takes no coin index; its reads find the coin.
         if (isPoolCoinIndex(p.name) && this.oraclePoolIndirectIds.has(node.functionId!)) continue;
         this.visit(p);
@@ -20894,6 +20912,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const skipArg = (i: number): boolean => targetFunc.parameters[i]?.name === '__internal__returnOutputIdx'
       || targetFunc.parameters[i]?.name === CALL_BATCH_ROW_SHIFT
       || targetFunc.parameters[i]?.name === '__internal__genesisCall'
+      || targetFunc.parameters[i]?.name === CALL_RECORD_READER_INPUT
       || (isPoolCoinIndex(targetFunc.parameters[i]?.name)
         && this.oraclePoolIndirectIds.has(targetFunc.functionId!));
 
@@ -33097,6 +33116,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(new Uint8Array(2), loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_CAT, loc);                               // [.., preimage]
+    if (!this.inGenesisMode) {
+      this.emitCallRecordReaderOfOwnInput(loc);
+      this.emit(Op.OP_CAT, loc);                             // [.., preimage || reader]
+    }
     numeric.forEach((isNumeric, index) => {
       this.emit(encodeInt(BigInt(index + 1)), loc);
       this.emit(Op.OP_PICK, loc);
@@ -56933,17 +56956,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[..]` -> `[.., digest]`: a call record's digest, the first 31 bytes of the SHA256 of the call's ordinal as two
-   * little-endian bytes, its selector, and each argument as its length in two little-endian bytes and its bytes, a
-   * number minimally encoded. `emitArgument(i)` leaves argument i on top as one tracked value. `emitLateOrdinal`
-   * pushes the ordinal once the arguments have run, so a call an argument makes takes its ordinal first. With `own`,
-   * an entry's own call outside a frame, it leaves the preimage, which its settlement hashes, and starts from the
-   * tracked `ordinal || selector` `own.prefix` names where the dispatcher left one.
+   * little-endian bytes, its selector, the reader's input index as two little-endian bytes, which `emitReader` pushes
+   * (none for a record bound by a constructor's tag, or where the genesis header took it), then each argument as its
+   * length in two little-endian bytes and its bytes, a number minimally encoded. `emitArgument(i)` leaves argument i
+   * on top as one tracked value. `emitLateOrdinal` pushes the ordinal once the arguments have run, so a call an
+   * argument makes takes its ordinal first. With `own`, an entry's own call outside a frame, it leaves the preimage,
+   * which its settlement hashes, and starts from the tracked `ordinal || selector` `own.prefix` names where the
+   * dispatcher left one.
    */
   private emitCallRecordDigest(
     selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
     emitArgument: (index: number) => void, loc: SingleLocationData, emitOrdinal?: () => void,
     emitLateOrdinal?: () => void, own?: { prefix?: string; selectorAfterPrefix?: boolean },
-    prefixStack?: string,
+    prefixStack?: string, emitReader?: () => void,
   ): void {
     if (emitOrdinal) {
       // [.., ordinal u16le] -> [.., ordinal || selector]
@@ -56974,6 +56999,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(prefix, loc);
     }
     this.pushToStack('(record_preimage)');
+    if (emitReader) {
+      // [.., ordinal? || selector, reader u16le] -> [.., ordinal? || selector || reader]
+      emitReader();
+      this.emit(Op.OP_CAT, loc);
+    }
     for (let index = 0; index < argumentTypes.length; index += 1) {
       emitArgument(index);
       if (this.isNumericCallRecordType(argumentTypes[index])) this.emit(Op.OP_BIN2NUM, loc);
@@ -56986,7 +57016,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(record_preimage)');
     }
     if (emitLateOrdinal) {
-      // [.., selector || arguments, ordinal u16le] -> [.., preimage]
+      // [.., selector || reader || arguments, ordinal u16le] -> [.., preimage]
       emitLateOrdinal();
       this.emit(Op.OP_SWAP, loc);
       this.emit(Op.OP_CAT, loc);
@@ -56995,6 +57025,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitCallRecordDigestOfPreimage(loc);
     this.popFromStack();
     this.pushToStack('(record_digest)');
+  }
+
+  /**
+   * `[..]` -> `[.., reader u16le]` (untracked): this input's index, the reader every record and edge it digests
+   * names. Two callers sit at two inputs, so no record of one run answers both.
+   */
+  private emitCallRecordReaderOfOwnInput(loc: SingleLocationData): void {
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_NUM2BIN, loc);
   }
 
   /** `[.., preimage, argument]` -> `[.., preimage || size u16le || argument]`. */
@@ -57118,12 +57158,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // parameter and are checked by the callee itself.
       genesisPrefix = '(genesis_prefix)';
     }
+    // A constructor's call is bound by its tag (A7): X is the outpoint only this input spends, so it names the reader.
     this.emitCallRecordDigest(selector, ordinal !== undefined && 'ordinal' in ordinal ? ordinal.ordinal : 0,
       digested.map((index) => declared[index]), (position) => {
         const argument = cloneNode(node.parameters[digested[position]!]!) as ExpressionNode;
         this.markArrayArgumentBlobEncoded(argument);
         this.visit(argument);
-      }, loc, undefined, emitLateOrdinal, undefined, genesisPrefix);
+      }, loc, undefined, emitLateOrdinal, undefined, genesisPrefix,
+      genesisPrefix === undefined ? (): void => this.emitCallRecordReaderOfOwnInput(loc) : undefined);
     if (genesisPrefix !== undefined) this.genesisRecordDigests += 1;
     return true;
   }
@@ -57347,10 +57389,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Leaves the call this entry executes, as `__internal__callDigest`, for its record: its digest, or in a compact
-   * layout outside a frame of the multi-call entry the digest's preimage, which its settlement hashes.
+   * layout outside a frame of the multi-call entry the digest's preimage, which its settlement hashes. It digests the
+   * reader its `CALL_RECORD_READER_INPUT` witness names, which it does not check: its caller digests its own input
+   * index, so a record naming any other input answers no caller. An ordinary preimage starts with its ordinal, so the
+   * witness cannot make it read as a tagged one. An entry that takes the genesis call digests the witness in its
+   * header (emitGenesisHeader), for an ordinary call only. An entry without the witness (a framed body or a kernel
+   * direct participant) digests no reader, and no caller accepts its record.
    */
   private emitOwnCallRecordDigest(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const emitReader = this.getStackIndex(CALL_RECORD_READER_INPUT, true) < 0 ? undefined : (): void => {
+      this.emitPickAt(this.getStackIndex(CALL_RECORD_READER_INPUT), loc);
+      this.emit(Op.OP_2, loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+    };
     // A signature authorizes the transaction the record is part of, so it is no argument of the digest.
     const visible = node.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')
       && parameter.type !== PrimitiveType.SIG);
@@ -57391,7 +57443,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack('(value)');
       }, loc, genesis ? undefined : emitOrdinal, undefined, genesis
         ? { prefix: '__internal__genesisHeader' }
-        : this.settlesOwnCallPreimage() ? { prefix } : undefined);
+        : this.settlesOwnCallPreimage() ? { prefix } : undefined, undefined, genesis ? undefined : emitReader);
     // The header form leaves the preimage; where the record is settled from the digest (a frame), hash it here.
     if (genesis && !this.settlesOwnCallPreimage()) this.emitCallRecordDigestOfPreimage(loc);
     this.stack[0] = '__internal__callDigest';

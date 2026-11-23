@@ -75,11 +75,12 @@ function spend(artifact: Artifact, foreignLock?: Uint8Array, threads = 0): true 
   const readOnly = pushesOf([encodeIntegerValue(0n), encodeIntegerValue(0n), recordRedeem]);
   // The last argument is pushed first. Fix B appends __internal__returnOutputIdx to an ordinary void entry (not a
   // split/merge lifecycle entry), so when the spent entry carries it, its value (-1, a compacted standalone void
-  // record) is pushed first, then the genesis call such an entry of a record-sound contract takes (A7, empty in a
-  // call no constructor makes), then `b` = true, then `n`.
+  // record) is pushed first, then the reader its record names (-1, no contract reads it), then the genesis call such
+  // an entry of a record-sound contract takes (A7, empty in a call no constructor makes), then `b` = true, then `n`.
   const carries = (name: string): boolean => artifact.abi.some((entry) =>
     (entry.inputs ?? []).some((parameter) => parameter.name === name));
   const args = [...(carries('__internal__returnOutputIdx') ? [encodeIntegerValue(-1n)] : []),
+    ...(carries('__internal__callRecordReader') ? [encodeIntegerValue(-1n)] : []),
     ...(carries('__internal__genesisCall') ? [EMPTY] : []), encodeIntegerValue(1n),
     ...(threads > 0 ? [encodeIntegerValue(BigInt(threads))] : [])];
   const master = (): VmOutput => ({ lockingBytecode: lock, valueSatoshis: VALUE, token: token('minting', EMPTY) });

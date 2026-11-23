@@ -89,6 +89,15 @@
 - `MockNetworkProvider` is assignable to `NetworkProvider` under `exactOptionalPropertyTypes` (#10, @aimanmalib).
 - `typegen` accepts a declaration compiled in its own file and imported by another root (#5, @samizdatproject).
 - `solidhat init --no-sample` writes a README that does not point at the Counter sample (#17, @Aakash074).
+- `@solidcash/solidcash` declares `@noble/curves`, which it imports; an install worked only while a 1.x copy
+  happened to be hoisted (#2, @swiftbotlabs).
+- On a Node that cannot load TypeScript, `solidhat init` writes the config and the deploy script as `.mjs`, which is
+  their content; `solidhat deploy` also finds `scripts/deploy.mjs`, and a `.ts` config such a Node cannot load fails
+  naming the fix (#2, @swiftbotlabs).
+- Each compiler warning is printed once, however many entries inline its site, on every compile path, and the
+  compile task no longer prints a file's warnings twice (#14, @PugarHuda).
+- The WalletConnect object of an overloaded function carries that overload's function body; it carried the first
+  overload's (found reviewing #1).
 
 ### Added
 
@@ -97,6 +106,8 @@
   than drop it (#4, @samizdatproject).
 - `fillerUnlocker()` and `FILLER_SEQUENCE` from `@solidcash/solidcash/stateful` spend the 576-sat filler output a
   call leaves, once its 144 blocks pass (#15, @aimanmalib).
+- A destroy lists the event NFTs it leaves for their relative lock in `leftBehind`, with `spendableFromHeight`, the
+  height from which anyone may sweep each (suggested reviewing #13).
 
 ### Changed
 
@@ -104,6 +115,11 @@
   write down, so the SDK can tell it from a call inside an `if` condition. No bytecode changes.
 - The warning for `revert CustomError(...)` says that it fails the spend and carries no revert data; it called the
   revert "a no-op" (#16, @Aakash074).
+- A struct local that is only read field by field compiles to one local per field instead of the pushdata struct
+  frame, its encoder and its decoder: a two-field local drops from about 480 bytes to 8 (#18, @Aakash074). Contracts
+  with such a local compile to new, smaller bytes: in the repository corpus 2 of 352 contracts (by 272 and 56 bytes),
+  in the external Solidity corpus 1 of 644 files (by 108). `scalarReplaceStructLocals: false` keeps the old
+  lowering.
 
 ## 0.51.1
 

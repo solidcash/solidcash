@@ -19,6 +19,9 @@
  *   inserts the run made, counted from the predecessors relinked in place. `MintBook` adds a second `side` lane, so
  *   `put` keeps no output count of its own and that bound alone refuses the mint.
  *
+ * - A row with a loop or a delete claims, in the trailing band, only its collections' entry locks: beside a `drop`
+ *   batch, an entry of `other`, which `drop` does not touch, rewritten at an unused trailing slot is refused.
+ *
  * Each attack row asserts the route's refusal; the entry covenant alone accepts every one of these spends.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -64,6 +67,16 @@ const PAIR = `contract PairBook() {
   mapping(int => int) public side;
   function put(int key, int value) public { this.side[key] = value; require(true); }
   function putPair(int a, int va, int b, int vb) public { this.side[a] = va; this.side[b] = vb; require(true); }
+}`;
+
+const DROP = `contract DropBook() {
+  bytes note;
+  mapping(int => int) public side;
+  mapping(int => int) public other;
+  function setNote(bytes value) public { this.note = value; require(true); }
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function putOther(int key, int value) public { this.other[key] = value; require(true); }
+  function drop(int key) public { delete this.side[key]; require(true); }
 }`;
 
 const KERNEL = {
@@ -128,22 +141,23 @@ async function connect(
   };
 }
 
-/** A live `side` entry that `honest` does not spend, with the redeem of its entry covenant. */
+/** A live entry of `collection` that `honest` does not spend, with the redeem of its entry covenant. */
 async function victimOf(
   provider: Provider, artifact: Artifact, bus: StatefulContract, categoryId: string, honest: Spend,
+  collection = 'side',
 ): Promise<Victim> {
   const spent = new Set(honest.transaction.inputs.map((input) =>
     `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`));
   const redeem = scriptToBytecode(buildEntryNftCovenantScript(
-    hexToBin(categoryId), computeCollectionHash(resolveCollectionSignature(artifact, 'side')),
+    hexToBin(categoryId), computeCollectionHash(resolveCollectionSignature(artifact, collection)),
     directConventionMasterLock(bus.inner),
   ));
-  const address = getEntryNftAddress(bus.inner, categoryId, 'side');
+  const address = getEntryNftAddress(bus.inner, categoryId, collection);
   const lock = addressToLockScript(address);
   expect(binToHex(encodeLockingBytecodeP2sh32(hash256(redeem)))).toBe(binToHex(lock));
   const entry = (await provider.getUtxos(address)).find((utxo) => utxo.token?.nft?.capability === 'mutable'
     && !spent.has(`${utxo.txid}:${utxo.vout}`));
-  expect(entry, 'an unspent side entry').toBeDefined();
+  expect(entry, `an unspent ${collection} entry`).toBeDefined();
   return {
     txid: entry!.txid, vout: entry!.vout, redeem,
     source: solidCashOutputToLibauthOutput({ to: lock, amount: entry!.satoshis, token: entry!.token }),
@@ -496,5 +510,50 @@ describe('bound route without its verifier: an honest batch inserting two keys i
   // Two new nodes after one spent node: the route's node count must still admit the honest batch.
   it('settles the batch', () => {
     expect(state.failures).toEqual([]);
+  });
+});
+
+describe('bound route without its verifier: a trailing slot beside a delete, which claims only its collection', () => {
+  let state: {
+    bus: StatefulContract;
+    honest: ReturnType<typeof failures>;
+    covenant: Verdict;
+    route: Verdict;
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(DROP, { ...KERNEL, messageBusHandlers: ['setNote', 'put', 'putOther', 'drop'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['setNote', 'put', 'putOther', 'drop']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    expect(layout.trailingBase, 'the route has a trailing band').toBeDefined();
+    const { bus, categoryId } = await connect(provider, artifact, { note: new Uint8Array() });
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    await bus.call.putOther(3n, 4n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const drop = spendOf(await bus.batch([{ function: 'drop', args: [9n] }]).build());
+    // other[3]: `drop` touches only `side`.
+    const victim = await victimOf(provider, artifact, bus, categoryId, drop, 'other');
+    const master = masterOf(drop, victim);
+    const at = padIndex(drop, master + layout.trailingBase!, master + layout.blockSize);
+    expect(at, 'the drop batch leaves a trailing pad').toBeDefined();
+    const rewrite = placed(drop, victim, master, at!, rewritten(victim));
+    state = {
+      bus, honest: failures(vm, drop), covenant: verdict(vm, rewrite, at!), route: verdict(vm, rewrite, master),
+    };
+    console.log('trailing band beside a delete', { offset: at! - master, covenant: state.covenant, route: state.route });
+  }, 300_000);
+
+  it('settles an honest drop batch, and the entry covenant accepts the victim spend', async () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+    await expect(state.bus.batch([{ function: 'drop', args: [9n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+  }, 300_000);
+
+  // The delete claims, in the band, only side's entry lock; other's lock is not one, so the pin holds the entry.
+  it('refuses an other entry rewritten at an unused trailing slot beside a drop batch', () => {
+    expect(state.route).not.toBe(true);
   });
 });

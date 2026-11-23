@@ -8678,12 +8678,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ordinal: number, size: number, frame: boolean, loc: SingleLocationData, reader?: number,
   ): void {
     const emit = (op: Op | Uint8Array): void => this.emit(op, loc);
+    // The reader witness sits right below the genesis call, so one index, kept below g, picks both. A frame's call
+    // context would sit between and cost the byte back.
+    const sharedIndex = reader === ordinal - 1 && !frame;
     emit(Op.OP_DEPTH);
-    emit(encodeInt(BigInt(ordinal)));
+    emit(encodeInt(BigInt(sharedIndex ? ordinal - 1 : ordinal)));
     emit(Op.OP_SUB);
-    emit(Op.OP_PICK);                                             // [.., g]
-    emit(Op.OP_SIZE);                                             // [.., g, size]
+    if (sharedIndex) emit(Op.OP_DUP);                             // [.., i, i]
+    emit(Op.OP_PICK);                                             // [.., (i,) g]
+    emit(Op.OP_SIZE);                                             // [.., (i,) g, size]
     emit(Op.OP_IF);
+    if (sharedIndex) emit(Op.OP_NIP);
     if (frame) {
       // A frame answers no constructor: a genesis call that is not empty needs a standalone run's context, below 0.
       emit(Op.OP_SWAP);
@@ -8732,12 +8737,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emit(Op.OP_NIP);
     emit(Op.OP_CAT);                                              // [header]
     emit(Op.OP_ELSE);
-    emit(frame ? Op.OP_2DROP : Op.OP_DROP);                       // [prefix]
+    emit(frame ? Op.OP_2DROP : Op.OP_DROP);                       // [prefix(, i)]
     if (reader !== undefined) {
       // An ordinary preimage names its reader after the selector; a tagged one names it by X.
-      emit(Op.OP_DEPTH);
-      emit(encodeInt(BigInt(reader)));
-      emit(Op.OP_SUB);
+      if (!sharedIndex) {
+        emit(Op.OP_DEPTH);
+        emit(encodeInt(BigInt(reader)));
+        emit(Op.OP_SUB);
+      }
       emit(Op.OP_PICK);
       emit(Op.OP_2);
       emit(Op.OP_NUM2BIN);

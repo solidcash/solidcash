@@ -307,17 +307,16 @@ async function composeScenario(graph: boolean): Promise<ComposeScenario> {
   const control = failures(await declared(original));
   const attack = failures(await declared(forged));
 
-  // Beside the honest row, a second side[9] node with no input spent for it, appended after the change, whose
-  // satoshis it takes, so the transaction still balances.
+  // Beside the honest row, a second side[9] node with no input spent for it, in place of the change output, whose
+  // satoshis it carries: inputs and outputs stay one to one, as the verifier requires, and the value balances.
   const minted = await compose();
   const lockOf = (to: string | Uint8Array): string => binToHex(typeof to === 'string' ? addressToLockScript(to) : to);
   const change = minted.outputs.findIndex((output) => lockOf(output.to) === binToHex(changeLock!));
   expect(change, 'the compose pays change').toBeGreaterThanOrEqual(0);
-  minted.outputs[change] = { ...minted.outputs[change]!, amount: minted.outputs[change]!.amount - victim.satoshis };
-  minted.outputs.push({
-    to: lock, amount: victim.satoshis,
+  minted.outputs[change] = {
+    to: lock, amount: minted.outputs[change]!.amount,
     token: { ...victim.token!, nft: { capability: 'mutable', commitment: forged } },
-  });
+  };
   const mint = failures(minted);
   // An honest bus row that inserts 11, after 9.
   const insert = failures(await compose(11n));

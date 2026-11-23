@@ -2149,12 +2149,16 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     caller's block by copying its inputs, the container's coin among them, and the container's change was appended
     after it, so the payer paid the coin's value into the container a second time. The change now takes the copy's
     place. A transfer or token container beside a callee block meets the same copies and fails closed.
-  - Tests: `TypedValueCallBinding.e2e.test.ts` (one-method and two-method interfaces: the honest call with one coin
-    each container and the payer paying the fee; another method, argument or a smaller value refused at the caller;
-    two callers on one run refused), `VoidCallArguments.test.ts` (its value row), `StatefulAddressPayment.e2e.test.ts`
-    (D1: no transfer slot).
-  - Open: a `__raw__` call or `.call{value:}` to a stateful target still pays the target's lock, which a stateful
-    master's never spends: an honest send is refused by A8, a hand-built one burns the caller's value. A callee
+  - Tests: `TypedValueCallBinding.e2e.test.ts` (one-method and two-method interfaces, and the call spelled
+    `I(v).f.call{value:}()`: the honest call with one coin each container and the payer paying the fee; another
+    method, argument or a smaller value refused at the caller; two callers on one run refused), `CallOptions.test.ts`
+    (the spelled call publishes the same call as the typed one), `VoidCallArguments.test.ts` (its value row),
+    `StatefulAddressPayment.e2e.test.ts` (D1: no transfer slot).
+  - `I(t).f.call{value:}()` is the typed call spelled as a call: it lowers to a regular call (`SymbolTableTraversal`,
+    the typed `I(cat).fn.call()` branch) and rides the record as `I(t).f{value:}()` does.
+  - Open: a raw call to a stateful target (`addr.call{value:}(data)`, an opaque payload, or a low-level call lowered
+    from a payload that names its method) still pays the target's lock, which a stateful master's never spends: an
+    honest send is refused by A8, a hand-built one burns the caller's value. A callee
     compiled with the bus on settles no compact record and digests no value, so a value call to it fails closed.
     Nested value calls (A to B to C), a deposit below dust and a loop's value `new` beside a value call (the loop's
     container check does not count the call's value) are not handled.

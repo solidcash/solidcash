@@ -21,6 +21,7 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
  * - the method and the arguments;
  * - the value: a spend that pays the callee less than its caller sent is refused;
  * - the caller: one callee run answers one caller.
+ * The same holds for the call spelled `I(v).f.call{value:}()`, a typed call and not a raw one.
  * The body rewrites the target after the call, so the identity check reads the call-site register.
  */
 
@@ -72,6 +73,24 @@ contract MultiCaller() {
     v = w;
     this.calls = this.calls + 1;
   }
+}
+contract SpelledCaller() {
+  int calls;
+  function fund(address v, address w, int id) public {
+    ISingle(v).deposit.call{value: 3000}(id);
+    v = w;
+    this.calls = this.calls + 1;
+  }
+  function fundLess(address v, address w, int id) public {
+    ISingle(v).deposit.call{value: 2999}(id);
+    v = w;
+    this.calls = this.calls + 1;
+  }
+  function fundOther(address v, address w, int id) public {
+    ISingleOther(v).other.call{value: 3000}(id);
+    v = w;
+    this.calls = this.calls + 1;
+  }
 }`;
 
 const VALUE = 3000n;
@@ -80,8 +99,10 @@ const BALANCE = 50_000n;
 const TIMEOUT = 300_000;
 
 const KINDS = [
-  { name: 'one-method', caller: 'SingleCaller' },
-  { name: 'two-method', caller: 'MultiCaller' },
+  { name: 'through a one-method interface', caller: 'SingleCaller' },
+  { name: 'through a two-method interface', caller: 'MultiCaller' },
+  // `I(v).f.call{value:}()` is the typed call spelled as a call: it lowers to the same regular call.
+  { name: 'spelled `I(v).f.call{value:}()`', caller: 'SpelledCaller' },
 ] as const;
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -343,7 +364,7 @@ function readAt(tx: Tx, lock: string, category: string, reader: number, value = 
   tx.outputs[at]!.token!.nft!.commitment = Uint8Array.of(...digest, ...commitment.slice(31));
 }
 
-describe.each(KINDS)('a typed {value:} call through a $name interface', ({ caller: callerName }) => {
+describe.each(KINDS)('a typed {value:} call $name', ({ caller: callerName }) => {
   const callerArtifact = (): Artifact => artifacts()[callerName]!;
   const vaultOf = (provider: Provider): Promise<Deployed> => deploy(provider, artifacts().Vault, { total: 0n, last: 0n });
   const callerOf = (provider: Provider): Promise<Deployed> => deploy(provider, callerArtifact(), { calls: 0n }, BALANCE);

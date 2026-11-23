@@ -20886,7 +20886,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       || !node.isEntryPoint || node.graphEmissionHandler || node.messageBusRoute) return;
     let rides = false;
     for (const slot of node.externalCalls ?? []) {
-      // A low-level `.call{value:}` routed through an interface keeps its own payment (open).
+      // A raw call keeps its own payment (open): a `__raw__` payload, or a low-level call lowered from one (call mode
+      // CALL). The typed spelling `I(t).f.call{value:}()` is a regular call and rides.
       if (!slot.callValueEffect || slot.interfaceName === '__raw__'
         || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
       if (this.callValueRidesRecord(slot)) {

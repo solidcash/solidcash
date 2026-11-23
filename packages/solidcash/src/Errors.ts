@@ -29,6 +29,21 @@ export class MixedCompileModeCallError extends Error {
 }
 
 /**
+ * A call between an artifact whose call records name their reader (`Artifact.callRecordReader`) and one compiled
+ * before, whose records name none. The caller digests its own input index and the callee the reader its witness
+ * names, so one side always digests two bytes the other does not: the caller would never accept the record, and
+ * accepting an unbound one would let two callers read one run.
+ */
+export class MixedCallRecordReaderError extends Error {
+  constructor(interfaceName: string, functionName: string, callerNamesReader: boolean) {
+    const [caller, callee] = callerNamesReader ? ['names', 'does not'] : ['does not', 'names'];
+    super(`Call to ${interfaceName}.${functionName} mixes call record schemes: its caller ${caller} the record's `
+      + `reader in the call's digest and its callee ${callee}, so the caller can never accept the callee's record. `
+      + 'Recompile the contract compiled before records named their reader.');
+  }
+}
+
+/**
  * A call whose target the function writes before the call runs on a callee the caller's current state and the
  * call's arguments do not name (ABI `targetWrittenBeforeCall`), so the builder cannot resolve it from them. `remedy`
  * names how the author passes the callee: withExternalCall for a call slot, withCall for a low-level call.

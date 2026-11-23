@@ -18,7 +18,7 @@ import { RawCallCalleeRequiredError } from '../Errors.js';
 import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
-import { assertCallSelectorScheme } from './call-record.js';
+import { assertCallRecordReaderScheme, assertCallSelectorScheme } from './call-record.js';
 import { calleeOutputSpan, calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
@@ -573,7 +573,10 @@ export async function orchestrateCreateBuilderExternalCalls(
     const materializeDirectCalleeGroup = async (
       slotIndex: number, ec: ExternalCallAbi, callInfo: ExternalCallInfo,
     ): Promise<void> => {
-      if (callInfo) assertCallSelectorScheme(ec, host.inner.artifact, callInfo.externalContract.inner.artifact);
+      if (callInfo) {
+        assertCallSelectorScheme(ec, host.inner.artifact, callInfo.externalContract.inner.artifact);
+        assertCallRecordReaderScheme(ec, host.inner.artifact, callInfo.externalContract.inner.artifact);
+      }
       // A raw call's `{value:}` pays the call's target address, the co-spent callee's master lock, where the coin is
       // stuck, and the callee reads msg.value from its satoshi container, which the payment never reaches. Refuse it
       // before a layout is planned. A message-bus participant settles its value edge in its route; a send of that one
@@ -1242,6 +1245,11 @@ export async function orchestrateCreateBuilderExternalCalls(
         provider: host.inner.provider,
         physicalRootLockingBytecode: params.physicalSelfAddress,
         rootLogicalAddress: params.rootLogicalAddress,
+        rootReader: {
+          categoryId: host.categoryId,
+          inputIndex: (overrides?.blockBase ?? 0)
+            + (abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'master')?.offset ?? 0),
+        },
         blockOracle: host.inner.oraclePool !== undefined
           && abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')
           ? { pool: host.inner.oraclePool,

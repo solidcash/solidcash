@@ -7,10 +7,13 @@
  * they shift no callee block and interact with no record layout; their dust value is covered by the fee funding.
  * Runs once on the final build result, after all other outputs are placed. Idempotent across build/send phases.
  * A frame of a multi-call spend takes no msg.sender, so no callee reads an edge for it: its call names none (-1).
+ * An edge digests the call as its record does, so it names its reader too: the input of the caller that pins it.
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, Artifact } from '@solidcash/utils';
+import {
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction, type Artifact,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
@@ -60,11 +63,15 @@ export function appendStandInCaller(
   const master = contractUnlockerOrUndefined(builder.inputs[0]?.unlocker);
   if (master === undefined || category === undefined) return;
   const artifact = (master as { contract?: { artifact?: Artifact } }).contract?.artifact;
+  // The edge must digest the call as input 0 digests it, with the reader its witness names.
+  const readerAt = master.abiFunction.inputs.findIndex((input) => input.name === CALL_RECORD_READER_INPUT);
+  const reader = readerAt >= 0 && typeof master.params[readerAt] === 'bigint'
+    ? master.params[readerAt] as bigint : CALL_RECORD_NO_READER;
   let digest: Uint8Array | undefined;
   try {
     digest = callRecordDigest(master.abiFunction as AbiFunction, master.params as FunctionArgument[], {
       structs: artifact?.structs ?? artifact?.stateLayout?.structs, enums: artifact?.enums,
-    });
+    }, 0, reader);
   } catch {
     digest = undefined;
   }
@@ -115,19 +122,20 @@ export function appendCallerEdges(
   const claimed = new Set<number>();
   // The caller's co-spent master input, keyed -1 for the top-level entry or a parent group index. A visible-args
   // -only unlocker is skipped (its encoding uses visibleInputs, so a synthetic witness index would overrun it).
-  const unlockerOf = (utxo: EdgeGroup['masterUtxo']): ReturnType<typeof contractUnlockerOrUndefined> => {
-    if (utxo === undefined) return undefined;
-    const input = builder.inputs.find((candidate) => candidate.txid === utxo.txid && candidate.vout === utxo.vout);
-    return contractUnlockerOrUndefined(input?.unlocker);
-  };
+  const inputOf = (utxo: EdgeGroup['masterUtxo']): number => (utxo === undefined ? -1
+    : builder.inputs.findIndex((candidate) => candidate.txid === utxo.txid && candidate.vout === utxo.vout));
+  const unlockerOf = (utxo: EdgeGroup['masterUtxo']): ReturnType<typeof contractUnlockerOrUndefined> => (
+    contractUnlockerOrUndefined(builder.inputs[inputOf(utxo)]?.unlocker));
   const attest = (
-    group: EdgeGroup, unlocker: ReturnType<typeof contractUnlockerOrUndefined>, witness: string,
+    group: EdgeGroup, caller: EdgeGroup['masterUtxo'], witness: string,
     callerCategory: string | undefined, onlyForSenderReader: boolean,
   ): void => {
+    const unlocker = unlockerOf(caller);
     if (unlocker === undefined || callerCategory === undefined) return;
     const paramIndex = unlocker.abiFunction.inputs.findIndex((input) => input.name === witness);
     if (paramIndex < 0) return; // this caller does not carry an edge for this call
-    const commitment = onlyForSenderReader && !calleeReadsSender(group) ? undefined : edgeCommitment(group);
+    const commitment = onlyForSenderReader && !calleeReadsSender(group) ? undefined
+      : edgeCommitment(group, inputOf(caller));
     if (commitment === undefined) {
       // No digest for this call (an unexpected shape or a routed group): the caller's covenant finds no edge and
       // fails closed (sound; a liveness gap for that caller only). -1 names no output.
@@ -162,19 +170,20 @@ export function appendCallerEdges(
     // A delegated implementation holds the witness; the record is its state owner's, as its pin requires.
     const delegate = group.edgeDelegateGroupIndex === undefined
       ? undefined : host.lowLevelCallUtxoGroups[group.edgeDelegateGroupIndex];
-    const unlocker = unlockerOf(delegate?.masterUtxo ?? (parent < 0 ? host.masterUtxo : groups[parent]?.masterUtxo));
+    const caller = delegate?.masterUtxo ?? (parent < 0 ? host.masterUtxo : groups[parent]?.masterUtxo);
     attest(
-      group, unlocker, `__internal__callEdgeOutputIdx${group.edgeEcSlot}`,
+      group, caller, `__internal__callEdgeOutputIdx${group.edgeEcSlot}`,
       delegate !== undefined ? group.callerIdentity?.categoryId ?? host.categoryId
         : parent < 0 ? host.categoryId : groups[parent]?.categoryId,
-      delegate !== undefined || unlocker?.abiFunction.externalCalls?.[group.edgeEcSlot]?.interfaceName === '__raw__',
+      delegate !== undefined
+        || unlockerOf(caller)?.abiFunction.externalCalls?.[group.edgeEcSlot]?.interfaceName === '__raw__',
     );
   }
   // A compat low-level call made by the entry itself, its callee on the low-level path or a direct external group.
   for (const group of [...host.lowLevelCallUtxoGroups, ...groups]) {
     if (group.edgeLowLevelCallIndex === undefined) continue;
     attest(
-      group, unlockerOf(host.masterUtxo), `__internal__lowLevelCallEdgeOutputIdx${group.edgeLowLevelCallIndex}`,
+      group, host.masterUtxo, `__internal__lowLevelCallEdgeOutputIdx${group.edgeLowLevelCallIndex}`,
       host.categoryId, true,
     );
   }
@@ -207,8 +216,11 @@ function calleeReadsSender(group: EdgeGroup): boolean {
   return calleeOf(group)?.abiFunction.usesMsgSender === true;
 }
 
-/** The 32-byte edge commitment: the call's 31-byte digest followed by the edge form byte. */
-function edgeCommitment(group: EdgeGroup): Uint8Array | undefined {
+/**
+ * The 32-byte edge commitment: the call's 31-byte digest followed by the edge form byte. The caller pinning it at
+ * input `reader` digests that index, as the callee digests the reader its witness names.
+ */
+function edgeCommitment(group: EdgeGroup, reader: number): Uint8Array | undefined {
   if (group.compilerRoute !== undefined) return undefined;
   const callee = calleeOf(group);
   if (callee === undefined) return undefined;
@@ -216,7 +228,7 @@ function edgeCommitment(group: EdgeGroup): Uint8Array | undefined {
   try {
     const digest = callRecordDigest(callee.abiFunction, args as never, {
       structs: callee.artifact.structs ?? callee.artifact.stateLayout?.structs, enums: callee.artifact.enums,
-    });
+    }, 0, reader);
     return digest === undefined ? undefined : Uint8Array.of(...digest, CALL_EDGE_FORM);
   } catch {
     // A planning build can hold a provisional frame; the build of the settled arguments attests the call.

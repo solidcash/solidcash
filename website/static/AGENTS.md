@@ -213,7 +213,9 @@ unless marked (native) or (evmCompat). Solidity shapes the parser accepts beyond
 
 Compile contracts that call each other in one mode: a `.sol` source is always evmCompat and a `.scash` source follows
 the config. A selector is hashed by its compile's mode (`int` is `int256` in both), so a fixed-method call between the
-modes never matches its callee, and the SDK refuses it by name (`MixedCompileModeCallError`).
+modes never matches its callee, and the SDK refuses it by name (`MixedCompileModeCallError`). Likewise recompile a
+contract compiled before call records named their reader (its artifact has no `callRecordReader`): a call between it
+and a current one never matches, and the SDK refuses it by name (`MixedCallRecordReaderError`).
 
 ### Source File Structure
 

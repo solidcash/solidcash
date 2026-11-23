@@ -61,10 +61,12 @@ function redeemUnlock(
   fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean,
 ): Uint8Array {
   const args = fn.inputs.map((entry) => {
-    // Fix B void record (returnOutputIdx) and F1 call edge (callEdgeOutputIdx<n>) default to a standalone compact
-    // spend (-1): no output named, nothing pinned. An ordinary spend's genesis call is empty (B6.5).
+    // Fix B void record (returnOutputIdx), F1 call edge (callEdgeOutputIdx<n>) and a record's reader default to a
+    // standalone compact spend (-1): no output or input named, nothing pinned. An ordinary spend's genesis call is
+    // empty (B6.5).
     const value = values[entry.name] ?? (
       entry.name === '__internal__returnOutputIdx' || /^__internal__callEdgeOutputIdx\d+$/.test(entry.name)
+        || entry.name === '__internal__callRecordReader'
         ? num(-1n) : entry.name === '__internal__genesisCall' ? new Uint8Array() : undefined);
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);
     return value;
@@ -822,8 +824,11 @@ describe('October 2026 class C holes', () => {
     const spend = (which: bigint): Array<true | string> => {
       const n = which === 0n ? 1 : 0;
       const returned = which === 0n ? idOf(pickerArtifact, 'ok') : idOf(pickerArtifact, 'other');
-      // D50: the carrier is the record of this call, digest(get, which) || form 1 || result.
-      const digest = callRecordDigest(pickerFn, pickerFn.inputs.map((entry) => (entry.name === 'which' ? which : 0n)));
+      // D50: the carrier is the record of this call, digest(get, which, reader) || form 1 || result, read by the caller
+      // at input 0.
+      const digest = callRecordDigest(
+        pickerFn, pickerFn.inputs.map((entry) => (entry.name === 'which' ? which : 0n)), {}, 0, 0,
+      );
       if (!digest) throw new Error('get publishes no selector');
       const commitment = callRecordCommitment(join([encodedId(n), encodedId(returned)]), digest);
       const callerValues: Record<string, Uint8Array> = {
@@ -837,6 +842,7 @@ describe('October 2026 class C holes', () => {
       const pickerValues: Record<string, Uint8Array> = {
         which: num(which),
         __internal__returnOutputIdx: num(2n),
+        __internal__callRecordReader: num(0n),
       };
       const callerDispatch = callerFn.selector !== undefined;
       const pickerDispatch = pickerFn.selector !== undefined;

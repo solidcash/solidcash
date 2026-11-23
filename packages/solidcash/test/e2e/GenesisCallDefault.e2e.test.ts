@@ -82,7 +82,7 @@ describe('a returning creating entry', () => {
     const factoryArtifact = artifacts.StateFactory!;
     expect(factoryArtifact.recordSound).toBe(true);
     expect(factoryArtifact.abi.find((entry) => entry.name === 'make')!.inputs.map((input) => input.name))
-      .toEqual(['__internal__genesisCall', '__internal__returnOutputIdx']);
+      .toEqual(['__internal__genesisCall', '__internal__callRecordReader', '__internal__returnOutputIdx']);
 
     const deploymentFunding: Utxo = { txid: 'e1'.repeat(32), vout: 0, satoshis: 100000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);

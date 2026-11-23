@@ -73,13 +73,17 @@ describe('ordinary readonly return aliases beside logical identities', () => {
       ['uint256', 'uint256'], artifacts.Reader.structs, true);
     const sizeAbi = artifacts.Source.abi.find((entry) => entry.name === 'size')!;
     const measureAbi = artifacts.Reader.abi.find((entry) => entry.name === 'measure')!;
-    const record = (abiFunction: typeof sizeAbi, result: Uint8Array): string => binToHex(
-      callRecordCommitment(result, callRecordDigest(abiFunction, [])!),
+    // The Reader's master reads the Source's record, which names its input; no contract reads the Reader's own.
+    const readerInput = inputs.findIndex((input) => input.token?.nft?.capability === 'minting'
+      && binToHex(input.token.category) === reader.categoryId);
+    expect(readerInput).toBeGreaterThanOrEqual(0);
+    const record = (abiFunction: typeof sizeAbi, result: Uint8Array, readBy?: number): string => binToHex(
+      callRecordCommitment(result, callRecordDigest(abiFunction, [], {}, 0, readBy)!),
     );
     // Both reads share the one run of `size`, so they read its one record.
     const sourceRecords = transaction.outputs.flatMap((output, index) => (output.token?.nft
       && binToHex(output.token.category) === source.categoryId
-      && binToHex(output.token.nft.commitment) === record(sizeAbi, scalar) ? [index] : []));
+      && binToHex(output.token.nft.commitment) === record(sizeAbi, scalar, readerInput) ? [index] : []));
     expect(sourceRecords).toHaveLength(1);
     expect(transaction.outputs.some((output) => output.token?.nft
       && binToHex(output.token.category) === reader.categoryId
@@ -89,7 +93,7 @@ describe('ordinary readonly return aliases beside logical identities', () => {
     const twin = structuredClone(forged.outputs[sourceRecords[0]!]!);
     twin.token!.nft!.commitment = callRecordCommitment(
       encodeExternalReturnValues([BigInt(payload.length + 1)], ['uint256'], artifacts.Source.structs, true),
-      callRecordDigest(sizeAbi, [])!,
+      callRecordDigest(sizeAbi, [], {}, 0, readerInput)!,
     );
     forged.outputs.push(twin);
     const sourceInput = inputs.findIndex((input) => input.token?.nft?.capability === 'minting'

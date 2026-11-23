@@ -398,8 +398,9 @@ describe('msg.sender and tx.origin', () => {
       const aliceP2PKH = hexToBin(`76a914${binToHex(alicePkh)}88ac`);
       const zeroCategory = new Uint8Array(32); // direct call -> zero bytes
 
-      // checkSender expects: (address expected, bytes32 _msgSenderCategory, genesisCall, returnOutputIdx)
-      const unlocker = contract.unlock.checkSender(aliceP2PKH, zeroCategory, new Uint8Array(), -1n);
+      // checkSender expects: (address expected, bytes32 _msgSenderCategory, genesisCall, callRecordReader,
+      // returnOutputIdx)
+      const unlocker = contract.unlock.checkSender(aliceP2PKH, zeroCategory, new Uint8Array(), -1n, -1n);
       expect(unlocker).toBeDefined();
     });
 
@@ -908,9 +909,9 @@ describe('msg.sender and tx.origin', () => {
       expect(catParam).toBeDefined();
       expect(catParam!.type).toBe('bytes32');
 
-      // Two user params and three synthetic ones.
-      // (expectedSender, expectedOrigin, _msgSenderCategory, _genesisCall, _returnOutputIdx)
-      expect(func!.inputs).toHaveLength(5);
+      // Two user params and four synthetic ones.
+      // (expectedSender, expectedOrigin, _msgSenderCategory, _genesisCall, _callRecordReader, _returnOutputIdx)
+      expect(func!.inputs).toHaveLength(6);
     });
 
     it('should compile a contract with one sender fn and one non-sender fn', () => {

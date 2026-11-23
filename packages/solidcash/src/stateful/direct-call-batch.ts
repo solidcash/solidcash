@@ -8,9 +8,9 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type {
-  AbiFunction, ArgSource, Artifact, BlockLayoutSlot, ExternalCallAbi, ExternalCallExpression, FunctionBlockLayout,
-  StateValue,
+import {
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction, type ArgSource, type Artifact,
+  type BlockLayoutSlot, type ExternalCallAbi, type ExternalCallExpression, type FunctionBlockLayout, type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Contract } from '../Contract.js';
@@ -491,11 +491,15 @@ export function isCallBatchMember(
 
 type FrameCall = Pick<DirectCallBatchFrame, 'abiFunction' | 'args' | 'rowEntryShift'>;
 
-/** A frame's ABI arguments: its visible ones, the output its record sits at and its entries' shift. */
-function frameAbiArgs(frame: FrameCall, recordIndex: number): FunctionArgument[] {
+/**
+ * A frame's ABI arguments: its visible ones, the output its record sits at, the input of the caller that reads it
+ * (every frame of a spend answers one caller) and its entries' shift.
+ */
+function frameAbiArgs(frame: FrameCall, recordIndex: number, reader: bigint): FunctionArgument[] {
   let visible = 0;
   return frame.abiFunction.inputs.map((input): FunctionArgument => {
     if (input.name === RETURN_OUTPUT_INDEX) return BigInt(recordIndex);
+    if (input.name === CALL_RECORD_READER_INPUT) return reader;
     if (input.name === ROW_ENTRY_SHIFT) return frame.rowEntryShift;
     if (input.name.startsWith('__internal__')) return defaultInternalFunctionArg(input);
     return frame.args[visible++] as FunctionArgument;
@@ -515,7 +519,7 @@ function probeCallBatch(
   const category = master.token?.category;
   if (category === undefined) throw unsupported('its master carries no token');
   const unlocker = contract.createCallBatchUnlocker(frames.map((frame, frameIndex) => ({
-    abiFunction: frame.abiFunction, args: frameAbiArgs(frame, recordOffset + frameIndex),
+    abiFunction: frame.abiFunction, args: frameAbiArgs(frame, recordOffset + frameIndex, CALL_RECORD_NO_READER),
   })));
   // The entry's pushes do not depend on the transaction.
   const unlocking = unlocker.generateUnlockingBytecode({} as GenerateUnlockingBytecodeOptions);
@@ -585,9 +589,12 @@ function probeCallBatch(
 export function directCallBatchUnlocker(group: ExternalCallUtxoGroup): ContractUnlocker {
   const contract = group.externalContract.inner as Contract;
   const batch = group.callBatch!;
+  const reader = group.internalArgs?.[CALL_RECORD_READER_INPUT];
   const unlockerAt = (masterInputIndex: number): ContractUnlocker => contract.createCallBatchUnlocker(
     batch.frames.map((frame, frameIndex) => ({
-      abiFunction: frame.abiFunction, args: frameAbiArgs(frame, masterInputIndex + batch.recordOffset + frameIndex),
+      abiFunction: frame.abiFunction,
+      args: frameAbiArgs(frame, masterInputIndex + batch.recordOffset + frameIndex,
+        typeof reader === 'bigint' ? reader : CALL_RECORD_NO_READER),
     })),
   );
   return {

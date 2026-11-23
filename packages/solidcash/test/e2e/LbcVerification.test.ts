@@ -364,9 +364,9 @@ contract Reader(bytes counterAddr) {
 
     it('should build a StatefulTransactionBuilder with address-parameterized external call', () => {
       // The full input list, internals included: the outState input base, the genesis call (empty in an ordinary
-      // call, B6.5) and the return output index.
+      // call, B6.5), the reader its record names (none) and the return output index.
       const readerMasterUnlocker = readerContract.unlock.readOutputState(
-        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n, -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
 
@@ -404,9 +404,9 @@ contract Reader(bytes counterAddr) {
 
     it('should compute correct transfer output base with address external call', () => {
       // The full input list, internals included: the outState input base, the genesis call (empty in an ordinary
-      // call, B6.5) and the return output index.
+      // call, B6.5), the reader its record names (none) and the return output index.
       const readerMasterUnlocker = readerContract.unlock.readOutputState(
-        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, new Uint8Array(), -1n, -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
       const counterMasterUnlocker = counterContract.unlock.increment(

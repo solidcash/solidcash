@@ -4,7 +4,9 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
+import {
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction, type ExternalCallAbi,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
@@ -64,6 +66,12 @@ export function materializeCreateBuilderSyntheticArgs(
     if (abiFunction.inputs.some((input) => input.name === '__internal__genesisCall')) {
       finalArgs = materializeInternalFunctionArgument(
         finalArgs, abiFunction.inputs, '__internal__genesisCall', new Uint8Array(),
+      );
+    }
+    // No contract makes this call, so its record names no reader.
+    if (abiFunction.inputs.some((input) => input.name === CALL_RECORD_READER_INPUT)) {
+      finalArgs = materializeInternalFunctionArgument(
+        finalArgs, abiFunction.inputs, CALL_RECORD_READER_INPUT, CALL_RECORD_NO_READER,
       );
     }
   }

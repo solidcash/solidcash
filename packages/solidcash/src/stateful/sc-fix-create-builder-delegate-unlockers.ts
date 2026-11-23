@@ -4,7 +4,9 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, Artifact, ExternalCallAbi } from '@solidcash/utils';
+import {
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction, type Artifact, type ExternalCallAbi,
+} from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { createDataNftUnlocker, delegateImplMsgSenderCategory } from './covenant-helpers.js';
@@ -423,6 +425,21 @@ export async function fixCreateBuilderDelegateUnlockers(
           && !isSdkResolvedExternalCallTopologyWitness(inp.name)
           && !isSdkResolvedParticipantStorageWitness(inp.name)) return compilerOwnedWitness;
         if (inp.name === '__internal__genesisCall') return new Uint8Array();
+        if (inp.name === CALL_RECORD_READER_INPUT) {
+          // The record answers the input whose call this run serves: this contract's own call or staticcall, or a
+          // nested proxy's caller for the implementation it delegates to. The builder's own forwarded call is made by
+          // no contract. Rebound by that master's category once the builder places the inputs.
+          const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+          const proxyCaller = proxyExternalGroup === undefined ? undefined : allGroupParentIndices[proxyExternalGroup];
+          const readerCategory = proxyExternalGroup !== undefined
+            ? proxyCaller !== undefined && proxyCaller >= 0
+              ? externalCallUtxoGroups[externalCallUtxoGroups[proxyCaller]?.sharedGroupIndex ?? proxyCaller]?.categoryId
+              : host.categoryId
+            : group.callMode === 'delegatecall' ? undefined : host.categoryId;
+          if (readerCategory !== undefined) externalCallInputPositions.push({ name: inp.name, categoryId: readerCategory });
+          group.internalArgs = { ...group.internalArgs, [inp.name]: CALL_RECORD_NO_READER };
+          return CALL_RECORD_NO_READER;
+        }
         if (inp.name === '__internal__returnOutputIdx') {
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
           return BigInt(proxyExternalGroup === undefined

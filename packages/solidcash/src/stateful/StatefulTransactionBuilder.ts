@@ -15,6 +15,8 @@ import {
   EVENT_CHUNK_BYTES,
   isAuxiliaryBlockSlot,
   sha256,
+  CALL_RECORD_NO_READER,
+  CALL_RECORD_READER_INPUT,
 } from '@solidcash/utils';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { binToHex, binsAreEqual, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -5716,11 +5718,23 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * The input a group's record names as its reader: the master of the contract that makes the call, by the category
+   * the callee's reader witness is bound to (the spending unit's, for a unit of a multi-call spend), or none.
+   */
+  private groupCallRecordReader(group: ExternalCallUtxoGroup): number {
+    const physical = group.callBatchUnit?.physical === undefined ? group
+      : this.externalCallUtxoGroups[group.callBatchUnit.physical] ?? group;
+    const category = physical.mintingInputWitnessCategories?.[CALL_RECORD_READER_INPUT];
+    return category === undefined ? Number(CALL_RECORD_NO_READER) : this.findMintingInputIndex(category);
+  }
+
+  /**
    * The digest of the call a callee group runs, when its function settles a call record. A rolled loop's later
    * part answers its own occurrence's call.
    */
   private groupCallRecordDigest(group: ExternalCallUtxoGroup, occurrence = 0): Uint8Array | undefined {
     const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
+    const reader = this.groupCallRecordReader(group);
     // A multi-call unit answers its frame's call, digested under the frame's ordinal; the spending unit's parts
     // are its frames in order.
     const batchUnit = group.callBatchUnit;
@@ -5729,7 +5743,7 @@ export class StatefulTransactionBuilder {
       const frame = batch.frames[group.callBatch !== undefined ? occurrence : batchUnit.ordinal];
       return frame === undefined ? undefined : callRecordDigest(frame.abiFunction, frame.args, {
         structs: artifact?.structs ?? artifact?.stateLayout?.structs, enums: artifact?.enums,
-      }, frame.ordinal);
+      }, frame.ordinal, reader);
     }
     const functionName = group.logicalFunctionName ?? group.functionName;
     const abiFunction = artifact?.abi.find((entry) => entry.name === functionName);
@@ -5739,7 +5753,7 @@ export class StatefulTransactionBuilder {
     if (args === undefined) return undefined;
     return callRecordDigest(abiFunction, args, {
       structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
-    });
+    }, 0, reader);
   }
 
   /**

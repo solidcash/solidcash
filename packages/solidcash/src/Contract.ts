@@ -4,6 +4,8 @@ import {
   type AbiFunction,
   type Artifact,
   asmToScript,
+  CALL_RECORD_NO_READER,
+  CALL_RECORD_READER_INPUT,
   bytecodeToScript,
   countOpcodes,
   generateContractBytecodeScript,
@@ -878,8 +880,9 @@ export class Contract<
           if (input.name === '__internal__blockOracleInputIndex') {
             return this.resolveBlockOracleIndexArgs(abiFunction, sourceOutputs);
           }
-          // A spend no caller made names no record.
+          // A spend no caller made names no record, and no reader.
           if (input.name === '__internal__returnOutputIdx') return [bigIntToVmNumber(-1n)];
+          if (input.name === CALL_RECORD_READER_INPUT) return [bigIntToVmNumber(CALL_RECORD_NO_READER)];
           // An ordinary call does not answer a constructor's genesis call.
           if (input.name === '__internal__genesisCall') return [new Uint8Array()];
           return [];

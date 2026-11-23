@@ -93,15 +93,18 @@ UTXO (and any required data NFTs) are co-spent in the same transaction.
 
 ### Return values
 
-A returning callee emits a **return-event NFT**: category-bound to B's master (base 32 bytes), `none`
-capability, FT amount 0, `OP_TRUE` (anyone-can-spend) locking bytecode, satoshis <= 1200 (dust). Its commitment is
-the **call record** of the call it answers (D50, `docs/wip/call-records/DESIGN.md`): a 31-byte digest of the call's
-selector and arguments, a form byte, then the encoded result inline (up to 96 bytes) or its SHA256, whose bytes ride
-in the caller's `__internal__externalReturnPreimage[N]`. The callee digests the call it ran, pins its record and
-admits no other `OP_TRUE` carrier of its category. The caller digests its own call, reads the record at the witness
-index `__internal__externalReturnOutputIdx[N]` via `OP_OUTPUTTOKENCOMMITMENT`, requires the digest to be its own and
-decodes the pushdata-framed fields. Single value, multi-value tuple (destructured `(a, b) = IFoo(addr).f()`), and
-forward-looking opaque `bytes` are all supported; an opaque read checks no digest.
+A returning callee emits a **return-event NFT**: category-bound to B's master (base 32 bytes), `none` capability, FT
+amount 0, `OP_TRUE` (anyone-can-spend) locking bytecode, satoshis <= 1200 (dust). Its commitment is the **call
+record** of the call it answers (D50, `docs/wip/call-records/DESIGN.md`): a 31-byte digest of the call's selector,
+its arguments and its reader, a form byte, then the encoded result inline (up to 96 bytes) or its SHA256, whose
+bytes ride in the caller's `__internal__externalReturnPreimage[N]`. The reader is the input index of the contract
+that reads the record: the caller digests its own `OP_INPUTINDEX`, the callee the `__internal__callRecordReader`
+witness, so one run's record answers one caller (two callers sit at two inputs). The callee digests the call it ran,
+pins its record and admits no other `OP_TRUE` carrier of its category. The caller digests its own call, reads the
+record at the witness index `__internal__externalReturnOutputIdx[N]` via `OP_OUTPUTTOKENCOMMITMENT`, requires the
+digest to be its own and decodes the pushdata-framed fields. An F1 caller edge commits to the same digest, so a
+callee that reads `msg.sender` binds it to the reader too. Single value, multi-value tuple (destructured
+`(a, b) = IFoo(addr).f()`), and forward-looking opaque `bytes` are all supported; an opaque read checks no digest.
 
 ### Calls made by a constructor (genesis calls)
 
@@ -112,7 +115,8 @@ g_in, the index of the input that spends the deployer coin `(X, 0)` (36 bytes), 
 arguments A and its code (46 bytes). Every tagged entry requires input g_in to spend `(X, 0)`; an entry run as a
 frame of the multi-call entry (call context 0 or more) and an entry that creates a child require the parameter
 empty, so a constructor's call is answered by a standalone run, and a payable tagged entry requires `msg.value`
-to be 0. The record's digest covers `ff ff ‖ X ‖ slot ‖ selector ‖ arguments`.
+to be 0. The record's digest covers `ff ff ‖ X ‖ slot ‖ selector ‖ arguments` and no reader witness: X is the
+outpoint only the creating input spends, so the tag names the one reader.
 
 At each call site j, `create` checks that the callee input's lock is the call's target (a P2SH32 lock), that
 the code which ran there carries the code marker with the record-sound flag, and that slot j runs once (its

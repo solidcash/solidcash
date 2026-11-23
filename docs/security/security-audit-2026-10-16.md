@@ -1395,13 +1395,13 @@ needs VM evidence, `rejectedWith` has no source fallback).
   the caller may name any callee there, as for a parameter's element, not only one the computation can reach (noted
   2026-10-26, source-traced).
 
-- One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
-  selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one
-  transaction that make the same returning call to one callee therefore both accept the callee's single run and
-  record; with a state-changing callee each caller takes an effect that ran once (two "withdrawals" credited for one
-  payment). It follows from the direct call edge being presence-based (F1, above): the callee does not bind which
-  caller it answers. Framed records and bus rows bind the caller. A fix needs the caller to bind the callee's call
-  edge, for example the callee's `msg.sender` witness, which reopens the F1 decision.
+- One run shared by two callers where no record is read (2026-11-23, residual of the one-reader fix in D50 Fixed). A
+  void call through a multi-function interface reads no record (its callee's selector and arguments are bound from
+  the callee's unlocking, `0b94c0f13`), so two callers can still share one void run there; reading fix B's void record
+  for every void call would close it. An opaque read checks no digest (below). A kernel direct participant's records
+  name no reader, so a direct caller refuses them (fail closed). The SDK's reader binding for a call a delegated
+  implementation or a nested proxy makes is written from the code and no test runs it (a wrong binding fails closed).
+  With `callBatch: true`, `bcmr_padded_token` grows to 9,001 bytes and loses its multi-call entry by one byte.
 
 - Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
   than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot
@@ -1448,6 +1448,18 @@ Design: `docs/wip/call-records/DESIGN.md`.
   record per iteration. The SDK resolved every iteration's callee with iteration 0's arguments; it now resolves each
   iteration's own (`sc-expand-resolve-create-builder-external-calls.ts`). Test: the loop case in
   `CallRecords.test.ts`.
+- **One record read by two callers** (found 2026-10-25; fixed 2026-11-23, branch `sec-record-reader`). A record named
+  the call it answers (ordinal, selector, arguments), not its reader, so two caller contracts in one transaction making
+  the same call both accepted the callee's one run and record (two credits for one withdrawal), void calls reading fix
+  B's `digest || 01` records and F1 edges included. The digest preimage is now `ordinal || selector || reader ||
+  arguments`, the reader an input index in two bytes: a caller digests its own `OP_INPUTINDEX`, a callee the unchecked
+  witness `__internal__callRecordReader`, which the SDK binds to the calling master's input. Two callers sit at two
+  inputs, so no record answers both; an edge names its pinning caller's input the same way. A constructor's tagged
+  record keeps its form: its X names the one input that spends (X, 0). Artifacts publish `callRecordReader: true`, and
+  the SDK refuses a call mixing them with earlier ones (`MixedCallRecordReaderError`). Test:
+  `packages/solidcash/test/e2e/CallRecordSingleReader.e2e.test.ts` (returning and void: A1 -> T and A2 -> T merged so
+  T runs once are refused at A2's input; A1 -> T1 and A2 -> T2 merged the same way settle). Residuals: Open, "One
+  run shared by two callers where no record is read".
 
 ### Open, or bound otherwise
 

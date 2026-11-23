@@ -51,6 +51,7 @@ const BUS = `contract LaneBus() {
 const DRIVER = `interface ILaneBus { function put(int key, int value); }
 contract LaneDriver(address bus) {
   function poke() public { ILaneBus(bus).put(5, 9); require(true); }
+  function pokeAt(int key, int value) public { ILaneBus(bus).put(key, value); require(true); }
 }`;
 
 const KERNEL = {
@@ -180,6 +181,10 @@ interface ComposeScenario {
   honest: { builder: TransactionBuilder; failures: ReturnType<typeof failures> };
   control: ReturnType<typeof failures>;
   attack: ReturnType<typeof failures>;
+  /** The honest compose with a second `side[9]` node appended, no input spent for it. */
+  mint: ReturnType<typeof failures>;
+  /** An honest compose whose bus row inserts a cold key. */
+  insert: ReturnType<typeof failures>;
   lane: number;
 }
 
@@ -203,15 +208,21 @@ async function composeScenario(graph: boolean): Promise<ComposeScenario> {
   await bus.call.put(5n, 7n).send();
   await bus.call.put(9n, 1n).send();
 
-  const compose = async (): Promise<TransactionBuilder> => {
+  let changeLock: Uint8Array | undefined;
+  // `put(5, 9)` through `poke`, or with `key` through `pokeAt`.
+  const compose = async (key?: bigint, value = 4n): Promise<TransactionBuilder> => {
     const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
+    changeLock = funder.unlocker.generateLockingBytecode();
     return messageBus.compose({
-      preparedCalls: [
+      preparedCalls: key === undefined ? [
         { contract: driver, functionName: 'poke', args: [] },
         { contract: bus, functionName: 'put', args: [5n, 9n] },
+      ] : [
+        { contract: driver, functionName: 'pokeAt', args: [key, value] },
+        { contract: bus, functionName: 'put', args: [key, value] },
       ],
       funder,
-      changeAddress: funder.unlocker.generateLockingBytecode(),
+      changeAddress: changeLock,
     }).build();
   };
   const honest = await compose();
@@ -295,8 +306,35 @@ async function composeScenario(graph: boolean): Promise<ComposeScenario> {
   const forged = original.slice(0, -2) + (parseInt(original.slice(-2), 16) ^ 1).toString(16).padStart(2, '0');
   const control = failures(await declared(original));
   const attack = failures(await declared(forged));
-  console.log('compose untouched record', { graph, lane, control, attack });
-  return { provider, honest: { builder: honest, failures: honestFailures }, control, attack, lane: lane! };
+
+  // Beside the honest row, a second side[9] node with no input spent for it, appended after the change, whose
+  // satoshis it takes, so the transaction still balances.
+  const minted = await compose();
+  const lockOf = (to: string | Uint8Array): string => binToHex(typeof to === 'string' ? addressToLockScript(to) : to);
+  const change = minted.outputs.findIndex((output) => lockOf(output.to) === binToHex(changeLock!));
+  expect(change, 'the compose pays change').toBeGreaterThanOrEqual(0);
+  minted.outputs[change] = { ...minted.outputs[change]!, amount: minted.outputs[change]!.amount - victim.satoshis };
+  minted.outputs.push({
+    to: lock, amount: victim.satoshis,
+    token: { ...victim.token!, nft: { capability: 'mutable', commitment: forged } },
+  });
+  const mint = failures(minted);
+  // An honest bus row that inserts 11, after 9.
+  const insert = failures(await compose(11n));
+  // The require each mint failure stopped at, where the bus master failed.
+  const requires = busArtifact.debug?.requires ?? [];
+  const busMaster = masterOf(minted);
+  console.log('compose untouched record', {
+    graph, lane, control, attack, insert,
+    mint: mint.map((failure) => {
+      const ip = Number(/\(ip (\d+)\)/.exec(failure.error)?.[1]);
+      return failure.inputIndex !== busMaster ? failure
+        : { ...failure, require: requires.find((entry) => entry.ip === ip || entry.ip === ip - 1)?.message };
+    }),
+  });
+  return {
+    provider, honest: { builder: honest, failures: honestFailures }, control, attack, mint, insert, lane: lane!,
+  };
 }
 
 describe('compose path: a resource row may rewrite a record no row touched', () => {
@@ -313,6 +351,15 @@ describe('compose path: a resource row may rewrite a record no row touched', () 
   it('refuses an untouched entry rewritten under a declared resource row', () => {
     expect(state.attack).not.toEqual([]);
   });
+
+  it('settles an honest compose whose bus row inserts a cold key', () => {
+    expect(state.insert).toEqual([]);
+  });
+
+  // The route's mint bound: the bus's nodes are its inputs plus the inserts of the rows that ran.
+  it('refuses a node minted at the collection with no input beside the honest row', () => {
+    expect(state.mint).not.toEqual([]);
+  });
 });
 
 describe('compose path on a graph route: a resource row may rewrite a record no row touched', () => {
@@ -328,5 +375,14 @@ describe('compose path on a graph route: a resource row may rewrite a record no 
   // No row of this compose claims the lane: the graph route pins the entry inside its verifier-proven block too.
   it('refuses an untouched entry rewritten under a declared resource row', () => {
     expect(state.attack).not.toEqual([]);
+  });
+
+  it('settles an honest compose whose bus row inserts a cold key', () => {
+    expect(state.insert).toEqual([]);
+  });
+
+  // Expected to fail before the graph route takes the mint bound: nothing else counts the bus's nodes.
+  it.fails('refuses a node minted at the collection with no input beside the honest row', () => {
+    expect(state.mint).not.toEqual([]);
   });
 });

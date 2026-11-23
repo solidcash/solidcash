@@ -4,11 +4,11 @@ import {
   encodeDataPush, encodeTransaction, hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';
 import type { AbiFunction, Artifact } from '@solidcash/utils';
-import { compileStringMulti } from '../direct-compile.js';
-import { Contract } from '../../src/index.js';
-import { StatefulContract } from '../../src/stateful/index.js';
+import { compileString, compileStringMulti } from '../direct-compile.js';
+import { Contract, Signer } from '../../src/index.js';
+import { StatefulContract, getContractFactory, upgrades } from '../../src/stateful/index.js';
 import { callRecordDigest } from '../../src/stateful/call-record.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { addProvenUtxo, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 /**
  * One call record answers one reader (docs/security/security-audit-2026-10-16.md, "One record read by two callers").
@@ -20,7 +20,8 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * The attack merges two honest transactions, A1 -> T and A2 -> T, into one where T runs once and both callers read its
  * record. The control merges A1 -> T1 and A2 -> T2 the same way and settles, so only the shared record is refused.
  * The merge discovers every position from the transactions and the ABI, so it runs on a build without the binding,
- * where the attack settles.
+ * where the attack settles. A void call through an interface naming several methods reads the callee's record too,
+ * in place of its selector check. A call an implementation makes behind a proxy names the implementation's input.
  */
 
 const SOURCE = `pragma solidcash >=0.8.0;
@@ -50,12 +51,18 @@ contract Account() {
     ISpend(vault).spend(amount);
     this.credited = this.credited + amount;
   }
+  function payMany(address vault, int amount) public {
+    IVault(vault).spend(amount);
+    this.credited = this.credited + amount;
+  }
 }`;
 
-// The returning call reads `digest || 01 || result`; the void call, through a one-method interface, `digest || 01`.
+// The returning call reads `digest || 01 || result`; the void call, through a one-method interface or one naming
+// several, `digest || 01`.
 const SHAPES = [
   { kind: 'returning', entry: 'pull', method: 'withdraw' },
   { kind: 'void', entry: 'pay', method: 'spend' },
+  { kind: 'multi-method void', entry: 'payMany', method: 'spend' },
 ] as const;
 type Shape = typeof SHAPES[number];
 
@@ -81,15 +88,21 @@ const abiOf = (artifact: Artifact, name: string): AbiFunction => artifact.abi.fi
 
 interface Deployed { readonly sc: StatefulContract<any>; readonly category: string; readonly lock: Uint8Array }
 
-async function deploy(provider: Provider, artifact: Artifact, state: Record<string, bigint>): Promise<Deployed> {
-  const contract = new Contract(artifact, [], { provider });
-  const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, state, { saltContract: true });
+async function deployContract(
+  provider: Provider, contract: Contract, state: Record<string, bigint>,
+): Promise<Deployed> {
+  const { categoryId } = await setupStatefulUtxos(
+    provider, contract, contract.artifact.stateLayout!, state, { saltContract: true },
+  );
   return {
     sc: StatefulContract.withCategory(contract, categoryId),
     category: categoryId,
     lock: hexToBin(contract.withCategory(hexToBin(categoryId)).lockingBytecode),
   };
 }
+
+const deploy = (provider: Provider, artifact: Artifact, state: Record<string, bigint>): Promise<Deployed> => (
+  deployContract(provider, new Contract(artifact, [], { provider }), state));
 
 const callOf = (caller: Deployed, vault: Deployed, shape: Shape) => (): Promise<unknown> => (caller.sc as any)
   [shape.entry](vault.lock, AMOUNT).withExternalCall(vault.sc, shape.method, [AMOUNT]).send();
@@ -348,5 +361,82 @@ describe('a call record answers one reader', () => {
       expect(refusal?.constructor.name).toBe('MixedCallRecordReaderError');
       expect(refusal?.message).toMatch(/IVault\.withdraw mixes call record schemes/);
     }
+  }, 300_000);
+});
+
+// A proxy whose fallback delegates its call to the implementation the spend names (NestedCalleeOtherPathsGuard).
+const FALLBACK_PROXY = `pragma solidcash >=0.8.0;
+contract Proxy() {
+  int credited;
+  function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+  fallback(bytes input) external {
+    address impl = address(0x76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac);
+    impl.delegatecall(input);
+    require(input.length > 0);
+  }
+}`;
+
+interface Proxied {
+  readonly provider: Provider;
+  readonly vault: Deployed;
+  /** The category of the implementation's master, whose input runs the code that makes the call. */
+  readonly implementation: string;
+  readonly call: (shape: Shape) => () => Promise<unknown>;
+  readonly credited: () => Promise<bigint>;
+}
+
+/** Account behind the SDK's default proxy, its entries reached through `__forward`. */
+async function defaultProxied(): Promise<Proxied> {
+  const provider = createTestProvider();
+  const signer = new Signer(new Uint8Array(32).fill(0x5b), provider);
+  for (let index = 0; index < 6; index += 1) await addProvenUtxo(provider, signer.getAddress());
+  const vault = await deploy(provider, artifacts().Vault, { balance: BALANCE });
+  const proxy = await upgrades.deployProxy(getContractFactory(artifacts().Account, signer), { credited: 0n }) as any;
+  for (const iface of ['IVault', 'ISpend']) proxy.implementation._registerResolvedExternal(iface, vault.sc);
+  return {
+    provider,
+    vault,
+    implementation: proxy.implementation.categoryId,
+    call: (shape) => () => proxy.forward(shape.entry, [vault.lock, AMOUNT]).send(),
+    credited: async () => (await proxy.proxy.getState()).credited as bigint,
+  };
+}
+
+/** Account as the delegate of a proxy whose fallback delegates to it. */
+async function fallbackProxied(): Promise<Proxied> {
+  const provider = createTestProvider();
+  const vault = await deploy(provider, artifacts().Vault, { balance: BALANCE });
+  const impl = await deployContract(
+    provider, new Contract(artifacts().Account, [], { provider }).asDelegate(), { credited: 0n },
+  );
+  const proxy = await deploy(provider, compileString(FALLBACK_PROXY, { allowUnsafeOperations: true }) as Artifact, {
+    credited: 0n,
+  });
+  for (const iface of ['IVault', 'ISpend']) (impl.sc as any)._registerResolvedExternal(iface, vault.sc);
+  return {
+    provider,
+    vault,
+    implementation: impl.category,
+    call: (shape) => () => (proxy.sc.call as any).__fallback()
+      .withDelegatecall(impl.sc, shape.entry, [vault.lock, AMOUNT]).send(),
+    credited: async () => (await proxy.sc.getState()).credited as bigint,
+  };
+}
+
+describe.each([
+  { proxy: 'the default proxy\'s __forward', setup: defaultProxied },
+  { proxy: 'a proxy\'s fallback', setup: fallbackProxied },
+])('a call an implementation makes behind $proxy', ({ setup }) => {
+  it.each(SHAPES)('names the implementation\'s input in a $kind call, which settles', async (shape) => {
+    const { provider, vault, implementation, call, credited } = await setup();
+    const tx = await capture(provider, call(shape));
+    const reader = inputOfCoin(await coinsOf(provider, tx), implementation, 'minting');
+    expect(reader).toBeGreaterThanOrEqual(0);
+    const record = tx.outputs[outputWith(tx, '51', vault.category)]!;
+    expect(binToHex(record.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digestFor(shape.method, reader)));
+
+    await call(shape)();
+    expect(await credited()).toBe(AMOUNT);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
   }, 300_000);
 });

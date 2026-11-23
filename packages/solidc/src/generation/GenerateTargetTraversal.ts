@@ -1063,6 +1063,11 @@ interface CallSiteWrites {
    */
   staleInitializer(name: string, call: ExternalCallSlot | Node): ExpressionNode | undefined;
   /**
+   * Whether the call through compiler local `name` can run on another callee than the one the caller's state and the
+   * call's arguments name before the run, which a builder resolves a callee from (targetWrittenBeforeCall).
+   */
+  targetWrittenFirst(name: string, call: ExternalCallSlot | Node): boolean;
+  /**
    * Whether a write before a run of the call can change what `expression` reads, by field path: a rewrite of a stack
    * variable it reads (its declaration aside), or a write of a state field it reads.
    */
@@ -1075,6 +1080,8 @@ interface CallSiteWrites {
 }
 /** A field path into a value, from its top (`['roles', 'worker']`); `[]` is the whole value. */
 type FieldPath = readonly string[];
+/** The local copies a call's target was traced through, the one the call reads first (receiverCopies). */
+type ReceiverCopies = NonNullable<VariableDefinitionNode['receiverCopies']>;
 /**
  * The state a write may change: each root (a state variable or collection, by name) with the field paths it changes
  * in the values it writes, under any key; or 'any' (assembly).
@@ -54345,6 +54352,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       after: (names, slot) => (positions ??= this.bodyWrites(body)).after(names, slot),
       before: (names, roots, slot) => (positions ??= this.bodyWrites(body)).before(names, roots, slot),
       staleInitializer: (name, call) => (positions ??= this.bodyWrites(body)).staleInitializer(name, call),
+      targetWrittenFirst: (name, call) => (positions ??= this.bodyWrites(body)).targetWrittenFirst(name, call),
       writtenBefore: (expression, call) => (positions ??= this.bodyWrites(body)).writtenBefore(expression, call),
       keepReads: (expression, call) => (positions ??= this.bodyWrites(body)).keepReads(expression, call),
     };
@@ -54444,11 +54452,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const target = call.targetExpression;
       let writtenFirst: boolean;
       if (target instanceof IdentifierNode && target.name.startsWith('__extaddr_')) {
-        try {
-          writtenFirst = writes.staleInitializer(target.name, call) !== undefined;
-        } catch {
-          writtenFirst = true;
-        }
+        writtenFirst = writes.targetWrittenFirst(target.name, call);
       } else {
         writtenFirst = writes.writtenBefore(target, call);
       }
@@ -54565,7 +54569,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const receiver = this.inlinedLowLevelReceiver(slot);
     if (receiver !== undefined) return writes.before([receiver], [], slot);
-    if (slot.addressParam.startsWith('__extaddr_')) return writes.staleInitializer(slot.addressParam, slot) !== undefined;
+    if (slot.addressParam.startsWith('__extaddr_')) return writes.targetWrittenFirst(slot.addressParam, slot);
     return writes.before([slot.addressParam], [], slot);
   }
 
@@ -54803,6 +54807,117 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         entries,
       };
     };
+    // The arms of each branch with two: a write in one reaches a call in the other only on a loop's next turn.
+    let arms: { left: Set<Node>; right: Set<Node> }[] | undefined;
+    const apart = (write: Node, run: Node): boolean => (arms ??= [...at.keys()]
+      .filter((node): node is BranchNode => node instanceof BranchNode && node.elseBlock !== undefined)
+      .map((branch) => ({ left: subtree(branch.ifBlock), right: subtree(branch.elseBlock!) })))
+      .some(({ left, right }) => (left.has(write) && right.has(run)) || (right.has(write) && left.has(run)));
+    // The field paths of copy `name` that `write`, a write of it, changes, with what it carries over from a snapshot:
+    // from its top, or with `element` from the top of the element a write of one element places.
+    const copyPaths = (write: Node, name: string, element: boolean): FieldPath[] => {
+      if (element) {
+        return write instanceof ArrayAssignNode && write.name === name
+          ? this.rebuiltPaths(write.value, this.carriedOver(write, snapshot)) : [[]];
+      }
+      return write instanceof AssignNode && write.identifier.name === name
+        ? this.rebuiltPaths(write.expression, this.carriedOver(write, snapshot)) : [[]];
+    };
+    // Whether a copy a target was traced through (VariableDefinitionNode.receiverCopies) can change at the target's
+    // path between where it is taken and where the copy nearer the call is taken from it, or a run of the call for
+    // the nearest: a write of the copy there, of it whole, or assembly.
+    const copiesWritten = (copies: ReceiverCopies, call: ExternalCallSlot | Node): boolean => copies.some((copy, index) => {
+      const copied = declarations.get(copy.local);
+      const from = copied === undefined ? -1 : subtreeEnd(copied);
+      const nearer = index === 0 ? undefined : declarations.get(copies[index - 1]!.local);
+      const calls = runsOf(call);
+      return landed.some((write) => write.node !== copied
+        && calls.some((run) => sharesLoop(write.node, run) || (write.end > from
+          && write.end < (nearer === undefined ? at.get(run)! : subtreeEnd(nearer) + 1) && !apart(write.node, run)))
+        && (write.names === undefined
+          || ((write.element === copy.local || write.names.includes(copy.local)) && (copy.path === undefined
+            || (write.element === copy.local && copy.element !== true)
+            || copyPaths(write.node, copy.local, copy.element === true)
+              .some((path) => fieldPathsOverlap(path, copy.path!))))));
+    });
+    // A target read from the stored value local copies were taken from is, as on the EVM, the value of the copy the
+    // call reads where it runs: the stored value where the farthest copy was taken, as the copies changed since. The
+    // body-top read holds it until a write can change the stored value (`sourceWritten`) or a copy at the target's
+    // path; then the call reads that copy. A copy the call cannot read there (declared twice, or the target under an
+    // element of it) is refused by name.
+    const throughCopy = (
+      copies: ReceiverCopies, call: ExternalCallSlot | Node, sourceWritten: boolean,
+    ): ExpressionNode | undefined => {
+      if (!sourceWritten && !copiesWritten(copies, call)) return undefined;
+      const copy = copies[0]!;
+      const copied = declarations.get(copy.local);
+      const read = copied === undefined || redeclared.has(copy.local) || copy.path === undefined || copy.element
+        ? undefined : this.readThroughCopy(copied, copy.path);
+      if (read !== undefined) return read;
+      const typed = (call instanceof ExternalFunctionCallNode || !(call instanceof Node))
+        && call.interfaceName !== '__raw__' ? call : undefined;
+      const calling = typed ? `calling ${typed.interfaceName}.${typed.functionName}` : 'making a low-level call';
+      throw new SolidcDiagnosticError(
+        'COPY_TARGET_WRITTEN_BEFORE_CALL',
+        `'${this.currentFunction.name}' changes what '${copy.local}' was copied from, or '${copy.local}' itself, `
+          + `before ${calling} through '${copy.local}', and the call cannot read '${copy.local}' where it runs. On `
+          + 'the EVM the call goes to the copy\'s value. Read the target into a local of its own before the write, '
+          + 'or make the call before the write.',
+        { functionName: this.currentFunction.name, call: typed?.functionName ?? 'call' },
+      );
+    };
+    // Whether a builder, reading `assignment`'s value before the call with its base local taken as what that local
+    // was initialized from, can read another value than the assignment takes (targetWrittenFirst).
+    const assignedWrittenFirst = (assignment: AssignNode): boolean => {
+      if (changing(assignment.expression, -1, undefined, assignment, false).writes.length > 0) return true;
+      const path: string[] = [];
+      let base: ExpressionNode = assignment.expression;
+      while (base instanceof FieldAccessNode || base instanceof CastNode) {
+        if (base instanceof FieldAccessNode) path.unshift(base.name);
+        base = base.expression;
+      }
+      const local = base instanceof IdentifierNode ? declarations.get(base.name) : undefined;
+      if (local?.expression === undefined) return false;
+      let source: ExpressionNode = local.expression;
+      for (const field of path) source = new FieldAccessNode(source, field);
+      return changing(source, -1, undefined, local, false).writes.length > 0;
+    };
+    const staleInitializer = (name: string, call: ExternalCallSlot | Node): ExpressionNode | undefined => {
+      const declaration = declarations.get(name);
+      const initializer = declaration?.expression;
+      if (declaration === undefined || initializer === undefined) return undefined;
+      // A local assigned after its declaration (`__extaddr_llf<N>`) holds what was assigned, not its initializer.
+      if (landed.some((write) => write.node !== declaration && write.names?.includes(name) === true)) {
+        return undefined;
+      }
+      const { writes: written, entries } = changing(
+        initializer, subtreeEnd(declaration), declaration, call, true,
+      );
+      const copies = declaration.receiverCopies;
+      if (copies !== undefined && copies.length > 0) return throughCopy(copies, call, written.length > 0);
+      if (written.length === 0) return undefined;
+      if (entries.length === 0) return initializer;
+      const readsWritten = entries.every((entry) => entry.collection?.sorted !== true && entry.arrayIndex === undefined
+        && entry.isPackedStateArrayAccess !== true)
+        && written.every(({ node: write }) => (write instanceof MappingAssignNode
+          || write instanceof MappingFieldAssignNode) && straightLine.has(write)
+          && entries.some((entry) => entry.name === write.name && entry.entrySlotIndex === write.entrySlotIndex));
+      if (readsWritten) return initializer;
+      // A typed call is named whether it comes as its slot or, from a body that checks every call, as its node.
+      const typed = (call instanceof ExternalFunctionCallNode || !(call instanceof Node))
+        && call.interfaceName !== '__raw__' ? call : undefined;
+      const calling = typed ? `calling ${typed.interfaceName}.${typed.functionName}` : 'making a low-level call';
+      throw new SolidcDiagnosticError(
+        'ENTRY_TARGET_WRITTEN_BEFORE_CALL',
+        `'${this.currentFunction.name}' writes '${entries[0]!.name}' before ${calling} through an entry of it, and `
+          + 'the call cannot read the written entry: the write is in a branch or loop, to another key, or of a '
+          + 'sorted, packed or array-element value. On the EVM the call goes to the written value. Make the call '
+          + 'before the write, or write the same entry unconditionally.',
+        {
+          functionName: this.currentFunction.name, collection: entries[0]!.name, call: typed?.functionName ?? 'call',
+        },
+      );
+    };
     return {
       after: (names, slot) => {
         const calls = callsOf(slot);
@@ -54816,39 +54931,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           || write.written === 'any' || roots.some((root) => (write.written as ReadonlyMap<string, unknown>).has(root)))
           && calls.some((run) => write.end < at.get(run)! || sharesLoop(write.node, run)));
       },
-      staleInitializer: (name, call) => {
+      staleInitializer,
+      targetWrittenFirst: (name, call) => {
         const declaration = declarations.get(name);
-        const initializer = declaration?.expression;
-        if (declaration === undefined || initializer === undefined) return undefined;
-        // A local assigned after its declaration (`__extaddr_llf<N>`) holds what was assigned, not its initializer.
-        if (landed.some((write) => write.node !== declaration && write.names?.includes(name) === true)) {
-          return undefined;
+        // A local assigned where the call runs (`__extaddr_llf<N> = e.buyer`) holds what was assigned, which a builder
+        // resolves with its base local taken as what it was initialized from (`escrow.buyer`): the call runs on
+        // another callee once a write changes what the assignment reads before it (the entry cache a field write
+        // rebuilds), or what the base local was initialized from before it was declared.
+        const assignments = landed.filter((write) => write.node !== declaration && write.names?.includes(name) === true);
+        if (declaration !== undefined && assignments.length > 0) {
+          return assignments.some(({ node: write }) => !(write instanceof AssignNode) || assignedWrittenFirst(write));
         }
-        const { writes: written, entries } = changing(
-          initializer, subtreeEnd(declaration), declaration, call, true,
-        );
-        if (written.length === 0) return undefined;
-        if (entries.length === 0) return initializer;
-        const readsWritten = entries.every((entry) => entry.collection?.sorted !== true && entry.arrayIndex === undefined
-          && entry.isPackedStateArrayAccess !== true)
-          && written.every(({ node: write }) => (write instanceof MappingAssignNode
-            || write instanceof MappingFieldAssignNode) && straightLine.has(write)
-            && entries.some((entry) => entry.name === write.name && entry.entrySlotIndex === write.entrySlotIndex));
-        if (readsWritten) return initializer;
-        // A typed call is named whether it comes as its slot or, from a body that checks every call, as its node.
-        const typed = (call instanceof ExternalFunctionCallNode || !(call instanceof Node))
-          && call.interfaceName !== '__raw__' ? call : undefined;
-        const calling = typed ? `calling ${typed.interfaceName}.${typed.functionName}` : 'making a low-level call';
-        throw new SolidcDiagnosticError(
-          'ENTRY_TARGET_WRITTEN_BEFORE_CALL',
-          `'${this.currentFunction.name}' writes '${entries[0]!.name}' before ${calling} through an entry of it, and `
-            + 'the call cannot read the written entry: the write is in a branch or loop, to another key, or of a '
-            + 'sorted, packed or array-element value. On the EVM the call goes to the written value. Make the call '
-            + 'before the write, or write the same entry unconditionally.',
-          {
-            functionName: this.currentFunction.name, collection: entries[0]!.name, call: typed?.functionName ?? 'call',
-          },
-        );
+        const copies = declaration?.receiverCopies;
+        if (declaration?.expression === undefined || copies === undefined || copies.length === 0) {
+          try {
+            return staleInitializer(name, call) !== undefined;
+          } catch {
+            // An entry the call cannot read after its write (ENTRY_TARGET_WRITTEN_BEFORE_CALL) is written first too.
+            return true;
+          }
+        }
+        // A builder resolves the callee from the stored value before the call. The copies hold another after a write
+        // of the stored value before the farthest is taken, or of a copy at the target's path.
+        const taken = declarations.get(copies[copies.length - 1]!.local);
+        return taken === undefined
+          || changing(declaration.expression, subtreeEnd(declaration), declaration, taken, true).writes.length > 0
+          || copiesWritten(copies, call);
       },
       writtenBefore: (expression, call) => changing(expression, -1, undefined, call, false).writes.length > 0,
       keepReads: (expression, call) => {
@@ -54946,6 +55054,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     });
   }
 
+  /**
+   * A read of `path` in the local `copied` declares, typed as the declaration and its struct fields are: the read of a
+   * call's target through the copy it was traced through (bodyWrites). undefined when the path leaves its struct.
+   */
+  private readThroughCopy(copied: VariableDefinitionNode, path: readonly string[]): ExpressionNode | undefined {
+    let read: ExpressionNode = new IdentifierNode(copied.name);
+    read.type = copied.type;
+    read.location = copied.location;
+    for (const field of path) {
+      const struct = read.type;
+      const member = struct instanceof StructType ? struct.fields.find((candidate) => candidate.name === field) : undefined;
+      if (!(struct instanceof StructType) || member === undefined) return undefined;
+      const access = new FieldAccessNode(read, field);
+      access.structType = struct;
+      access.type = member.type;
+      access.location = copied.location;
+      read = access;
+    }
+    return read;
+  }
+
   /** The struct `call` builds with its own constructor, not a function returning one. */
   private structConstructed(call: FunctionCallNode): StructType | undefined {
     const struct = call.type;
@@ -54980,6 +55109,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * same entry (its entry slot, or keys naming the same stack values) or the same packed array element.
    */
   private sameLocation(read: ExpressionNode, write: Node): boolean {
+    if (write instanceof ArrayAssignNode) {
+      return read instanceof ArrayAccessNode && read.array instanceof IdentifierNode && read.array.name === write.name
+        && this.sameStableKeys([read.index], [write.index]);
+    }
     if (write instanceof StateAssignNode) return read instanceof StateAccessNode && read.name === write.name;
     if (write instanceof AssignNode) return read instanceof IdentifierNode && read.name === write.identifier.name;
     if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) {
@@ -55001,7 +55134,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** The keys naming the location `write` writes: an entry's keys, a packed array element's index. */
   private locationKeys(write: Node): readonly ExpressionNode[] {
     if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) return write.keys;
-    if (write instanceof StateArrayAssignNode) return [write.index];
+    if (write instanceof StateArrayAssignNode || write instanceof ArrayAssignNode) return [write.index];
     return [];
   }
 

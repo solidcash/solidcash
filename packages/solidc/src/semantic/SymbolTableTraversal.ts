@@ -11959,9 +11959,33 @@ export default class SymbolTableTraversal extends AstTraversal {
         // dominating statements directly.
         let addressBase: ExpressionNode = node.addressExpression;
         while (addressBase instanceof CastNode) addressBase = addressBase.expression;
+        // A compiler local assigned where the call runs (`__extaddr_llf<N> = e.buyer`, SynthesizeExternalAddressLocals)
+        // holds what was assigned, not its placeholder: publish that read, its field reads' base locals taken as what
+        // they were initialized from (`e.buyer` as `escrow.buyer`), the value a builder reads before the call. A call
+        // whose function can change it first is published as written first (targetWrittenBeforeCall).
+        const resolveFieldBases = (expression: ExpressionNode): ExpressionNode => {
+          if (!(expression instanceof FieldAccessNode)) return resolveInitializer(expression);
+          const resolved = new FieldAccessNode(resolveFieldBases(expression.expression), expression.name);
+          resolved.location = expression.location;
+          resolved.type = expression.type;
+          resolved.structType = expression.structType;
+          return resolved;
+        };
+        const dominatingAssignment = (identifier: IdentifierNode): ExpressionNode | undefined => {
+          if (!identifier.name.startsWith('__extaddr_')) return undefined;
+          const prior = priorStatements ?? [];
+          for (let index = prior.length - 1; index >= 0; index -= 1) {
+            const statement = prior[index]!;
+            if (statement instanceof AssignNode && statement.identifier.name === identifier.name) {
+              return resolveFieldBases(statement.expression);
+            }
+            if (writesLocal(statement, identifier.name, true)) return undefined;
+          }
+          return undefined;
+        };
         const addressLocal = addressBase instanceof IdentifierNode
           && (priorStatements ?? []).some((statement) => writesLocal(statement, addressBase.name, true))
-          ? dominatingTupleElement(addressBase) : undefined;
+          ? dominatingTupleElement(addressBase) ?? dominatingAssignment(addressBase) : undefined;
         const resolvedAddressExpression = serializeExpression(
           addressLocal ?? resolveInitializer(node.addressExpression),
         );

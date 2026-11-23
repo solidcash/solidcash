@@ -183,6 +183,11 @@ export interface CompilerOptions {
    * re-read path, so a regression test can compare the two sizes; it must not be used for deployed artifacts.
    */
   reuseEntryLocalForWriteback?: boolean;
+  /**
+   * Size optimization: give a struct local that is only read field by field one local per field instead of the
+   * pushdata struct frame (ScalarReplaceStructLocals). Default true. `false` is a measurement-only escape hatch.
+   */
+  scalarReplaceStructLocals?: boolean;
   // Compiler-generated atomic composition route and write-back journal. Omitted selects automatically from
   // source-level atomic call-graph edges; `true` opts out of that narrowing and requests a route for a
   // graph-free contract, still falling back to direct-only when none can be built; `false` requests direct-only

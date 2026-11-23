@@ -31843,9 +31843,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
       this.emit(Op.OP_ENDIF, locationData);
     }
-    // Imported-Solidity producer results carry addresses as 20-byte identities. The authenticated graph transcript
-    // is deliberately native and names the full target locking bytecode. Recover that full value from the current
-    // rooted emission row, prove its canonical projection equals the runtime value, and then frame the full value.
+    // A 20-byte target (an imported-Solidity producer result, or under evmCompat any target, narrowed above) names
+    // the callee by identity. The authenticated graph transcript names the full lock of the input at the consumer's
+    // slot, which the spender lays out, so that lock stands for the identity only as a P2SH32 or a P2PKH lock
+    // (compileLockToEvmIdentity): a P2SH20 lock carrying the callee's identity is anyone's to spend. Recover the full
+    // lock from the current rooted emission row, prove its identity equals the runtime value, and frame the full lock.
     // Reading the row avoids a fixed external-call input coordinate: graph callees are located by the settlement
     // plan, and the later complete-row assertion independently consumes this same authenticated stream position.
     this.emit(Op.OP_DUP, locationData);
@@ -31868,7 +31870,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_DROP, locationData);
     this.emit(Op.OP_DUP, locationData);
-    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    for (const operation of compileLockToEvmIdentity()) this.emit(operation, locationData);
     this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);

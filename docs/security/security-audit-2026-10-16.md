@@ -17,8 +17,9 @@ target, is spender-chosen by design and now warned; TARGET-4, unchecked loop wit
 the contract could check, and TARGET-5, raw calls answered without their callee and value calls that paid nothing,
 are fixed; see "Call targets (2026-11-15)" at the end. Security completion (2026-11-23): TARGET-7 in a message-bus
 graph route (VM-confirmed on the 0.51 code), event NFT replay in the SDK's readers (EVENT-REPLAY-1), TARGET-6's two
-leftover deviations and a listed call whose guard skips it are fixed; see "Security completion (2026-11-23)" at the
-end. Container sums (2026-11-14):
+leftover deviations, a listed call whose guard skips it, one call record read by two callers (VM-confirmed) and a call
+leaving arguments to its callee with no method bound (VM-confirmed) are fixed; see "Security completion (2026-11-23)"
+at the end. Container sums (2026-11-14):
 CONTAINER-SUM-1 (a runtime
 loop's payments) and CONTAINER-SUM-2 (a kernel route's, VM-confirmed on 0.50.1) let a builder drain a second
 container coin, and are fixed; see "Container sums" at the end. After 0.51.0 (2026-11-16), two more are fixed:
@@ -1408,8 +1409,10 @@ needs VM evidence, `rejectedWith` has no source fallback).
   2026-10-26, source-traced).
 
 - One run shared by two callers where no digest is checked (2026-11-23, residual of the one-reader fix in D50
-  Fixed). A call naming fewer arguments than its method declares reads its record with no digest check (below), an
-  opaque read checks none, and neither does a call whose method is chosen at run time (a function pointer, a selector
+  Fixed). A call naming fewer arguments than its method declares digests the ones it leaves as caller witnesses in a
+  direct compile (S3a, "Security completion (2026-11-23)"), but in a framed, message-bus, kernel-participant or
+  deployer compile, or in a loop over targets, it still reads its record with no digest check; an opaque read checks
+  none, and neither does a call whose method is chosen at run time (a function pointer, a selector
   table: its callee's reader is pinned to none), so two callers making such a call can still share one run. A kernel
   direct participant's records name no reader, so a direct caller refuses them (fail closed). The SDK's reader
   binding for a call a nested proxy makes (a proxy one contract calls, delegating to an implementation) is written
@@ -2077,3 +2080,19 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   - Open, fail closed: calls through one copy on both sides of a write of the stored value name two callees, so the
     spend cannot be built; the write scan stays conservative where precision is not available (a call matched to a
     function by name, a key that is neither a local nor a literal, assembly, a write in a loop with the call).
+- **One record read by two callers** (S2, `sec-record-reader`; recorded in "Direct call results bound by call records",
+  Fixed). VM-confirmed on the released code: `CallRecordSingleReader.e2e.test.ts`, run once against master
+  (`af630cc60`), passes its honest call and both merge controls and fails exactly where the two-caller spends must be
+  refused: they were ACCEPTED, in a returning and in a void call. Bytes (default options): 111 of 345 corpus contracts
+  (-2,434 to +9, median +6) and 462 of 1,169 external contracts (-540 to +98, median +31) move; no compile result
+  changes. A pointer call, whose method is chosen at run time, still checks no digest (its callee's reader is pinned
+  to none): residual under "One run shared by two callers where no digest is checked".
+- **A call leaving arguments to its callee bound no method** (S3a; `778339875`, `ec09c2921`). A direct call passing
+  fewer arguments than its method declares (`getAndIncrement()` for `(pubkey, sig)`) digested no record, so through a
+  one-method interface nothing bound which method its callee ran. VM-confirmed on the released code: a co-spend running
+  another same-arity method settled, void and returning (`AuditArgsLeftMethodBinding.test.ts`). Each non-sig argument
+  the call leaves is now a hidden caller witness digested with the named ones, so the record comparison binds the
+  method, the arguments and the reader; the SDK fills the witnesses from the callee's arguments. The same file's
+  caller-isolated splices show fix B binds at the caller (the earlier `AuditSingleInterfaceMethodBinding` refusals came
+  from the callee's own record count). Left: framed, message-bus, kernel-participant and deployer compiles and loops
+  keep the no-digest read (Open, above).

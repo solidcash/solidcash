@@ -38,6 +38,15 @@
   `evmCompat`, a mapping entry's field written under one key and called through under another
   (`book[j].token = t; book[k].token.call(..)`) went to the old value even when `j == k`. Such a call now reads the copy
   where it runs. Only functions with such a write compile to new bytes; none in the repository's corpora does.
+- Two caller contracts in one transaction making the same direct call could both accept the callee's one run (in 0.51.1
+  and earlier): a call record named the call it answered but not its caller, so one withdrawal could be credited twice.
+  A record now names its reader's input, so one record answers one caller. A void call through an interface naming
+  several methods now reads its callee's record instead of a selector check. Callers and callees must be compiled
+  with this version together: the SDK refuses a call mixing them with earlier artifacts
+  (`MixedCallRecordReaderError`). Contracts with direct calls or call records compile to new bytes.
+- A direct call passing fewer arguments than its method declares (`getAndIncrement()` for `getAndIncrement(pubkey,
+  sig)`) did not bind which method its callee ran through a one-method interface (in 0.51.1 and earlier). The
+  arguments it leaves are now digested with the named ones, from witnesses the SDK fills.
 
 ### Fixed
 

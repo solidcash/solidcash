@@ -356,7 +356,7 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
-  externalResultEncoding, externalResultMayNeedPreimage,
+  externalResultEncoding, externalResultMayNeedPreimage, callArgumentWitnessName,
   CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES, namesCallRecordArguments,
   isEvmAbiWordType, usesEvmResultWords,
 } from '../semantic/ExternalResultEncoding.js';
@@ -31346,7 +31346,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.emitCallerCallRecordDigest(node, slot, loc)) {
       // A call dispatched through its callee's own multi-call entry has its record read and bound by that entry's
       // machinery, not by a caller-side digest. Fix B's single-interface void-record read does not apply here;
-      // defer to the multi-call binding, as the pre-fix-B direct read did.
+      // defer to the multi-call binding, as the pre-fix-B direct read did. So does a call leaving arguments to its
+      // callee in a compile whose callers take no witness of them (takesLeftCallArguments).
       return;
     }
     const returnParamName = this.externalCallSlots.filter((candidate) => candidate.hasReturnValues).length === 1
@@ -33435,9 +33436,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || this.isCompilerMessageBusRoute()
       || this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
         && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) return undefined;
-    // A returning call whose record digests its arguments (emitCallerCallRecordDigest) is bound there.
+    // A call whose record digests its arguments (emitCallerCallRecordDigest) is bound there.
     if (slot.hasReturnValues && slot.callRecordSelector !== undefined
-      && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], node.parameters.length)) return undefined;
+      && this.leftCallArgumentWitnesses(node, slot, this.callRecordDeclaredTypes(slot)) !== undefined) return undefined;
     // A function value passes as its address and selector, two pushes (SplitExternalCallFnPtrArgs).
     const types: (Type | undefined)[] = method.parameterTypes.flatMap((type) => (type instanceof FunctionType
       && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type])).slice(0, node.parameters.length)
@@ -57132,11 +57133,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): boolean {
     const selector = node.opaqueReturn ? undefined : slot.callRecordSelector;
     if (selector === undefined) return false;
-    // A function value passes as its address and selector, as the callee's lowered parameters take it.
-    const declared = (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
-      && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
-    // Arguments left to the callee's witness: the read is bound by the record's category and the callee's run.
-    if (!namesCallRecordArguments(declared, node.parameters.length)) return false;
+    const declared = this.callRecordDeclaredTypes(slot);
+    // An argument left to the callee is digested from the caller's witness of it; without one the call digests none.
+    const left = this.leftCallArgumentWitnesses(node, slot, declared);
+    if (left === undefined) return false;
     const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
     const ordinal = slot.callOrdinal;
     const counter = this.liveCallOrdinalCounter(slot);
@@ -57168,6 +57168,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A constructor's call is bound by its tag (A7): X is the outpoint only this input spends, so it names the reader.
     this.emitCallRecordDigest(selector, ordinal !== undefined && 'ordinal' in ordinal ? ordinal.ordinal : 0,
       digested.map((index) => declared[index]), (position) => {
+        const witness = left.get(digested[position]!);
+        if (witness !== undefined) {
+          this.emitPickAt(this.getStackIndex(witness), loc);
+          this.pushToStack('(call_argument)');
+          return;
+        }
         const argument = cloneNode(node.parameters[digested[position]!]!) as ExpressionNode;
         this.markArrayArgumentBlobEncoded(argument);
         this.visit(argument);
@@ -57175,6 +57181,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       genesisPrefix === undefined ? (): void => this.emitCallRecordReaderOfOwnInput(loc) : undefined);
     if (genesisPrefix !== undefined) this.genesisRecordDigests += 1;
     return true;
+  }
+
+  /** A call record's argument types as the callee's lowered parameters take them: a function value as two. */
+  private callRecordDeclaredTypes(slot: ExternalCallSlot): Type[] {
+    return (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
+      && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
+  }
+
+  /**
+   * The caller's witnesses of the arguments `node` leaves to its callee that its record digests, by position: none
+   * for a call naming them all, undefined when one has no witness, so the call digests no argument.
+   */
+  private leftCallArgumentWitnesses(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, declared: readonly Type[],
+  ): Map<number, string> | undefined {
+    const left = new Map<number, string>();
+    for (let position = node.parameters.length; position < declared.length; position += 1) {
+      if (declared[position] === PrimitiveType.SIG) continue;
+      const witness = callArgumentWitnessName(slot.slotIndex, position);
+      if (this.getStackIndex(witness, true) < 0) return undefined;
+      left.set(position, witness);
+    }
+    return left;
   }
 
   /** The counter on the stack whose value is a counted call's ordinal, if it has one. */

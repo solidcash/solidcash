@@ -1112,6 +1112,11 @@ const GRAPH_BLOCK_SIZE = '__internal__graphBlockSize';
 const PARTICIPANT_BLOCK_SIZE = '__internal__participantBlockSize';
 /** A bound route's C3 pin: the chunk locks its rows that ran may rewrite in the trailing band. */
 const ROUTE_BAND_LOCKS = '(__route_band_locks)';
+/** The parked record pin's mask for a block of `size` slots: every offset but the master's, 0. */
+function parkedRecordPinMask(size: number): bigint {
+  if (!Number.isSafeInteger(size) || size < 1) throw new Error(`parked record pin: block size ${size}`);
+  return (1n << BigInt(size)) - 2n;
+}
 /** The tracked names of a route's mint bound operands, bottom first. */
 function routeMintBoundNames(bound: RouteMintBound): string[] {
   return [ROUTE_MINT_LO, ROUTE_MINT_HI, ...(bound.span ? [ROUTE_MINT_SPAN_START, ROUTE_MINT_SPAN_END] : []),
@@ -59864,7 +59869,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitParkedRecordCount(pin: CountedRecordPin, loc: SingleLocationData): boolean {
     const balance = this.sharedEntryCheckId('countedBalance', (t, l) => t.emitOwnCategoryMutableBalance(l));
-    if (!this.invokeParkedRecordPin(() => this.emit(encodeInt(BigInt(pin.span)), loc), () => {
+    if (!this.invokeParkedRecordPin(() => this.emit(encodeInt(parkedRecordPinMask(pin.span)), loc), () => {
       if (pin.verifierByIndex === true) this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc);
       else this.emit(encodeInt(-1n), loc);
     }, loc)) return false;
@@ -62675,10 +62680,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * node no row claims and a row's consumer holds each one it spends, so these relinks, counted at run time, are the
    * inserts. Any other change to the count (an insert whose predecessor comes back elsewhere, as a loop's or a kept
    * batch's does, or a lifecycle row's) is refused here by name, never let through. A collection the route's kept
-   * batch or runtime-loop census counts is left to it. Stack neutral.
+   * batch or runtime-loop census counts is left to it. A graph route takes claims but not this bound. Stack neutral.
    */
   private emitRouteCollectionMintBounds(node: FunctionDefinitionNode, loc: SingleLocationData): void {
-    if (node.messageBusRecordClaims === undefined) return;
+    if (node.messageBusRecordClaims === undefined || this.routePhysicalSize(node) === GRAPH_BLOCK_SIZE) return;
     const counted = new Set([
       ...(node.sortedBatchInfo ?? []).map((batch) => batch.collection), ...this.vmapRuntimeCollections(node),
     ]);
@@ -62769,17 +62774,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * C3, census-path route. The census leaves a collection an admitted handler names to that handler, which settles
    * only the rows it runs, and counts no value-chunk lock. A standalone batch and a local-caller route run no
-   * verifier, and the verifier counts records only inside the participant block. So every own-category mutable input
-   * outside `[master, master + size)` comes back at its own index, except the verifier (routeVerifierSkipsByIndex).
-   * A graph route skips its authenticated physical block: `size` is `__internal__graphBlockSize`, which its verifier
-   * binds to the participant's actual span. Any other route without claim flags skips its compile-time block, except
-   * one on a proxy's block (below). The route's records, its trailing band's included, sit inside the block, so no
-   * record lock is admitted: a consumed old value chunk too, which only a direct delegate's narrower walk admits by
-   * lock (delegatePinReadsChunkLockList). With claim
-   * flags (a bound non-graph route), the pin skips only the claimed slots (emitRouteBlockClaims): those of the rows
-   * that ran, or, once the verifier ran, its authenticated physical block, `__internal__participantBlockSize` slots.
-   * One pass parks each own-category mutable index and a second pins them, as in emitCountedRecordPin; without claim
-   * flags, through the parked record pin the entries share. A route with no bound lock keeps the census alone.
+   * verifier, and the verifier holds a record no row touched only to a composer's resource row. So every own-category
+   * mutable input comes back at its own index, except the verifier (routeVerifierSkipsByIndex) and the slots the rows
+   * that ran claim (emitRouteBlockClaims), cut to the physical block once the verifier ran: a graph route's
+   * `__internal__graphBlockSize`, any other's `__internal__participantBlockSize`, each of which its verifier binds to
+   * the participant's actual span. A route without claim flags skips its compile-time block, except one on a proxy's
+   * block (below). The route's records, its trailing band's included, sit inside the block, so no record lock is
+   * admitted: a consumed old value chunk too, which only a direct delegate's narrower walk admits by lock
+   * (delegatePinReadsChunkLockList). One pass parks each own-category mutable index and a second pins them, as in
+   * emitCountedRecordPin. A graph route, or one without claim flags, takes the parked record pin the entries share,
+   * its claims or its window the mask, unless a dynamic-state writer's band locks need the inline pass. A route with
+   * no bound lock keeps the census alone.
    *
    * On a proxy's block (a delegate route) the records are the proxy's: the base is the proxy master the route's
    * prologue and binder authenticate (`__internal__proxyMasterIndex`, emitMasterInputIndex) and the category its own.
@@ -62803,10 +62808,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       else if (participantSized) this.emitParticipantSizedWindow(blockSize, loc);
       else this.emit(encodeInt(BigInt(blockSize)), loc);
     };
-    // The entries' plain walks and pinned counts take the same helper (contractRoutePinsByIndex).
-    if (!inBlock && byIndex && this.invokeParkedRecordPin(
-      emitSize, () => this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc), loc,
-    )) {
+    const trailingBase = node.blockLayout?.trailingBase;
+    const bandLocks = inBlock && trailingBase !== undefined ? this.routeBandLockClaims(node) : undefined;
+    // The entries' plain walks and pinned counts take the same helper (contractRoutePinsByIndex). Its mask is a graph
+    // route's claims, or else the window.
+    if ((!inBlock || graphSized) && bandLocks === undefined && byIndex && this.invokeParkedRecordPin(() => {
+      if (inBlock) {
+        this.emitRouteBlockClaims(node, blockSize, loc);
+        this.popFromStack();
+        return;
+      }
+      this.emit(Op.OP_1, loc);
+      emitSize();
+      this.emit(Op.OP_LSHIFTNUM, loc);
+      this.emit(Op.OP_2, loc);
+      this.emit(Op.OP_SUB, loc);
+    }, () => this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc), loc)) {
       this.emit(Op.OP_DROP, loc);
       return;
     }
@@ -62837,8 +62854,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_2DROP, loc);
     this.popFromStack();
-    const trailingBase = node.blockLayout?.trailingBase;
-    const bandLocks = inBlock && trailingBase !== undefined ? this.routeBandLockClaims(node) : undefined;
     if (bandLocks !== undefined) this.emitRouteBandLocks(bandLocks, loc);
     if (inBlock) this.emitRouteBlockClaims(node, blockSize, loc);
     this.emit(Op.OP_BEGIN, loc);
@@ -62861,7 +62876,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_MOD, loc);             // [claimed, i, claimedAt]
       if (bandLocks !== undefined) {
         this.emitRouteBandLockClaim(trailingBase!, blockSize, this.getStackIndex(ACTIVE_VERIFIER_INDEX, true) >= 0
-          && !node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory'), loc);
+          && !node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory')
+          ? this.routePhysicalSize(node) : undefined, loc);
       }
     } else {
       this.emit(Op.OP_DUP, loc);
@@ -62951,11 +62967,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[locks, claimed, i, claimedAt]` -> `[locks, claimed, i, claimedAt']`: an input the claims leave pinned that sits
-   * in the trailing band `[trailingBase, blockSize)` is claimed where its lock is one of `locks`. With `physical`,
-   * the band ends at the participant's physical block once the verifier ran (emitRouteBlockClaims).
+   * in the trailing band `[trailingBase, blockSize)` is claimed where its lock is one of `locks`. With `physicalSize`,
+   * the band ends at the participant's physical block, that witness, once the verifier ran (emitRouteBlockClaims).
    */
   private emitRouteBandLockClaim(
-    trailingBase: number, blockSize: number, physical: boolean, loc: SingleLocationData,
+    trailingBase: number, blockSize: number, physicalSize: string | undefined, loc: SingleLocationData,
   ): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOTIF, loc);
@@ -62964,12 +62980,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_SUB, loc);
     this.emit(encodeInt(BigInt(trailingBase)), loc);
-    if (physical) {
+    if (physicalSize !== undefined) {
       this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc);
       this.emit(encodeInt(0n), loc);
       this.emit(Op.OP_GREATERTHANOREQUAL, loc);
       this.emit(Op.OP_IF, loc);
-      this.emitPickTrackedFromBottom(PARTICIPANT_BLOCK_SIZE, loc);
+      this.emitPickTrackedFromBottom(physicalSize, loc);
       this.emit(Op.OP_ELSE, loc);
       this.emit(encodeInt(BigInt(blockSize)), loc);
       this.emit(Op.OP_ENDIF, loc);
@@ -63062,9 +63078,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * as `lanes`, or every lane of the collection where none were), or the trailing band. A lane no such row claims
    * stays pinned, as a read brings it back at its own index. Each offset belongs to one group, so the masks add.
    * A row that may rewrite any of them claims the whole compile-time block. Once the verifier ran
-   * (`__internal__activeVerifierIndex` >= 0) the claims are cut to the physical `__internal__participantBlockSize`
-   * slots its binding digest proves; they are not widened to them, as the verifier holds a record no row touched
-   * only to a resource row the composer writes. A local-caller route runs its verifier only for a lifecycle row, so
+   * (`__internal__activeVerifierIndex` >= 0) the claims are cut to the physical block its binding digest proves
+   * (routePhysicalSize); they are not widened to it, as the verifier holds a record no row touched only to a
+   * resource row the composer writes. A local-caller route runs its verifier only for a lifecycle row, so
    * it takes that row's flag alone. Bit 0, the master, stays clear.
    */
   private emitRouteBlockClaims(node: FunctionDefinitionNode, blockSize: number, loc: SingleLocationData): void {
@@ -63099,8 +63115,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       bandMask |= bit(slot.offset);
     }
     const local = node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory');
+    const physicalSize = this.routePhysicalSize(node);
     const witnesses = [
-      ...(local ? [] : [ACTIVE_VERIFIER_INDEX, PARTICIPANT_BLOCK_SIZE]), ...claims.map((claim) => claim.flag),
+      ...(local ? [] : [ACTIVE_VERIFIER_INDEX, physicalSize]), ...claims.map((claim) => claim.flag),
     ];
     const lost = witnesses.find((name) => this.getStackIndex(name, true) < 0);
     if (lost !== undefined) throw new Error(`message-bus record pin: '${lost}' is not live at the route census`);
@@ -63145,10 +63162,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_GREATERTHANOREQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(encodeInt(1n), loc);
-    this.emitPickTrackedFromBottom(PARTICIPANT_BLOCK_SIZE, loc);
+    this.emitPickTrackedFromBottom(physicalSize, loc);
     this.emit(Op.OP_LSHIFTNUM, loc);
     this.emit(Op.OP_MOD, loc);
     this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * The witness of a bound route's physical block size, which its verifier's binding digest proves once it ran: a
+   * graph route's `__internal__graphBlockSize`, any other route's `__internal__participantBlockSize`.
+   */
+  private routePhysicalSize(node: FunctionDefinitionNode): string {
+    return node.parameters.some((parameter) => parameter.name === GRAPH_BLOCK_SIZE)
+      ? GRAPH_BLOCK_SIZE : PARTICIPANT_BLOCK_SIZE;
   }
 
   /** Each data NFT this function does not write is recreated at its offset. Stack neutral. */
@@ -63375,7 +63401,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPlainOutsideLayoutWalk(size: number, loc: SingleLocationData): void {
     if (this.contractRoutePinsByIndex()) {
       if (this.invokeParkedRecordPin(
-        () => this.emit(encodeInt(BigInt(size)), loc), () => this.emit(encodeInt(-1n), loc), loc,
+        () => this.emit(encodeInt(parkedRecordPinMask(size)), loc), () => this.emit(encodeInt(-1n), loc), loc,
       )) {
         this.emit(Op.OP_DROP, loc);
         return;
@@ -63402,14 +63428,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Whether this contract has a bound route whose past-block pin takes the parked helper: no claim flags, its
-   * verifier skipped by index (routeVerifierSkipsByIndex), and a frame a shared check can serve.
+   * Whether this contract has a bound route whose record pin takes the parked helper: a graph route, whose claims are
+   * the helper's mask, or one with no claim flags, its verifier skipped by index (routeVerifierSkipsByIndex), and a
+   * frame a shared check can serve.
    */
   private contractRoutePinsByIndex(): boolean {
     for (const fn of this.userFunctionDefs.values()) {
       if (fn.messageBusRoute !== true || fn.messageBusVerifierLock === undefined
-        || fn.messageBusRecordClaims !== undefined || (fn.blockLayout?.blockSize ?? 0) <= 0) continue;
+        || (fn.blockLayout?.blockSize ?? 0) <= 0) continue;
       const names = new Set(fn.parameters.map((parameter) => parameter.name));
+      if (fn.messageBusRecordClaims !== undefined && !names.has(GRAPH_BLOCK_SIZE)) continue;
       if (names.has(ACTIVE_VERIFIER_INDEX) && !names.has('__internal__msgSenderCategory')
         && !names.has('__internal__proxyMasterIndex') && !names.has(MESSAGE_BUS_OWNER_INPUT)
         && !names.has('__internal__lifecycleOwnerInput')) return true;
@@ -63418,17 +63446,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Invoke the parked record pin on `[size, exempt]`, each pushed by its emitter and then tracked, leaving its
+   * Invoke the parked record pin on `[mask, exempt]`, each pushed by its emitter and then tracked, leaving its
    * untracked count. False, with nothing emitted, where the helper is not defined. Counts this site toward it.
    */
-  private invokeParkedRecordPin(emitSize: () => void, emitExempt: () => void, loc: SingleLocationData): boolean {
+  private invokeParkedRecordPin(emitMask: () => void, emitExempt: () => void, loc: SingleLocationData): boolean {
     const id = this.sharedEntryCheckId('parkedRecordPin', (t, l) => {
       t.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
       t.pushToStack(OUTSIDE_LAYOUT_EXEMPT);
       t.emitParkedRecordPin(l);
     });
     if (id === undefined || !this.subroutineDefined.get(id)) return false;
-    emitSize();
+    emitMask();
     this.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
     emitExempt();
     this.pushToStack(OUTSIDE_LAYOUT_EXEMPT);
@@ -63438,10 +63466,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[size, exempt]` -> `[count]`: every own-category mutable input outside `[master, master + size)`, other than
-   * input `exempt` (-1 for none), comes back at its own index, and `count` is the number of own-category mutable
-   * inputs. One pass parks each own-category mutable index above a -1 sentinel and a second counts and pins the
-   * parked ones, as in emitCountedRecordPin, so an input that is no such record costs one short test.
+   * `[mask, exempt]` -> `[count]`: every own-category mutable input at `master + k` whose bit k of `mask` is clear,
+   * other than input `exempt` (-1 for none), comes back at its own index, and `count` is the number of own-category
+   * mutable inputs. Bit 0 is the master's and is clear, and an input below the master reads it. An entry passes its
+   * block, `(1 << size) - 2` (parkedRecordPinMask), a graph route its claims (emitRouteBlockClaims). One pass parks
+   * each own-category mutable index above a -1 sentinel and a second counts and pins the parked ones, as in
+   * emitCountedRecordPin, so an input that is no such record costs one short test.
    */
   private emitParkedRecordPin(loc: SingleLocationData): void {
     const category = '(__outside_own_mutable)';
@@ -63468,22 +63498,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(__parked_count)');
     this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc);      // [size, exempt, count, i]
+    this.emit(Op.OP_FROMALTSTACK, loc);      // [mask, exempt, count, i]
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_1ADD, loc);
     this.emit(Op.OP_IF, loc);                // not the -1 sentinel
     this.emit(Op.OP_DUP, loc);
     this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_DUP, loc);               // [size, exempt, count, i, i, master, master]
-    this.emit(encodeInt(BigInt(this.getStackIndex(OUTSIDE_LAYOUT_BLOCK_SIZE) + 4)), loc);
+    this.emit(Op.OP_SUB, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_MAX, loc);               // [mask, exempt, count, i, k]
+    this.emit(encodeInt(BigInt(this.getStackIndex(OUTSIDE_LAYOUT_BLOCK_SIZE) + 2)), loc);
     this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_WITHIN, loc);            // [size, exempt, count, i, inBlock]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_RSHIFTNUM, loc);
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_MOD, loc);               // [mask, exempt, count, i, claimedAt]
     this.emit(Op.OP_OVER, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(OUTSIDE_LAYOUT_EXEMPT) + 3)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_BOOLOR, loc);            // [size, exempt, count, i, inBlock || exempt]
+    this.emit(Op.OP_BOOLOR, loc);            // [mask, exempt, count, i, claimedAt || exempt]
     this.emit(Op.OP_NOTIF, loc);
     this.emitSameIndexPin(loc);
     this.emit(Op.OP_ENDIF, loc);

@@ -7089,13 +7089,15 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
  * sorted collections it writes, whose fixed entry slots it may rewrite. A sorted entry or dynamic state the row only
  * reads comes back at its own index (the SDK keeps a read-only entry's commitment, a journal flushes only a written
  * cache, read-only chunks lead the band 1:1), which is what the pin requires, so a read claims none of them.
+ * A typed external call claims nothing of its own: the callee runs as its own row, in its own block, and a call back
+ * into this contract is another row with its own claims. A low-level call (a delegatecall runs other code on this
+ * contract's records) claims all.
  */
 function messageBusRecordClaim(
   footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
   collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, lifecycle: boolean,
 ): { all: boolean; band?: 'any' | string[]; collections: string[] } {
-  let all = lifecycle || footprint.unknown || footprint.effects.includes('external-call');
-  let anyBand = false;
+  const reach = { all: lifecycle || footprint.unknown, anyBand: false };
   const bandStates = new Set<string>();
   const named = new Set<string>();
   const writes = new Set(footprint.writes);
@@ -7106,22 +7108,25 @@ function messageBusRecordClaim(
       if (written && dynamicState.has(name)) bandStates.add(name);
     } else if (kind === 'collection') {
       const collection = collections.get(name);
-      if (collection?.sorted !== true) anyBand = true;
+      if (collection?.sorted !== true) reach.anyBand = true;
       else {
         if (written) named.add(name);
-        if (isChunkableValueType(collection.innermostValueType)) anyBand = true;
+        if (isChunkableValueType(collection.innermostValueType)) reach.anyBand = true;
       }
     }
   }
-  for (const member of closure) {
-    walkInvocationAst(member.body, (node) => {
-      if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
-        || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) anyBand = true;
-      else if (node instanceof AssemblyStatementNode) all = true;
-    });
-  }
-  const band = anyBand ? 'any' : bandStates.size > 0 ? [...bandStates].sort() : undefined;
-  return { all, ...(band !== undefined ? { band } : {}), collections: [...named] };
+  const visit = (node: unknown): void => {
+    if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+      || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) reach.anyBand = true;
+    else if (node instanceof AssemblyStatementNode || node instanceof LowLevelCallNode
+      || node instanceof LowLevelCallStatementNode
+      || (node instanceof MethodCallNode && ['call', 'staticcall', 'delegatecall'].includes(node.methodName))) {
+      reach.all = true;
+    }
+  };
+  for (const member of closure) walkInvocationAst(member.body, visit);
+  const band = reach.anyBand ? 'any' : bandStates.size > 0 ? [...bandStates].sort() : undefined;
+  return { all: reach.all, ...(band !== undefined ? { band } : {}), collections: [...named] };
 }
 
 function synthesizeMessageBusRoute(
@@ -12671,10 +12676,11 @@ function synthesizeMessageBusRoute(
       && dynamicState.has(resource.slice('state:'.length)));
   };
   const routeHasDynamicWriter = eligible.some(handlerWritesDynamicState);
-  // C3, bound route without its verifier: a selector branch counts the rows of a handler whose row may rewrite
-  // records inside the participant block, and the record pin holds every own-category record there that no row that
-  // ran claims 1:1. A graph route always runs its verifier; a proxy route, and a framed build, keep the census alone.
-  const recordClaimRoute = !graphExecutionContext && !isDelegateRoute && compilerOptions.composition !== 'framed'
+  // C3: a selector branch counts the rows of a handler whose row may rewrite records inside the participant block,
+  // and the record pin holds every own-category record there that no row that ran claims 1:1, with or without the
+  // verifier, which holds a record no row touched only to a composer's resource row. A graph route takes them too.
+  // A proxy route and a framed build keep the census alone.
+  const recordClaimRoute = !isDelegateRoute && compilerOptions.composition !== 'framed'
     && (!!compilerOptions.__messageBusVerifierProgram
       || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true);
   const routeRecordClaims: NonNullable<FunctionDefinitionNode['messageBusRecordClaims']> = [];

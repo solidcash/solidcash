@@ -929,6 +929,17 @@ export class Contract<
     };
   }
 
+  /**
+   * @internal The unlocker of one ABI entry. A name's dispatcher picks an overload by its input count, hidden
+   * witnesses included, so two overloads taking as many inputs are told apart only by the entry itself.
+   */
+  unlockerFor(abiFunction: AbiFunction): ContractFunctionUnlocker {
+    const overloaded = this.artifact.abi.filter((entry) => entry.name === abiFunction.name).length > 1;
+    const byName = this.unlock[abiFunction.name] as ContractFunctionUnlocker | undefined;
+    if (!overloaded && byName !== undefined) return byName;
+    return this.createUnlocker(abiFunction, abiFunction.selector ? hexToBin(abiFunction.selector) : undefined);
+  }
+
   /** @internal Construct an unlocker for a compiler-owned physical route
    * which is advertised outside the source ABI (for example message-bus batch). */
   createCompilerRouteUnlocker(

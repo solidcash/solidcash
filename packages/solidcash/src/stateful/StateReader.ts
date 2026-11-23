@@ -14,8 +14,10 @@ function attachEventArgsAccessors(values: Record<string, StateValue>): Record<st
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hexToBin, binsAreEqual, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
+import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
 import type { Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { servedTransaction } from '../framed/deploy/own-coin.js';
 import { joinEventContinuations } from './event-chunks.js';
 
 export interface OnChainState {
@@ -347,6 +349,59 @@ export function parseEventCommitment(
 }
 
 /**
+ * An event read the provider cannot prove: it serves no transaction for an event coin or for one its transaction
+ * spent from, or one without the coin.
+ */
+export class EventProvenanceError extends Error {
+  constructor(readonly outpoint: string, reason: string) {
+    super(`Cannot prove event coin ${outpoint}: ${reason}`);
+    this.name = 'EventProvenanceError';
+  }
+}
+
+/**
+ * The listed coins an emit created, in order: those whose transaction spent the contract's minting master, which an
+ * emit recreates and a selfdestruct burns, or minted it at genesis. A transaction that outputs a minting NFT of the
+ * category did one of these; otherwise each input's parent is read until one held such an NFT. The event covenant
+ * lets anyone spend the coin after its relative lock and recreate it unchanged, spending no master: a replay.
+ * A replay forces extra reads only through distinct parent transactions, each costing a fee.
+ * Each transaction is read once per call. A coin the provider cannot prove refuses the read, so an event is neither
+ * counted unproven nor silently dropped.
+ */
+async function emittedEventCoins(
+  provider: NetworkProvider, categoryId: string, coins: readonly Utxo[],
+): Promise<Utxo[]> {
+  const category = categoryId.toLowerCase();
+  const transactions = new Map<string, ReturnType<typeof servedTransaction>>();
+  const served = async (txid: string, outpoint: string): Promise<Transaction> => {
+    if (!transactions.has(txid)) transactions.set(txid, servedTransaction(provider, txid));
+    const transaction = await transactions.get(txid)!;
+    if (transaction === undefined) throw new EventProvenanceError(outpoint, `the provider serves no transaction ${txid}`);
+    if (typeof transaction === 'string') throw new EventProvenanceError(outpoint, transaction);
+    return transaction;
+  };
+  const isMaster = (token: Transaction['outputs'][number]['token']): boolean => (
+    token?.nft?.capability === 'minting' && binToHex(token.category) === category);
+  const emitted = await Promise.all(coins.map(async (coin) => {
+    const txid = coin.txid.toLowerCase();
+    const outpoint = `${txid}:${coin.vout}`;
+    const transaction = await served(txid, outpoint);
+    const token = transaction.outputs[coin.vout]?.token;
+    if (token?.nft === undefined || binToHex(token.category) !== category
+      || binToHex(token.nft.commitment) !== coin.token!.nft!.commitment.toLowerCase()) {
+      throw new EventProvenanceError(outpoint, 'its transaction holds no such NFT at that output');
+    }
+    if (transaction.outputs.some((output) => isMaster(output.token))) return true;
+    for (const input of transaction.inputs) {
+      const parent = await served(binToHex(input.outpointTransactionHash), outpoint);
+      if (isMaster(parent.outputs[input.outpointIndex]?.token)) return true;
+    }
+    return false;
+  }));
+  return coins.filter((_coin, index) => emitted[index]);
+}
+
+/**
  * The continuation commitments of this category's wide events (`txid:vout` -> commitment), read only when some
  * event's first commitment does not decode alone. Empty without a continuation address.
  */
@@ -376,8 +431,9 @@ function eventPayload(utxo: Utxo, continuations: ReadonlyMap<string, string>): s
 }
 
 /**
- * Read events from chain by querying UTXOs at the event covenant address. A wide event's later chunks are read
- * from `continuationAddress` (`getEventNftContinuationAddress`) and joined to its first.
+ * Read events from chain by querying UTXOs at the event covenant address, counting only the coins an emit created
+ * (`emittedEventCoins`). A wide event's later chunks are read from `continuationAddress`
+ * (`getEventNftContinuationAddress`) and joined to its first, keyed by that first coin's own transaction.
  */
 export async function readEventsFromChain(
   provider: NetworkProvider,
@@ -389,14 +445,14 @@ export async function readEventsFromChain(
 ): Promise<ParsedEvent[]> {
   const utxos = await provider.getUtxos(eventAddress);
 
-  const heads = utxos
+  const heads = await emittedEventCoins(provider, categoryId, utxos
     .filter((utxo) => (
       utxo.token
       && utxo.token.category === categoryId
       && utxo.token.nft
       && utxo.token.nft.commitment.length > 0
     ))
-    .sort(compareChainPosition);
+    .sort(compareChainPosition));
   const continuations = await readEventContinuations(provider, continuationAddress, categoryId, heads,
     (commitment) => {
       try {
@@ -482,8 +538,8 @@ export function tryParseEventCommitment(
 }
 
 /**
- * Read anonymous events from chain. Queries the shared anonymous event address
- * and tries decoding each UTXO against all anonymous event definitions.
+ * Read anonymous events from chain. Queries the shared anonymous event address, keeps the coins an emit created
+ * (`emittedEventCoins`) and tries decoding each against all anonymous event definitions.
  */
 export async function readAnonymousEventsFromChain(
   provider: NetworkProvider,
@@ -496,12 +552,12 @@ export async function readAnonymousEventsFromChain(
   const utxos = await provider.getUtxos(anonymousAddress);
   const results: ParsedEvent[] = [];
 
-  const filtered = utxos.filter((utxo) => (
+  const filtered = await emittedEventCoins(provider, categoryId, utxos.filter((utxo) => (
     utxo.token
     && utxo.token.category === categoryId
     && utxo.token.nft
     && utxo.token.nft.commitment.length > 0
-  )).sort(compareChainPosition);
+  )).sort(compareChainPosition));
   const continuations = await readEventContinuations(provider, continuationAddress, categoryId, filtered,
     (commitment) => anonymousEventDefs.some((eventDef) =>
       tryParseEventCommitment(commitment, eventDef, structs) !== null));

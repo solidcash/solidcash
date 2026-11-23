@@ -184,7 +184,7 @@ export {
   StateReader, type OnChainState, type ParsedEvent, type EventFilter,
   parseEventCommitment, tryParseEventCommitment,
   readEventsFromChain, readEventsFiltered,
-  readAnonymousEventsFromChain, valuesEqual,
+  readAnonymousEventsFromChain, valuesEqual, EventProvenanceError,
 } from './StateReader.js';
 export { ThreadManager, ThreadHandle, type SplitOptions, type MergeOptions } from './ThreadManager.js';
 export { resolveDeployReads, type DeployReadResolveOptions } from './resolveDeployReads.js';

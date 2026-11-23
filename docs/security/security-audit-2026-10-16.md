@@ -16,8 +16,9 @@ ways a spender could choose the callee of a call whose answer the caller uses, a
 target, is spender-chosen by design and now warned; TARGET-4, unchecked loop witnesses and view answers for targets
 the contract could check, and TARGET-5, raw calls answered without their callee and value calls that paid nothing,
 are fixed; see "Call targets (2026-11-15)" at the end. Security completion (2026-11-23): TARGET-7 in a message-bus
-graph route (VM-confirmed on the 0.51 code), event NFT replay in the SDK's readers (EVENT-REPLAY-1) and a listed call
-whose guard skips it are fixed; see "Security completion (2026-11-23)" at the end. Container sums (2026-11-14):
+graph route (VM-confirmed on the 0.51 code), event NFT replay in the SDK's readers (EVENT-REPLAY-1), TARGET-6's two
+leftover deviations and a listed call whose guard skips it are fixed; see "Security completion (2026-11-23)" at the
+end. Container sums (2026-11-14):
 CONTAINER-SUM-1 (a runtime
 loop's payments) and CONTAINER-SUM-2 (a kernel route's, VM-confirmed on 0.50.1) let a builder drain a second
 container coin, and are fixed; see "Container sums" at the end. After 0.51.0 (2026-11-16), two more are fixed:
@@ -1920,16 +1921,9 @@ profile.
   witness.
 ### Open
 
-- Left after TARGET-6 and its follow-ups (2026-11-16, by reading, not run on the VM):
-  - Under `evmCompat`, a mapping-entry field write is cached and written back after the call, so
-    `book[j].token = t; book[k].token.call(..)` binds entry k's value from the top of the body. If `j == k` can be
-    spent, the call goes to the old token, while the EVM calls `t`. A write under the same key binds the written
-    value correctly, but the call is not flagged `targetWrittenBeforeCall`.
-  - A struct local initialized from a state element is treated as a storage pointer. A call through a field of a
-    memory copy, made after a write of that field, binds the written value, where the EVM uses the copy.
-  - The struct-field value call crash is fixed (see Fixed). `target-6b`'s fixes for the two items above
-    (`fc114ef85`, `a7a3cf38e`) were held at the 2026-11-22 landing: a call through a copy got its own callee slot even
-    with no write, so `IToken t = itoken; itoken.f(); t.g();` no longer built as two frames of one callee spend.
+- The two deviations left after TARGET-6 (a cached entry field written under one key and called through under
+  another; a call through a copy of a stored target after a write of it) are FIXED: see "Security completion
+  (2026-11-23)", TARGET-6 leftovers. The struct-field value call crash is fixed (see Fixed).
 - The genesis body's check after the body still reads the variable, so a constructor that writes its target after
   the call fails closed.
 - Two calls through one variable reassigned between them share one callee identity and are refused when the two
@@ -2044,3 +2038,26 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   their own transaction can always run a callee's public entry directly.
 - The "Direct call argument binding, residuals" entry of "Fix pass 2026-10-22" still called fix B unmerged; it was
   merged on 2026-10-28 (see the status line added there).
+- **TARGET-6 leftovers** (`99df23d3b`, `0d516a207`, `b47e29287`, `8354ebcb6`, `07af902c1`; by reading, checked
+  against solc/EVM in the conformance tests). Two shapes still bound another target than the EVM calls:
+  - Under `evmCompat`, a mapping entry's field written under one key and called through under another
+    (`book[j].token = t; book[k].token.call(..)`) bound entry k's value from the top of the body, so with `j == k` the
+    call went to the old token. The call is now published as written first, judged by field path.
+  - A call through a local copy of a stored target (`IToken t = token`, a memory copy of a stored struct, an entry
+    cache, an inlined helper's argument) after a write of the stored value bound the written value, where the EVM
+    calls the copy's.
+  - Fix: a copy takes a local of its own, read where the call runs, only where a write before the call (or in a loop
+    with it) can make its value differ there. Writes are judged by field path, below an array element, through
+    struct rebuilds that carry the field over, and not across the other arm of a branch or past a return. Otherwise
+    the call keeps the stored target's local, so its identity, ABI and bytes are master's. A copy codegen cannot read
+    at the call (declared twice) is refused by name (`COPY_TARGET_WRITTEN_BEFORE_CALL`).
+  - The held `target-6b` fixes gave every copy a local of its own; two revisions here removed calls that took one
+    with no write behind them, found by comparing each function's `externalCalls` over both corpora
+    (MasterChef.updatePool, MarketplaceV1.takeJob). Final: 345 `.scash` and 1,169 `evmCompat` contracts move 0 bytes
+    and 0 `externalCalls`; `IToken t = itoken; itoken.f(a); t.g(b);` keeps master's bytecode and builds as two frames
+    of one callee spend (`CallTargetCopyFrames.test.ts`).
+  - Tests: `CallTargetCopy.test.ts`, `call-target-copies.conformance.test.ts`,
+    `entry-alias-call-target.conformance.test.ts`, `CallTargetCopyFrames.test.ts`, `LowLevelCallSiteTarget.test.ts`.
+  - Open, fail closed: calls through one copy on both sides of a write of the stored value name two callees, so the
+    spend cannot be built; the write scan stays conservative where precision is not available (a call matched to a
+    function by name, a key that is neither a local nor a literal, assembly, a write in a loop with the call).

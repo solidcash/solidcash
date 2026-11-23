@@ -32,6 +32,12 @@
   it spent the contract's minting master (an emit recreates it, a selfdestruct burns it). No covenant or address
   changes. Reading events now needs the provider's `getRawTransaction` for those transactions; a provider that cannot
   serve one (a node without a transaction index) makes the read throw `EventProvenanceError`.
+- A call through a local copy of a stored target could go to another contract than the EVM calls (TARGET-6 leftovers,
+  in 0.51.0 and 0.51.1). After a write of the stored value, a call through a copy taken before it (`IToken t = token;
+  token = other; t.f()`, or through a field of a memory copy of a stored struct) went to the written value; and under
+  `evmCompat`, a mapping entry's field written under one key and called through under another
+  (`book[j].token = t; book[k].token.call(..)`) went to the old value even when `j == k`. Such a call now reads the copy
+  where it runs. Only functions with such a write compile to new bytes; none in the repository's corpora does.
 
 ### Fixed
 

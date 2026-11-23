@@ -4847,11 +4847,14 @@ export default class SymbolTableTraversal extends AstTraversal {
               ...logicalCallSlots.filter((slot) => !grouped.has(slot)));
           }
         }
-        // Approach B (single-interface method binding): a void call through an interface naming exactly one
-        // function verifies no co-spent selector (a one-method callee has no selector prefix), so a multi-method
-        // co-spent callee could run a different same-arity method while the caller advances its state. Bind the
-        // method by reading the callee's attested void record: mark the slot to carry a record. Its callee emits
-        // `digest || 0x01` universally, so the caller can always read one.
+        // Approach B (method binding): a void call through an interface naming exactly one function verifies no
+        // co-spent selector (a one-method callee has no selector prefix), so a multi-method co-spent callee could
+        // run a different same-arity method while the caller advances its state. Bind the method by reading the
+        // callee's attested void record: mark the slot to carry a record. Its callee emits `digest || 0x01`
+        // universally, so the caller can always read one. A call through an interface naming several functions
+        // reads it too, in place of its selector check: the digest names the method, the arguments and the reader,
+        // so two callers cannot both take one run of it. One that leaves arguments to its callee digests nothing and
+        // keeps its selector check.
         // The exploit this closes exists for every ungrouped single-interface void call, not only an explicit
         // messageBus:false opt-out. An inferred (auto) compile direct-lowers a call it does not route - `messageBus`
         // is folded to true for auto, so the mode, not that flag, says whether lowering is direct. Bind for disabled
@@ -4868,11 +4871,16 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (slot.runtimeTernaryAddress || slot.addressIsMsgSender || slot.addressIsSelf) continue;
             if (slot.callValueEffect) continue;
             if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
-            if (slot.needsSelectorVerification) continue;
+            if (slot.batchInvocations) continue;
             const calleeFns = this.getCalleeFunctions(slot.interfaceName);
-            if (!calleeFns || calleeFns.length !== 1) continue;
+            if (!calleeFns || calleeFns.length === 0) continue;
             const recordMethod = this.slotCalleeMethod(slot);
             if (!this.interfaceMap.has(slot.interfaceName) || !recordMethod) continue;
+            // As emitCallerCallRecordDigest counts them: a function value passes as its address and selector.
+            const digested = recordMethod.parameterTypes.flatMap((type) => (type instanceof FunctionType
+              && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
+            if (slot.needsSelectorVerification && (slot.sourceCallNode === undefined
+              || !namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length))) continue;
             // The void record is read by the digest of this method's selector and arguments; set it here so the
             // read always has one, including where the generic returning-slot pass does not reach this slot
             // (e.g. a callee dispatched through its own multi-call entry).
@@ -4880,6 +4888,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             slot.callRecordParameterTypes = recordMethod.parameterTypes;
             slot.hasReturnValues = true;
             slot.voidCallRecord = true;
+            slot.needsSelectorVerification = false;
           }
         }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot

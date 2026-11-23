@@ -62659,8 +62659,70 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Re-emitting it at the same index with another commitment keeps no check that only counts layout slots.
     // A compiler-owned route's handlers rewrite records across its whole block, so it pins only past the block.
     if (!this.isCompilerMessageBusRoute(node)) this.emitPreserveOutsideLayoutOwnMutable(node, loc);
-    else this.emitRouteOutsideBlockRecordPin(node, loc);
+    else {
+      this.emitRouteOutsideBlockRecordPin(node, loc);
+      this.emitRouteCollectionMintBounds(node, loc);
+    }
     if (pinsGated) this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * C3 mint bound, bound non-graph route: the census leaves a handler-managed collection to its handlers, which
+   * count its outputs only where they run, and the output scan admits a node at the collection's lock. So the
+   * collection's address takes no output beyond its inputs except the nodes the rows that ran may insert, one per
+   * fixed write of their handler (`inserts`) for each row its counter counted. A row that may rewrite any record,
+   * or inserts from a loop, lifts the bound for the run. A collection the route's own batch or runtime-loop census
+   * counts is left to it. Stack neutral.
+   */
+  private emitRouteCollectionMintBounds(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    const claims = node.messageBusRecordClaims;
+    if (claims === undefined) return;
+    const counted = new Set([
+      ...(node.sortedBatchInfo ?? []).map((batch) => batch.collection), ...this.vmapRuntimeCollections(node),
+    ]);
+    const collections = [...new Set((node.messageBusHandlerManagedEntrySlots ?? []).flatMap((slotIndex) => {
+      const name = this.entrySlots[slotIndex]?.collection;
+      return name === undefined || counted.has(name) ? [] : [name];
+    }))].filter((name) => this.collectionDefinitions.some((collection) => collection.name === name && collection.sorted));
+    const allFlags = claims.flatMap((claim) => (claim.all === true ? [claim.flag] : []));
+    for (const collection of collections) {
+      const signature = this.vmapCollectionSignature(collection);
+      if (signature === undefined) throw new Error(`message-bus mint bound: no signature for '${collection}'`);
+      const inserters = claims.filter((claim) => claim.collections?.includes(collection) ?? false);
+      const gate = [...allFlags, ...inserters.flatMap((claim) => ((claim.inserts?.[collection] ?? -1) < 0
+        ? [claim.flag] : []))];
+      gate.forEach((flag, index) => {
+        this.emitPickTrackedFromBottom(flag, loc);
+        if (index > 0) this.emit(Op.OP_BOOLOR, loc);
+      });
+      if (gate.length > 0) this.emit(Op.OP_NOTIF, loc);
+      const addr = `(__route_mint_addr_${collection})`;
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);
+      this.pushToStack(addr);
+      this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
+      this.stack[0] = addr;
+      this.emitCountAtLock(false, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+      this.emitCountAtLock(true, loc);
+      this.emit(Op.OP_FROMALTSTACK, loc);    // [addr, outputs, inputs]
+      for (const claim of inserters) {
+        const count = claim.inserts?.[collection] ?? -1;
+        if (count <= 0) continue;
+        this.emitPickTrackedFromBottom(claim.flag, loc);
+        if (count > 1) {
+          this.emit(encodeInt(BigInt(count)), loc);
+          this.emit(Op.OP_MUL, loc);
+        }
+        this.emit(Op.OP_ADD, loc);
+      }
+      this.emit(Op.OP_LESSTHANOREQUAL, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
+      if (gate.length > 0) this.emit(Op.OP_ENDIF, loc);
+    }
   }
 
   /**

@@ -958,6 +958,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusRecordClaims?: Array<{
     flag: string; all?: true; trailing?: true; bandStates?: readonly string[]; collections?: readonly string[];
     lanes?: readonly number[];
+    /** Per written collection, the nodes one row may insert: one per fixed write, -1 without bound. */
+    inserts?: Readonly<Record<string, number>>;
   }>;
   /** Eligible handler of a bound route: its row counter in `messageBusRecordClaims`. */
   messageBusRecordClaimFlag?: string;

@@ -18156,6 +18156,17 @@ function compileResolvedAst(
         for (const entry of entries) if (entry.collection === collection) lanes.add(entry.slotIndex);
       }
       claim.lanes = [...lanes].sort((left, right) => left - right);
+      // The mint bound's allowance: the nodes one row may insert, one per fixed write; -1 where a write sits in a
+      // loop or no handler body names one.
+      const handlers = ast.contract.functions.filter((fn) => fn !== route && fn.messageBusRecordClaimFlag === claim.flag);
+      claim.inserts = Object.fromEntries(collections.map((collection) => {
+        const writes = handlers.map((fn) => (fn.entryAccesses ?? []).filter((entry) => entry.collection === collection
+          && entry.operations.includes('write')));
+        if (writes.every((list) => list.length === 0) || writes.some((list) => list.some((entry) => entry.inLoop))) {
+          return [collection, -1];
+        }
+        return [collection, Math.max(...writes.map((list) => list.length))];
+      }));
     }
   }
   const typeCheckStarted = Date.now();

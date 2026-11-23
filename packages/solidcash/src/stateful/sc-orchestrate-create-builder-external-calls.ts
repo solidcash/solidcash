@@ -42,6 +42,8 @@ import {
 import {
   expandResolveCreateBuilderExternalCalls as expandResolveCreateBuilderExternalCallsImpl,
   rawCallName,
+  refuseListedLowLevelCallsTheGuardSkips,
+  type ExpandResolveCreateBuilderExternalCallsHost,
 } from './sc-expand-resolve-create-builder-external-calls.js';
 import {
   allocateCreateBuilderSharedFunders as allocateCreateBuilderSharedFundersImpl,
@@ -414,28 +416,34 @@ export async function orchestrateCreateBuilderExternalCalls(
     }
   }
 
+  const resolveHost: ExpandResolveCreateBuilderExternalCallsHost = {
+    getExternalTargetEntriesByInterface: (interfaceName) =>
+      host.inner.getExternalTargetEntriesByInterface(interfaceName),
+    resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
+    evaluateExternalExpression: (...a: any[]) => host.callerContract._evaluateExternalExpression(...a),
+    resolveExternalExpressionReturns: (
+      sources, functionArgs, state, callerInputs, executionSelfAddress, producerCalls,
+    ) => host.callerContract._resolveExternalExpressionReturns(
+      sources, functionArgs, host.callerContract, state, callerInputs,
+      executionSelfAddress, producerCalls, false,
+    ),
+    hydrateExternalPredicateState: (...a: any[]) => host.callerContract._hydrateExternalPredicateState(...a),
+    getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
+    getExternalDeploymentByAddressValue: (value) =>
+      findDeploymentByAddressValue(host.inner.provider, value)?.contract,
+    isCreate2ProjectedAddressValue: (value) =>
+      isCreate2ProjectedAddressValue(host.inner.provider, value),
+    getFullState: () => host.getFullState(),
+    probeRawCallee: host.probeRawCallee === undefined
+      ? undefined : (...a: any[]) => host.probeRawCallee!(...a),
+  };
+  // A `.withCall()` list names a low-level call's callee, not whether the function makes it: decide each listed call's
+  // guard before a compat callee group or a low-level callee is co-spent for it.
+  await refuseListedLowLevelCallsTheGuardSkips(
+    resolveHost, abiFunction, args, host.inner.artifact, publicSelfAddress, overrides?.calls,
+  );
   const expandedExternal = await expandResolveCreateBuilderExternalCallsImpl(
-    {
-      getExternalTargetEntriesByInterface: (interfaceName) =>
-        host.inner.getExternalTargetEntriesByInterface(interfaceName),
-      resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
-      evaluateExternalExpression: (...a: any[]) => host.callerContract._evaluateExternalExpression(...a),
-      resolveExternalExpressionReturns: (
-        sources, functionArgs, state, callerInputs, executionSelfAddress, producerCalls,
-      ) => host.callerContract._resolveExternalExpressionReturns(
-        sources, functionArgs, host.callerContract, state, callerInputs,
-        executionSelfAddress, producerCalls, false,
-      ),
-      hydrateExternalPredicateState: (...a: any[]) => host.callerContract._hydrateExternalPredicateState(...a),
-      getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
-      getExternalDeploymentByAddressValue: (value) =>
-        findDeploymentByAddressValue(host.inner.provider, value)?.contract,
-      isCreate2ProjectedAddressValue: (value) =>
-        isCreate2ProjectedAddressValue(host.inner.provider, value),
-      getFullState: () => host.getFullState(),
-      probeRawCallee: host.probeRawCallee === undefined
-        ? undefined : (...a: any[]) => host.probeRawCallee!(...a),
-    },
+    resolveHost,
     abiFunction,
     args,
     host.inner.artifact,
@@ -984,12 +992,15 @@ export async function orchestrateCreateBuilderExternalCalls(
     await refuseCreateBuilderNestedLowLevelCalls(externalCallUtxoGroups);
     // A transitive callee whose run reads a region right after its block (a walk, loop side-cars, the chunks it writes)
     // gets the block a direct callee gets, with the region after it. So does one whose call publishes a record, when a
-    // low-level call's callee follows every block on the low-level path: the tail band of call records would otherwise
-    // come before that callee's outputs. A return probe runs only this function's input.
+    // low-level call's callee follows every block on the low-level path, or the raw coin `.withCall(utxo)` names for it
+    // (recreated at its own index, which a covenant coin can check): the tail band of call records would otherwise come
+    // before those outputs. A return probe runs only this function's input.
     if (overrides?.returnProbeOnly !== true) {
-      const lowLevelBandCall = (abiFunction?.lowLevelCalls ?? []).findIndex((row, index) => (
-        row.callMode !== 'delegatecall' && (overrides?.calls?.[index] as { type?: string } | undefined)?.type === 'stateful'
-        && !compatCalls.some((call) => call.callIndex === index)));
+      const lowLevelBandCall = (abiFunction?.lowLevelCalls ?? []).findIndex((row, index) => {
+        const type = (overrides?.calls?.[index] as { type?: string } | undefined)?.type;
+        return row.callMode !== 'delegatecall' && (type === 'stateful' || type === 'raw')
+          && !compatCalls.some((call) => call.callIndex === index);
+      });
       await appendCreateBuilderTransitiveCalleeRegionsImpl(
         {
           block: nestedBlockHost,

@@ -84,6 +84,33 @@ export class CallGuardUndecidedError extends Error {
   }
 }
 
+/**
+ * A call `withExternalCall()` or `withCall()` lists a callee for, which the calling function does not make: its guard
+ * reads false when the SDK builds the transaction. The function pins no caller edge for the call, so nothing in its
+ * covenant would refuse the listed callee, co-spent, running without being called; the SDK refuses the call instead.
+ */
+export class ListedCallNotMadeError extends Error {
+  constructor(
+    /** The calling function, `Contract.function`. */
+    public readonly caller: string,
+    /** The call, `Interface.function`, with its source line when the artifact publishes it. */
+    public readonly call: string,
+    /** The contract the listed callee is. */
+    public readonly callee: string,
+    /** The guard as the artifact publishes it. */
+    public readonly guard: string,
+    /** The list the callee is named in. */
+    public readonly list: 'withExternalCall' | 'withCall' = 'withExternalCall',
+  ) {
+    const contract = caller.slice(0, caller.lastIndexOf('.')) || caller;
+    super(`${caller}'s call of ${call} is listed with ${list}(), but ${contract} does not make it: it runs only `
+      + `under the guard \`${guard}\`, which is false when the transaction is built. Spending ${callee} would let it `
+      + 'run without being called. Send the call without listing its callee, and the SDK leaves out a call its guard '
+      + 'skips; or send it when the guard holds.');
+    this.name = 'ListedCallNotMadeError';
+  }
+}
+
 export class UndefinedInputError extends Error {
   constructor() {
     super('Input is undefined');

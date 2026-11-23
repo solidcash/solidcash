@@ -901,8 +901,9 @@ describe('runtime selector reads from received external function pointers', () =
       + ' return this.f.selector; } function h(function() external p) public returns (bytes4) {'
       + ' return p.selector; } }', { evmCompat: true });
     expect(artifact.contractName).toBe('C');
+    // The pair, then the reader its record names and its record's output.
     expect(artifact.abi.find((entry) => entry.name === 'h')?.inputs.map((input) => input.type))
-      .toEqual(['address', 'bytes4', 'bigint']);
+      .toEqual(['address', 'bytes4', 'bigint', 'bigint']);
   });
 
   it('reads an uninitialized local pointer as the default zero selector at runtime', () => {

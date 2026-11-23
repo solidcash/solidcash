@@ -17,8 +17,9 @@ import { compileString } from '../../../src/compiler.js';
  * rebuilds to check its records, defined its authority bind and its category once; and again when a drained container
  * left a sweepable filler in place of a zero-value output (c2d8ed7ea); and again when `genesisCalls` went on by
  * default, so these record-sound contracts carry the genesis step and their marker (with `genesisCalls: false` each is
- * the previous bytecode less the trailing marker push, which A7 drops when the option is off). A framed compile may
- * add artifacts, but it may not make these two directs disagree.
+ * the previous bytecode less the trailing marker push, which A7 drops when the option is off); and again when a call
+ * record named its reader, so each entry takes the reader witness (without it each is the previous bytecode). A framed
+ * compile may add artifacts, but it may not make these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -40,9 +41,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.51.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: '92c4939094859722e4cf9ea490502f12cfbd71ecc90bf3f1d427519a820ddeef' },
+    pinnedSha256: 'c647d0988c7931c2cd75fdf210df65cb67f7f4b823098c3c3e2bd4c4dcd1a611' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: '8cfd9205bc42b102b4d2c2bf03ed272f51889f181da5f22ee2be6a5dc767382c' },
+    pinnedSha256: 'd39e4f6939ba1ca106015d952722471a2479523e48b7c3e06fda1355c4f12a66' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

@@ -360,10 +360,12 @@ describe('state-field arguments after sibling writes', () => {
 
 describe('unlocking selector extract', () => {
   it('takes the first 4-byte script push, not a 0x04 prefix plus three selector bytes', () => {
+    // A fixed call through a multi-method interface reads its callee's record; one whose target the run picks
+    // checks the selector its callee's unlocking pushes.
     const artifact = compileString(
       'interface IData { function ping() external; function pong() external; }'
-      + ' contract C(IData data) {'
-      + '   function f(sig s, pubkey pk) { data.ping(); require(checkSig(s, pk)); }'
+      + ' contract C(IData a, IData b) {'
+      + '   function f(bool x, sig s, pubkey pk) { (x ? a : b).ping(); require(checkSig(s, pk)); }'
       + ' }',
     );
     const compact = artifact.bytecode.replace(/\s+/g, '');

@@ -440,3 +440,77 @@ describe.each([
     expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
   }, 300_000);
 });
+
+// Calls whose method or receiver is chosen when they run: through a function pointer whose target a ternary picks,
+// and through a ternary target.
+const CHOOSER_SOURCE = `pragma solidcash >=0.8.0;
+interface IVault {
+  function withdraw(int amount) external returns (int);
+  function spend(int amount) external;
+}
+contract Vault() {
+  int balance;
+  function withdraw(int amount) public returns (int) {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+    return amount;
+  }
+  function spend(int amount) public {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+  }
+}
+contract Chooser() {
+  int credited;
+  function pullEither(bool first, address a, address b, int amount) public {
+    function(int) external returns (int) f = first ? IVault(a).withdraw : IVault(b).withdraw;
+    this.credited = this.credited + f(amount);
+  }
+  function payEither(bool first, address a, address b, int amount) public {
+    function(int) external f = first ? IVault(a).spend : IVault(b).spend;
+    f(amount);
+    this.credited = this.credited + amount;
+  }
+  function pullTernary(bool first, address a, address b, int amount) public {
+    this.credited = this.credited + IVault(first ? a : b).withdraw(amount);
+  }
+}`;
+
+let chooserCompiled: Record<string, Artifact> | undefined;
+const chooserArtifacts = (): Record<string, Artifact> => {
+  chooserCompiled ??= compileStringMulti(CHOOSER_SOURCE) as Record<string, Artifact>;
+  return chooserCompiled;
+};
+
+describe('a call whose method or receiver is chosen when it runs', () => {
+  // A pointer's caller checks no digest of its callee's record, so the record names no reader; a call through a
+  // ternary target names a fixed method, so its record names the caller's input. A void pointer reads no record.
+  it.each([
+    { kind: 'returning pointer', entry: 'pullEither', method: 'withdraw', reader: 'none' },
+    { kind: 'void pointer', entry: 'payEither', method: 'spend', reader: 'no record' },
+    { kind: 'ternary-target', entry: 'pullTernary', method: 'withdraw', reader: 'caller' },
+  ] as const)('settles a $kind call honestly', async (row) => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, chooserArtifacts().Vault, { balance: BALANCE });
+    const other = await deploy(provider, chooserArtifacts().Vault, { balance: BALANCE });
+    const chooser = await deploy(provider, chooserArtifacts().Chooser, { credited: 0n });
+    const call = (): Promise<unknown> => (chooser.sc as any)[row.entry](true, vault.lock, other.lock, AMOUNT)
+      .withExternalCall(vault.sc, row.method, [AMOUNT]).send();
+    const tx = await capture(provider, call);
+    const record = outputWith(tx, '51', vault.category);
+    if (row.reader === 'no record') {
+      expect(record).toBe(-1);
+    } else {
+      const caller = inputOfCoin(await coinsOf(provider, tx), chooser.category, 'minting');
+      expect(caller).toBeGreaterThanOrEqual(0);
+      const reader = row.reader === 'caller' ? caller : -1;
+      const digest = callRecordDigest(abiOf(chooserArtifacts().Vault, row.method), [AMOUNT], {}, 0, reader)!;
+      expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digest));
+    }
+
+    await call();
+    expect((await chooser.sc.getState()).credited).toBe(AMOUNT);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+    expect((await other.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+});

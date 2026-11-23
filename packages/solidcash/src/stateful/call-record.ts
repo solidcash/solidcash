@@ -36,6 +36,15 @@ export function callRecordNamesReader(abiFunction: Pick<AbiFunction, 'inputs'>):
   return abiFunction.inputs.some((input) => input.name === CALL_RECORD_READER_INPUT);
 }
 
+/**
+ * True for a call whose method its caller chooses at run time (a function pointer, a selector table): the caller
+ * checks no digest of its record and pins no edge for it, and it requires its callee's reader witness to name none
+ * (the compiler's emitRequirePointerCalleePushes), so the callee's record names no reader.
+ */
+export function callNamesNoReader(call: Pick<ExternalCallAbi, 'fnPtrCall' | 'selectorArrayVar'> | undefined): boolean {
+  return call?.fnPtrCall === true || call?.selectorArrayVar !== undefined;
+}
+
 /** A reader input index as a digest takes it: `OP_NUM2BIN` to two bytes, sign in the top bit. */
 export function callRecordReaderBytes(reader: bigint | number): Uint8Array {
   const value = BigInt(reader);

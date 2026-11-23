@@ -56141,9 +56141,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * `[.., blob] -> [..]`: pins a received pointer's co-spent pushes (selector split off) to its `args` declared
    * arguments and the redeem, so a run-time selector naming a wider method, whose extra parameters the caller never
-   * binds, is refused. Ahead of the arguments a callee takes up to two hidden witnesses, in this order: its record
-   * witness, then, in a record-sound callee (genesisCalls, A7), its genesis call. This call is not a constructor's,
-   * so a genesis call is empty: the second hidden push must be OP_0.
+   * binds, is refused. Ahead of the arguments a callee takes up to three hidden witnesses, in this order: its record
+   * witness, the reader its record names, then, in a record-sound callee (genesisCalls, A7), its genesis call. A
+   * method chosen at run time has no digest for its caller to check and its caller pins no edge for it, so its
+   * record names no reader: the second hidden push must be OP_1NEGATE. This call is not a constructor's, so a genesis
+   * call is empty: the third must be OP_0.
    * A returning pointer's callee takes the record witness: a method without one settles no record for the caller to
    * read. A void pointer reads no record, so that witness, the first push, must name none (OP_1NEGATE), and a callee
    * taking no witness pushes just the arguments. A method with extra parameters and no witness then runs on those
@@ -56152,8 +56154,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitRequirePointerCalleePushes(args: number, slot: ExternalCallSlot, loc: SingleLocationData): void {
     const witnessed = slot.hasReturnValues === true;
     // What the pinned hidden pushes spell, h of them: for a void pointer the record witness naming none, then the
-    // empty genesis call; for a returning one the empty genesis call after a record witness that is free.
-    const pinned = witnessed ? Uint8Array.of(Op.OP_0) : Uint8Array.of(Op.OP_1NEGATE, Op.OP_0);
+    // reader naming none and the empty genesis call; for a returning one the same two after a record witness that
+    // is free.
+    const pinned = witnessed ? Uint8Array.of(Op.OP_1NEGATE, Op.OP_0)
+      : Uint8Array.of(Op.OP_1NEGATE, Op.OP_1NEGATE, Op.OP_0);
     this.emit(Op.OP_DUP, loc);
     this.emitCountPushes(loc);                            // [.., blob, count]
     this.emit(encodeInt(BigInt(args + (witnessed ? 2 : 1))), loc);

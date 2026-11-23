@@ -98,6 +98,9 @@ const masterInput = (tx: Tx, category: string): number => tx.outputs.findIndex((
   ofCategory(output, category) && output.token?.nft?.capability === 'minting'));
 const stateOutput = (tx: Tx, category: string): Output => tx.outputs.find((output) => (
   ofCategory(output, category) && output.token?.nft?.capability === 'mutable'))!;
+/** A callee's call record: an output of its category under the record carrier's `OP_TRUE` lock. */
+const recordOf = (tx: Tx, category: string): Output | undefined => tx.outputs.find((output) => (
+  ofCategory(output, category) && binToHex(output.lockingBytecode) === '51'));
 
 /** Rewrite input `input`'s ABI argument `name` of `fn`: one push per ABI input, the first just before the redeem. */
 function setArgument(tx: Tx, input: number, artifact: any, fn: string, name: string, value: bigint): void {
@@ -128,14 +131,21 @@ describe('direct void call arguments', () => {
   it('refuses a callee run on another argument, which the caller agreeing with makes valid', async () => {
     const d = await deploy();
     const honest = decode(await capture(d.provider, () => relay(d, 7n)));
-    // A self-consistent callee run on x = 9: its argument and the state it writes.
+    // A self-consistent callee run on x = 9: its argument, the state it writes and the void record it pins.
     const other = await deploy();
     const forged = decode(await capture(other.provider, () => relay(other, 8n)));
     const tx = decode(encode(honest));
     setArgument(tx, masterInput(tx, d.sinkCat), artifacts().Sink, 'put', 'x', 9n);
     stateOutput(tx, d.sinkCat).token!.nft!.commitment = stateOutput(forged, other.sinkCat).token!.nft!.commitment
       .slice();
-    // The same transaction with the caller's own argument agreeing is valid: only the argument binding refuses it.
+    // The record's digest names the method, the arguments and the reader's input, not the category, so the forged
+    // run's `digest(put, [9]) || 01` is the record this run pins.
+    const record = recordOf(tx, d.sinkCat);
+    const forgedRecord = recordOf(forged, other.sinkCat);
+    expect(record?.token?.nft?.commitment).not.toEqual(forgedRecord?.token?.nft?.commitment);
+    record!.token!.nft!.commitment = forgedRecord!.token!.nft!.commitment.slice();
+    // The same transaction with the caller's own argument agreeing is valid: only the caller's read of the record
+    // refuses it.
     const control = decode(encode(tx));
     setArgument(control, masterInput(control, d.sourceCat), artifacts().Source, 'relay', 'x', 8n);
     // F1: Source pins an own-category edge committing to the call it makes. Editing relay.x = 8 makes Source

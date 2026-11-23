@@ -38,6 +38,20 @@ export function withWarningListener<T>(listener: WarningListener, compile: () =>
   }
 }
 
+/**
+ * Run `compile` handing each distinct warning once to the listener outside it. A site inlined into several entries,
+ * or a pass run again, emits the same text more than once.
+ */
+export function withDistinctWarnings<T>(compile: () => T): T {
+  const outer = currentListener;
+  const delivered = new Set<string>();
+  return withWarningListener((warning) => {
+    if (delivered.has(warning.message)) return;
+    delivered.add(warning.message);
+    outer(warning);
+  }, compile);
+}
+
 /** Run `compile` without emitting warnings, including warnings from a listener installed further out. */
 export function withSuppressedWarnings<T>(compile: () => T): T {
   return withWarningListener(suppressedWarningListener, compile);

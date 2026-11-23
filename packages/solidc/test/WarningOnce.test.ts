@@ -19,7 +19,7 @@ describe('compiler warnings', () => {
   it('prints a warning once per source site, however many entries inline it', () => {
     const warnings: string[] = [];
     compileString(SOURCE, { warningListener: (warning) => { warnings.push(warning.message); } });
-    const reverts = warnings.filter((message) => message.includes('revert with custom error is a no-op'));
+    const reverts = warnings.filter((message) => message.includes('revert with a custom error fails the spend'));
     expect(reverts).toHaveLength(1);
     expect(reverts[0]).toContain('at line 7');
   });

@@ -107,7 +107,9 @@ import {
 } from './admission-decision.js';
 import { normalizeKernelAdmissionReason } from './kernel-admission-catalog.js';
 import { deduplicateMessageBusVerifierStackSuffix, outlineMessageBusVerifierArms } from './messageBusVerifierDedup.js';
-import { emitCompilerWarning, withSuppressedWarnings, withWarningListener, type WarningListener } from './warnings.js';
+import {
+  emitCompilerWarning, withDistinctWarnings, withSuppressedWarnings, withWarningListener, type WarningListener,
+} from './warnings.js';
 
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
 let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
@@ -2505,7 +2507,7 @@ function runWithWarningListener<T>(
   options: { suppressWarnings?: boolean, warningListener?: WarningListener }, compile: () => T,
 ): T {
   const listener = options.warningListener;
-  const invoke = (): T => withCompilerWarnings(options.suppressWarnings, compile);
+  const invoke = (): T => withCompilerWarnings(options.suppressWarnings, () => withDistinctWarnings(compile));
   if (listener === undefined || options.suppressWarnings) return invoke();
   return withWarningListener(listener, invoke);
 }

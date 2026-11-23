@@ -12670,24 +12670,16 @@ function synthesizeMessageBusRoute(
       && dynamicState.has(resource.slice('state:'.length)));
   };
   const routeHasDynamicWriter = eligible.some(handlerWritesDynamicState);
-  // C3, bound route without its verifier: a selector branch sets a route-local flag for the records its handler may
-  // rewrite inside the participant block, and the record pin holds every other own-category record there 1:1. A
-  // graph route always runs its verifier; a proxy route, and a framed build, keep the census alone.
+  // C3, bound route without its verifier: a selector branch counts the rows of a handler whose row may rewrite
+  // records inside the participant block, and the record pin holds every own-category record there that no row that
+  // ran claims 1:1. A graph route always runs its verifier; a proxy route, and a framed build, keep the census alone.
   const recordClaimRoute = !graphExecutionContext && !isDelegateRoute && compilerOptions.composition !== 'framed'
     && (!!compilerOptions.__messageBusVerifierProgram
       || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true);
-  const routeRecordClaims: Array<{ flag: string; all?: true; trailing?: true; collection?: string }> = [];
-  const recordClaimFlags = new Map<FunctionDefinitionNode, string[]>();
+  const routeRecordClaims: NonNullable<FunctionDefinitionNode['messageBusRecordClaims']> = [];
+  // A counter of an earlier synthesis attempt names nothing in this route.
+  for (const fn of contract.functions) fn.messageBusRecordClaimFlag = undefined;
   if (recordClaimRoute) {
-    const flagByClaim = new Map<string, string>();
-    const flagOf = (key: string, claim: { all?: true; trailing?: true; collection?: string }): string => {
-      const known = flagByClaim.get(key);
-      if (known !== undefined) return known;
-      const flag = `__message_bus_claim_${flagByClaim.size}`;
-      flagByClaim.set(key, flag);
-      routeRecordClaims.push({ flag, ...claim });
-      return flag;
-    };
     const claimAllModifiers = new Set([
       FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.SPLIT,
       FunctionModifier.MERGE, FunctionModifier.UNSAFE,
@@ -12698,11 +12690,15 @@ function synthesizeMessageBusRoute(
       const claim = messageBusRecordClaim(eligibleFootprint(fn), closure, collectionByName, dynamicState,
         kernelLifecycleHandlers.has(fn) || kernelDeploymentHandlers.has(fn)
           || fn.modifiers.some((modifier) => claimAllModifiers.has(modifier)));
-      const flags = claim.all ? [flagOf('all', { all: true })] : [
-        ...(claim.trailing ? [flagOf('trailing', { trailing: true })] : []),
-        ...claim.collections.map((name) => flagOf(`collection:${name}`, { collection: name })),
-      ];
-      if (flags.length > 0) recordClaimFlags.set(fn, flags);
+      if (!claim.all && !claim.trailing && claim.collections.length === 0) continue;
+      // The handler's own lanes are stamped on this claim once the route's physical entry slots are assigned.
+      const flag = `__message_bus_claim_${routeRecordClaims.length}`;
+      fn.messageBusRecordClaimFlag = flag;
+      routeRecordClaims.push(claim.all ? { flag, all: true } : {
+        flag,
+        ...(claim.trailing ? { trailing: true as const } : {}),
+        ...(claim.collections.length > 0 ? { collections: claim.collections } : {}),
+      });
     }
   }
   const buildDecodeAndCall = (
@@ -12717,7 +12713,8 @@ function synthesizeMessageBusRoute(
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
       const dynamicWriteFlag = (routeHasDynamicWriter && handlerWritesDynamicState(fn)
         ? '__message_bus_dynamic_write_active = 1;' : '')
-        + (recordClaimFlags.get(fn) ?? []).map((flag) => ` ${flag} = 1;`).join('');
+        + (recordClaimRoute && fn.messageBusRecordClaimFlag !== undefined
+          ? ` ${fn.messageBusRecordClaimFlag} = ${fn.messageBusRecordClaimFlag} + 1;` : '');
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
@@ -18130,6 +18127,33 @@ function compileResolvedAst(
           && prior.collection === entry.collection
           && prior.keyParams.length === entry.keyParams.length)
         .map((prior) => prior.slotIndex);
+    }
+  }
+  // C3 record claims: a handler that writes a sorted collection claims its own lanes of it, the route entry slots
+  // its fixed accesses project to (alternatives included), and the earlier lanes a runtime alias may move a write to.
+  // A written collection it projects no lane of keeps every lane of it.
+  for (const route of ast.contract.functions) {
+    if (!route.messageBusRoute || !route.messageBusRecordClaims) continue;
+    const entries = (route.entryAccesses ?? []).filter((entry) => !entry.inLoop);
+    for (const claim of route.messageBusRecordClaims) {
+      const collections = claim.collections;
+      if (collections === undefined) continue;
+      const projected = new Set(ast.contract.functions
+        .filter((fn) => fn !== route && fn.messageBusRecordClaimFlag === claim.flag)
+        .flatMap((fn) => [
+          ...(fn.messageBusPhysicalEntrySlots ?? []), ...(fn.messageBusPhysicalEntrySlotAlternatives?.flat() ?? []),
+        ]));
+      const lanes = new Set<number>();
+      for (const entry of entries) {
+        if (!collections.includes(entry.collection) || !projected.has(entry.slotIndex)) continue;
+        lanes.add(entry.slotIndex);
+        for (const prior of entry.runtimeAliasPriorSlots ?? []) lanes.add(prior);
+      }
+      for (const collection of collections) {
+        if (entries.some((entry) => entry.collection === collection && lanes.has(entry.slotIndex))) continue;
+        for (const entry of entries) if (entry.collection === collection) lanes.add(entry.slotIndex);
+      }
+      claim.lanes = [...lanes].sort((left, right) => left - right);
     }
   }
   const typeCheckStarted = Date.now();

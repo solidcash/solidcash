@@ -62818,9 +62818,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[]` -> `[claimed]`: bit k is set where an own-category record at `master + k` is one this run may rewrite. That
-   * is the route's own (data band, sidecar, route-owned entry), or one a row that ran claims by the flag its selector
-   * branch set: the handler-managed lanes of a collection it writes, or the trailing band. Each offset belongs to one
-   * group, so the masks add.
+   * is the route's own (data band, sidecar, route-owned entry), or one a row that ran claims by the row counter its
+   * selector branch increments: a handler-managed lane of a collection its handler writes (its own lanes, stamped
+   * as `lanes`, or every lane of the collection where none were), or the trailing band. A lane no such row claims
+   * stays pinned, as a read brings it back at its own index. Each offset belongs to one group, so the masks add.
    * A row that may rewrite any of them claims the whole compile-time block. Once the verifier ran
    * (`__internal__activeVerifierIndex` >= 0), the claim is exactly the block its census counts, the physical
    * `__internal__participantBlockSize` slots, which its binding digest proves: `(1 << size) - 2`, replacing the rest.
@@ -62830,28 +62831,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitRouteBlockClaims(node: FunctionDefinitionNode, blockSize: number, loc: SingleLocationData): void {
     const claims = node.messageBusRecordClaims ?? [];
     const handlerManaged = new Set(node.messageBusHandlerManagedEntrySlots ?? []);
-    const named = new Set(claims.flatMap((claim) => (claim.collection === undefined ? [] : [claim.collection])));
     const own = new Set<BlockSlotKind>(['dataNft', 'readOnlyDataNft', 'keccakSideCar', 'ecrecoverSideCar']);
-    // An entry slot the route settles is its own. A handler-managed lane is claimed only by a row that writes its
-    // collection; any other row leaves it pinned, as a read brings it back at its own index.
-    const groupOf = (slot: BlockLayoutSlot): string | undefined => {
-      if (own.has(slot.kind)) return 'own';
-      if (slot.kind === 'trailing') return 'trailing';
-      if (slot.kind !== 'entry' || slot.slotIndex === undefined) return undefined;
-      if (!handlerManaged.has(slot.slotIndex)) return 'own';
-      const collection = this.entrySlots[slot.slotIndex]?.collection;
-      return collection !== undefined && named.has(collection) ? `collection:${collection}` : undefined;
-    };
-    const assigned = new Set<number>();
-    const masks = new Map<string, bigint>();
     const slots = (node.blockLayout?.slots ?? []).filter((slot) => slot.offset > 0 && slot.offset < blockSize);
-    for (const first of [true, false]) {
-      for (const slot of slots) {
-        const group = groupOf(slot);
-        if (group === undefined || (group === 'own') !== first || assigned.has(slot.offset)) continue;
-        assigned.add(slot.offset);
-        masks.set(group, (masks.get(group) ?? 0n) | (1n << BigInt(slot.offset)));
-      }
+    const bit = (offset: number): bigint => 1n << BigInt(offset);
+    const assigned = new Set<number>();
+    let ownMask = 0n;
+    for (const slot of slots) {
+      const routeEntry = slot.kind === 'entry' && slot.slotIndex !== undefined && !handlerManaged.has(slot.slotIndex);
+      if ((!own.has(slot.kind) && !routeEntry) || assigned.has(slot.offset)) continue;
+      assigned.add(slot.offset);
+      ownMask |= bit(slot.offset);
+    }
+    // Lanes with one set of claimers share a mask.
+    const laneMasks = new Map<string, bigint>();
+    for (const slot of slots) {
+      if (slot.kind !== 'entry' || slot.slotIndex === undefined || assigned.has(slot.offset)) continue;
+      assigned.add(slot.offset);
+      const lane = slot.slotIndex;
+      const collection = this.entrySlots[lane]?.collection;
+      const flags = claims.filter((claim) => (claim.lanes !== undefined ? claim.lanes.includes(lane)
+        : collection !== undefined && (claim.collections?.includes(collection) ?? false))).map((claim) => claim.flag);
+      if (flags.length > 0) laneMasks.set(flags.join(' '), (laneMasks.get(flags.join(' ')) ?? 0n) | bit(slot.offset));
+    }
+    let bandMask = 0n;
+    for (const slot of slots) {
+      if (slot.kind !== 'trailing' || assigned.has(slot.offset)) continue;
+      assigned.add(slot.offset);
+      bandMask |= bit(slot.offset);
     }
     const local = node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory');
     const witnesses = [
@@ -62860,17 +62866,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const lost = witnesses.find((name) => this.getStackIndex(name, true) < 0);
     if (lost !== undefined) throw new Error(`message-bus record pin: '${lost}' is not live at the route census`);
     const claimed = '(__route_claimed)';
-    this.emit(encodeInt(masks.get('own') ?? 0n), loc);
+    this.emit(encodeInt(ownMask), loc);
     this.pushToStack(claimed);
-    for (const claim of claims) {
-      const mask = claim.all ? 0n : masks.get(claim.trailing ? 'trailing' : `collection:${claim.collection}`) ?? 0n;
-      if (mask === 0n) continue;
-      this.emitPickTrackedFromBottom(claim.flag, loc);
+    // [claimed] -> [claimed + mask] where a row of any of `flags` ran.
+    const addWhereRan = (flags: readonly string[], mask: bigint): void => {
+      if (flags.length === 0 || mask === 0n) return;
+      flags.forEach((flag, index) => {
+        this.emitPickTrackedFromBottom(flag, loc);
+        if (index > 0) this.emit(Op.OP_BOOLOR, loc);
+      });
       this.emit(Op.OP_IF, loc);
       this.emit(encodeInt(mask), loc);
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_ENDIF, loc);
-    }
+    };
+    for (const [flags, mask] of laneMasks) addWhereRan(flags.split(' '), mask);
+    addWhereRan(claims.flatMap((claim) => (claim.trailing === true ? [claim.flag] : [])), bandMask);
     const allFlags = claims.flatMap((claim) => (claim.all === true ? [claim.flag] : []));
     allFlags.forEach((flag, index) => {
       this.emitPickTrackedFromBottom(flag, loc);

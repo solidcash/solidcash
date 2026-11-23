@@ -19,6 +19,12 @@
   and a P2SH20 contract is called through its lock. The check is in every `evmCompat` build that calls through such an
   identity, and in a native low-level call's 20-byte target branch. Those contracts compile to new bytes: recompile
   and redeploy them.
+- A message-bus graph route took a call row's callee to be whatever lock the spender laid out at the callee's slot,
+  when that lock projected to the call's 20-byte target identity (TARGET-7 in a graph route, in 0.51.0 and 0.51.1).
+  Under `evmCompat` every graph call compares by identity, so a P2SH20 lock carrying the HASH160 of the callee's
+  P2SH32 lock, which anyone can spend, could answer any call a route makes with a result no contract computed. The
+  row's lock now stands for an identity only as a P2SH32 or a P2PKH lock. A contract whose message-bus route makes
+  external calls compiles to new bytes: recompile and redeploy it.
 
 ### Fixed
 

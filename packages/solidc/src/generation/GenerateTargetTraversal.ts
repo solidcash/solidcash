@@ -62819,7 +62819,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * `[]` -> `[claimed]`: bit k is set where an own-category record at `master + k` is one this run may rewrite. That
    * is the route's own (data band, sidecar, route-owned entry), or one a row that ran claims by the flag its selector
-   * branch set: a collection's entry slots, or the trailing band. Each offset belongs to one group, so the masks add.
+   * branch set: the handler-managed lanes of a collection it writes, or the trailing band. Each offset belongs to one
+   * group, so the masks add.
    * A row that may rewrite any of them claims the whole compile-time block. Once the verifier ran
    * (`__internal__activeVerifierIndex` >= 0), the claim is exactly the block its census counts, the physical
    * `__internal__participantBlockSize` slots, which its binding digest proves: `(1 << size) - 2`, replacing the rest.
@@ -62831,14 +62832,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const handlerManaged = new Set(node.messageBusHandlerManagedEntrySlots ?? []);
     const named = new Set(claims.flatMap((claim) => (claim.collection === undefined ? [] : [claim.collection])));
     const own = new Set<BlockSlotKind>(['dataNft', 'readOnlyDataNft', 'keccakSideCar', 'ecrecoverSideCar']);
-    // An entry slot no claim names stays the route's, as it was before claims.
+    // An entry slot the route settles is its own. A handler-managed lane is claimed only by a row that writes its
+    // collection; any other row leaves it pinned, as a read brings it back at its own index.
     const groupOf = (slot: BlockLayoutSlot): string | undefined => {
       if (own.has(slot.kind)) return 'own';
       if (slot.kind === 'trailing') return 'trailing';
       if (slot.kind !== 'entry' || slot.slotIndex === undefined) return undefined;
+      if (!handlerManaged.has(slot.slotIndex)) return 'own';
       const collection = this.entrySlots[slot.slotIndex]?.collection;
-      return handlerManaged.has(slot.slotIndex) && collection !== undefined && named.has(collection)
-        ? `collection:${collection}` : 'own';
+      return collection !== undefined && named.has(collection) ? `collection:${collection}` : undefined;
     };
     const assigned = new Set<number>();
     const masks = new Map<string, bigint>();

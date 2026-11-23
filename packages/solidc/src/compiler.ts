@@ -7084,8 +7084,11 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
 
 /**
  * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. `all` where its
- * effects can reach any record, `trailing` where it may consume a record in the trailing band (dynamic state, an
- * array, a chunked value, a loop, a delete), and the sorted collections whose fixed entry slots it names.
+ * effects can reach any record, `trailing` where it may consume a record in the trailing band (written dynamic
+ * state, an array, a chunked value, a loop, a delete), and the sorted collections it writes, whose fixed entry
+ * slots it may rewrite. A sorted entry or dynamic state the row only reads comes back at its own index (the SDK
+ * keeps a read-only entry's commitment, a journal flushes only a written cache, read-only chunks lead the band
+ * 1:1), which is what the pin requires, so a read claims none of them.
  */
 function messageBusRecordClaim(
   footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
@@ -7095,15 +7098,17 @@ function messageBusRecordClaim(
     all: lifecycle || footprint.unknown || footprint.effects.includes('external-call'), trailing: false,
   };
   const named = new Set<string>();
+  const writes = new Set(footprint.writes);
   for (const resource of [...footprint.reads, ...footprint.writes]) {
     const [kind, name] = resource.split(':');
+    const written = writes.has(resource);
     if (kind === 'state') {
-      if (dynamicState.has(name)) claim.trailing = true;
+      if (written && dynamicState.has(name)) claim.trailing = true;
     } else if (kind === 'collection') {
       const collection = collections.get(name);
       if (collection?.sorted !== true) claim.trailing = true;
       else {
-        named.add(name);
+        if (written) named.add(name);
         if (isChunkableValueType(collection.innermostValueType)) claim.trailing = true;
       }
     }

@@ -1871,6 +1871,19 @@ profile.
     Solidity files under `evmCompat`, 110 contracts shrank (93,413 bytes in all) and 75 grew (2,442 bytes, at most
     249), since the narrower check is emitted at each site where the old projection was one shared helper. Three
     native corpus contracts with low-level calls shrank (528 bytes). None crossed the 10,000-byte input limit.
+  - In a message-bus graph route (HIGH; found 2026-11-23; `7f8a966ff`, test `KernelRowCalleeIdentity.test.ts`). The
+    route checks a call row it owns against the graph transcript and, for a 20-byte target, took the row lock's
+    identity with `compileAddressToEvmIdentity`. Under `evmCompat` every target is first narrowed to its identity,
+    a target held as the callee's full lock included; natively, only a 20-byte producer result is. The row's lock
+    is the one at the consumer participant's slot, which the spender lays out: the caller's verifier builds the row
+    from that input's lock, and binds a participant only to the manifest's lock, of any form, and to a minting
+    token of the manifest's category. So the P2SH20 stand-in, or a raw 20-byte lock, could be the callee. It runs
+    no route and its verifier slot is any coin of the spender's, so nothing checks the answer its row carries. The
+    row's lock now stands for an identity only as a P2SH32 or a P2PKH lock (`compileLockToEvmIdentity`). On the VM,
+    the caller's verifier accepts a transcript naming either lock, the stand-in's own input evaluates true, and the
+    caller's route now refuses it; that the route accepted it before is by reading, as the old projection maps the
+    stand-in to the callee's identity. 0.51.0 and 0.51.1 carry the old projection. Bytes not measured: the row check
+    sheds 97 bytes before optimization, and can grow where the optimizer shared one projection body.
 - The crash the Open list kept after TARGET-6, not a soundness issue (`1d08fd8c5`, tests
   `LowLevelCallSiteTarget.test.ts`, `LowLevelCallSiteTarget.e2e.test.ts`). A statement-form value call through a stored
   struct field (`split.to.call{value: v}("");`) crashed code generation (`structType` undefined in `visitFieldAccess`):
@@ -1913,10 +1926,6 @@ profile.
   block. The low-level call pins, the compat identity check and every loop dispatch now refuse an empty target or
   element (`b3a9ae4a4`, `aede82dd5`). A co-spent callee no longer stands for a 20-byte identity as a 20-byte lock, nor
   as a P2SH20 one, which needed no miner (TARGET-7).
-- Not checked yet: a message-bus graph target row (`GenerateTargetTraversal.ts`, the "rooted emission row" check
-  after a 20-byte producer result) still maps the row's full lock to an identity with `compileAddressToEvmIdentity`,
-  so a P2SH20 or 20-byte row lock would match. The row comes from the authenticated graph transcript; whether a
-  spender can choose its lock decides whether TARGET-7 reaches it.
 - A message-bus participant compiled direct-only cannot pay: no route binds its value, and compose lays out no
   satoshi container or payment outputs for it, so the graph planner refuses a function of it that declares a
   payment. Before `45f85306e` such a payment was dropped silently and the composition built.

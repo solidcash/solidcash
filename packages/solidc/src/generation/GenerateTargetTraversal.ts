@@ -1080,8 +1080,8 @@ interface CallSiteWrites {
 }
 /** A field path into a value, from its top (`['roles', 'worker']`); `[]` is the whole value. */
 type FieldPath = readonly string[];
-/** The local copy a call's target was traced through (VariableDefinitionNode.receiverCopy). */
-type ReceiverCopy = NonNullable<VariableDefinitionNode['receiverCopy']>;
+/** The local copies a call's target was traced through, the one the call reads first (receiverCopies). */
+type ReceiverCopies = NonNullable<VariableDefinitionNode['receiverCopies']>;
 /**
  * The state a write may change: each root (a state variable or collection, by name) with the field paths it changes
  * in the values it writes, under any key; or 'any' (assembly).
@@ -54805,9 +54805,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         entries,
       };
     };
-    // Whether the copy a target was traced through (VariableDefinitionNode.receiverCopy) can change at the target's
+    // Whether a copy a target was traced through (VariableDefinitionNode.receiverCopies) can change at the target's
     // path between where it is taken and a run of the call: a write of the copy there, of it whole, or assembly.
-    const copyWritten = (copy: ReceiverCopy, call: ExternalCallSlot | Node): boolean => {
+    const copiesWritten = (copies: ReceiverCopies, call: ExternalCallSlot | Node): boolean => copies.some((copy) => {
       const copied = declarations.get(copy.local);
       const from = copied === undefined ? -1 : subtreeEnd(copied);
       const calls = runsOf(call);
@@ -54816,16 +54816,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && (write.names === undefined || write.element === copy.local
           || (write.names.includes(copy.local) && (copy.path === undefined
             || localPaths(write.node, copy.local).some((path) => fieldPathsOverlap(path, copy.path!))))));
-    };
-    // A target read from the stored value a local copy was taken from is the copy's value where the call runs, as on
-    // the EVM: the stored value where the copy was declared, as the copy changed since. The body-top read holds it
-    // until a write can change the stored value (`sourceWritten`) or the copy at the target's path; then the call
-    // reads the copy itself. A copy the call cannot read (declared twice, or the target under an element of it) is
-    // refused by name.
+    });
+    // A target read from the stored value local copies were taken from is, as on the EVM, the value of the copy the
+    // call reads where it runs: the stored value where the farthest copy was taken, as the copies changed since. The
+    // body-top read holds it until a write can change the stored value (`sourceWritten`) or a copy at the target's
+    // path; then the call reads that copy. A copy the call cannot read there (declared twice, or the target under an
+    // element of it) is refused by name.
     const throughCopy = (
-      copy: ReceiverCopy, call: ExternalCallSlot | Node, sourceWritten: boolean,
+      copies: ReceiverCopies, call: ExternalCallSlot | Node, sourceWritten: boolean,
     ): ExpressionNode | undefined => {
-      if (!sourceWritten && !copyWritten(copy, call)) return undefined;
+      if (!sourceWritten && !copiesWritten(copies, call)) return undefined;
+      const copy = copies[0]!;
       const copied = declarations.get(copy.local);
       const read = copied === undefined || redeclared.has(copy.local) || copy.path === undefined
         ? undefined : this.readThroughCopy(copied, copy.path);
@@ -54869,8 +54870,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const { writes: written, entries } = changing(
         initializer, subtreeEnd(declaration), declaration, call, true,
       );
-      const copy = declaration.receiverCopy;
-      if (copy !== undefined) return throughCopy(copy, call, written.length > 0);
+      const copies = declaration.receiverCopies;
+      if (copies !== undefined && copies.length > 0) return throughCopy(copies, call, written.length > 0);
       if (written.length === 0) return undefined;
       if (entries.length === 0) return initializer;
       const readsWritten = entries.every((entry) => entry.collection?.sorted !== true && entry.arrayIndex === undefined
@@ -54918,8 +54919,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (declaration !== undefined && assignments.length > 0) {
           return assignments.some(({ node: write }) => !(write instanceof AssignNode) || assignedWrittenFirst(write));
         }
-        const copy = declaration?.receiverCopy;
-        if (declaration?.expression === undefined || copy === undefined) {
+        const copies = declaration?.receiverCopies;
+        if (declaration?.expression === undefined || copies === undefined || copies.length === 0) {
           try {
             return staleInitializer(name, call) !== undefined;
           } catch {
@@ -54927,12 +54928,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             return true;
           }
         }
-        // A builder resolves the callee from the stored value before the call. The copy holds another after a write
-        // of the stored value before the copy is taken, or of the copy at the target's path.
-        const copied = declarations.get(copy.local);
-        return copied === undefined
-          || changing(declaration.expression, subtreeEnd(declaration), declaration, copied, true).writes.length > 0
-          || copyWritten(copy, call);
+        // A builder resolves the callee from the stored value before the call. The copies hold another after a write
+        // of the stored value before the farthest is taken, or of a copy at the target's path.
+        const taken = declarations.get(copies[copies.length - 1]!.local);
+        return taken === undefined
+          || changing(declaration.expression, subtreeEnd(declaration), declaration, taken, true).writes.length > 0
+          || copiesWritten(copies, call);
       },
       writtenBefore: (expression, call) => changing(expression, -1, undefined, call, false).writes.length > 0,
       keepReads: (expression, call) => {

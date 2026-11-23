@@ -6,6 +6,9 @@
  * receiver from storage instead of the copy. After a write of the stored value between the copy and the call, the
  * covenant bound the call to the written value, while the EVM's call goes to the copy's.
  *
+ * A helper's parameter is such a copy too: the inliner binds it to the argument where the helper is called, and a
+ * write of the stored value inside the helper leaves it as it was.
+ *
  * One source runs on both sides. The EVM deploys two tokens and the vault, points the vault at the first and calls an
  * entry naming the second; its tokens report which one moved. The BCH spend of the same entry must accept the EVM's
  * callee, and the vault, input 0, must refuse the other.
@@ -66,6 +69,16 @@ contract Vault {
     e.currency = x;
     SafeTransfer.safeTransfer(e.currency, address(this), e.amount);
   }
+  function payFromHelperArgument(address x) external { retokenThenPay(token, x); }
+  function retokenThenPay(address t, address x) internal {
+    token = x;
+    SafeTransfer.safeTransfer(t, address(this), 5);
+  }
+  function payFromHelperCopy(address x) external { rerouteThenPay(escrow, x); }
+  function rerouteThenPay(Escrow memory e, address x) internal {
+    escrow.currency = x;
+    SafeTransfer.safeTransfer(e.currency, address(this), e.amount);
+  }
 }`;
 
 /** Each entry, with the token its call goes to on the EVM: the copy's, the stored one before the write. */
@@ -75,6 +88,8 @@ const ENTRIES = [
   ['a memory copy of a stored struct the function changes', 'payFromChangedCopy', 'first'],
   ['a copy of a stored interface', 'payFromInterfaceCopy', 'first'],
   ['a memory copy whose target field the function rewrites', 'payFromRetargetedCopy', 'second'],
+  ['a helper\'s address parameter', 'payFromHelperArgument', 'first'],
+  ['a helper\'s memory struct parameter', 'payFromHelperCopy', 'first'],
 ] as const;
 
 /** The token the EVM's call goes to: the vault set up with `first`, then `entry(second)`. */

@@ -541,6 +541,8 @@ const RUNTIME_LOOP_VALUE_SENT = '(runtime loop value sent)';
  * locals end with their block, before the container conservation reads them; the sum lives for the function.
  */
 const DEPLOYER_VALUE_SENT = '(deployer value sent)';
+/** The values of the calls whose `{value:}` rides their record, summed as they run: they leave the container unpinned. */
+const CALL_VALUE_SENT = '(call value sent)';
 /**
  * B8.9: how many times the function's loop ran its deployer `new`. Its children's genesis groups follow one another
  * from the site's slot, so the trailing region starts after the last of them; the count lives for the function.
@@ -10808,6 +10810,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         value.valueTransferIndex = start;
         return start + 1;
       }
+      // A value that rides its call's record takes no transfer slot.
+      if ((value instanceof ExternalFunctionCallNode && value.callValueInRecord === true)
+        || (value instanceof MethodCallStatementNode && value.expression instanceof ExternalFunctionCallNode
+          && value.expression.callValueInRecord === true)) return start;
       if (value instanceof MethodCallStatementNode && hasEffectiveCallValue(value.call.callOptions?.value)) {
         value.call.valueTransferIndex = start;
         if (value.expression instanceof ExternalFunctionCallNode) value.expression.valueTransferIndex = start;
@@ -12018,6 +12024,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (hasScopedDeployerValue(node.body) && !this.isDefineSubTraversal) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(DEPLOYER_VALUE_SENT);
+    }
+    if (!this.isDefineSubTraversal && this.externalCallSlots.some((slot) => slot.callValueInRecord === true)) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(CALL_VALUE_SENT);
     }
     // B8.9: a loop's deployer `new` lays out one genesis group per run from its slot, so the trailing region follows the
     // last of them. The function keeps the number of runs for the trailing coordinates emitted after the loop.
@@ -31141,6 +31151,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitCountPinnedEdge(`__internal__callEdgeOutputIdx${node.callInfo.externalCallSlotIndex}`, node, locationData);
     }
 
+    // A value that rides the record leaves the satoshi container with no output; the checks after the body count it.
+    if (node.callValueInRecord === true && node.callOptions?.value
+      && this.getStackIndex(CALL_VALUE_SENT, true) >= 0) {
+      this.visit(cloneNode(node.callOptions.value) as ExpressionNode);
+      this.emit(encodeInt(BigInt(this.getStackIndex(CALL_VALUE_SENT))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_ADD, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emitReplace(this.getStackIndex(CALL_VALUE_SENT), node);
+      this.popFromStack();
+    }
+
     // Handle {value: X} call option - emit a transfer to the callee's address
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
@@ -31215,7 +31239,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         : `__internal__externalReturnOutputIdx${returnSlotIndex}`;
       // The record names the call it answers: the digest of this call's method and the arguments the source passes,
       // which the callee computes over the call it executed.
-      const verifiesDigest = this.emitCallerCallRecordDigest(node, physicalSlot, locationData);
+      const verifiesDigest = this.emitCallerCallRecordDigest(node, physicalSlot, locationData, true);
       // A counted call in a loop has no epilogue: it binds its callee and its record's carrier where it runs, and
       // reads its record at its return index plus its ordinal.
       const counter = verifiesDigest ? this.liveCallOrdinalCounter(physicalSlot) : undefined;
@@ -31350,7 +31374,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitVoidCallRecordRead(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
   ): void {
-    if (!this.emitCallerCallRecordDigest(node, slot, loc)) {
+    if (!this.emitCallerCallRecordDigest(node, slot, loc, true)) {
       // A call dispatched through its callee's own multi-call entry has its record read and bound by that entry's
       // machinery, not by a caller-side digest. Fix B's single-interface void-record read does not apply here;
       // defer to the multi-call binding, as the pre-fix-B direct read did. So does a call leaving arguments to its
@@ -57030,6 +57054,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.compilerOptions.callRecords === 'all' && this.currentFunction !== undefined) {
       this.currentFunction.settlesCallRecord = true;
     }
+    this.emitAppendReceivedValue(loc);
     const digestIdx = this.getStackIndex('__internal__callDigest');
     this.emitRollAt(digestIdx, loc);
     this.removeFromStack(digestIdx);
@@ -57109,13 +57134,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * on top as one tracked value. `emitLateOrdinal` pushes the ordinal once the arguments have run, so a call an
    * argument makes takes its ordinal first. With `own`, an entry's own call outside a frame, it leaves the preimage,
    * which its settlement hashes, and starts from the tracked `ordinal || selector` `own.prefix` names where the
-   * dispatcher left one.
+   * dispatcher left one. `emitValue` leaves a call's value on top, digested after the arguments when not zero.
    */
   private emitCallRecordDigest(
     selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
     emitArgument: (index: number) => void, loc: SingleLocationData, emitOrdinal?: () => void,
     emitLateOrdinal?: () => void, own?: { prefix?: string; selectorAfterPrefix?: boolean },
-    prefixStack?: string, emitReader?: () => void,
+    prefixStack?: string, emitReader?: () => void, emitValue?: () => void,
   ): void {
     if (emitOrdinal) {
       // [.., ordinal u16le] -> [.., ordinal || selector]
@@ -57162,6 +57187,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(record_preimage)');
     }
+    if (emitValue) {
+      emitValue();
+      this.emitAppendCallValue(loc);
+      this.popFromStack(2);
+      this.pushToStack('(record_preimage)');
+    }
     if (emitLateOrdinal) {
       // [.., selector || reader || arguments, ordinal u16le] -> [.., preimage]
       emitLateOrdinal();
@@ -57182,6 +57213,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_INPUTINDEX, loc);
     this.emit(Op.OP_2, loc);
     this.emit(Op.OP_NUM2BIN, loc);
+  }
+
+  /**
+   * An entry that takes value digests, after its arguments, what its run received when not zero: what its satoshi
+   * container gained plus what its own effects took out of it. A caller sending `{value:}` digests the value it sent,
+   * so its record read binds the two; an entry that takes no value digests none, and a value call to it fails.
+   */
+  private emitAppendReceivedValue(loc: SingleLocationData): void {
+    const node = this.currentFunction;
+    if (!this.settlesOwnCallPreimage() || !node.blockLayout
+      || this.getStackIndex('__internal__callDigest', true) < 0 || !this.entryTakesValue(node)) return;
+    node.recordDigestsValue = true;
+    const digestIdx = this.getStackIndex('__internal__callDigest');
+    this.emitRollAt(digestIdx, loc);
+    this.removeFromStack(digestIdx);
+    this.pushToStack('__internal__callDigest');
+    this.emitMsgValue(loc);
+    this.pushToStack('(received)');
+    this.emitAddFixedContainerOutflows(loc, 0);
+    for (const name of [RUNTIME_LOOP_VALUE_SENT, DEPLOYER_VALUE_SENT, CALL_VALUE_SENT,
+      ...this.deployerNewValues.map((deploy) => deploy.amountStackName)]) {
+      if (this.getStackIndex(name, true) < 0) continue;
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emitAppendCallValue(loc);
+    this.popFromStack(2);
+    this.pushToStack('__internal__callDigest');
+  }
+
+  /** Payable, or reading msg.value itself or through a function it calls. */
+  private entryTakesValue(node: FunctionDefinitionNode): boolean {
+    return node.modifiers.includes(FunctionModifier.PAYABLE)
+      || (this.contractUsesMsgValue && this.framedValueCarrierNames().has(node.name));
+  }
+
+  /** `[.., preimage, value]` -> `[.., preimage || value u64le]`, or `[.., preimage]` for a zero value. */
+  private emitAppendCallValue(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_8, loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /** `[.., preimage, argument]` -> `[.., preimage || size u16le || argument]`. */
@@ -57265,10 +57343,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Leaves the digest of the call `node` makes, as one tracked value, when its slot names the method it calls; the
-   * arguments are visited as copies, so no final use is consumed here.
+   * arguments are visited as copies, so no final use is consumed here. A record read (`withValue`) also digests the
+   * value of a call whose `{value:}` rides its record; the edge of the call does not.
    */
   private emitCallerCallRecordDigest(
-    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData, withValue = false,
   ): boolean {
     const selector = node.opaqueReturn ? undefined : slot.callRecordSelector;
     if (selector === undefined) return false;
@@ -57277,6 +57356,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const left = this.leftCallArgumentWitnesses(node, slot, declared);
     if (left === undefined) return false;
     const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
+    const value = withValue && slot.callValueInRecord === true ? node.callOptions?.value : undefined;
     const ordinal = slot.callOrdinal;
     const counter = this.liveCallOrdinalCounter(slot);
     // A counted call digests the group's counter as two little-endian bytes, read once its arguments have run.
@@ -57317,7 +57397,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.markArrayArgumentBlobEncoded(argument);
         this.visit(argument);
       }, loc, undefined, emitLateOrdinal, undefined, genesisPrefix,
-      genesisPrefix === undefined ? (): void => this.emitCallRecordReaderOfOwnInput(loc) : undefined);
+      genesisPrefix === undefined ? (): void => this.emitCallRecordReaderOfOwnInput(loc) : undefined,
+      value === undefined ? undefined : (): void => {
+        this.visit(cloneNode(value) as ExpressionNode);
+      });
     if (genesisPrefix !== undefined) this.genesisRecordDigests += 1;
     return true;
   }
@@ -57723,6 +57806,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * above them, every entry shares one helper.
    */
   private emitCallRecordSettlement(loc: SingleLocationData): void {
+    if (!this.callBatchFrame) this.emitAppendReceivedValue(loc);
     const blobIdx = this.getStackIndex('__internal__returnBlob');
     this.emitRollAt(blobIdx, loc);
     this.removeFromStack(blobIdx);
@@ -61988,8 +62072,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
-    if (this.getStackIndex(DEPLOYER_VALUE_SENT, true) >= 0) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(DEPLOYER_VALUE_SENT))), loc);
+    for (const sent of [DEPLOYER_VALUE_SENT, CALL_VALUE_SENT]) {
+      if (this.getStackIndex(sent, true) < 0) continue;
+      this.emit(encodeInt(BigInt(this.getStackIndex(sent))), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
@@ -64012,8 +64097,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_PICK, locationData);
         this.emit(Op.OP_ADD, locationData);
       }
-      if (this.getStackIndex(DEPLOYER_VALUE_SENT, true) >= 0) {
-        this.emit(encodeInt(BigInt(this.getStackIndex(DEPLOYER_VALUE_SENT))), locationData);
+      for (const sent of [DEPLOYER_VALUE_SENT, CALL_VALUE_SENT]) {
+        if (this.getStackIndex(sent, true) < 0) continue;
+        this.emit(encodeInt(BigInt(this.getStackIndex(sent))), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.emit(Op.OP_ADD, locationData);
       }

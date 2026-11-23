@@ -119,7 +119,14 @@ function blockTerminates(block: BlockNode | undefined): boolean {
     && blockTerminates(last.elseBlock);
 }
 
+/** A typed call whose `{value:}` rides the record it reads, or the statement making one: no transfer of its own. */
+function callValueRidesRecord(node: Node): boolean {
+  const call = node instanceof MethodCallStatementNode ? node.expression : node;
+  return call instanceof ExternalFunctionCallNode && call.callValueInRecord === true;
+}
+
 function isValueTransferNode(node: Node): boolean {
+  if (callValueRidesRecord(node)) return false;
   return node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
     || node instanceof AddressSendExpressionNode
     || (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value))
@@ -196,7 +203,8 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
     result.transfers++;
     // Don't return - we still need to recurse into child nodes
   }
-  if (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value)) {
+  if (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value)
+    && !callValueRidesRecord(node)) {
     result.transfers++;
   }
   if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
@@ -207,7 +215,7 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
     result.transfers++;
   }
   if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
-    || hasEffectiveCallValue(node.callOptions?.value))) {
+    || hasEffectiveCallValue(node.callOptions?.value)) && !callValueRidesRecord(node)) {
     result.transfers++;
   }
   // `new C{value: x}()` transfers x from the contract's satoshi container to the child. A deployer `new` does not:

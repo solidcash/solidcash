@@ -100,6 +100,8 @@ export type SolidcDiagnosticCode =
   | 'EXTERNAL_CALL_IN_SUBROUTINE'
   // A `{value: v}` call whose target no output the covenant checks can be built for, so the payment would drop.
   | 'CALL_VALUE_RECIPIENT_UNBOUND'
+  // A typed `{value:}` call that reads no record by a fixed digest, which alone could bind its value to the callee.
+  | 'CALL_VALUE_UNBOUND'
   // F1: an entry reads a contract-caller msg.sender but its call digest is not in scope where the caller edge binds.
   | 'CALLER_EDGE_DIGEST_UNAVAILABLE'
   // A message-bus entry whose looped call only the route binds, where the route does not serve that entry.

@@ -251,6 +251,11 @@ export interface ExternalCallUtxoGroup {
   /** Exact physical state owner against which producer claims are authenticated. */
   valueChunkStateOwner?: { categoryId: string; lockingBytecode: string };
   callMode?: 'call' | 'staticcall' | 'delegatecall';
+  /**
+   * The `{value:}` of a call whose value rides its record (ABI `callValue`): its caller's satoshi container pays it into
+   * this callee's satoshi container, and both digest it.
+   */
+  callValue?: bigint;
   /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */
   delegateCallGroupIndex?: number;
   /** The delegate implementation and its function resources are already carried in this physical proxy block. */

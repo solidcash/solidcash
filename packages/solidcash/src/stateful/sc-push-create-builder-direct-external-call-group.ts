@@ -113,6 +113,8 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
   publicSelfIdentity: { categoryId: string; lockingBytecode: string };
   publicSelfAddress: Uint8Array | undefined;
   returnProbeOnly: boolean | undefined;
+  /** The value of a call whose `{value:}` rides its record (ExternalCallUtxoGroup.callValue). */
+  callValue?: bigint;
 }
 
 /**
@@ -153,6 +155,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     publicSelfIdentity,
     publicSelfAddress,
     returnProbeOnly,
+    callValue,
   } = input;
 
   if (compilerRoute && bBlockInputs && bBlockLayout) {
@@ -355,6 +358,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     requiredDataNftIndices: bRequiredNftIndices,
     functionName: callInfo.functionName,
     functionArgs: callInfo.args,
+    ...(callValue !== undefined && { callValue }),
     ...(!compilerRoute && ec.readonlyReturnBinding?.version === 1
       && bAbiFunc?.writesState === false && bAbiFunc.selector !== undefined
       && ec.readonlyReturnBinding.selector.toLowerCase() === bAbiFunc.selector.toLowerCase()

@@ -791,6 +791,15 @@ export async function orchestrateCreateBuilderExternalCalls(
       }
 
       if (callInfo) {
+        // A call whose `{value:}` rides its record: the caller's container pays it into this callee's container.
+        const callValue = ec.callValue === undefined ? undefined : host.resolveExternalArgs(
+          [ec.callValue], args, host.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+          undefined, 0, false, publicSelfAddress,
+        )?.[0];
+        if (ec.callValue !== undefined && (typeof callValue !== 'bigint' || callValue < 0n)) {
+          throw new Error(`The {value:} of ${host.inner.artifact.contractName}.${abiFunction?.name}'s call to `
+            + `${ec.interfaceName}.${ec.functionName}() does not resolve to an amount from its arguments and state.`);
+        }
         await pushCreateBuilderDirectExternalCallGroupImpl(
           {
             deriveReturnValue: (...a: any[]) => (callInfo.externalContract as any)._deriveReturnValue(...a),
@@ -867,6 +876,7 @@ export async function orchestrateCreateBuilderExternalCalls(
             publicSelfIdentity,
             publicSelfAddress,
             returnProbeOnly: overrides?.returnProbeOnly,
+            ...(callValue !== undefined && { callValue }),
           } as any,
         );
         const materializedGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];

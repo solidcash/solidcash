@@ -702,6 +702,11 @@ export interface AbiFunction {
    * over its selector and arguments, the result inline or its SHA256 (docs/wip/call-records/DESIGN.md).
    */
   callRecord?: boolean;
+  /**
+   * The entry takes value, and its record's digest ends with the value its run received when that is not zero: what
+   * its satoshi container gained plus what it sent out of it. A caller sending `{value:}` digests the value it sent.
+   */
+  callRecordValue?: boolean;
   /** This entry can run as a frame of the contract's multi-call entry (`Artifact.callBatch`). */
   callBatchRow?: boolean;
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
@@ -1767,6 +1772,11 @@ export interface ExternalCallAbi {
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   /** Value bit emitted for this graph edge. Explicit false distinguishes new artifacts from legacy absence. */
   callValueEffect?: boolean;
+  /**
+   * A direct typed call's `{value:}`, which rides the record it reads: the caller takes it from its satoshi container
+   * with no output of its own, the builder pays it into the callee's satoshi container, and both digest it.
+   */
+  callValue?: ArgSource;
   opaqueReturn?: boolean; // `(bool,bytes)=addr.call(payload)`: opaque integrity-bound return, callee unknown at compile time
   argSources?: readonly ArgSource[];
   rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call

@@ -5477,6 +5477,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(param);
         }
       }
+      this.bindDirectCallValues(node);
     }
 
     // Token container access pre-scan: collect all token container accesses and assign slot indices
@@ -5986,13 +5987,14 @@ export default class SymbolTableTraversal extends AstTraversal {
    *
    * In a framed compile the caller's site holds the record's `value` to the amount its code computes, the validator
    * holds the callee's frame value to the record (V5), and the value rule charges the caller's containers and credits
-   * the callee's (V7). The direct and message-bus conventions pay a call value as a transfer, and every convention
+   * the callee's (V7). A direct call whose value rides its record (bindDirectCallValues) takes it from the caller's
+   * container with no transfer. The message-bus convention pays a call value as a transfer, and every convention
    * pays a raw call's value and an empty-calldata value call that way, since those are sends.
    */
   private recordCarriesCallValue(node: Node | undefined): boolean {
-    return node instanceof ExternalFunctionCallNode && this.compilerOptions.composition === 'framed'
-      && !node.rawValueTransferOnly && node.interfaceName !== '__raw__'
-      && hasEffectiveCallValue(node.callOptions?.value);
+    if (!(node instanceof ExternalFunctionCallNode) || node.rawValueTransferOnly || node.interfaceName === '__raw__'
+      || !hasEffectiveCallValue(node.callOptions?.value)) return false;
+    return this.compilerOptions.composition === 'framed' || node.callValueInRecord === true;
   }
 
   private collectTransferStatements(
@@ -11947,6 +11949,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           },
         };
       }
+      // The value a `{value:}` call sends, read as an argument is: the SDK pays it into the callee's container.
+      const callValue = node.callOptions?.value;
+      const callValueSource: ExternalCallArgSource | undefined = !hasEffectiveCallValue(callValue) ? undefined
+        : callValue instanceof IntLiteralNode ? { kind: 'literal', value: callValue.value.toString(), type: 'bigint' }
+          : classifyArg(callValue) ?? {
+            kind: 'expression',
+            expression: serializeExpression(callValue) ?? { kind: 'missing', name: callValue.constructor.name },
+          };
       if (unresolvedProducerAlias && this.compilerOptions.messageBusKernel === true
         && this.currentFunction?.messageBusEligible === true) {
         // A graph call cannot derive an ambiguous, conditional, reassigned, or future producer value from an
@@ -12447,6 +12457,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(node.runtimeSelector && { runtimeSelector: node.runtimeSelector }),
         ...(node.opaqueReturn && { opaqueReturn: true }),
         ...(hasEffectiveCallValue(node.callOptions?.value) && { callValueEffect: true }),
+        ...(callValueSource && { callValueSource }),
         ...(callMode && callMode !== ExternalCallMode.REGULAR && { callMode }),
         ...(node.callInfo.hasReturnValues && {
           hasReturnValues: true,
@@ -20862,6 +20873,53 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * A direct typed call with `{value:}` sends its value through the record it reads: the caller takes the value
+   * from its satoshi container and pins no output for it, and the record's digest names the value, which the callee
+   * digests as what its satoshi container received. Paying the call's target instead lands on the callee's master
+   * lock, which no script spends, while the callee counts msg.value at its container. A call that reads no record
+   * by a fixed digest has nothing to bind its value, so a compile with `messageBus: false` refuses it by name.
+   */
+  private bindDirectCallValues(node: FunctionDefinitionNode): void {
+    const busMode = (this.compilerOptions as CompilerOptions
+    & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
+    if ((busMode !== 'disabled' && busMode !== 'auto') || this.compilerOptions.composition === 'framed'
+      || !node.isEntryPoint || node.graphEmissionHandler || node.messageBusRoute) return;
+    let rides = false;
+    for (const slot of node.externalCalls ?? []) {
+      // A low-level `.call{value:}` routed through an interface keeps its own payment (open).
+      if (!slot.callValueEffect || slot.interfaceName === '__raw__'
+        || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+      if (this.callValueRidesRecord(slot)) {
+        slot.callValueInRecord = true;
+        slot.sourceCallNode!.callValueInRecord = true;
+        rides = true;
+      } else if (busMode === 'disabled') {
+        throw new SolidcDiagnosticError(
+          'CALL_VALUE_UNBOUND',
+          `'${node.name}' sends {value:} with ${slot.interfaceName}.${slot.functionName}(), which reads no record `
+          + 'of its callee by a fixed digest: nothing binds the value to the callee\'s run, and it would land on the '
+          + 'callee\'s master lock, which no script spends. Call a fixed method of a fixed target and name every '
+          + 'argument it declares.',
+          { functionName: node.name, interfaceName: slot.interfaceName, method: slot.functionName },
+        );
+      }
+    }
+    // The branches were summarized while the body was resolved, counting such a call as a transfer.
+    if (rides && node.body) this.refreshConditionalEntryOps(node.body);
+  }
+
+  /** The call reads its callee's record by the digest of a fixed method and every argument it declares. */
+  private callValueRidesRecord(slot: ExternalCallSlot): boolean {
+    if (!slot.hasReturnValues || slot.opaqueReturn || slot.callRecordSelector === undefined
+      || slot.sourceCallNode === undefined) return false;
+    if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar
+      || slot.batchInvocations || slot.callOrdinal !== undefined) return false;
+    const digested = (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
+      && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
+    return namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length);
+  }
+
+  /**
    * F1: this outgoing external call carries a caller-attested edge record - a straight-line, unconditional, direct
    * call to a fixed method of a known interface. The caller pins an own-category edge record committing to the
    * call's digest at this slot's `callEdge` output, so the callee can bind the caller to the call. A raw call whose
@@ -20976,12 +21034,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     const minerFeeStatement = node.body?.statements?.find(
       (statement): statement is MinerFeeStatementNode => statement instanceof MinerFeeStatementNode,
     );
-    // Under `pragma satoshicontainer single` a payable call adds to the one coin, so it spends it.
+    // Under `pragma satoshicontainer single` a payable call adds to the one coin, so it spends it. A call whose value
+    // rides its record takes the value from the container too.
     const singleSatoshiContainer = this.currentContract?.singleSatoshiContainer === true;
     if ((node.transferInfos && node.transferInfos.length > 0)
       || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0 || minerFeeStatement
       || (singleSatoshiContainer && node.modifiers.includes(FunctionModifier.PAYABLE))
-      || this.sendsDeployerValue(node.body)) {
+      || this.sendsDeployerValue(node.body)
+      || (node.externalCalls ?? []).some((slot) => slot.callValueInRecord === true)) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 

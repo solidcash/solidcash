@@ -54,17 +54,27 @@ export function callRecordReaderBytes(reader: bigint | number): Uint8Array {
   return Uint8Array.of(Number(magnitude & 0xffn), Number(magnitude >> 8n) | (value < 0n ? 0x80 : 0));
 }
 
+/** A call's value as a record's digest ends with it: `OP_NUM2BIN` to eight bytes, none for zero. */
+export function callRecordValueBytes(value: bigint): Uint8Array {
+  if (value === 0n) return new Uint8Array();
+  if (value < 0n || value >= 1n << 63n) throw new Error(`A call's value ${value} does not fit a record`);
+  const bytes = new Uint8Array(8);
+  bytes.set(bigIntToVmNumber(value));
+  return bytes;
+}
+
 /**
  * The digest of a call: the first 31 bytes of the SHA256 of its ordinal as two little-endian bytes, its selector,
  * for an entry whose records name their reader `reader` (the input index of the contract that reads the record, or
  * `CALL_RECORD_NO_READER` when none does), then each argument as its length in two little-endian bytes and its
- * bytes, a number minimally encoded. A signature authorizes the transaction the record is part of, so it is no
+ * bytes, a number minimally encoded, then, for an entry that takes value (`callRecordValue`), the value the call sent
+ * when not zero (callRecordValueBytes). A signature authorizes the transaction the record is part of, so it is no
  * argument of the digest.
  */
 export function callRecordDigest(
-  abiFunction: Pick<AbiFunction, 'inputs' | 'selector'>, params: readonly FunctionArgument[],
+  abiFunction: Pick<AbiFunction, 'inputs' | 'selector' | 'callRecordValue'>, params: readonly FunctionArgument[],
   options: { readonly structs?: readonly StructDefinitionInfo[]; readonly enums?: readonly EnumDefinitionAbi[] } = {},
-  ordinal = 0, reader: bigint | number = CALL_RECORD_NO_READER,
+  ordinal = 0, reader: bigint | number = CALL_RECORD_NO_READER, value = 0n,
 ): Uint8Array | undefined {
   if (abiFunction.selector === undefined) return undefined;
   const parts: number[] = [ordinal & 0xff, (ordinal >> 8) & 0xff, ...hexToBin(abiFunction.selector)];
@@ -79,6 +89,7 @@ export function callRecordDigest(
       : encoded;
     parts.push(bytes.length & 0xff, (bytes.length >> 8) & 0xff, ...bytes);
   }
+  if (abiFunction.callRecordValue === true) parts.push(...callRecordValueBytes(value));
   return sha256(Uint8Array.from(parts)).slice(0, CALL_RECORD_DIGEST_BYTES);
 }
 

@@ -45,6 +45,8 @@ export interface MaterializeOwnerEntriesContainersTransfersHost {
   readonly pendingTokenContainerDeposits: ReadonlyMap<string, bigint>;
   readonly runtimeLoopTransferOutputs: readonly RuntimeLoopTransferOutput[];
   readonly containerDepositAmount: bigint;
+  /** What the calls whose `{value:}` rides their record take out of the container, with no output of their own. */
+  readonly callValueSent: bigint;
   entryPlaceholderFillThreshold(): number;
   isTokenContainerDrained(categoryId: string): boolean;
 }
@@ -177,7 +179,8 @@ export function materializeOwnerEntriesContainersTransfers(
       + host.runtimeLoopTransferOutputs
         .filter((transfer) => (transfer.kind ?? 'bch') === 'bch')
         .reduce((sum, transfer) => sum + transfer.amount, 0n)
-      + BigInt(host.blockLayout?.minerFee ?? 0);
+      + BigInt(host.blockLayout?.minerFee ?? 0)
+      + host.callValueSent;
     if (totalTransferAmount > host.satoshiContainerUtxo.satoshis + host.containerDepositAmount) {
       throw new Error(
         `Total transfer amount (${totalTransferAmount}) exceeds satoshi container balance `

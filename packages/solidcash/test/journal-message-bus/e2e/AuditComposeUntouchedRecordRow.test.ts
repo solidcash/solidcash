@@ -140,13 +140,17 @@ function rebindEnvelope(builder: TransactionBuilder, changed: Manifest): void {
     .reduce((base, current) => base + current.actualSize, 0));
   builder.inputs.forEach((input, index) => {
     if (!input.token?.nft?.commitment.startsWith(VERIFIER_MAGIC)) return;
+    // [densityReserve, activeInputIndex, expectedLocalRows, localBatch, graph values..., messageEnvelope], the
+    // envelope last on a participant-verifier transport (createMessageBusVerifierUnlocker).
     const params = (input.unlocker as ContractUnlocker).params;
+    const last = params[params.length - 1];
+    const carriesEnvelope = last instanceof Uint8Array && binToHex(last) === oldHex;
     const [, activeBase, expectedRows, batch] = params;
     if (typeof activeBase !== 'bigint' || typeof expectedRows !== 'bigint' || !(batch instanceof Uint8Array)) {
       throw new Error('a verifier input has no canonical arguments');
     }
     const parts = [sha256(changedManifest), uint16(Number(activeBase)), uint16(Number(expectedRows)), sha256(batch)];
-    const graphArguments = params.slice(4);
+    const graphArguments = params.slice(4, carriesEnvelope ? -1 : undefined);
     for (const value of graphArguments) {
       if (typeof value === 'bigint') parts.push(uint16(Number(value)));
       else if (value instanceof Uint8Array) parts.push(sha256(value));

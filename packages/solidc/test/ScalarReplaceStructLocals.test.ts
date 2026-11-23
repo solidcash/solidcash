@@ -116,6 +116,24 @@ contract C {
     expect(bytecode(source, options)).toBe(bytecode(source, { ...options, scalarReplaceStructLocals: false }));
   });
 
+  it('publishes a call target read through a replaced field as the direct read of its value', () => {
+    const proxy = (body: string): string => `pragma solidcash >=0.8.0;
+contract P(address impl) {
+    bigint counter;
+    struct Route { bytes to; }
+    function up(bytes input, bytes blob) external {
+        ${body}
+        require(input.length > 0);
+    }
+}`;
+    const target = (body: string): unknown => compileString(proxy(body)).abi
+      .find((entry) => entry.name === 'up')!.lowLevelCalls![0].target;
+    const replaced = target('Route memory r = Route(blob); address t = address(r.to); t.delegatecall(input);');
+    expect(replaced).toEqual(target('address t = address(blob); t.delegatecall(input);'));
+    expect(target('Route memory r = Route(blob); r.to = r.to; address t = address(r.to); t.delegatecall(input);'))
+      .toEqual({ kind: 'computed' });
+  });
+
   it('does not touch a struct with a nested struct or array field', () => {
     const source = `
 pragma solidcash ^0.51.0;

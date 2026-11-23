@@ -1036,7 +1036,10 @@ contract E3StateTargetProxy(address impl) {
         'tx.origin': 'address t = address(tx.origin); t.delegatecall(input);',
         slice: 'address t = address(blob.split(35)[0]); t.delegatecall(input);',
         concatenated: 'address t = address(bytes(impl) + blob); t.delegatecall(input);',
-        'struct field': 'Route memory r = Route(blob); address t = address(r.to); t.delegatecall(input);',
+        // A written struct keeps its fields framed; a local only read field by field becomes plain locals, whose
+        // target is the value itself (ScalarReplaceStructLocals.test.ts pins that it publishes as the direct form).
+        'struct field': 'Route memory r = Route(blob); r.to = r.to; address t = address(r.to); '
+          + 't.delegatecall(input);',
         'tuple destructured': '(bytes l, bytes r2) = pair(blob); address t = address(l); '
           + 'require(r2.length >= 0); t.delegatecall(input);',
         'alias cycle': 'address a = impl; address b = a; a = b; a.delegatecall(input);',

@@ -11,6 +11,7 @@ import {
   FunctionCallNode,
   StatementNode,
   StructDefinitionNode,
+  AssemblyStatementNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -77,7 +78,9 @@ export default class ScalarReplaceStructLocals extends AstTraversal {
       const order = call.fieldNames ?? this.fieldsOf(def)!.map((f) => f.name);
       call.parameters.forEach((arg, i) => {
         const field = this.fieldsOf(def)!.find((f) => f.name === order[i])!;
-        const scalar = new VariableDefinitionNode(field.type as never, [], fields.get(field.name)!, this.visit(arg) as never);
+        const scalar = new VariableDefinitionNode(
+          field.type as never, [], fields.get(field.name)!, this.visit(arg) as never,
+        );
         scalar.location = def.location;
         scalar.compilerGenerated = true;
         scalar.allowUnused = true;
@@ -112,6 +115,10 @@ export default class ScalarReplaceStructLocals extends AstTraversal {
   }
 
   private findCandidates(fn: FunctionDefinitionNode): Map<string, Map<string, string>> {
+    // Inline assembly reaches a local's memory by pointer, and its Yul tree is not an AST node this walk enters.
+    let assembly = false;
+    walk(fn.body, (value) => { if (value instanceof AssemblyStatementNode) assembly = true; });
+    if (assembly) return new Map();
     const defs = new Map<string, VariableDefinitionNode[]>();
     const parameterNames = new Set(fn.parameters.map((p) => p.name));
     walk(fn.body, (value, parent, key) => {

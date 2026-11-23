@@ -162,15 +162,15 @@ contract Around(address book) {
     expect(writer.bytecode).toContain(`0100${selector('setTotal')}`);
     expect(fn(writer, 'twice').inputs.map((input) => input.name).filter((name) => name.includes('ReturnOutput')))
       .toEqual(['__internal__externalReturnOutputIdx0', '__internal__externalReturnOutputIdx1']);
-    // Fix B: even a lone void call digests its call to read the callee's universal void call record (so a
-    // single-function-interface caller can always bind the method), so the digest preimage appears; the record is
-    // bound inline, not at a caller external-return witness (that witness stays frame-only).
+    // A lone void call digests its call to read the callee's void record, `digest || 0x01`. IBook names several
+    // methods, so the read takes the place of the selector check and runs through a return witness, as a returning
+    // call's does (the record names the method, the arguments and the reader).
     const lone = compileString(WRITER.replace('IBook(book).setTotal(a + 1);', ''),
       { messageBus: false, suppressWarnings: true });
-    expect(calls(lone, 'twice').map((call) => [call.callOrdinal, call.hasReturnValues]))
-      .toEqual([[undefined, undefined]]);
+    expect(calls(lone, 'twice').map((call) => [call.callOrdinal, call.hasReturnValues, call.needsSelectorVerification]))
+      .toEqual([[undefined, true, false]]);
     expect(lone.bytecode).toContain(`0000${selector('setTotal')}`);
-    expect(fn(lone, 'twice').inputs.some((input) => input.name.includes('ReturnOutput'))).toBe(false);
+    expect(fn(lone, 'twice').inputs.some((input) => input.name.includes('ReturnOutput'))).toBe(true);
   });
 
   it('still refuses a repeated call that cannot be a frame, naming the multi-call entry\'s limits', () => {

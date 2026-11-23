@@ -5062,9 +5062,9 @@ export function generateArtifact(
     source,
     debug,
     ...(directCompile && isStateful && { callRecords: compilerOptions.callRecords ?? 'returning' as const }),
-    // A direct compile's calls and records name their reader (CALL_RECORD_READER_INPUT); a kernel direct
-    // participant's records name none.
-    ...(directCompile && compilerOptions.messageBusDirectParticipant !== true && { callRecordReader: true }),
+    // A direct compile's call digests name their reader (CALL_RECORD_READER_INPUT): it digests its own input as a
+    // caller, a kernel direct participant too, whose entries take no reader witness.
+    ...(directCompile && { callRecordReader: true }),
     ...(directCompile && isStateful && { genesisCalls: compilerOptions.genesisCalls !== false }),
     ...(contract.recordSound !== undefined && { recordSound: contract.recordSound }),
     ...(functionBodies && { functionBodies }),

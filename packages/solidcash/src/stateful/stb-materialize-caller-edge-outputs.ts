@@ -134,8 +134,10 @@ export function appendCallerEdges(
     if (unlocker === undefined || callerCategory === undefined) return;
     const paramIndex = unlocker.abiFunction.inputs.findIndex((input) => input.name === witness);
     if (paramIndex < 0) return; // this caller does not carry an edge for this call
+    // The edge is the caller's digest: it names the caller's input where the caller digests its own.
+    const namesReader = (unlocker as { contract?: { artifact?: Artifact } }).contract?.artifact?.callRecordReader === true;
     const commitment = onlyForSenderReader && !calleeReadsSender(group) ? undefined
-      : edgeCommitment(group, inputOf(caller));
+      : edgeCommitment(group, inputOf(caller), namesReader);
     if (commitment === undefined) {
       // No digest for this call (an unexpected shape or a routed group): the caller's covenant finds no edge and
       // fails closed (sound; a liveness gap for that caller only). -1 names no output.
@@ -217,10 +219,11 @@ function calleeReadsSender(group: EdgeGroup): boolean {
 }
 
 /**
- * The 32-byte edge commitment: the call's 31-byte digest followed by the edge form byte. The caller pinning it at
- * input `reader` digests that index, as the callee digests the reader its witness names.
+ * The 32-byte edge commitment: the call's 31-byte digest followed by the edge form byte. A caller that names its
+ * reader (`namesReader`) and pins the edge at input `reader` digests that index, as a callee reading the edge digests
+ * the reader its witness names; whether the callee's entry takes that witness does not change the caller's digest.
  */
-function edgeCommitment(group: EdgeGroup, reader: number): Uint8Array | undefined {
+function edgeCommitment(group: EdgeGroup, reader: number, namesReader: boolean): Uint8Array | undefined {
   if (group.compilerRoute !== undefined) return undefined;
   const callee = calleeOf(group);
   if (callee === undefined) return undefined;
@@ -228,6 +231,7 @@ function edgeCommitment(group: EdgeGroup, reader: number): Uint8Array | undefine
   try {
     const digest = callRecordDigest(callee.abiFunction, args as never, {
       structs: callee.artifact.structs ?? callee.artifact.stateLayout?.structs, enums: callee.artifact.enums,
+      namesReader,
     }, 0, reader);
     return digest === undefined ? undefined : Uint8Array.of(...digest, CALL_EDGE_FORM);
   } catch {

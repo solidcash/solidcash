@@ -52,7 +52,9 @@ describe('MinimalNativeToken bytecode budget', () => {
     // a contract msg.sender reads that lock too: 12 B (7617 -> 7629). The pin did not follow deployer-coins 07552ad33,
     // which compiles it to 7731 B. genesisCalls, on by default, gives each record-publishing entry the genesis call and
     // its checks: 221 B (7731 -> 7952); `genesisCalls: false` gives 7708 B, without the 23 B record-sound marker.
-    expect(artifactBytes).toBe(7952);
+    // Each record naming its reader, the input of the contract that reads it, adds 25 B (7952 -> 7977; 7751 B with
+    // `genesisCalls: false`).
+    expect(artifactBytes).toBe(7977);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

@@ -22,6 +22,8 @@ import {
   asmToScript,
   ORACLE_POOL_PARAMETER,
   abiTypeString,
+  CALL_RECORD_READER_INPUT,
+  CALL_RECORD_NO_READER,
 } from '@solidcash/utils';
 import { isDynamicallyEncodedElementType } from '../generation/utils.js';
 import {
@@ -2852,9 +2854,10 @@ export default class TypeCheckTraversal extends AstTraversal {
           || p.name.startsWith('__internal__vmapCounter')
           || p.name.startsWith('__internal__vmapRuntime'));
     };
-    // An internal call runs no frame of the multi-call entry: its entry shift is 0.
+    // An internal call runs no frame of the multi-call entry: its entry shift is 0. It settles no record, so it has
+    // no reader.
     const literalWitness = (name: string): bigint | undefined => (name === '__internal__returnOutputIdx' ? -1n
-      : name === CALL_BATCH_ROW_SHIFT ? 0n : undefined);
+      : name === CALL_BATCH_ROW_SHIFT ? 0n : name === CALL_RECORD_READER_INPUT ? CALL_RECORD_NO_READER : undefined);
     // Nor does it answer a constructor: its genesis call is empty, and like the record witness never pushed.
     const genesisCall = (name: string): boolean => name === '__internal__genesisCall';
     if (!pending.every((p) => genesisCall(p.name) || literalWitness(p.name) !== undefined

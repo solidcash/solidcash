@@ -3,10 +3,11 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction } from '@solidcash/utils';
+import { CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
+import { callNamesNoReader } from './call-record.js';
 import { isPoolInfoInput } from '../oracle/pool/reader.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
@@ -45,6 +46,8 @@ export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;
   readonly physicalRootLockingBytecode: Uint8Array;
   readonly rootLogicalAddress?: string;
+  /** The root's master, the reader of the records of the calls it makes: its category and planned input. */
+  readonly rootReader: { readonly categoryId: string; readonly inputIndex: number };
   /** The root reader's pool and the input of the coin it co-spends. */
   readonly blockOracle?: { pool: string; inputIndex: number };
   ensureOrdinarySelfIdentityBand(contract: any, abi: AbiFunction): Promise<number | undefined>;
@@ -354,6 +357,26 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         if (retIdx !== undefined) {
           bFinalArgs.push(BigInt(retIdx));
         }
+      } else if (paramName === CALL_RECORD_READER_INPUT && callNamesNoReader(meta.ecSlot)) {
+        // A method chosen at run time: its caller digests no record of the run and requires its reader to name none.
+        bFinalArgs.push(CALL_RECORD_NO_READER);
+        group.internalArgs = { ...group.internalArgs, [paramName]: CALL_RECORD_NO_READER };
+      } else if (paramName === CALL_RECORD_READER_INPUT) {
+        // The run's record answers the contract that makes this call, which digests its own input: the root, or
+        // the parent's master. The assembled transaction rebinds it by that master's category, as the digest the
+        // builder lays reads it.
+        const parent = meta.parentGroupIndex < 0 ? undefined
+          : externalCallUtxoGroups[externalCallUtxoGroups[meta.parentGroupIndex]?.sharedGroupIndex
+            ?? meta.parentGroupIndex];
+        const reader = parent === undefined ? host.rootReader : {
+          categoryId: parent.categoryId,
+          inputIndex: plannedMasterIndices[parent.sharedGroupIndex ?? meta.parentGroupIndex]!,
+        };
+        bFinalArgs.push(BigInt(reader.inputIndex));
+        group.internalArgs = { ...group.internalArgs, [paramName]: BigInt(reader.inputIndex) };
+        group.mintingInputWitnessCategories = {
+          ...group.mintingInputWitnessCategories, [paramName]: reader.categoryId,
+        };
       } else if (paramName === '__internal__valueChunkOutputBase') {
         // Composed computed values are relocated after the complete participant layout is materialized.
         bFinalArgs.push(-1n);

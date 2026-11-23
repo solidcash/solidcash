@@ -132,9 +132,11 @@ describe('a blind write in a tagged layout', () => {
     const abiFunction = d.artifact.abi.find((fn) => fn.name === 'setBig')!;
     expect(abiFunction.callBatchRow).toBe(true);
     // Outputs: the master, records 0 and 1, then the frame's call record at output 3.
+    // No contract reads the frame's record, so it names no reader.
     const args = abiFunction.inputs.map((input) => (input.name === 'v' ? 5n
       : input.name === '__internal__returnOutputIdx' ? 3n
-        : input.name === '__internal__genesisCall' ? new Uint8Array() : 0n));
+        : input.name === '__internal__genesisCall' ? new Uint8Array()
+          : input.name === '__internal__callRecordReader' ? -1n : 0n));
     const frames = [{ abiFunction, args }];
     const category = standalone.outputs[0]!.token!.category;
     const carrier: Output = {

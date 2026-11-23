@@ -28,6 +28,8 @@ import {
   splitValueIntoChunks,
   validateChildDeploymentGenesisState,
   getDefaultStateValue,
+  CALL_RECORD_NO_READER,
+  CALL_RECORD_READER_INPUT,
   type Artifact,
   type DeployerAbi,
   type StateValue,
@@ -1281,10 +1283,14 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   // returnOutputIdx is the last hidden input when present (after vmap batch witnesses).
   if (deployReturns) {
     const retIdxPos = deployAbi.inputs.findIndex((inp) => inp.name === '__internal__returnOutputIdx');
-    // The genesis call sits right before it: a creating call answers no constructor, so it is empty.
-    if (retIdxPos > 0 && finalArgs.length === retIdxPos - 1
-      && deployAbi.inputs[retIdxPos - 1]!.name === '__internal__genesisCall') {
-      finalArgs = [...finalArgs, new Uint8Array()];
+    // The genesis call and the reader the record names sit right before it, in that order: a creating call answers no
+    // constructor, so the genesis call is empty, and no contract makes it, so the record names no reader.
+    for (const [name, value] of [
+      ['__internal__genesisCall', new Uint8Array()], [CALL_RECORD_READER_INPUT, CALL_RECORD_NO_READER],
+    ] as const) {
+      if (finalArgs.length < retIdxPos && deployAbi.inputs[finalArgs.length]!.name === name) {
+        finalArgs = [...finalArgs, value];
+      }
     }
     if (retIdxPos >= 0 && finalArgs.length === retIdxPos) {
       finalArgs = [...finalArgs, BigInt(returnEventSlot!.offset)];
@@ -1454,6 +1460,9 @@ async function deployFromStatefulContractInner<T extends Artifact>(
     } else if (input.name === '__internal__genesisCall') {
       // A creating call answers no constructor.
       finalArgs = [...finalArgs, new Uint8Array()];
+    } else if (input.name === CALL_RECORD_READER_INPUT) {
+      // No contract makes it, so its record names no reader.
+      finalArgs = [...finalArgs, CALL_RECORD_NO_READER];
     } else {
       throw new Error(
         `deployFrom cannot resolve hidden deploy argument '${input.name}'. Recompile or extend the deploy path.`,

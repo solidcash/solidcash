@@ -4,7 +4,9 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
+import {
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction, type ExternalCallAbi,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -16,6 +18,7 @@ import {
   selectorParamSlot,
 } from './physical-external-call.js';
 import { selectVisibleCallArguments } from './route-expression-key.js';
+import { callNamesNoReader } from './call-record.js';
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
 } from './mapping-key-lookup.js';
@@ -498,6 +501,23 @@ export async function completeCreateBuilderNestedUnlockers(
       if (/^__internal__(?:lowLevelC|c)allEdgeOutputIdx\d+$/.test(input.name)) return -1n;
       // A7: an ordinary call's genesis call is empty; only a constructor's call carries a tag.
       if (input.name === '__internal__genesisCall') return new Uint8Array();
+      if (input.name === CALL_RECORD_READER_INPUT) {
+        // The record answers the input that makes this call: the delegated implementation that runs it, else the
+        // physical parent or the root. Rebound by that master's category once the builder places the inputs. A
+        // method chosen at run time names none: its caller digests no record of the run.
+        const delegate = [...delegateExternalGroupIndices].find(([, children]) => children.includes(groupIdx))?.[0];
+        const readerCategory = callNamesNoReader(allGroupEcSlots[groupIdx] as ExternalCallAbi | undefined) ? undefined
+          : delegate !== undefined ? lowLevelCallUtxoGroups[delegate]?.categoryId
+            : childParentGroupIndex !== undefined && childParentGroupIndex >= 0
+              ? externalCallUtxoGroups[externalCallUtxoGroups[childParentGroupIndex]?.sharedGroupIndex
+                ?? childParentGroupIndex]?.categoryId
+              : host.categoryId;
+        if (readerCategory !== undefined) {
+          childExternalCallInputPositions.push({ name: input.name, categoryId: readerCategory });
+        }
+        child.internalArgs = { ...child.internalArgs, [input.name]: CALL_RECORD_NO_READER };
+        return CALL_RECORD_NO_READER;
+      }
       throw new Error(
         `Unsupported SDK-filled nested delegate callee parameter '${input.name}' on ${child.functionName}.`,
       );

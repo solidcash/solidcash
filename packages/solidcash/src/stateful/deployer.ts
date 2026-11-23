@@ -15,7 +15,8 @@ import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/c
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import {
-  decodePushdataValue, encodePushdataValue, Op, type Artifact, type DeployerAbi, type StateValue,
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, decodePushdataValue, encodePushdataValue, Op, type Artifact,
+  type DeployerAbi, type StateValue,
 } from '@solidcash/utils';
 import {
   encodeFunctionArgument, type FunctionArgument,
@@ -350,6 +351,7 @@ const COVENANT_INDEX_PARAMETER = new Set(['masterInputIndex', 'outputIndex']);
 /** The internal witnesses `calleeFrame` sets for a genesis call itself. */
 const GENESIS_FRAME_WITNESS = new Set([
   '__internal__genesisCall', '__internal__returnOutputIdx', '__internal__msgSenderCategory', '__internal__rowEntryShift',
+  CALL_RECORD_READER_INPUT,
 ]);
 
 /** The `txid:vout` of a coin, as the shared side-car pools are told apart by. */
@@ -1429,6 +1431,8 @@ function calleeFrame(block: ConstructorCalleeBlock, tag: Uint8Array, returnIndex
     else if (input.name === '__internal__msgSenderCategory') values.set(input.name, new Uint8Array(32));
     // A standalone run of a body the multi-call entry can also run takes no row shift.
     else if (input.name === '__internal__rowEntryShift') values.set(input.name, 0n);
+    // A tagged record names its reader by its tag (X is the outpoint only the creating input spends), not this.
+    else if (input.name === CALL_RECORD_READER_INPUT) values.set(input.name, CALL_RECORD_NO_READER);
     else if (block.witnesses[input.name] !== undefined) values.set(input.name, block.witnesses[input.name]);
     else {
       throw new DeployerCalleeError(block.contract.artifact.contractName, block.functionName,

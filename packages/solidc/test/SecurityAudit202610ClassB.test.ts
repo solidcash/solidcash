@@ -65,8 +65,10 @@ function redeemUnlock(
   fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean,
 ): Uint8Array {
   const args = fn.inputs.map((entry) => {
-    // Fix B: an ordinary void entry's universal void call record defaults to a standalone compact spend (-1).
-    const value = values[entry.name] ?? (entry.name === '__internal__returnOutputIdx' ? num(-1n)
+    // Fix B: an ordinary void entry's universal void call record defaults to a standalone compact spend (-1), which
+    // names no reader either.
+    const value = values[entry.name] ?? (entry.name === '__internal__returnOutputIdx'
+      || entry.name === '__internal__callRecordReader' ? num(-1n)
       : entry.name === '__internal__genesisCall' ? new Uint8Array() : undefined);
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);
     return value;

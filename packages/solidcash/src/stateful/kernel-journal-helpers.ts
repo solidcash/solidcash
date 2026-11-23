@@ -3,7 +3,9 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, AbiInput, KernelJournalDispositionsAbi } from '@solidcash/utils';
+import {
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction, type AbiInput, type KernelJournalDispositionsAbi,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
@@ -344,6 +346,8 @@ export function defaultInternalFunctionArg(input: { name: string; type?: string 
   // A computed target's lock witness: an empty value matches no co-spent input, so an unreached call fails closed.
   if (name.startsWith('__internal__computedCallTarget')) return new Uint8Array();
   if (name === '__internal__dynamicChunkOutputBase' || name === '__internal__graphSelfIdentityInput') return -1n;
+  // A record no contract reads names no input.
+  if (name === CALL_RECORD_READER_INPUT) return CALL_RECORD_NO_READER;
   if (kernelEntryJournalRecordSegmentIndex(name) !== undefined) {
     return encodeKernelEntryJournalRecordSegment([]);
   }

@@ -23,7 +23,7 @@ that can run several calls in one spend.
 A direct return carrier becomes a call record (as built):
 
     commitment = callDigest || form || field
-    callDigest = sha256(ordinal u16le || selector || for each argument: size u16le || bytes)[0:31]
+    callDigest = sha256(ordinal u16le || selector || reader u16le || for each argument: size u16le || bytes)[0:31]
     form       = 0x01: field is the encoded result, at most 96 bytes
                  0x02: field is sha256(result); the caller's `__internal__externalReturnPreimage<N>` holds the bytes
 
@@ -31,8 +31,15 @@ A direct return carrier becomes a call record (as built):
   the caller's and the callee's encodings of one value digest alike. `sig` arguments and compiler inputs are left out.
 - A 31-byte digest keeps a three-word EVM result (96 bytes) inline; its collision resistance is 2^124. The framed
   `canonicalPushScript` encoding was not reused: it costs about 80 bytes inline per argument.
-- `ordinal` is 0 for a callee run once, and identical reads share its record; frame k of a multi-call spend
-  (section 3) digests k.
+- `ordinal` is 0 for a callee run once, and identical reads by one reader share its record; frame k of a multi-call
+  spend (section 3) digests k.
+- `reader` (2026-11-23, artifacts with `callRecordReader: true`) is the input index of the contract that reads the
+  record, `OP_NUM2BIN` to two bytes: the caller digests its own `OP_INPUTINDEX`, the callee its unchecked witness
+  `__internal__callRecordReader` (-1 when no contract reads the record), placed before `__internal__returnOutputIdx`.
+  An entry that takes the genesis call appends it in the shared genesis header, for an ordinary call only. Before, a
+  record named no reader, and two callers making one call in one transaction both read one run's record. A
+  constructor's tagged record (A7) takes no reader: its X names the one input that spends (X, 0). The SDK refuses a
+  call mixing the two schemes (`MixedCallRecordReaderError`).
 - The carrier keeps today's form: the callee's category, no capability, no fungible amount, `OP_TRUE`, at most 1,200
   satoshis.
 
@@ -94,6 +101,10 @@ A direct return carrier becomes a call record (as built):
   callee's own witness: it reads its record with no digest check, bound by the carrier's category and the callee's
   run, and is no frame of a multi-call spend (before 2026-10-24 its compile threw in `cloneNode`). The arguments it
   names are checked against the callee's unlocking pushes, as are a void call's (`0b94c0f13`, security ledger).
+- A lone void call reads its callee's void record, `digest || 0x01`: through a one-method interface since fix B
+  (`3efd384bd`), and through an interface naming several methods since 2026-11-23, in place of its selector check and
+  of the unlocking's argument binding (a caller with one such call: 2,009 -> 1,813 B). One that names fewer arguments
+  than its method keeps its selector check.
 - Repeated calls (phase 2, as built, direct compiles only): an entry that calls one fixed target (a parameter, a state
   variable or a literal, keyed with the interface) several times, or once in a loop, gives each call the ordinal of
   its frame in that callee's one multi-call spend, published as `callOrdinal: { group, ordinal }` on the external

@@ -219,7 +219,9 @@ describe('direct call records', () => {
     expect(carriers(tx, d.quoterCat)).toHaveLength(1);
     const commitment = tx.outputs[record!].token!.nft!.commitment;
     const quote = artifacts().Quoter.abi.find((entry: any) => entry.name === 'quote')!;
-    expect(binToHex(commitment.slice(0, 31))).toBe(binToHex(callRecordDigest(quote, [7n])!));
+    // The record names its reader: the input of the Reader's master.
+    expect(binToHex(commitment.slice(0, 31)))
+      .toBe(binToHex(callRecordDigest(quote, [7n], {}, 0, masterInput(tx, d.readerCat))!));
     expect(commitment[31]).toBe(1);
     expect(binToHex(commitment.slice(32))).toBe(binToHex(encodeDataPush(bigIntToVmNumber(12n))));
 
@@ -311,7 +313,7 @@ describe('direct call records', () => {
     for (const [index, value] of [10n, 20n].entries()) {
       const [record] = carriers(honest, d.subCats[index]!);
       expect(binToHex(honest.outputs[record!].token!.nft!.commitment.slice(0, 31)))
-        .toBe(binToHex(callRecordDigest(tally, [value])!));
+        .toBe(binToHex(callRecordDigest(tally, [value], {}, 0, masterInput(honest, d.pubCat))!));
     }
 
     // The second callee runs tally(21), self-consistently, while the caller passed 20.

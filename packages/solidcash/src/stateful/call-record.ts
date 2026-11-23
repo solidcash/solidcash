@@ -9,10 +9,11 @@ import {
   bigIntToVmNumber, vmNumberToBigInt,
 } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  sha256, type AbiFunction, type Artifact, type EnumDefinitionAbi, type ExternalCallAbi, type StructDefinitionInfo,
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, sha256, type AbiFunction, type Artifact, type EnumDefinitionAbi,
+  type ExternalCallAbi, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
-import { MixedCompileModeCallError } from '../Errors.js';
+import { MixedCallRecordReaderError, MixedCompileModeCallError } from '../Errors.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 
 export const CALL_RECORD_DIGEST_BYTES = 31;
@@ -30,18 +31,43 @@ export function callRecordHashesResult(raw: Uint8Array): boolean {
   return raw.length > CALL_RECORD_INLINE_RESULT_BYTES;
 }
 
+/** True when this entry's records name their reader: it takes the reader witness. */
+export function callRecordNamesReader(abiFunction: Pick<AbiFunction, 'inputs'>): boolean {
+  return abiFunction.inputs.some((input) => input.name === CALL_RECORD_READER_INPUT);
+}
+
+/**
+ * True for a call whose method its caller chooses at run time (a function pointer, a selector table): the caller
+ * checks no digest of its record and pins no edge for it, and it requires its callee's reader witness to name none
+ * (the compiler's emitRequirePointerCalleePushes), so the callee's record names no reader.
+ */
+export function callNamesNoReader(call: Pick<ExternalCallAbi, 'fnPtrCall' | 'selectorArrayVar'> | undefined): boolean {
+  return call?.fnPtrCall === true || call?.selectorArrayVar !== undefined;
+}
+
+/** A reader input index as a digest takes it: `OP_NUM2BIN` to two bytes, sign in the top bit. */
+export function callRecordReaderBytes(reader: bigint | number): Uint8Array {
+  const value = BigInt(reader);
+  const magnitude = value < 0n ? -value : value;
+  if (magnitude > 0x7fffn) throw new Error(`A call record's reader ${value} does not fit two bytes`);
+  return Uint8Array.of(Number(magnitude & 0xffn), Number(magnitude >> 8n) | (value < 0n ? 0x80 : 0));
+}
+
 /**
  * The digest of a call: the first 31 bytes of the SHA256 of its ordinal as two little-endian bytes, its selector,
- * and each argument as its length in two little-endian bytes and its bytes, a number minimally encoded. A signature
- * authorizes the transaction the record is part of, so it is no argument of the digest.
+ * for an entry whose records name their reader `reader` (the input index of the contract that reads the record, or
+ * `CALL_RECORD_NO_READER` when none does), then each argument as its length in two little-endian bytes and its
+ * bytes, a number minimally encoded. A signature authorizes the transaction the record is part of, so it is no
+ * argument of the digest.
  */
 export function callRecordDigest(
   abiFunction: Pick<AbiFunction, 'inputs' | 'selector'>, params: readonly FunctionArgument[],
   options: { readonly structs?: readonly StructDefinitionInfo[]; readonly enums?: readonly EnumDefinitionAbi[] } = {},
-  ordinal = 0,
+  ordinal = 0, reader: bigint | number = CALL_RECORD_NO_READER,
 ): Uint8Array | undefined {
   if (abiFunction.selector === undefined) return undefined;
   const parts: number[] = [ordinal & 0xff, (ordinal >> 8) & 0xff, ...hexToBin(abiFunction.selector)];
+  if (callRecordNamesReader(abiFunction)) parts.push(...callRecordReaderBytes(reader));
   for (const [index, input] of abiFunction.inputs.entries()) {
     if (input.name.startsWith('__internal__') || input.type === 'sig') continue;
     const encoded = encodeFunctionArgument(params[index] as FunctionArgument, input.type, options.structs);
@@ -70,6 +96,25 @@ export function assertCallSelectorScheme(
   if (callerEvmCompat !== artifactUsesSolidityAbi(callee)) {
     throw new MixedCompileModeCallError(call.interfaceName, call.functionName, callerEvmCompat);
   }
+}
+
+/**
+ * Refuses a call between an artifact whose records name their reader and one compiled before (an artifact without
+ * `callRecordReader`), when the call digests: it reads a record its caller checks, or its callee reads `msg.sender`
+ * and so requires the caller's edge, whose digest is the call's. The two never digest alike, and a caller that
+ * accepted an unbound record would let two callers read one run.
+ */
+export function assertCallRecordReaderScheme(
+  call: ExternalCallAbi, caller: Pick<Artifact, 'callRecordReader'>,
+  callee: Pick<Artifact, 'callRecordReader' | 'abi'>,
+): void {
+  const callerNamesReader = caller.callRecordReader === true;
+  if (callerNamesReader === (callee.callRecordReader === true)) return;
+  const readsRecord = call.hasReturnValues === true && call.opaqueReturn !== true;
+  const method = call.rawFunctionName ?? call.functionName;
+  const calleeReadsSender = callee.abi.some((entry) => entry.name === method && entry.usesMsgSender === true);
+  if (!readsRecord && !calleeReadsSender) return;
+  throw new MixedCallRecordReaderError(call.interfaceName, call.functionName, callerNamesReader);
 }
 
 /** A record's commitment: the digest, then the result inline or its SHA256. */

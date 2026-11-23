@@ -57,7 +57,10 @@ describe('genesisCalls is on by default', () => {
       expect(publishing.map((fn) => fn.name)).toEqual(['add', 'get']);
       for (const fn of publishing) {
         const names = fn.inputs.map((input) => input.name);
-        expect(names.indexOf('__internal__genesisCall'), fn.name).toBe(names.indexOf('__internal__returnOutputIdx') - 1);
+        // The reader a record names sits between the genesis call and the record witness.
+        expect(names.indexOf('__internal__genesisCall'), fn.name).toBe(names.indexOf('__internal__callRecordReader') - 1);
+        expect(names.indexOf('__internal__callRecordReader'), fn.name)
+          .toBe(names.indexOf('__internal__returnOutputIdx') - 1);
       }
       // The default is the option on.
       expect(compileString(COUNTER, { ...options, genesisCalls: true }).bytecode).toBe(artifact.bytecode);
@@ -125,7 +128,8 @@ describe('genesisCalls is on by default', () => {
 /**
  * Each code's SHA-256 as the compiler gave it before the default changed, at this tree: with the option unset, and with
  * `genesisCalls: false`. Before, an unset option compiled no genesis call but flagged a record-sound contract, and
- * `false` flagged one with a returning entry.
+ * `false` flagged one with a returning entry. Taken again once call records named their reader, which every contract
+ * here with a record-publishing entry digests (the `unsafe` one has none, and is unchanged).
  */
 const BEFORE = {
   unsafe: {
@@ -136,33 +140,33 @@ const BEFORE = {
   fallback: {
     source: `${P} contract C { int s; function a() { s = s + 1; } fallback() external { s = s + 2; } }`,
     options: { allowUnsafeOperations: true },
-    unset: 'ca2364fbc2e2ceeac4d24641863972a6af0644c6ab78aa813eaccce2a3a04a49',
-    off: 'ca2364fbc2e2ceeac4d24641863972a6af0644c6ab78aa813eaccce2a3a04a49',
+    unset: '9ce9fb259acb18616def68252c29a99fd9aec7416c133e6708f9bbd0357ab8dd',
+    off: '9ce9fb259acb18616def68252c29a99fd9aec7416c133e6708f9bbd0357ab8dd',
   },
   delegate: {
     source: `${P} contract C { int s; function a() { s = s + 1; } function d() delegate { s = s + 2; } }`,
     options: { allowUnsafeOperations: true },
-    unset: '0499eddb7172305c03463ba4317867dc2b6c044dc5b156dcc4b33aecd126516a',
-    off: '0499eddb7172305c03463ba4317867dc2b6c044dc5b156dcc4b33aecd126516a',
+    unset: '3300420741c9f5ec16e17990750289c3e925d212335967aed385994c1d1e8713',
+    off: '3300420741c9f5ec16e17990750289c3e925d212335967aed385994c1d1e8713',
   },
   stateless: {
     source: `${P} contract C(bytes20 pkh) { function get(int a) public pure returns (int) { return a + 1; } `
       + 'function spend(int a) { require(a > 1); require(pkh != bytes20(0)); } }',
     options: {},
-    unset: 'c666c01821266f5f7a6c393ce79b5f94610d40eeb5d3c4ebc24d055af74f6986',
-    off: 'c666c01821266f5f7a6c393ce79b5f94610d40eeb5d3c4ebc24d055af74f6986',
+    unset: 'c1928907629b83ff9f91291fbd73442765e53270d740dffb1958755e9b059c9a',
+    off: 'c1928907629b83ff9f91291fbd73442765e53270d740dffb1958755e9b059c9a',
   },
   voidOnly: {
     source: `${P} contract C { int calls; function hit(int amount) { calls = calls + amount; } }`, options: {},
-    unset: '4d314712a73009abac2480e9798645f61ee4a1c371d59c7439b4b3fe7e36693c',
-    off: '7d16538bbbff9e6f9a2a044df89a7679d01b8104cb93d141bba9c3cf4e3b9d88',
+    unset: '468a5f9eab9214c6ed9e72be1160474acf271c4acbae25b5680e279afa113aff',
+    off: 'e5d714987089dbf80a487c78ad92ef80fb2e38a23530f1fc38885689cece833f',
   },
   returning: {
     source: `${P} contract C { int calls; function hit(int amount) { calls = calls + amount; } `
       + 'function get() public returns (int) { return calls; } }',
     options: {},
-    unset: '226697a774462956aae359b234a6701c88629fff81ccd6ccfe58a4279253b2c0',
-    off: '226697a774462956aae359b234a6701c88629fff81ccd6ccfe58a4279253b2c0',
+    unset: 'bb02b77e6d521b034baee3a4969d1c3d8ff36102058582a2ecdde401968a93a6',
+    off: 'bb02b77e6d521b034baee3a4969d1c3d8ff36102058582a2ecdde401968a93a6',
   },
 } as const;
 
@@ -255,8 +259,10 @@ describe('a multi-call frame requires its genesis call empty', () => {
     );
     const counter = StatefulContract.withCategory(contract, categoryId) as StatefulContract<any>;
     const abi = (name: string): Artifact['abi'][number] => artifact.abi.find((fn) => fn.name === name)!;
+    // No contract reads these records, so they name no reader.
     const args = (name: string, values: Record<string, FunctionArgument>): FunctionArgument[] => abi(name).inputs
-      .map((input) => values[input.name] ?? (input.name === '__internal__genesisCall' ? new Uint8Array() : 0n));
+      .map((input) => values[input.name] ?? (input.name === '__internal__genesisCall' ? new Uint8Array()
+        : input.name === '__internal__callRecordReader' ? -1n : 0n));
 
     // The master at input 0 and its data record at input 1; the record leaves `add(2)` at 5.
     const added = await capture(provider, () => counter.add(2n).send());
@@ -307,7 +313,7 @@ describe('a multi-call frame requires its genesis call empty', () => {
       version: got.version,
       locktime: got.locktime,
       inputs: [
-        { ...got.inputs[0]!, unlockingBytecode: counter.inner.unlock.get(genesis, 2n)
+        { ...got.inputs[0]!, unlockingBytecode: counter.inner.unlock.get(genesis, -1n, 2n)
           .generateUnlockingBytecode({} as never) },
         got.inputs[1]!,
         pay.input,
@@ -348,7 +354,7 @@ describe('a payable entry answers a tag only when it is paid nothing', () => {
     const rerun = (call: Tx, pay: Awaited<ReturnType<typeof funder>>, genesis: Uint8Array): Tx => ({
       ...call,
       inputs: [
-        { ...call.inputs[0]!, unlockingBytecode: box.inner.unlock.pay(genesis, -1n)
+        { ...call.inputs[0]!, unlockingBytecode: box.inner.unlock.pay(genesis, -1n, -1n)
           .generateUnlockingBytecode({} as never) },
         ...call.inputs.slice(1),
         pay.input,

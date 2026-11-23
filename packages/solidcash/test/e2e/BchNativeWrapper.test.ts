@@ -84,8 +84,9 @@ describe('BchNativeWrapper', () => {
     // callee reading a contract msg.sender reads that lock too: 12 B (7683 -> 7695). The pin did not follow
     // deployer-coins 07552ad33, which compiles it to 7800 B. genesisCalls, on by default, gives each record-publishing
     // entry the genesis call and its checks: 220 B (7800 -> 8020); `genesisCalls: false` gives 7777 B, without the
-    // 23 B record-sound marker.
-    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(8020);
+    // 23 B record-sound marker. Each record naming its reader, the input of the contract that reads it, adds 24 B
+    // (8020 -> 8044; 7824 B with `genesisCalls: false`).
+    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(8044);
     expect(minimal.abi.filter((entry) => entry.name !== '__construct').map((entry) => entry.name).sort()).toEqual([
       'allowance', 'approve', 'balanceOf', 'totalSupply', 'transfer', 'transferFrom', 'underlying', 'unwrap', 'wrap',
     ]);

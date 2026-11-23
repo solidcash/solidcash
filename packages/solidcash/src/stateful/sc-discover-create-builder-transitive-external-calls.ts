@@ -11,7 +11,7 @@ import type { FunctionArgument } from '../Argument.js';
 import { CallGuardUndecidedError } from '../Errors.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { assertCallSelectorScheme } from './call-record.js';
+import { assertCallRecordReaderScheme, assertCallSelectorScheme } from './call-record.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import { findDeploymentByAddressValue } from './deployment-registry.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
@@ -261,6 +261,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         );
       }
       assertCallSelectorScheme(bEc, bContract.inner.artifact, cContract.inner.artifact);
+      assertCallRecordReaderScheme(bEc, bContract.inner.artifact, cContract.inner.artifact);
 
       // Detect circular calls (B->A): the transitive target is the primary contract
       if (cContract.categoryId === primaryCategoryId) {

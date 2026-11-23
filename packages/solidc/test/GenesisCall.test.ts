@@ -16,8 +16,10 @@ describe('B6.5: the genesis call parameter', () => {
     const entry = artifact.abi.find((candidate) => candidate.name === 'hit')!;
     const names = entry.inputs.map((input) => input.name);
     // The unlocking pushes the ABI in reverse, so the parameter that follows the carrier witness in the source
-    // order sits below it; the compiler's model and the SDK agree on this order (see the commit message).
-    expect(names.indexOf('__internal__genesisCall')).toBe(names.indexOf('__internal__returnOutputIdx') - 1);
+    // order sits below it; the compiler's model and the SDK agree on this order (see the commit message). The reader
+    // a record names sits between them.
+    expect(names.indexOf('__internal__genesisCall')).toBe(names.indexOf('__internal__callRecordReader') - 1);
+    expect(names.indexOf('__internal__callRecordReader')).toBe(names.indexOf('__internal__returnOutputIdx') - 1);
   });
 
   it('a contract with a delegate entry is not record-sound and takes no parameter', () => {

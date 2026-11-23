@@ -69,13 +69,14 @@ describe('if/else entry writes: an arm that writes one entry twice', () => {
     // Re-pinned 2026-11-14 to the current build: these were stale by 07552ad33, and e7fe44e3a moved them again. With
     // genesisCalls: false its code equals 07552ad33's but for O8 (the exact-stack check now first in every arm, the
     // shared helper renumbered behind it); with the default it also carries the genesis marker and header.
+    // Re-pinned again when each record named its reader: every void entry takes the reader witness.
     const before: Record<string, string> = {
       'k = k + 1; if (c) { m[k] = a; } else { m[k] = 5; }':
-        'f54d94acc741514c43275dfe759dc06073430668edec194affcf8e3b6df970bb',
+        'a1de13b7c61f0edc09eafe89c953219872925054fe72149a6818bc68b1c0adc8',
       'if (c) { m[k] = a; } else { n[k] = 5; }':
-        'eff2bd58d776509a07165b70e67e262bbce5639d89d7516f0f8f52b7eaea3f5d',
+        '07dc0d67169ecb975774cb50005b89795c3e87cb7acf4b4cf4da8da969042f9a',
       'k = k + 1; if (c) { m[k] = a; n[k] = 1; } else { m[k] = 5; }':
-        '730f226313edba6590ba1eda557f2c898d997da0af1d018fb5818fbf120f3581',
+        'bf284e858d525872e2464118759583702a0a76d394e7ebe6779ce880b41b127e',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);
@@ -119,15 +120,16 @@ describe('if entry writes: the condition runs once, each arm in its own order', 
     // Re-pinned 2026-11-14 to the current build: these were stale by 07552ad33, and e7fe44e3a moved them again. With
     // genesisCalls: false its code equals 07552ad33's but for O8 (the exact-stack check now first in every arm, the
     // shared helper renumbered behind it); with the default it also carries the genesis marker and header.
+    // Re-pinned again when each record named its reader: every void entry takes the reader witness.
     const before: Record<string, string> = {
       // The condition reads no mapping, or only the one the last write mutates.
-      'if (c) { m[k] = a; n[k] = 1; }': 'ff1aa9dc9f0bac1d4283c31e6f560849210dadb3877540f3831b515ed53f80c2',
-      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': 'f30a173006eb1f4e95dbd8eec5941cc1f15c47c007dd4e7add05c0e0e37fc469',
+      'if (c) { m[k] = a; n[k] = 1; }': '20c4722fcd2dda2c7fa6756c7151b8bffd029dc393edc00d803654472b799d49',
+      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': 'ee4a770b14a9ebc7242099e2196b76baf062f5a3bb9664ad11d1c7e2165a9700',
       // The merge runs n[k] ahead of the else arm's m[k]; neither write observes the other.
       'k = k + 1; if (c) { n[k] = 3; } else { m[k] = 1; n[k] = 2; }':
-        '442c6e9eebe4def175f54850b8f9680cc4d47a3ca7b2689d59ff25b41786771f',
+        '779f09b33938842b70f0208e397d918bed4b77301fbf84f89c317e4a4a2e4782',
       'k = k + 1; if (c) { n[k] = 3; m[k] = 4; } else { m[k] = 1; n[k] = 2; }':
-        'aca96f0fe47d41c37f4e9c6b000bf31616a5d7d86b157557499feb868c6fe4cc',
+        'ba45dddfa5f4be0b3cdb90b137c65464fb19975d2fe2017f579ee45db903f1db',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);

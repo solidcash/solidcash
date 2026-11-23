@@ -214,6 +214,11 @@ const recordOutputs = (transaction: LibauthTransaction, categoryId: string): Lib
   .outputs.filter((output) => output.token !== undefined && binToHex(output.token.category) === categoryId
     && output.token.nft?.capability === 'none' && binToHex(output.lockingBytecode) === '51');
 
+/** The input of a contract's master: the reader the records of its calls name. */
+const masterInputOf = (builder: TransactionBuilder, categoryId: string): number => builder.inputs.findIndex(
+  (input) => input.token?.category === categoryId && input.token.nft?.capability === 'minting',
+);
+
 /** The entries the inputs spending `contractName`'s master run, in input order. */
 const masterSpends = (builder: TransactionBuilder, contractName: string): string[] => builder.inputs.flatMap(
   (input) => input.token?.nft?.capability === 'minting' && 'contract' in input.unlocker
@@ -377,8 +382,10 @@ describe('direct multi-call', () => {
     const builder = await pairs.call.pairs(2n).build() as TransactionBuilder;
     expect(masterSpends(builder, 'Values')).toEqual(['callBatch']);
     const at = valuesArtifact.abi.find((fn) => fn.name === 'at')!;
+    // Every frame's record names its reader, the input of the caller's master.
     const digestOf = (index: bigint, ordinal: number): string => binToHex(callRecordDigest(
       at, at.inputs.map((input) => (input.name === 'index' ? index : 0n)), {}, ordinal,
+      masterInputOf(builder, pairs.categoryId),
     )!);
     expect(recordCommitments(builder, values.categoryId).map((record) => binToHex(parseCallRecord(record)!.digest)))
       .toEqual([0n, 2n, 1n, 3n].map((index, ordinal) => digestOf(index, ordinal)));
@@ -440,6 +447,7 @@ describe('direct multi-call', () => {
     const add = counterArtifact.abi.find((fn) => fn.name === 'add')!;
     const voidRecord = (value: bigint, ordinal: number): string => `${binToHex(callRecordDigest(
       add, add.inputs.map((input) => (input.name === 'value' ? value : 0n)), {}, ordinal,
+      masterInputOf(builder, tally.categoryId),
     )!)}01`;
     const commitments = recordCommitments(builder, counter.categoryId).map((record) => binToHex(record));
     expect(commitments).toHaveLength(3);

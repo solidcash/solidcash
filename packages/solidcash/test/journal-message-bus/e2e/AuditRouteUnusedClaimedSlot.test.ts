@@ -2,25 +2,23 @@
  * A record at a claimed but unused slot of a bound message-bus route that runs without its verifier
  * (docs/security/security-audit-2026-10-16.md, "Fix pass 2026-10-22", Open: "Routes without a verifier").
  *
- * A standalone batch runs the route with `__internal__activeVerifierIndex` -1. Its C3 pin then holds each own-category
+ * A standalone batch runs the route with `__internal__activeVerifierIndex` -1. Its C3 pin holds each own-category
  * mutable input of the participant block at its own index, except at the offsets a row that ran claims
- * (emitRouteBlockClaims): the whole trailing band once a row that may use it ran, and every handler-managed entry slot
- * of a collection a row that ran names. A row checks only the records it uses, the census leaves a handler-managed
- * collection to its handlers, and a handler's sorted write counts at most the outputs at its collection's address. So
- * a claimed offset that no row uses holds a record that nothing checks:
+ * (emitRouteBlockClaims). A row checks only the records it uses, the census leaves a handler-managed collection to
+ * its handlers, and a handler's sorted write counts at most the outputs at its collection's address. The claims were
+ * once whole groups, so a claimed offset no row used held a record nothing checked:
  *
- * - Trailing band: beside a `setNote` batch (dynamic state claims the band), an entry of `side`, which only `put`
- *   names, is rewritten or burnt at a trailing slot the batch leaves as a pad. Beside a `put` batch, which claims no
- *   trailing record, the pin refuses the same placement.
- * - Collection lane: `compare` reads `side` at two keys, so the route holds a second handler-managed `side` lane,
- *   which a `check` or `put` row claims with the first. Beside a `check` batch an entry is rewritten in that lane;
- *   beside a `put` batch it is rewritten or burnt there: no count at `side`'s address runs in this route.
+ * - Trailing band: beside a `setNote` batch (it writes dynamic state), an entry of `side`, which only `put` names,
+ *   was rewritten or burnt at a trailing slot the batch leaves as a pad. A dynamic-state writer now claims only the
+ *   chunk locks of the state the route writes there. Beside a `put` batch, which claims no band, the pin refuses it.
+ * - Collection lane: `compare` reads `side` at two keys, so the route holds a second handler-managed `side` lane.
+ *   Beside a `check` batch an entry was rewritten in that lane, beside a `put` batch rewritten or burnt. A read now
+ *   claims nothing, and a writer claims only its own handler's lanes.
+ * - Inputless mint (no input, so no pin applies): beside a `setNote` or `check` batch a second `side` node was minted
+ *   at the collection's lock. Its address now takes no output beyond its inputs except the nodes a writer row that
+ *   ran may insert.
  *
- * Adjacent (no input, so no pin applies): beside a `setNote` batch a second `side` node is minted at the collection's
- * lock. The output scan admits any record lock the contract mints at, and nothing beside it counts `side`'s outputs.
- *
- * Each attack row is `it.fails`: today the entry covenant and the route accept the spend. It turns red once the route
- * holds a claimed slot no row used (and, for the mint, bounds the outputs at a collection's lock beside every row).
+ * Each attack row asserts the route's refusal; the entry covenant alone accepts every one of these spends.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
@@ -288,18 +286,17 @@ describe('bound route without its verifier: a trailing slot the band claim cover
     expect(state.route.putRewrite).not.toBe(true);
   });
 
-  // Fails today: setNote's flag claims the whole band, and nothing beside it counts `side` (handler-managed).
-  it.fails('refuses a side entry rewritten at an unused trailing slot beside a setNote batch', () => {
+  // setNote claims only the chunk locks of the dynamic state the route writes; a side entry's lock is not one.
+  it('refuses a side entry rewritten at an unused trailing slot beside a setNote batch', () => {
     expect(state.route.rewrite).not.toBe(true);
   });
 
-  // Fails today: as above; a burn adds no output, so not even a side writer's output count would see it.
-  it.fails('refuses a side entry burnt at an unused trailing slot beside a setNote batch', () => {
+  it('refuses a side entry burnt at an unused trailing slot beside a setNote batch', () => {
     expect(state.route.burn).not.toBe(true);
   });
 
-  // Fails today (adjacent): the minted node has no input to pin, and nothing beside setNote counts side's outputs.
-  it.fails('refuses a side node minted with no input beside a setNote batch', () => {
+  // No input, so no pin: the mint bound refuses an output at side's address beyond its inputs, as setNote inserts none.
+  it('refuses a side node minted with no input beside a setNote batch', () => {
     expect(state.route.mint).not.toBe(true);
   });
 });
@@ -310,7 +307,7 @@ describe('bound route without its verifier: a collection lane the collection cla
     bus: StatefulContract;
     honest: { check: ReturnType<typeof failures>; put: ReturnType<typeof failures> };
     covenant: { checkRewrite: Verdict; putBurn: Verdict };
-    route: { checkRewrite: Verdict; putBurn: Verdict; putRewrite: Verdict };
+    route: { checkRewrite: Verdict; checkMint: Verdict; putBurn: Verdict; putRewrite: Verdict };
   };
 
   beforeAll(async () => {
@@ -346,13 +343,18 @@ describe('bound route without its verifier: a collection lane the collection cla
     const checkRewrite = placed(check, victim, checkMaster, checkAt!, rewritten(victim));
     const putBurn = placed(put, victim, putMaster, putAt!, burnt(victim));
     const putRewrite = placed(put, victim, putMaster, putAt!, rewritten(victim));
+    // A second node for side[9] with another value, minted beside a row that only reads side.
+    const checkMint: Spend = {
+      sourceOutputs: check.sourceOutputs,
+      transaction: { ...check.transaction, outputs: [...check.transaction.outputs, rewritten(victim)] },
+    };
     state = {
       provider, bus,
       honest: { check: failures(vm, check), put: failures(vm, put) },
       covenant: { checkRewrite: verdict(vm, checkRewrite, checkAt!), putBurn: verdict(vm, putBurn, putAt!) },
       route: {
-        checkRewrite: verdict(vm, checkRewrite, checkMaster), putBurn: verdict(vm, putBurn, putMaster),
-        putRewrite: verdict(vm, putRewrite, putMaster),
+        checkRewrite: verdict(vm, checkRewrite, checkMaster), checkMint: verdict(vm, checkMint, checkMaster),
+        putBurn: verdict(vm, putBurn, putMaster), putRewrite: verdict(vm, putRewrite, putMaster),
       },
     };
     console.log('collection lane', {
@@ -371,18 +373,22 @@ describe('bound route without its verifier: a collection lane the collection cla
       .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
   }, 300_000);
 
-  // Fails today: check's flag claims every side lane, and a read checks only its own lane and counts nothing.
-  it.fails('refuses a side entry rewritten in the unused lane beside a check batch', () => {
+  // A read claims no lane, so the unused lane is pinned beside a check row.
+  it('refuses a side entry rewritten in the unused lane beside a check batch', () => {
     expect(state.route.checkRewrite).not.toBe(true);
   });
 
-  // Fails today: put's flag claims every side lane, and no count at side's address runs beside it in this route.
-  it.fails('refuses a side entry rewritten in the unused lane beside a put batch', () => {
+  // put claims only its own lane; the other handler's lane stays pinned.
+  it('refuses a side entry rewritten in the unused lane beside a put batch', () => {
     expect(state.route.putRewrite).not.toBe(true);
   });
 
-  // Fails today: as above; a burn adds no output at side's address, so no output count could see it.
-  it.fails('refuses a side entry burnt in the unused lane beside a put batch', () => {
+  it('refuses a side entry burnt in the unused lane beside a put batch', () => {
     expect(state.route.putBurn).not.toBe(true);
+  });
+
+  // check inserts nothing, so side's address takes no output beyond its inputs.
+  it('refuses a side node minted with no input beside a check batch', () => {
+    expect(state.route.checkMint).not.toBe(true);
   });
 });

@@ -12444,11 +12444,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // unsafe(1): master + minting preservation only
     // unsafe(2): master + minting + value preservation
     // split/merge: dedicated covenant verification
-    const isStatefulContract = this.stateVariables.length > 0
-      || this.collectionCount > 0 || this.eventDefinitions.length > 0
-      || this.currentContractReadsBlockhash
-      || this.currentContractEmitsEvent
-      || (this.compilerOptions.forceStateful ?? false);
+    const isStatefulContract = this.keepsState();
     // A5: the create arm's genesis epilogue replaces every live-spend covenant check.
     if (node.genesisMode === true) {
       this.emitGenesisCreateEpilogue(node);
@@ -56656,9 +56652,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-    // A raw `call` checks no digest of this iteration's record: its callee's run answers this caller alone instead, by
-    // the reader that run names (emitRawCalleeReaderPin), as a raw call outside a loop does.
-    if (node.opaqueReturn && this.bindsRawCalleeReader(this.currentFunction, slot)) {
+    // A raw `call` checks no digest of this iteration's record: a stateful caller's callee run answers it alone instead,
+    // by the reader that run names (emitRawCalleeReaderPin), as a raw call outside a loop does. A stateless caller keeps
+    // no state a shared run could credit twice, and its loop over targets that are no SolidCash contract, which push no
+    // reader, stays caller-permissive (TARGET-5).
+    if (node.opaqueReturn && this.keepsState() && this.bindsRawCalleeReader(this.currentFunction, slot)) {
       this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc); // [..., inputidx]
       this.emitRawCalleeReaderPin(loc);
       this.emit(Op.OP_DROP, loc);           // [...]
@@ -57712,6 +57710,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(1200n), loc);
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
+  }
+
+  /** A contract that keeps state, as its covenant counts it: fields, collections, events, block data, or forced. */
+  private keepsState(): boolean {
+    return this.stateVariables.length > 0 || this.collectionCount > 0 || this.eventDefinitions.length > 0
+      || this.currentContractReadsBlockhash || this.currentContractEmitsEvent
+      || (this.compilerOptions.forceStateful ?? false);
   }
 
   /** A call on an element of a state array: its loop's epilogue checks every element's callee, in order. */

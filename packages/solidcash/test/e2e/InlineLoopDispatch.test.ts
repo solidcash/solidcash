@@ -6,7 +6,6 @@ import {
   Contract, SignatureTemplate, TransactionBuilder,
 } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
-import { trivialCallee } from '../trivial-callee.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 // Minimal isolation of the inline loop-indexed external dispatch (the MultiCall covenant): a stateless
@@ -224,10 +223,10 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
   });
 });
 
-// The same loop through `call`: no digest binds an iteration's record, so each iteration's callee run answers this
-// caller alone by the reader it names, the second push after an optional selector (its record witness, then the reader
-// witness), which must be the caller's input. A stand-in target pushes its record output and that reader, and drops
-// both.
+// The same loop through `call`. A stateless caller keeps no state a shared run could credit twice, so it binds no
+// reader to its callees' runs: a loop over targets that are no SolidCash contract, which push none, stays
+// caller-permissive (TARGET-5) and builds through the stateless loop builder (solidcash/loop-call). A stateful caller
+// pins each iteration's callee reader, as a raw call outside a loop does (P-2).
 const CALL_SRC = `
 pragma solidcash >=0.8.0;
 contract MiniCall() {
@@ -242,45 +241,25 @@ contract MiniCall() {
     }
 }`;
 
-describe('inline loop dispatch through call binds each callee run to its caller', () => {
-  /** The callees at inputs 1 and 2 run for the readers `readers`; their records are outputs 3 and 4. */
-  async function buildCallTx(readers: [bigint, bigint]): Promise<TransactionBuilder> {
-    const art = compileString(CALL_SRC);
+describe('inline loop dispatch through call', () => {
+  it('builds a stateless caller\'s loop over targets that are no SolidCash contract', async () => {
     const provider = createTestProvider();
-    const contract = new Contract(art, [], { provider });
-    const callees = readers.map((reader, at) => trivialCallee([reader, BigInt(3 + at)]));
-    const tokens = [C0, C1].map((category) => ({
-      category, amount: 0n, nft: { capability: 'minting' as const, commitment: '' },
-    }));
-    const feeFunder = await createFeeFunder(provider, 10000n);
-    const tb = new TransactionBuilder({ provider });
-    tb.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, contract.unlock.run(
-      encodePushdataValue(callees.map((callee) => callee.lock), 'address[]'),
-      encodePushdataValue([new Uint8Array([]), new Uint8Array([])], 'bytes[]'), 1n, 3n, new Uint8Array(),
-    ) as never);
-    callees.forEach((callee, at) => tb.addInput({
-      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1200n, token: tokens[at],
-    }, callee.unlocker));
-    tb.addInput(feeFunder.utxo, feeFunder.unlocker);
-    tb.addOutput({ to: contract.address, amount: 100000n });
-    callees.forEach((callee, at) => tb.addOutput({ to: callee.lock, amount: 1200n, token: tokens[at] }));
-    for (const [category, result] of [[C0, 'deadbeef'], [C1, 'cafe']] as const) {
-      tb.addOutput({
-        to: OP_TRUE, amount: 1000n,
-        token: { category, amount: 0n, nft: { capability: 'none', commitment: `${'00'.repeat(31)}01${result}` } },
-      });
-    }
-    tb.addOutput({ to: OP_TRUE, amount: 7000n });
-    return tb;
-  }
-
-  it('runs each iteration on a callee whose run names this caller', async () => {
-    verifyTransaction(await buildCallTx([0n, 0n]));
-  });
-
-  it('refuses an iteration whose callee run names another input as its reader', async () => {
-    // The second callee's run answered input 1: a second caller there could read it as well.
-    const tb = await buildCallTx([0n, 1n]);
-    expect(() => verifyTransaction(tb)).toThrow();
+    const contract = new Contract(compileString(CALL_SRC), [], { provider });
+    await provider.addUtxo(contract.address, { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n });
+    const cospend = (txid: string, category: string, result: string): unknown => ({
+      utxo: {
+        txid, vout: 0, satoshis: 1200n,
+        token: { category, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+      },
+      unlocker: trueUnlocker(),
+      returnData: hexToBin(result),
+    });
+    const funder = await createFeeFunder(provider, 10000n);
+    const tb = await (contract as any).run(
+      [OP_TRUE, OP_TRUE], [new Uint8Array([]), new Uint8Array([])],
+      { cospends: [cospend('01'.repeat(32), C0, 'deadbeef'), cospend('02'.repeat(32), C1, 'cafe')], funder },
+    ) as TransactionBuilder;
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
   });
 });

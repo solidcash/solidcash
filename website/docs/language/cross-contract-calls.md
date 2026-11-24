@@ -384,14 +384,21 @@ possible.
 
 ## Call options and value
 
-`{value: amount}` creates an authenticated BCH transfer output to the target. It is not an in-memory balance
-transfer. In Solidity source, as with solc, a typed call sends value only to a function its interface declares
-`payable`. `gas` is accepted for source compatibility but has no EVM meaning; BCH applies transaction and per-input
-operation-density limits. Deployment `salt` belongs to contract-creation flows.
+`{value: amount}` on a typed call to a stateful contract takes the amount from the caller's satoshi container and
+pays it into the callee's satoshi container, where the callee reads it as `msg.value`; the callee's record binds what
+it received, so a spend that pays it less is refused. It is not an in-memory balance transfer. In Solidity source, as
+with solc, a typed call sends value only to a function its interface declares `payable`. `gas` is accepted for
+source compatibility but has no EVM meaning; BCH applies transaction and per-input operation-density limits.
+Deployment `salt` belongs to contract-creation flows.
 
 ```solidity
 IPayee(payee).deposit{value: amount}();
 ```
+
+Send value to a stateful contract only with a typed call. A raw value call (`payee.call{value: amount}(data)`) pays
+the target's address, which for a stateful contract is its master lock, and the contract can never spend a coin
+there. The compiler refuses such a call when it can see the target is a stateful contract, and the SDK refuses to send
+one; a target held only as a plain `address` it cannot see.
 
 ### How `msg.sender` is derived
 

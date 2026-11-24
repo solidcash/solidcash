@@ -1,5 +1,6 @@
 import { asmToScript, Op } from '@solidcash/utils';
-import { AssemblyStatementNode } from '../ast/AST.js';
+import { AssemblyStatementNode, Node } from '../ast/AST.js';
+import AstTraversal from '../ast/AstTraversal.js';
 import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 
 // Native assembly is safe to run inside a kernel handler only when it is a closed computation: it may use
@@ -213,4 +214,25 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
   }
 
   return controls.length === 0 && main.length === 0 && alt.length === 0;
+}
+
+/** Native assembly the kernel cannot isolate, among a body's own statements: a resolved call is not followed. */
+class UnsafeNativeAssemblyFinder extends AstTraversal {
+  found = false;
+
+  visitAssemblyStatement(node: AssemblyStatementNode): Node {
+    if (node.yulBlock === undefined && !isKernelSafeNativeAssembly(node)) this.found = true;
+    return node;
+  }
+}
+
+/**
+ * Whether a function's own body holds native assembly the kernel cannot isolate. The walk is the AST's own: a call's
+ * resolved function is another body, and a recursive one would never end the walk.
+ */
+export function hasUnsafeNativeAssembly(body: Node | undefined): boolean {
+  if (body === undefined) return false;
+  const finder = new UnsafeNativeAssemblyFinder();
+  finder.visit(body);
+  return finder.found;
 }

@@ -178,10 +178,13 @@ describe('split contract SDK', () => {
   it('settles a typed graph call through a verifier-bound split facet', async () => {
     const signer = await fundedSigner();
     const provider = signer.provider;
-    const peerArtifact = compileString(`contract Peer() {
-      int stored;
-      function ping(int next) { this.stored = next; require(next >= 0); }
-    }`);
+    // The facet reads Peer's void record by a digest over ping's selector, which each compile mode hashes its own
+    // way: Peer is compiled in the facet's mode.
+    const peerArtifact = compileString(`pragma solidity ^0.8.20;
+      contract Peer {
+        int stored;
+        function ping(int next) public { stored = next; require(next >= 0); }
+      }`, { evmCompat: true, suppressWarnings: true });
     const peerContract = new Contract(peerArtifact, [], { provider });
     const { categoryId: peerCategory } = await setupStatefulUtxos(
       provider, peerContract, peerArtifact.stateLayout!, { stored: 0n }, { saltContract: true },

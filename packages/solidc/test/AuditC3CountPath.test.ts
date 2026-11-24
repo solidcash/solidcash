@@ -76,11 +76,18 @@ function redeemOf(artifact: Artifact): Uint8Array {
   return scriptToBytecode(asmToScript(artifact.bytecode));
 }
 
+/** A run no contract called pins no void record and names no reader: its record index and reader are -1. */
+const STANDALONE: Record<string, Uint8Array> = {
+  __internal__returnOutputIdx: num(-1n),
+  __internal__callRecordReader: num(-1n),
+};
+
 /** The selector at the bottom, then the ABI arguments with the first on top, then the redeem. */
 function masterUnlock(artifact: Artifact, name: string, values: Record<string, Uint8Array> = {}): Uint8Array {
   const fn = fnOf(artifact, name);
   const args = fn.inputs.map((entry) => {
-    const value = values[entry.name] ?? (entry.name.startsWith('__internal__') ? EMPTY : undefined);
+    const value = values[entry.name] ?? STANDALONE[entry.name]
+      ?? (entry.name.startsWith('__internal__') ? EMPTY : undefined);
     if (value === undefined) throw new Error(`no value for ${name}.${entry.name}`);
     return value;
   }).reverse();

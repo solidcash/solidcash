@@ -98,6 +98,14 @@ contract StirBook() {
   function churn(int x) public { stir(); require(x >= 0); }
 }`;
 
+// A sorted mapping with a chunkable value beside the victim's mapping.
+const NOTES = `contract NoteBook() {
+  mapping(int => bytes) public notes;
+  mapping(int => int) public side;
+  function write(int key, bytes value) public { this.notes[key] = value; require(true); }
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+}`;
+
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
   maximumInputBytes: 1_000_000, suppressWarnings: true,
@@ -652,4 +660,47 @@ describe('a handler whose free function holds opaque assembly', () => {
     const { bus } = await connect(provider, artifact, {});
     await expect(bus.call.churn(1n).send()).resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
   }, 300_000);
+});
+
+
+describe('bound route without its verifier: a trailing slot beside a chunkable mapping write', () => {
+  let state: { bus: StatefulContract; honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(NOTES, { ...KERNEL, messageBusHandlers: ['write', 'put'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['write', 'put']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    expect(layout.trailingBase, 'the route has a trailing band').toBeDefined();
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    await bus.call.write(3n, new Uint8Array(90).fill(0x61)).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    // A long value over a long value: the old value's chunks are spent, the new one's created.
+    const write = spendOf(await bus.batch([{ function: 'write', args: [3n, new Uint8Array(95).fill(0x62)] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, write);
+    const master = masterOf(write, victim);
+    const at = padIndex(write, master + layout.trailingBase!, master + layout.blockSize);
+    expect(at, 'the write batch leaves a trailing pad').toBeDefined();
+    const rewrite = placed(write, victim, master, at!, rewritten(victim));
+    state = {
+      bus, honest: failures(vm, write), covenant: verdict(vm, rewrite, at!), route: verdict(vm, rewrite, master),
+    };
+    console.log('trailing band beside a chunkable mapping write', {
+      offset: at! - master, covenant: state.covenant, route: state.route,
+    });
+  }, 300_000);
+
+  it('settles an honest long write over a long value, and the entry covenant accepts the victim spend', async () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+    await expect(state.bus.batch([{ function: 'write', args: [3n, new Uint8Array(70).fill(0x63)] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+  }, 300_000);
+
+  // The hole: a row touching a chunkable sorted collection claims the whole trailing band.
+  it('accepts a side entry rewritten at an unused trailing slot beside a write batch', () => {
+    expect(state.route).toBe(true);
+  });
 });

@@ -1423,8 +1423,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   state array (an address array, a struct array's address field, or a table of pointers to one method) is FIXED
   2026-11-24 the same way: each turn reads its callee's void record at the return base plus the element it claims,
   carried by that callee (VM-confirmed before: two keepers merged into one transaction each took one payment;
-  CallRecordSingleReader.e2e.test.ts). Such a call leaving arguments to its callee still reads none, as its arguments
-  take no witness list there (left to the args-left stream). A void call through a table whose elements name their own
+  CallRecordSingleReader.e2e.test.ts). Such a call leaving arguments to its callee reads its record too since
+  `d3189756d`: each left argument takes a per-turn witness list, checked fully consumed (`4ceed9edd`).
+  A void call through a table whose elements name their own
   methods (received pointers, or pointers to several methods) is FIXED 2026-11-24 the same way: each element's call
   reads its callee's void record by the digest of the selector its element holds, read where it runs
   (`loopRecordSelector`, `bytes4(sel[i])`), its reader and its arguments; the record's carrier is checked where the
@@ -2178,8 +2179,9 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   the call leaves is now a hidden caller witness digested with the named ones, so the record comparison binds the
   method, the arguments and the reader; the SDK fills the witnesses from the callee's arguments. The same file's
   caller-isolated splices show fix B binds at the caller (the earlier `AuditSingleInterfaceMethodBinding` refusals came
-  from the callee's own record count). Left: framed, message-bus, kernel-participant and deployer compiles and loops
-  keep the no-digest read (Open, above).
+  from the callee's own record count). Extended 2026-11-24: message-bus builds' direct entries and direct participants
+  (`c82398866`), constructor calls (`41d98ad0b`) and loops over parameter arrays, computed targets and state arrays
+  (`d4a668146`, `d3189756d`) digest their left arguments too; a framed call is bound by its own convention.
 - **A typed `{value:}` call to a stateful callee bound no run** (branch `sec-value-call-fix`). In the direct
   convention `t.deposit{value: v}(x)` paid `v` with a transfer its caller pinned at the target as given: a stateful
   callee's master lock, which no script spends, while the callee counts msg.value at its satoshi container. The call

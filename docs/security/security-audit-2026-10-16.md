@@ -2247,17 +2247,45 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     mutable input's lock, so listing it admits no other output. A packed state is one data record, the route's own,
     and a token container holds no own-category record, so neither needs a band claim. No row claims the band as a
     whole. Test: NoteBook in `AuditRouteUnusedClaimedSlot.test.ts` (rewrite refused, the honest write settles).
-  - Residual (lanes, R2, R-B): a writer's row claims all of its own lanes, alternatives and alias priors included,
-    even where a run writes one; a written collection it projects no lane of keeps every lane of it. VM-checked at
-    `a2065ef8c`: an aliased putPair(5, 2, 5, 3) leaves its second lane to a pad, and a side entry rewritten there is
-    refused in the route body outside the C3 pin, so that shape is held. By reading, a conditional write's unused
-    lane round-trips under its conditional write flag (markConditionalSortedWriteFlag). A writer that projects no
-    lane is a hole, VM-confirmed at `dcbaea853`: LoopBook's `fill` (a bounded loop writer) claims every `side` lane,
-    and beside an honest fill batch a side entry rewritten at a lane only `triple` uses settled. The loop's entries
-    are a runtime stream whose lanes the run picks (cursor and permutation; the route keeps a per-collection
-    runtime input count), so an exact claim needs the run's record of the lanes its stream consumed. Not built. The
-    fallback, refusing a loop-only writer of a collection that another handler reaches at a fixed lane, is not
-    applied either: 37 kernel bus test files have loop writes and need triage before its test changes can be listed.
+  - Residual (lanes, R2): a writer's row claims all of its own lanes, alternatives and alias priors included,
+    even where a run writes one. VM-checked at `a2065ef8c`: an aliased putPair(5, 2, 5, 3) leaves its second lane
+    to a pad, and a side entry rewritten there is refused in the route body outside the C3 pin, so that shape is
+    held. By reading, a conditional write's unused lane round-trips under its conditional write flag
+    (markConditionalSortedWriteFlag). Pools and alternatives checked the same way (`a9d56686d`): beside a non-aliased
+    putPair(5, 2, 9, 3), a side entry rewritten at a pool lane the run did not write is refused, and beside a
+    `place` batch (one nested key in two orientations), a values entry rewritten at the alternate tuple lane the run
+    did not write is refused; both honest batches settle. The writer's static claim names those lanes, so the pin
+    skips them, and the route body's input census (emitVerifyChunkUtxoCount from
+    emitSortedBatchTransitionVerification) refuses the extra input there. That census counts each target's proof
+    witness, which the spender chooses. VM-confirmed at `72f489518`: with the unwritten lane's batch witnesses
+    forged into an active target over the victim's own node (proof, predOut -1, slot, next), the rewrite SETTLED at
+    the pool lane and at the alternate tuple lane; the alias lane and a forged proof alone are still refused. Fixed
+    (`e991184a3`, completed in the next commit): the route records each lane a sorted write statement of the run
+    reaches, and such a lane is claimed only by that record, so an unwritten lane is pinned whatever its witnesses
+    say. The pool and alternate tuple lanes are route-owned (the handler projection maps to the lowest matching
+    slot), so the route's own mask had claimed them on every run; they now take the record too. Run once:
+    AuditRouteUnusedClaimedSlot 36/36, both forged targets refused, every honest batch settles. Residual: a lane
+    whose record changes without its own write running (a predecessor relinked from another lane) would be refused.
+  - R-B, corrected (`2be6b2c9f`, `53c0fc1a8`). The LoopBook row (`dcbaea853`) was not a loop writer. A kernel
+    compile unrolls `fill`'s constant-bound loop before admission (UnrollFixedBoundEntryLoop ahead of
+    LowerVMapCounterLoops), so `fill` is a two-lane literal-key writer, and a diagnostic compile showed its claim
+    was exact (its two lanes). The route's `side` lanes were two handler-managed ones and two it absorbs from its
+    clones' reads (`__message_bus_ek_` keys, mapped to no handler, read only). The pin claimed those as the route's
+    own on every run, and the rewrite used one. Fixed: a route-owned lane the route only reads is not claimed (it
+    comes back at its own index, as any read); one it writes or deletes keeps its claim. The row now asserts the
+    refusal, and the honest fill batch settles.
+  - R-B, a genuine loop writer (`d12d5561e`). A collection a handler wrote only in runtime loops had no projected
+    lane, so the fallback claimed every lane of it, other handlers' lanes included. Such a collection now gets no
+    lane. The stream runs in the route's clone, which shares the route layout, so its inputs sit in the trailing
+    band, where the row's lock claim admits them. StreamBook in the same test VM-checks both: the honest `spread`
+    batch's stream inputs sit at offsets >= trailingBase and it settles, and a `side` entry rewritten at a lane only
+    `triple` reads is refused. `d12d5561e` also threaded a mask of the inputs each stream authenticated into the
+    pin's claims. With the stream in the band, and no R2 arm needing a run-time record (above), it added no claim,
+    so `2c3143a9c` removes it; the no-lane rule stays. Bytes saved, by reading: about 25 B per bound route with a
+    runtime loop, 20-50 B per marking site (one to four per loop, one in the scalar first-touch arm) and 6-15 B per
+    call into a body that carried it. Run once without it: AuditRouteUnusedClaimedSlot,
+    AuditComposeUntouchedRecordRow, KernelHeteroLoopStreamsCompose, KernelPendingScalarRows,
+    KernelDelegateDualRuntimeSet (57/57), KernelMixedRuntimeFixedCollectionFence (1/1).
   - R-C, stage 1 (`a57d01f69`, holes VM-confirmed at `88bfbcd87` and `a83db74a4`): a kernel-safe native assembly
     row and an unsafe(2) row each claimed the whole block; beside a standalone batch of either, a `side` entry
     rewritten at the block's pad settled. Kernel-safe native assembly is a closed computation and unsafe(2) writes

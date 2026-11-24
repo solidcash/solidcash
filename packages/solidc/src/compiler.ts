@@ -18196,18 +18196,20 @@ function compileResolvedAst(
   }
   // C3 record claims: a handler that writes a sorted collection claims its own lanes of it, the route entry slots
   // its fixed accesses project to (alternatives included), and the earlier lanes a runtime alias may move a write to.
-  // A written collection it projects no lane of keeps every lane of it.
+  // A collection it writes only in runtime loops claims no lane: the stream runs in the route's clone, which shares
+  // the route layout, so its inputs sit in the trailing band, claimed there by the collection's lock. Any other
+  // written collection it projects no lane of keeps every lane of it.
   for (const route of ast.contract.functions) {
     if (!route.messageBusRoute || !route.messageBusRecordClaims) continue;
     const entries = (route.entryAccesses ?? []).filter((entry) => !entry.inLoop);
     for (const claim of route.messageBusRecordClaims) {
       const collections = claim.collections;
       if (collections === undefined) continue;
-      const projected = new Set(ast.contract.functions
-        .filter((fn) => fn !== route && fn.messageBusRecordClaimFlag === claim.flag)
-        .flatMap((fn) => [
-          ...(fn.messageBusPhysicalEntrySlots ?? []), ...(fn.messageBusPhysicalEntrySlotAlternatives?.flat() ?? []),
-        ]));
+      const handlers = ast.contract.functions
+        .filter((fn) => fn !== route && fn.messageBusRecordClaimFlag === claim.flag);
+      const projected = new Set(handlers.flatMap((fn) => [
+        ...(fn.messageBusPhysicalEntrySlots ?? []), ...(fn.messageBusPhysicalEntrySlotAlternatives?.flat() ?? []),
+      ]));
       const lanes = new Set<number>();
       for (const entry of entries) {
         if (!collections.includes(entry.collection) || !projected.has(entry.slotIndex)) continue;
@@ -18216,6 +18218,9 @@ function compileResolvedAst(
       }
       for (const collection of collections) {
         if (entries.some((entry) => entry.collection === collection && lanes.has(entry.slotIndex))) continue;
+        const accesses = handlers.flatMap((fn) => fn.entryAccesses ?? [])
+          .filter((entry) => entry.collection === collection);
+        if (accesses.length > 0 && accesses.every((entry) => entry.inLoop === true)) continue;
         for (const entry of entries) if (entry.collection === collection) lanes.add(entry.slotIndex);
       }
       claim.lanes = [...lanes].sort((left, right) => left - right);

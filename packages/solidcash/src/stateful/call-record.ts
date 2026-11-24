@@ -9,8 +9,8 @@ import {
   bigIntToVmNumber, vmNumberToBigInt,
 } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, sha256, type AbiFunction, type Artifact, type EnumDefinitionAbi,
-  type ExternalCallAbi, type StructDefinitionInfo,
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, encodePushdataValue, sha256, type AbiFunction, type Artifact,
+  type EnumDefinitionAbi, type ExternalCallAbi, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { MixedCallRecordReaderError, MixedCompileModeCallError } from '../Errors.js';
@@ -106,14 +106,20 @@ export function callRecordDigest(
 /** A caller's witness of the argument at a position its call at a callsite leaves to the callee. */
 export const CALL_ARGUMENT_WITNESS = /^__internal__callArgument(\d+)_(\d+)$/;
 
+/** The same for a call a loop over targets makes once per turn: one element per call made, in order. */
+export const CALL_ARGUMENT_LIST = /^__internal__callArgumentList(\d+)_(\d+)$/;
+
+/** The parts of a callee's artifact its record's arguments are encoded from. */
+type RecordArtifact = Pick<Artifact, 'abi' | 'structs'> & Partial<Pick<Artifact, 'stateLayout'>>;
+
 /** A co-spent call: the method its callee runs and the arguments it runs on. */
 interface CallRecordGroup {
   readonly functionName: string;
   readonly functionArgs: readonly unknown[];
   readonly logicalFunctionName?: string;
   readonly logicalFunctionArgs?: readonly unknown[];
-  readonly logicalArtifact?: Artifact;
-  readonly externalContract?: { readonly inner?: { readonly artifact?: Artifact } };
+  readonly logicalArtifact?: RecordArtifact;
+  readonly externalContract?: { readonly inner?: { readonly artifact?: RecordArtifact } };
 }
 
 /**
@@ -139,20 +145,44 @@ export function leftCallArgumentWitness(group: CallRecordGroup, position: number
 }
 
 /**
+ * The witness list of the argument at `position` a loop's call leaves to each turn's callee: each group's
+ * leftCallArgumentWitness, pushdata-framed, in the order the calls are made. Undefined when one cannot be encoded.
+ */
+export function leftCallArgumentList(
+  groups: readonly CallRecordGroup[], position: number,
+): Uint8Array | undefined {
+  const elements: Uint8Array[] = [];
+  for (const group of groups) {
+    const value = leftCallArgumentWitness(group, position);
+    if (value === undefined) return undefined;
+    elements.push(encodePushdataValue(value, 'bytes'));
+  }
+  return Uint8Array.from(elements.flatMap((element) => [...element]));
+}
+
+/**
  * Sets, by name, each witness of an argument a call of `abiFunction` leaves to its callee, from the group co-spent at
- * that callsite (`edgeEcSlot`, a top-level call's published callsite). A witness with no such group keeps its value.
+ * that callsite (`edgeEcSlot`, a top-level call's published callsite), and each witness list of one a loop's call
+ * leaves, from the groups of that callsite in order. A witness with no such group keeps its value.
  */
 export function fillLeftCallArgumentWitnesses(
   args: readonly FunctionArgument[], abiFunction: Pick<AbiFunction, 'inputs'>,
   groups: readonly (CallRecordGroup & { readonly edgeParentIndex?: number; readonly edgeEcSlot?: number })[],
 ): FunctionArgument[] {
   let filled = [...args];
+  const atCallsite = (callsite: number): typeof groups => groups.filter((candidate) => (
+    (candidate.edgeParentIndex ?? -1) < 0 && candidate.edgeEcSlot === callsite));
   for (const input of abiFunction.inputs) {
     const witness = CALL_ARGUMENT_WITNESS.exec(input.name);
-    if (witness === null) continue;
-    const group = groups.find((candidate) => (candidate.edgeParentIndex ?? -1) < 0
-      && candidate.edgeEcSlot === Number(witness[1]));
-    const value = group === undefined ? undefined : leftCallArgumentWitness(group, Number(witness[2]));
+    const list = CALL_ARGUMENT_LIST.exec(input.name);
+    let value: Uint8Array | undefined;
+    if (witness !== null) {
+      const group = atCallsite(Number(witness[1]))[0];
+      value = group === undefined ? undefined : leftCallArgumentWitness(group, Number(witness[2]));
+    } else if (list !== null) {
+      const turns = atCallsite(Number(list[1]));
+      value = turns.length === 0 ? undefined : leftCallArgumentList(turns, Number(list[2]));
+    }
     if (value !== undefined) filled = materializeInternalFunctionArgument(filled, abiFunction.inputs, input.name, value);
   }
   return filled;

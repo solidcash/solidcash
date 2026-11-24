@@ -135,7 +135,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
 import {
-  callArgumentWitnessName, externalResultMayNeedPreimage, namesCallRecordArguments,
+  callArgumentListName, callArgumentWitnessName, externalResultMayNeedPreimage, namesCallRecordArguments,
 } from './ExternalResultEncoding.js';
 import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
@@ -4908,10 +4908,10 @@ export default class SymbolTableTraversal extends AstTraversal {
               slot.voidCallRecord = true;
             }
           }
-          // A void call in a loop over the targets a parameter holds (or a witness for computed ones), naming its
-          // arguments, reads each iteration's callee's void record at the return base plus the iteration's index, by
-          // the digest of its method, its reader and that iteration's arguments, as a returning one reads its record.
-          // A call leaving arguments to its callee is not one of them.
+          // A void call in a loop over the targets a parameter holds (or a witness for computed ones) reads each
+          // iteration's callee's void record at the return base plus the iteration's index, by the digest of its
+          // method, its reader and that iteration's arguments, as a returning one reads its record. One leaving
+          // arguments to its callee digests them from its witness lists (leftCallArgumentListPositions).
           for (const slot of externalCallSlots) {
             if (!slot.loopArrayVar || slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
             if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar || slot.batchInvocations) continue;
@@ -4923,7 +4923,8 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (!recordMethod || slot.sourceCallNode === undefined) continue;
             const digested = recordMethod.parameterTypes.flatMap((type) => (type instanceof FunctionType
               && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
-            if (!namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length)) continue;
+            if (!this.takesLeftCallArguments()
+              && !namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length)) continue;
             slot.callRecordSelector = this.calleeMethodSelector(slot.functionName, recordMethod.parameterTypes);
             slot.callRecordParameterTypes = recordMethod.parameterTypes;
             slot.hasReturnValues = true;
@@ -5503,8 +5504,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A call leaving arguments to its callee takes each one its record digests as a witness, which the SDK fills
       // from the callee's arguments: the record then binds the method and every argument (leftCallArgumentPositions).
       for (const slot of this.takesLeftCallArguments() ? node.externalCalls : []) {
-        for (const position of this.leftCallArgumentPositions(slot)) {
-          const name = callArgumentWitnessName(slot.slotIndex, position);
+        const names = [
+          ...this.leftCallArgumentPositions(slot).map((position) => callArgumentWitnessName(slot.slotIndex, position)),
+          ...this.leftCallArgumentListPositions(slot, node)
+            .map((position) => callArgumentListName(slot.slotIndex, position)),
+        ];
+        for (const name of names) {
           const param = new ParameterNode(new BytesType(), name);
           param.location = node.location;
           param.syntheticallyUsed = true;
@@ -16638,9 +16643,26 @@ export default class SymbolTableTraversal extends AstTraversal {
    * None for a call naming them all, one reading no record by its digest, or one a loop runs per target.
    */
   private leftCallArgumentPositions(slot: ExternalCallSlot): number[] {
+    return slot.loopArrayVar || slot.inlineLoopDispatch ? [] : this.leftDigestedPositions(slot);
+  }
+
+  /**
+   * The arguments a call made once per turn of a loop over targets, a parameter array or a computed-target witness
+   * (the inline loop dispatch), leaves to each turn's callee: the caller takes a witness list of each
+   * (callArgumentListName) and digests each turn's element, so each turn's record binds its method and arguments.
+   */
+  private leftCallArgumentListPositions(slot: ExternalCallSlot, node: FunctionDefinitionNode): number[] {
+    const loopArray = slot.loopArrayVar;
+    if (loopArray === undefined || (!loopArray.startsWith('__internal__loopTargets')
+      && !node.parameters.some((parameter) => parameter.name === loopArray))) return [];
+    return this.leftDigestedPositions(slot);
+  }
+
+  /** The positions leftCallArgumentPositions and leftCallArgumentListPositions name, whatever the loop. */
+  private leftDigestedPositions(slot: ExternalCallSlot): number[] {
     if (!slot.hasReturnValues || slot.callRecordSelector === undefined || slot.sourceCallNode === undefined
-      || slot.opaqueReturn || slot.runtimeSelector || slot.selectorArrayVar || slot.fnPtrCall || slot.loopArrayVar
-      || slot.inlineLoopDispatch || slot.batchInvocations || !this.interfaceMap.has(slot.interfaceName)) return [];
+      || slot.opaqueReturn || slot.runtimeSelector || slot.selectorArrayVar || slot.fnPtrCall
+      || slot.batchInvocations || !this.interfaceMap.has(slot.interfaceName)) return [];
     const declared = (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
       && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
     const named = slot.sourceCallNode.parameters.length;

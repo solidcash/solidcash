@@ -2,7 +2,9 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, encodePushdataValue, type AbiFunction, type Artifact,
 } from '@solidcash/utils';
-import { CALL_RECORD_DIGEST_BYTES, callRecordCommitment, callRecordDigest } from './stateful/call-record.js';
+import {
+  CALL_ARGUMENT_LIST, CALL_RECORD_DIGEST_BYTES, callRecordCommitment, callRecordDigest, leftCallArgumentList,
+} from './stateful/call-record.js';
 import type { Contract } from './Contract.js';
 import { TransactionBuilder } from './TransactionBuilder.js';
 import type { NetworkProvider } from './network/index.js';
@@ -243,6 +245,11 @@ export interface TypedLoopCoSpend {
    * at output 1 + n + i, on a carrier of the category of this UTXO's token; deriveTypedLoopCoSpends fills it.
    */
   record?: Uint8Array;
+  /**
+   * The call this iteration's callee runs, from which a caller whose call leaves it arguments takes each turn's
+   * element of its witness lists (`__internal__callArgumentList`); deriveTypedLoopCoSpends fills it.
+   */
+  call?: OpaqueLoopContractCall;
 }
 
 /** Fully-resolved options for buildTypedLoopCallTransaction (no lookups - everything present). */
@@ -334,6 +341,15 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
     } else if (inp.name.startsWith('__internal__externalCallSelector')) {
       if (!opts.selector) throw new Error(`buildTypedLoopCallTransaction: '${inp.name}' needs a selector option`);
       fullArgs.push(opts.selector);
+    } else if (CALL_ARGUMENT_LIST.test(inp.name)) {
+      // Each iteration's element of an argument the call leaves to its callee: that callee's, in target order.
+      const position = Number(CALL_ARGUMENT_LIST.exec(inp.name)![2]);
+      const turns = cospends.map((cospend) => cospend.call);
+      const list = turns.every((call) => call !== undefined) ? leftCallArgumentList(turns.map((call) => ({
+        functionName: call!.fn, functionArgs: call!.args, externalContract: { inner: { artifact: call!.contract.artifact } },
+      })), position) : undefined;
+      if (list === undefined) throw new Error(`buildTypedLoopCallTransaction: '${inp.name}' needs each cospend's call`);
+      fullArgs.push(list);
     } else if (inp.name.startsWith('__internal__')) {
       throw new Error(`buildTypedLoopCallTransaction: unsupported synthetic param '${inp.name}'`);
     } else {
@@ -406,7 +422,7 @@ export async function deriveTypedLoopCoSpends(
     targets.push(hexToBin(call.contract.lockingBytecode));
     const frame = typedLoopRecordFrame(call, 1 + calls.length + i);
     if (frame === undefined) {
-      cospends.push({ utxo, unlocker: unlockFactory(...call.args) });
+      cospends.push({ utxo, unlocker: unlockFactory(...call.args), call });
       continue;
     }
     const artifact = call.contract.artifact!;
@@ -414,7 +430,7 @@ export async function deriveTypedLoopCoSpends(
       structs: artifact.structs, enums: artifact.enums,
     }, 0, 0);
     if (digest === undefined) throw new Error(`deriveTypedLoopCoSpends: '${call.fn}' has no record digest`);
-    cospends.push({ utxo, unlocker: unlockFactory(...frame.args), record: Uint8Array.of(...digest, 0x01) });
+    cospends.push({ utxo, unlocker: unlockFactory(...frame.args), record: Uint8Array.of(...digest, 0x01), call });
   }
   return { targets, cospends };
 }

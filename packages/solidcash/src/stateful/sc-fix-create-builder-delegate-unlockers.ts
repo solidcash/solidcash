@@ -427,14 +427,18 @@ export async function fixCreateBuilderDelegateUnlockers(
         if (inp.name === '__internal__genesisCall') return new Uint8Array();
         if (inp.name === CALL_RECORD_READER_INPUT) {
           // The record answers the input whose call this run serves: this contract's own call or staticcall, or a
-          // nested proxy's caller for the implementation it delegates to. The builder's own forwarded call is made by
+          // nested proxy's caller for the implementation it delegates to: the implementation that makes the call, which
+          // digests its own input, else the physical parent or the root. The builder's own forwarded call is made by
           // no contract. Rebound by that master's category once the builder places the inputs.
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
           const proxyCaller = proxyExternalGroup === undefined ? undefined : allGroupParentIndices[proxyExternalGroup];
+          const callingDelegate = proxyExternalGroup === undefined ? undefined : [...delegateExternalGroupIndices]
+            .find(([, children]) => children.includes(proxyExternalGroup))?.[0];
           const readerCategory = proxyExternalGroup !== undefined
-            ? proxyCaller !== undefined && proxyCaller >= 0
-              ? externalCallUtxoGroups[externalCallUtxoGroups[proxyCaller]?.sharedGroupIndex ?? proxyCaller]?.categoryId
-              : host.categoryId
+            ? callingDelegate !== undefined ? lowLevelCallUtxoGroups[callingDelegate]?.categoryId
+              : proxyCaller !== undefined && proxyCaller >= 0
+                ? externalCallUtxoGroups[externalCallUtxoGroups[proxyCaller]?.sharedGroupIndex ?? proxyCaller]?.categoryId
+                : host.categoryId
             : group.callMode === 'delegatecall' ? undefined : host.categoryId;
           if (readerCategory !== undefined) externalCallInputPositions.push({ name: inp.name, categoryId: readerCategory });
           group.internalArgs = { ...group.internalArgs, [inp.name]: CALL_RECORD_NO_READER };
@@ -442,9 +446,19 @@ export async function fixCreateBuilderDelegateUnlockers(
         }
         if (inp.name === '__internal__returnOutputIdx') {
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
-          return BigInt(proxyExternalGroup === undefined
-            ? returnEmitOutputIndex
-            : physicalReturnIndexForGroup.get(proxyExternalGroup) ?? -1);
+          // The builder's own forwarded call is read by no contract: only a returning entry pins its result, where
+          // `emitReturn` asks for it.
+          if (proxyExternalGroup === undefined) {
+            return BigInt(group.compilerRoute !== undefined || ((bFunc as AbiFunction).outputs?.length ?? 0) > 0
+              ? returnEmitOutputIndex : -1);
+          }
+          // A nested proxy's implementation pins the record of the call its proxy forwarded where the caller reads it,
+          // and follows that read when the layout moves it.
+          const planned = physicalReturnIndexForGroup.get(proxyExternalGroup);
+          if (planned !== undefined) {
+            group.returnWitnessGroups = { ...group.returnWitnessGroups, [inp.name]: proxyExternalGroup };
+          }
+          return BigInt(planned ?? -1);
         }
         if (inp.name === '__internal__valueChunkOutputBase') {
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);

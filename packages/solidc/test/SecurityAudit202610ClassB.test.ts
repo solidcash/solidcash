@@ -482,7 +482,10 @@ describe('October 2026 class B holes', () => {
     const values: Record<string, Uint8Array> = {};
     for (const entry of fn.inputs) {
       if (entry.name === '__internal__proxyMasterIndex') values[entry.name] = num(0n);
-      else throw new Error(`unexpected delegate input ${entry.name}`);
+      // A void entry's record witness and reader: a standalone run pins no record (redeemUnlock's -1).
+      else if (entry.name !== '__internal__returnOutputIdx' && entry.name !== '__internal__callRecordReader') {
+        throw new Error(`unexpected delegate input ${entry.name}`);
+      }
     }
     // The prologue requires proxyIndex == INPUTINDEX - (1 + dataNftCount). The proxy block is inputs 0 and 1,
     // so the implementation master is input 2. Its own record sits after that block.

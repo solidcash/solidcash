@@ -2456,6 +2456,47 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     of the output pass its entries share costs that pass again (131 B on the pooled callee, past 10,000 B).
     `unsafe(0)` keeps no covenant, by design. The vault: 1,624 -> 1,598 B (its count reuses the record count's
     subroutine).
+- **A proxied callee's void record** (built 2026-11-24, `sec-proxy-void`; a liveness gap that failed closed). A void
+  call through a one-method interface binds the method its callee ran by reading the callee's void record. A proxied
+  callee's forward delegatecalls, so it settles none, and its implementation's delegated void entry took no record
+  witness (fix B grouped `delegate` with the lifecycle modifiers): it pinned no record and counted its proxy's carriers
+  to its edges. The honest call failed in direct builds since fix B and in message-bus builds since `16ef0a5d6`
+  (KernelCalleeOnlyBlockOracle's proxy row).
+  - Fix: the implementation's delegated void entry takes the record witness and its reader and settles the forwarded
+    call's record in its proxy's category, as D11's returning entry does: it digests its own selector, the reader and
+    the arguments it ran, pins `digest || 01` at its witness, and counts its proxy's carriers (records and edges) to
+    that record and its edges. It is the minter: the proxy master's minting NFT is what lets any NFT of the proxy's
+    category be created, and the implementation is the one input that knows the method and arguments it ran (the
+    forward binds the selector alone, as the delegate's first push) and already holds the proxy's records through its
+    authenticated proxy-master witness. A library's delegate entry, a split facet's included, keeps its settlement. The
+    record rides the return band appended for the proxy's call, so the implementation's block keeps its layout. SDK: a
+    nested proxy's implementation names as its reader the implementation that makes the call (it named the root), its
+    record witness follows the caller's read when the layout moves it, and the builder forms the record from that
+    reader; a delegate the builder forwards itself pins no record. A direct call record in the return band is laid
+    once: the band's last writer (`ensureAuthenticatedViewReturns`) turns any other carrier of the same record into a
+    token-free pad and rebinds the implementation's witness with the caller's read.
+  - Sound by the same bindings as a direct callee's record: the caller digests its own method, arguments and input and
+    checks the carrier's category against the co-spent callee master's, so a run of another method or arguments, or a
+    record naming another reader, fails its read; the implementation counts its proxy's carriers, so a record minted or
+    moved beside its run fails its count; a run its builder forwards (witness -1) admits none. DX-8 conserves the
+    implementation's own category, and its own-category carrier count is unchanged: the record is in the proxy's.
+  - Tests: `ProxiedVoidCallRecord.e2e.test.ts`, a Driver behind the default proxy calling a Target behind another, in a
+    direct and a message-bus build: the honest call settles and its record names the caller's input; the Target run
+    with another method (`poke` for `stamp`) or other arguments is refused at the caller while its own input accepts
+    it; a copy of the record beside the honest run, and a `stamp` record minted at the caller's read beside a `poke` run
+    that pins its own, are refused at the Target's implementation while the caller accepts its read.
+  - Run once (mocknet), before the band fix: CallRecordSingleReader and RecordlessRunCarrier passed (49); the eight new
+    rows and KernelCalleeOnlyBlockOracle's proxy row failed. Each honest spend held two carriers of the Target proxy's
+    category (outputs 7 and 8), so the implementation's count refused it. By reading, the band materializer appended the
+    record and the band writers placed it again at the planned coordinate, which a call record's callee never admits.
+    The band fix above follows from that reading and is UNVERIFIED: not run after it.
+  - Bytes: the default proxy is unchanged (387 B), as are primary artifacts. Delegate artifacts, two void entries each:
+    Target 3,186 -> 3,244 B (direct) and 4,674 -> 4,759 B (message bus); Driver 4,059 -> 4,169 B and 5,936 -> 6,039 B.
+    Moved by design: GenesisCallDefault's `delegate` code hash, and SecurityAudit202610ClassB's DX-8 spend, whose
+    hand-built delegate unlocking names the two witnesses (-1).
+  - Open, unchanged: a split facet's void entry pins no record, so such a call reaching a facet fails closed; a
+    proxied callee run through its implementation's message-bus route (a compiler route group) settles no void record,
+    so a direct caller reading one fails closed.
 
 ## Value residuals (2026-11-24)
 

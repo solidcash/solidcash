@@ -5412,12 +5412,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     // message-bus build's direct entry included, attests the method it ran via a void call record so a
     // single-function-interface caller can bind the co-spent method. It needs the carrier output index its caller pins
     // the record at. Lifecycle and unsafe entries keep their own covenant settlement, and the multi-call candidate path
-    // below injects this witness itself.
+    // below injects this witness itself. A delegate entry answers the call its proxy forwarded, so it pins that call's
+    // record in the proxy's category. A library's (a split facet is one) keeps its settlement.
     const voidRecordLifecycleOrUnsafe = node.modifiers.some((modifier) =>
       modifier === FunctionModifier.UPGRADE || modifier === FunctionModifier.DEPLOY
       || modifier === FunctionModifier.SELFDESTRUCT || modifier === FunctionModifier.SPLIT
       || modifier === FunctionModifier.MERGE || modifier === FunctionModifier.MIGRATE_RECORDS
-      || modifier === FunctionModifier.UNSAFE || modifier === FunctionModifier.DELEGATE);
+      || modifier === FunctionModifier.UNSAFE)
+      || (node.modifiers.includes(FunctionModifier.DELEGATE) && this.currentContract?.isLibraryContract === true);
     // An entry that makes a returning external storage read (readOnlyDataNft co-spend) leaves the target's lock on
     // the stack through to the epilogue; adding the void record's own settlement there collides with it (its
     // returnOutputIdx pick is thrown off). Such entries keep their pre-fix-B settlement, so no void record is
@@ -21319,10 +21321,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // entry running a runtime mapping loop reserves none: the SDK keeps the slot whenever the loop lays out a
     // predecessor or an entry after the complete block, while the covenant steps its chunk reads down whenever no
     // record runs, so the slot cannot sit inside that block. Its record's index is witnessed; the SDK places it past.
+    // A delegate's void record answers its proxy's call and rides the return band appended for it, so its block keeps
+    // its layout.
     const runsMappingLoop = node.parameters
       .some((parameter) => parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX));
     if (node.returnTypes.length > 0
-      || (node.returnTypes.length === 0 && !runsMappingLoop
+      || (node.returnTypes.length === 0 && !runsMappingLoop && !node.modifiers.includes(FunctionModifier.DELEGATE)
         && node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx'))) {
       slots.push({ kind: 'returnEvent', offset: offset++ });
       // The message-bus route commits its complete result vector here. Atomic graph derivation extracts each

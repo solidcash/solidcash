@@ -56323,30 +56323,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `[.., blob] -> [..]`: pins a received pointer's co-spent pushes (selector split off) to its `args` declared
    * arguments and the redeem, so a run-time selector naming a wider method, whose extra parameters the caller never
    * binds, is refused. Ahead of the arguments a callee takes up to three hidden witnesses, in this order: its record
-   * witness, the reader its record names, then, in a record-sound callee (genesisCalls, A7), its genesis call. A
-   * method chosen at run time has no digest for its caller to check and its caller pins no edge for it, so its
-   * record names no reader: the second hidden push must be OP_1NEGATE. This call is not a constructor's, so a genesis
-   * call is empty: the third must be OP_0.
-   * A returning pointer's callee takes the record witness: a method without one settles no record for the caller to
-   * read. A void pointer reads no record, so that witness, the first push, must name none (OP_1NEGATE), and a callee
-   * taking no witness pushes just the arguments. A method with extra parameters and no witness then runs on those
-   * constants, never on a spender-chosen value.
+   * witness, the reader its record names, then, in a record-sound callee (genesisCalls, A7), its genesis call. This
+   * call is not a constructor's, so a genesis call is empty: the third must be OP_0.
+   * A call that reads its callee's record by a digest taking the selector it picks (runtimeRecordSelector) leaves the
+   * first two free: the record it reads names its method, its reader and its arguments. A callee without both settles
+   * no record naming a reader, so the read fails whatever stands in their place.
+   * Any other pointer call checks no digest. A returning one's callee takes the record witness, free: a method
+   * without one settles no record for the caller to read. Its record names no reader, OP_1NEGATE. A void one reads
+   * no record, so that witness names none as well, and a callee taking no witness pushes just the arguments. A method
+   * with extra parameters and no witness then runs on those constants, never on a spender-chosen value.
    */
   private emitRequirePointerCalleePushes(args: number, slot: ExternalCallSlot, loc: SingleLocationData): void {
-    const witnessed = slot.hasReturnValues === true;
-    // What the pinned hidden pushes spell, h of them: for a void pointer the record witness naming none, then the
-    // reader naming none and the empty genesis call; for a returning one the same two after a record witness that
-    // is free.
-    const pinned = witnessed ? Uint8Array.of(Op.OP_1NEGATE, Op.OP_0)
-      : Uint8Array.of(Op.OP_1NEGATE, Op.OP_1NEGATE, Op.OP_0);
+    // The leading hidden pushes left free, then what the rest spell, h of them: the record witness, the reader and
+    // the genesis call, after the free ones.
+    const free = slot.runtimeRecordSelector === true ? 2 : slot.hasReturnValues === true ? 1 : 0;
+    const pinned = Uint8Array.of(Op.OP_1NEGATE, Op.OP_1NEGATE, Op.OP_0).slice(free);
     this.emit(Op.OP_DUP, loc);
     this.emitCountPushes(loc);                            // [.., blob, count]
-    this.emit(encodeInt(BigInt(args + (witnessed ? 2 : 1))), loc);
+    this.emit(encodeInt(BigInt(args + 1 + free)), loc);
     this.emit(Op.OP_SUB, loc);                            // [.., blob, h]
-    if (witnessed) {
+    if (free > 0) {
       this.emit(Op.OP_SWAP, loc);                         // [.., h, blob]
-      this.emitGenericPushdataDecode(new BytesType(), loc); // [.., h, witness, rest]
-      this.emit(Op.OP_NIP, loc);                          // [.., h, rest]
+      for (let push = 0; push < free; push += 1) {
+        this.emitGenericPushdataDecode(new BytesType(), loc); // [.., h, witness, rest]
+        this.emit(Op.OP_NIP, loc);                        // [.., h, rest]
+      }
       this.emit(Op.OP_OVER, loc);                         // [.., h, rest, h]
     } else {
       this.emit(Op.OP_TUCK, loc);                         // [.., h, blob, h]
@@ -57158,12 +57159,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * dispatcher left one. `emitValue` leaves a call's value on top, digested after the arguments when not zero.
    */
   private emitCallRecordDigest(
-    selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
+    selector: Uint8Array | (() => void), ordinal: number, argumentTypes: readonly (Type | undefined)[],
     emitArgument: (index: number) => void, loc: SingleLocationData, emitOrdinal?: () => void,
     emitLateOrdinal?: () => void, own?: { prefix?: string; selectorAfterPrefix?: boolean },
     prefixStack?: string, emitReader?: () => void, emitValue?: () => void,
   ): void {
-    if (emitOrdinal) {
+    if (!(selector instanceof Uint8Array)) {
+      // A selector picked when the call runs leads an ordinary preimage: [.., selector] -> [.., ordinal || selector].
+      if (emitOrdinal || emitLateOrdinal || prefixStack !== undefined || own !== undefined) {
+        throw new Error('A run-time call record selector leads only an ordinary preimage');
+      }
+      selector();
+      this.emit(Uint8Array.of(ordinal & 0xff, (ordinal >> 8) & 0xff), loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack();
+    } else if (emitOrdinal) {
       // [.., ordinal u16le] -> [.., ordinal || selector]
       emitOrdinal();
       this.emit(selector, loc);
@@ -57370,7 +57381,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitCallerCallRecordDigest(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData, withValue = false,
   ): boolean {
-    const selector = node.opaqueReturn ? undefined : slot.callRecordSelector;
+    const selector = node.opaqueReturn ? undefined : slot.callRecordSelector ?? this.runtimeRecordSelector(slot, loc);
     if (selector === undefined) return false;
     const declared = this.callRecordDeclaredTypes(slot);
     // An argument left to the callee is digested from the caller's witness of it; without one the call digests none.
@@ -57380,6 +57391,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const value = withValue && slot.callValueInRecord === true ? node.callOptions?.value : undefined;
     const ordinal = slot.callOrdinal;
     const counter = this.liveCallOrdinalCounter(slot);
+    // A selector picked when the call runs leads an ordinary preimage only: an uncounted call outside a constructor.
+    if (!(selector instanceof Uint8Array) && (counter !== undefined || this.inGenesisMode)) return false;
     // A counted call digests the group's counter as two little-endian bytes, read once its arguments have run.
     const emitLateOrdinal = counter === undefined ? undefined : (): void => {
       this.emitPickAt(this.getStackIndex(counter), loc);
@@ -57424,6 +57437,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     if (genesisPrefix !== undefined) this.genesisRecordDigests += 1;
     return true;
+  }
+
+  /**
+   * `[..]` -> `[.., selector]` (tracked), for a call whose method its caller picks when it runs (runtimeRecordSelector):
+   * the selector its pointer holds where the call runs, required four bytes wide, so its record's preimage keeps the
+   * layout every callee digests (selector, then the two-byte reader, then the length-prefixed arguments).
+   */
+  private runtimeRecordSelector(slot: ExternalCallSlot, loc: SingleLocationData): (() => void) | undefined {
+    const expression = slot.runtimeRecordSelector === true ? slot.runtimeSelector : undefined;
+    if (expression === undefined) return undefined;
+    return (): void => {
+      this.visit(cloneNode(expression) as ExpressionNode);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_4, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    };
   }
 
   /** A call record's argument types as the callee's lowered parameters take them: a function value as two. */

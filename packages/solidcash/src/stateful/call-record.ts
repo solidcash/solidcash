@@ -38,12 +38,15 @@ export function callRecordNamesReader(abiFunction: Pick<AbiFunction, 'inputs'>):
 }
 
 /**
- * True for a call whose method its caller chooses at run time (a function pointer, a selector table): the caller
- * checks no digest of its record and pins no edge for it, and it requires its callee's reader witness to name none
- * (the compiler's emitRequirePointerCalleePushes), so the callee's record names no reader.
+ * True for a call whose method its caller chooses at run time (a function pointer, a selector table) and whose record
+ * its caller checks by no digest: it pins no edge for it, and it requires its callee's reader witness to name none
+ * (the compiler's emitRequirePointerCalleePushes), so the callee's record names no reader. A pointer call that
+ * digests its record with the selector it picks (`runtimeRecordSelector`) names its caller like any other.
  */
-export function callNamesNoReader(call: Pick<ExternalCallAbi, 'fnPtrCall' | 'selectorArrayVar'> | undefined): boolean {
-  return call?.fnPtrCall === true || call?.selectorArrayVar !== undefined;
+export function callNamesNoReader(
+  call: Pick<ExternalCallAbi, 'fnPtrCall' | 'selectorArrayVar' | 'runtimeRecordSelector'> | undefined,
+): boolean {
+  return (call?.fnPtrCall === true || call?.selectorArrayVar !== undefined) && call?.runtimeRecordSelector !== true;
 }
 
 /** A reader input index as a digest takes it: `OP_NUM2BIN` to two bytes, sign in the top bit. */

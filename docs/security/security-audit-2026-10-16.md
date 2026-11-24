@@ -1413,8 +1413,11 @@ needs VM evidence, `rejectedWith` has no source fallback).
   Fixed). A call naming fewer arguments than its method declares digests the ones it leaves as caller witnesses in a
   direct compile (S3a, "Security completion (2026-11-23)"), but in a framed, message-bus, kernel-participant or
   deployer compile, or in a loop over targets, it still reads its record with no digest check; an opaque read checks
-  none, and neither does a call whose method is chosen at run time (a function pointer, a selector
-  table: its callee's reader is pinned to none), so two callers making such a call can still share one run. A kernel
+  none, and neither does a table of function pointers or selectors (its callee's reader is pinned to none), so two
+  callers making such a call can still share one run. A single call through a function pointer is FIXED 2026-11-24
+  (P-1): its caller digests the record with the selector the pointer holds, its reader and its arguments, and a void
+  one reads the void record, so the run answers one caller and the method and arguments it names (VM-confirmed before:
+  two callers merged into one transaction each took one withdrawal; CallRecordSingleReader.e2e.test.ts). A kernel
   direct participant's records name no reader: the V5 opaque-call proof profile admits no hidden witness beside the
   call index (`cfbbc4a77`), so its entries take none, and a caller naming its reader refuses its records and the edges
   it reads by name (fail closed; as a caller the participant names its reader). The SDK's reader binding for a call a

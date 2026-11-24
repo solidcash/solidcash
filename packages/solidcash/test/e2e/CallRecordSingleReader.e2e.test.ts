@@ -21,7 +21,8 @@ import { addProvenUtxo, createTestProvider, setupStatefulUtxos } from '../test-u
  * record. The control merges A1 -> T1 and A2 -> T2 the same way and settles, so only the shared record is refused.
  * The merge discovers every position from the transactions and the ABI, so it runs on a build without the binding,
  * where the attack settles. A void call through an interface naming several methods reads the callee's record too,
- * in place of its selector check. A call an implementation makes behind a proxy names the implementation's input.
+ * in place of its selector check, and a call through a function pointer reads it by the digest of the selector the
+ * pointer holds. A call an implementation makes behind a proxy names the implementation's input.
  */
 
 const SOURCE = `pragma solidcash >=0.8.0;
@@ -491,12 +492,13 @@ const chooserArtifacts = (): Record<string, Artifact> => {
 };
 
 describe('a call whose method or receiver is chosen when it runs', () => {
-  // A pointer's caller checks no digest of its callee's record, so the record names no reader; a call through a
-  // ternary target names a fixed method, so its record names the caller's input. A void pointer reads no record.
+  // A pointer's caller digests its callee's record with the selector it picks, its reader and its arguments, and a
+  // void pointer reads the void record; a call through a ternary target names a fixed method. Each record names the
+  // caller's input.
   it.each([
-    { kind: 'returning pointer', entry: 'pullEither', method: 'withdraw', reader: 'none' },
-    { kind: 'void pointer', entry: 'payEither', method: 'spend', reader: 'no record' },
-    { kind: 'ternary-target', entry: 'pullTernary', method: 'withdraw', reader: 'caller' },
+    { kind: 'returning pointer', entry: 'pullEither', method: 'withdraw' },
+    { kind: 'void pointer', entry: 'payEither', method: 'spend' },
+    { kind: 'ternary-target', entry: 'pullTernary', method: 'withdraw' },
   ] as const)('settles a $kind call honestly', async (row) => {
     const provider = createTestProvider();
     const vault = await deploy(provider, chooserArtifacts().Vault, { balance: BALANCE });
@@ -506,19 +508,43 @@ describe('a call whose method or receiver is chosen when it runs', () => {
       .withExternalCall(vault.sc, row.method, [AMOUNT]).send();
     const tx = await capture(provider, call);
     const record = outputWith(tx, '51', vault.category);
-    if (row.reader === 'no record') {
-      expect(record).toBe(-1);
-    } else {
-      const caller = inputOfCoin(await coinsOf(provider, tx), chooser.category, 'minting');
-      expect(caller).toBeGreaterThanOrEqual(0);
-      const reader = row.reader === 'caller' ? caller : -1;
-      const digest = callRecordDigest(abiOf(chooserArtifacts().Vault, row.method), [AMOUNT], {}, 0, reader)!;
-      expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digest));
-    }
+    const caller = inputOfCoin(await coinsOf(provider, tx), chooser.category, 'minting');
+    expect(caller).toBeGreaterThanOrEqual(0);
+    const digest = callRecordDigest(abiOf(chooserArtifacts().Vault, row.method), [AMOUNT], {}, 0, caller)!;
+    expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digest));
 
     await call();
     expect((await chooser.sc.getState()).credited).toBe(AMOUNT);
     expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
     expect((await other.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+
+  // Two choosers make one pointer call each, merged into one transaction where the vault runs once. Before the
+  // pointer's caller digested the record, both took that run, each credited for one withdrawal (VM-confirmed).
+  it.each([
+    { kind: 'returning pointer', entry: 'pullEither', method: 'withdraw' },
+    { kind: 'void pointer', entry: 'payEither', method: 'spend' },
+  ] as const)('refuses two callers sharing one run of a $kind call', async (row) => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, chooserArtifacts().Vault, { balance: BALANCE });
+    const other = await deploy(provider, chooserArtifacts().Vault, { balance: BALANCE });
+    const c1 = await deploy(provider, chooserArtifacts().Chooser, { credited: 0n });
+    const c2 = await deploy(provider, chooserArtifacts().Chooser, { credited: 0n });
+    const call = (chooser: Deployed) => (): Promise<unknown> => (chooser.sc as any)[row.entry](
+      true, vault.lock, other.lock, AMOUNT,
+    ).withExternalCall(vault.sc, row.method, [AMOUNT]).send();
+    const a = await capture(provider, call(c1));
+    const b = await capture(provider, call(c2));
+    const { tx, inputOf } = await merge(
+      provider, a, b, new Map([[c2.category, abiOf(chooserArtifacts().Chooser, row.entry)]]), vault.category,
+    );
+    const second = inputOf(inputOfCoin(await coinsOf(provider, b), c2.category, 'minting'));
+    // The vault's one record names the first chooser's input, so the second, reading it, is refused.
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('mandatory-script-verify-flag-failed');
+    expect(outcome).toContain(`error in evaluating input index ${second}:`);
+    expect((await c2.sc.getState()).credited).toBe(0n);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE);
   }, 300_000);
 });

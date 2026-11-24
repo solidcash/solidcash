@@ -4893,6 +4893,25 @@ export default class SymbolTableTraversal extends AstTraversal {
             slot.voidCallRecord = true;
             slot.needsSelectorVerification = false;
           }
+          // A call through a function pointer, whose method its caller picks when it runs, reads its callee's record
+          // by the digest of that method's selector, its reader and its arguments: two callers cannot both take one
+          // run, and the run is of the method and the arguments the call names. A void one reads the void record. It
+          // keeps its selector check and the pin of its callee's pushes (emitRequirePointerCalleePushes). A pointer in
+          // a loop or a selector table is no single call.
+          for (const slot of externalCallSlots) {
+            if (!slot.fnPtrCall || !slot.runtimeSelector || slot.loopArrayVar || slot.selectorArrayVar
+              || slot.inlineLoopDispatch || slot.batchInvocations || slot.opaqueReturn) continue;
+            if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+            if (slot.sourceCallNode === undefined || this.loopNestedExternalCalls.has(slot.sourceCallNode)) continue;
+            const method = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+            if (!method) continue;
+            slot.callRecordParameterTypes = method.parameterTypes;
+            slot.runtimeRecordSelector = true;
+            if (!slot.hasReturnValues) {
+              slot.hasReturnValues = true;
+              slot.voidCallRecord = true;
+            }
+          }
         }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot
         let slotIndex = 0;

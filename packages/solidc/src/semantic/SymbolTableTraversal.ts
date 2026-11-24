@@ -4932,6 +4932,26 @@ export default class SymbolTableTraversal extends AstTraversal {
             slot.voidCallRecord = true;
             slot.needsSelectorVerification = false;
           }
+          // A void call through a table whose elements name their own methods (received pointers, or pointers to
+          // several methods) reads each element's void record the same way, by the digest of the method its element
+          // names (loopRecordSelector), its reader and its arguments. A record, not a pin of the callee's reader: a
+          // received method wider than the table's type, taking no witnesses, would run an extra parameter on the
+          // pinned reader, while its record digests every argument it takes.
+          for (const slot of externalCallSlots) {
+            if (!slot.loopArrayVar || !slot.selectorArrayVar || slot.loopRecordSelector === undefined) continue;
+            if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn || slot.runtimeSelector
+              || slot.batchInvocations) continue;
+            if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+            const method = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+            if (!method || slot.sourceCallNode === undefined) continue;
+            const digested = method.parameterTypes.flatMap((type) => (type instanceof FunctionType
+              && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
+            if (!namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length)) continue;
+            slot.callRecordParameterTypes = method.parameterTypes;
+            slot.runtimeRecordSelector = true;
+            slot.hasReturnValues = true;
+            slot.voidCallRecord = true;
+          }
         }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot
         let slotIndex = 0;
@@ -12514,6 +12534,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // runtime param the SDK fills, not a fixed block offset (the callee's layout is unknown at compile time).
         ...(node.callInfo.interfaceName.startsWith('__FnPtr_') && { fnPtrCall: true }),
         ...(node.runtimeSelector && { runtimeSelector: node.runtimeSelector }),
+        ...(node.loopRecordSelector && { loopRecordSelector: node.loopRecordSelector }),
         ...(node.opaqueReturn && { opaqueReturn: true }),
         ...(hasEffectiveCallValue(node.callOptions?.value) && { callValueEffect: true }),
         ...(callValueSource && { callValueSource }),
@@ -19639,6 +19660,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // reach this path, not the 7037 statement path.
         if (node.runtimeSelector) callNode.runtimeSelector = this.visit(node.runtimeSelector) as ExpressionNode;
         if (node.selectorArrayVar) callNode.selectorArrayVar = node.selectorArrayVar;
+        if (node.loopRecordSelector) {
+          callNode.loopRecordSelector = this.visit(node.loopRecordSelector) as ExpressionNode;
+        }
         if (callNode.callOptions?.value) {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }
@@ -19820,6 +19844,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // b.selector`, folds to a runtime bytes4). The covenant binds the co-spent method to it (see codegen).
         if (node.runtimeSelector) callNode.runtimeSelector = this.visit(node.runtimeSelector) as ExpressionNode;
         if (node.selectorArrayVar) callNode.selectorArrayVar = node.selectorArrayVar;
+        if (node.loopRecordSelector) {
+          callNode.loopRecordSelector = this.visit(node.loopRecordSelector) as ExpressionNode;
+        }
         if (callNode.callOptions?.value) {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }

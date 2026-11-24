@@ -400,17 +400,17 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
           mc.callOptions = node.callOptions;
           mc.pointerTableBroadcast = true;
           mc.selectorArrayVar = this.selArrayName(name);
-          if (this.graphMode) {
-            const selectorArray = new IdentifierNode(this.selArrayName(name));
-            selectorArray.location = node.location;
-            const selectorRead = new ArrayAccessNode(
-              selectorArray, cloneNode(liveIndex) as ExpressionNode,
-            );
-            selectorRead.location = node.location;
-            const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
-            selectorCast.location = node.location;
-            mc.runtimeSelector = selectorCast;
-          }
+          const selectorArray = new IdentifierNode(this.selArrayName(name));
+          selectorArray.location = node.location;
+          const selectorRead = new ArrayAccessNode(
+            selectorArray, cloneNode(liveIndex) as ExpressionNode,
+          );
+          selectorRead.location = node.location;
+          const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
+          selectorCast.location = node.location;
+          // A graph handler checks the row's selector; a direct entry's record digest names it.
+          if (this.graphMode) mc.runtimeSelector = selectorCast;
+          else mc.loopRecordSelector = selectorCast;
           return mc;
         }
         const idx = this.visit(target.index) as ExpressionNode;

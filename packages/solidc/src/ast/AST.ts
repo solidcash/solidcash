@@ -3137,6 +3137,8 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // Foreign fn-ptr ARRAY dispatch table with per-element methods: the parallel `bytes4[]` state array of
   // per-element selectors; the array-call loop asserts the co-spent callee's selector == sel[i].
   selectorArrayVar?: string;
+  // A table call's selector where it runs, `bytes4(sel[i])`: the method its record's digest names (loopRecordSelector).
+  loopRecordSelector?: ExpressionNode;
   // Set for a framed low-level call lowered to this typed call (LowerStaticLowLevelCalls).
   lowLevelRoute?: LowLevelRoute;
 
@@ -3318,6 +3320,11 @@ export interface ExternalCallSlot {
    * `runtimeSelector` evaluates where the call runs, in place of `callRecordSelector`.
    */
   runtimeRecordSelector?: boolean;
+  /**
+   * A call through a table whose elements name their own methods: the selector of the element it calls, read where it
+   * runs (`bytes4(sel[i])`), which its record's digest takes when `runtimeRecordSelector` is set.
+   */
+  loopRecordSelector?: ExpressionNode;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;
@@ -3462,6 +3469,9 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
+  // Set by the table lowerings for a broadcast call outside a message-bus graph: the called element's selector,
+  // `bytes4(sel[i])`, which its record's digest names; threaded to the external call slot in semantic analysis.
+  loopRecordSelector?: ExpressionNode;
   // Set by LowerStaticLowLevelCalls for a framed low-level call it lowered to this typed call; threaded to the
   // external call node in semantic analysis.
   lowLevelRoute?: LowLevelRoute;

@@ -31261,11 +31261,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // reads its record at its return index plus its ordinal.
       const counter = verifiesDigest ? this.liveCallOrdinalCounter(physicalSlot) : undefined;
       const bindsInline = counter !== undefined && this.isExternalCallSlotLoopNested(physicalSlot);
-      // A call on a state-array element reads its record at its return index plus the element, carried by its callee.
+      // A call on a state-array element reads its record at its return index plus the element, carried by its callee
+      // (for a table of received pointers, checked after the body, where its callee input is read from its list).
       const element = this.isStateArrayElementCall(physicalSlot);
+      const carried = element && !physicalSlot.fnPtrCall;
       if (bindsInline) this.emitLoopCallCalleeCategory(physicalSlot, node, locationData);
-      else if (element) this.emitLoopElementCalleeCategory(physicalSlot, locationData);
-      const untracked = bindsInline || element ? 1 : 0;
+      else if (carried) this.emitLoopElementCalleeCategory(physicalSlot, locationData);
+      const untracked = bindsInline || carried ? 1 : 0;
       const returnOutputIdxIdx = this.getStackIndex(returnParamName);
       this.emit(encodeInt(BigInt(returnOutputIdxIdx + untracked)), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -31273,7 +31275,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPickAt(this.getStackIndex(counter) + 2, locationData);
         this.emit(Op.OP_ADD, locationData);
       } else if (element) {
-        this.emitPickAt(this.getStackIndex(this.loopInputFloorName(physicalSlot)) + 2, locationData);
+        this.emitPickAt(this.getStackIndex(this.loopInputFloorName(physicalSlot)) + untracked + 1, locationData);
         this.emit(Op.OP_ADD, locationData);
       } else if (this.plainLoopDepth > 0) {
         // A rolled `for` over `tags_[i]` reuses one return-output ABI slot. Each iteration
@@ -31309,7 +31311,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_0, locationData);    // empty returndata
         this.emit(Op.OP_ELSE, locationData);
       }
-      if (bindsInline || element) this.emitLoopCallRecordCarrierChecks(locationData);
+      if (bindsInline || carried) this.emitLoopCallRecordCarrierChecks(locationData);
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
       // Stack: [digest?, record] (record untracked): the call's digest, a form byte, then the result or its SHA256.
       this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), locationData);
@@ -31409,14 +31411,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const counter = this.liveCallOrdinalCounter(slot);
     const bindsInline = counter !== undefined && this.isExternalCallSlotLoopNested(slot);
     const element = this.isStateArrayElementCall(slot);
+    const carried = element && !slot.fnPtrCall;
     if (bindsInline) this.emitLoopCallCalleeCategory(slot, node, loc);
-    else if (element) this.emitLoopElementCalleeCategory(slot, loc);
-    this.emitPickAt(this.getStackIndex(returnParamName) + (bindsInline || element ? 1 : 0), loc);
+    else if (carried) this.emitLoopElementCalleeCategory(slot, loc);
+    const below = bindsInline || carried ? 1 : 0;
+    this.emitPickAt(this.getStackIndex(returnParamName) + below, loc);
     if (bindsInline || element) {
-      this.emitPickAt(this.getStackIndex(bindsInline ? counter : this.loopInputFloorName(slot)) + 2, loc);
+      this.emitPickAt(this.getStackIndex(bindsInline ? counter : this.loopInputFloorName(slot)) + below + 1, loc);
       this.emit(Op.OP_ADD, loc);
-      this.emitLoopCallRecordCarrierChecks(loc);
     }
+    if (bindsInline || carried) this.emitLoopCallRecordCarrierChecks(loc);
     // [digest, record] -> []: the record is `digest || 0x01`.
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(Op.OP_SWAP, loc);
@@ -56251,6 +56255,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, loc);                 // [elem, idx]
     }
 
+    // A received table's element call read its void record at the return base plus the element
+    // (emitVoidCallRecordRead): this element's callee carries it.
+    if (slot.fnPtrCall && slot.voidCallRecord === true) {
+      const returnParam = this.externalCallSlots.filter((candidate) => candidate.hasReturnValues).length === 1
+        ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
+      this.emit(Op.OP_DUP, loc);                                   // [elem, idx, idx]
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);                                   // [elem, idx, category]
+      this.emitPickAt(this.getStackIndex(returnParam) + 3, loc);   // [elem, idx, category, base]
+      this.emitPickAt(this.getStackIndex('(aec_i)') + 4, loc);
+      this.emit(Op.OP_ADD, loc);                                   // [elem, idx, category, record]
+      this.emitLoopCallRecordCarrierChecks(loc);                   // [elem, idx, record]
+      this.emit(Op.OP_DROP, loc);                                  // [elem, idx]
+    }
+
     // 4. selector (REGULAR + needsSelectorVerification)
     if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification
       && slot.fnPtrCall && slot.selectorArrayVar) {
@@ -57548,7 +57567,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * layout every callee digests (selector, then the two-byte reader, then the length-prefixed arguments).
    */
   private runtimeRecordSelector(slot: ExternalCallSlot, loc: SingleLocationData): (() => void) | undefined {
-    const expression = slot.runtimeRecordSelector === true ? slot.runtimeSelector : undefined;
+    const expression = slot.runtimeRecordSelector === true ? slot.loopRecordSelector ?? slot.runtimeSelector : undefined;
     if (expression === undefined) return undefined;
     return (): void => {
       this.visit(cloneNode(expression) as ExpressionNode);
@@ -57721,7 +57740,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** A call on an element of a state array: its loop's epilogue checks every element's callee, in order. */
   private isStateArrayElementCall(slot: ExternalCallSlot): boolean {
-    return slot.loopArrayVar !== undefined && !slot.inlineLoopDispatch && !slot.fnPtrCall
+    return slot.loopArrayVar !== undefined && !slot.inlineLoopDispatch
       && this.stateVariables.some((variable) => variable.name === slot.loopArrayVar)
       && this.getStackIndex(this.loopInputFloorName(slot), true) >= 0;
   }

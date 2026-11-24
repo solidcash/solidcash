@@ -1424,9 +1424,18 @@ needs VM evidence, `rejectedWith` has no source fallback).
   2026-11-24 the same way: each turn reads its callee's void record at the return base plus the element it claims,
   carried by that callee (VM-confirmed before: two keepers merged into one transaction each took one payment;
   CallRecordSingleReader.e2e.test.ts). Such a call leaving arguments to its callee still reads none, as its arguments
-  take no witness list there. A table whose elements name their own methods (received pointers, or pointers to several
-  methods) reads none either (its callee's reader is pinned to none), so two callers making such a call can still
-  share one run. A raw `address.call` (visible or opaque payload, its result read or not) is FIXED
+  take no witness list there (left to the args-left stream). A void call through a table whose elements name their own
+  methods (received pointers, or pointers to several methods) is FIXED 2026-11-24 the same way: each element's call
+  reads its callee's void record by the digest of the selector its element holds, read where it runs
+  (`loopRecordSelector`, `bytes4(sel[i])`), its reader and its arguments; the record's carrier is checked where the
+  call runs for a table of interface pointers, and after the body for received pointers, whose callee input comes from
+  their index list. The callee's record witness and reader are then free in the pin of its pushes, as for a single
+  pointer (P-1); its genesis call and arity stay pinned (VM-confirmed before: two keepers of either table merged into
+  one transaction each took one payment; CallRecordSingleReader.e2e.test.ts). A record, not a pin of the callee's
+  reader: a received method wider than the table's type and taking no witnesses would run an extra parameter on the
+  pinned reader, an input index the spender picks, while its record digests every argument it takes. A message-bus
+  build whose tables its graph handlers bind lowers no record selector, and is left to those handlers. A raw
+  `address.call` (visible or opaque payload, its result read or not) is FIXED
   2026-11-24 (P-2): no digest over an opaque payload is sound (the caller cannot name its arguments, and the callee
   never sees the payload), so the caller pins its callee's reader witness, the second push after an optional selector
   push, to its own input index; one run then answers one caller (VM-confirmed before: two pullers merged into one
@@ -2158,8 +2167,9 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   (`af630cc60`), passes its honest call and both merge controls and fails exactly where the two-caller spends must be
   refused: they were ACCEPTED, in a returning and in a void call. Bytes (default options): 111 of 345 corpus contracts
   (-2,434 to +9, median +6) and 462 of 1,169 external contracts (-540 to +98, median +31) move; no compile result
-  changes. A pointer call, whose method is chosen at run time, still checks no digest (its callee's reader is pinned
-  to none): residual under "One run shared by two callers where no digest is checked".
+  changes. A pointer call, whose method is chosen at run time, checked no digest (its callee's reader was pinned to
+  none): FIXED 2026-11-24 for a single pointer (P-1) and a table of pointers (P-3), under "One run shared by two
+  callers where no digest is checked".
 - **A call leaving arguments to its callee bound no method** (S3a; `778339875`, `ec09c2921`). A direct call passing
   fewer arguments than its method declares (`getAndIncrement()` for `(pubkey, sig)`) digested no record, so through a
   one-method interface nothing bound which method its callee ran. VM-confirmed on the released code: a co-spend running

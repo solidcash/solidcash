@@ -2291,6 +2291,13 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     KernelMultiDynamicShrink's graph compose of `shrink()` was refused at the Store master: its old chunks, inside
     the band, were pinned with the band-lock list empty. The branch now runs both. A getter or a fixed-state writer
     claims nothing and emits as before; a zero-parameter dynamic-state writer takes the base check every writer row
-    takes. Not yet re-run: the file's one run failed before this fix.
+    takes. Run by the lander on the landing tree: KernelMultiDynamicShrink and the proxy pin pass, the bus suites
+    pass (984/984, 1631/1631).
   - Cost of a verifier path where one is used: one verifier input of at least 9,000 B unlocking bytecode
     (`MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES`) and a deployed verifier UTXO per transaction.
+- **DYN-1 in a zero-parameter route handler** (by reading; closed by `4625e4a7a`). The DYN-1 fix closes the route lane
+  with an activity flag that a handler's selector branch sets when its footprint writes dynamic state, and the route
+  frame requires `base >= -1` when it is set. The route's zero-parameter selector branch never ran those statements,
+  so a handler that takes no parameters and writes dynamic state ran without the base check: by DYN-1's mechanism, a
+  spender passing a base below -1 could skip its chunk verification. The branch now runs the same statements as the
+  others (found through the KernelMultiDynamicShrink regression above; not separately VM-tested on the old code).

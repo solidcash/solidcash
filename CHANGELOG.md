@@ -62,7 +62,9 @@
 - A message-bus route run without its verifier left records unheld at slots its rows claimed but did not use, so a
   spender could rewrite or burn them, and a node of a mapping a handler manages could be minted with no input (in
   0.51.1 and earlier). Rows now claim only what they may write, and each such collection's nodes must equal its inputs
-  plus the inserts of the run. Contracts with message-bus routes compile to new bytes. Some row kinds still claim
+  plus the inserts of the run. A route handler that takes no parameters and writes dynamic state now gets the
+  dynamic-write base check every other writer gets. Contracts with message-bus routes compile to new bytes.
+  Some row kinds still claim
   their whole block or band (lifecycle rows, function pointers, inline assembly, delegatecall, calls to
   address(this), chunked values): see the security ledger.
 

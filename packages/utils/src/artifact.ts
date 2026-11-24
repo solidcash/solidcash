@@ -1771,6 +1771,11 @@ export interface ExternalCallAbi {
   needsSelectorVerification?: boolean;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
+  /**
+   * A void call whose caller reads its callee's void record (`digest || 01`), which binds the method and arguments its
+   * callee ran. It has `hasReturnValues` for that record and consumes no result (callConsumesResult).
+   */
+  voidCallRecord?: boolean;
   returnTypes?: readonly string[];
   /** Tuple-wide result representation expected by this compiler-authored callsite. */
   resultEncoding?: ExternalResultEncoding;
@@ -2075,6 +2080,11 @@ export function assertDeployabilityCertificate(
  * input than its caller's is one no caller accepts.
  */
 export const CALL_RECORD_READER_INPUT = '__internal__callRecordReader';
+
+/** Whether a published call consumes its callee's result: a void call that reads a void record does not. */
+export function callConsumesResult(call: Pick<ExternalCallAbi, 'hasReturnValues' | 'voidCallRecord'>): boolean {
+  return call.hasReturnValues === true && call.voidCallRecord !== true;
+}
 
 /** The reader a record names when no contract reads it. Its two bytes, `01 80`, are no input index's. */
 export const CALL_RECORD_NO_READER = -1n;

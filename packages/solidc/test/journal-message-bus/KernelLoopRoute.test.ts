@@ -899,8 +899,9 @@ contract Acc() {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'outer'))
       .toMatchObject({ eligible: true });
     expect(routeAsm(artifact)).toContain('OP_INVOKE');
+    // No journal context leaks into the direct entry: beside `n` it takes only its void record's reader and carrier.
     expect(artifact.abi.find((entry) => entry.name === 'outer')?.inputs.map((input) => input.name))
-      .toEqual(['n']);
+      .toEqual(['n', '__internal__callRecordReader', '__internal__returnOutputIdx']);
   });
 
   it('unions mixed collection cardinalities while keeping one record carrier', () => {

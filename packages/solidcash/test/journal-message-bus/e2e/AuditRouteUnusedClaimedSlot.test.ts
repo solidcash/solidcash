@@ -79,6 +79,13 @@ const DROP = `contract DropBook() {
   function drop(int key) public { delete this.side[key]; require(true); }
 }`;
 
+const QUIET = `contract QuietBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function probe(int x) public { assembly { OP_1 OP_VERIFY } require(x >= 0); }
+  function idle(int x) unsafe(2) { require(x >= 0); }
+}`;
+
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
   maximumInputBytes: 1_000_000, suppressWarnings: true,
@@ -555,5 +562,68 @@ describe('bound route without its verifier: a trailing slot beside a delete, whi
   // The delete claims, in the band, only side's entry lock; other's lock is not one, so the pin holds the entry.
   it('refuses an other entry rewritten at an unused trailing slot beside a drop batch', () => {
     expect(state.route).not.toBe(true);
+  });
+});
+
+
+describe('bound route without its verifier: a block slot beside a row that writes no record', () => {
+  let state: {
+    bus: StatefulContract;
+    honest: { probe: ReturnType<typeof failures>; idle: ReturnType<typeof failures> };
+    covenant: Verdict;
+    route: { probe: Verdict; idle: Verdict };
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(QUIET, { ...KERNEL, messageBusHandlers: ['put', 'probe', 'idle'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'probe', 'idle']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const probe = spendOf(await bus.batch([{ function: 'probe', args: [1n] }]).build());
+    const idle = spendOf(await bus.batch([{ function: 'idle', args: [1n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, probe);
+    // The victim rewritten at the highest pad of the batch's compile-time block.
+    const attack = (honest: Spend): { at: number; master: number; spend: Spend } => {
+      const master = masterOf(honest, victim);
+      const at = padIndex(honest, master + 1, master + layout.blockSize);
+      expect(at, 'the batch leaves a pad in its block').toBeDefined();
+      return { at: at!, master, spend: placed(honest, victim, master, at!, rewritten(victim)) };
+    };
+    const onProbe = attack(probe);
+    const onIdle = attack(idle);
+    state = {
+      bus,
+      honest: { probe: failures(vm, probe), idle: failures(vm, idle) },
+      covenant: verdict(vm, onProbe.spend, onProbe.at),
+      route: { probe: verdict(vm, onProbe.spend, onProbe.master), idle: verdict(vm, onIdle.spend, onIdle.master) },
+    };
+    console.log('block slot beside a row that writes no record', {
+      blockSize: layout.blockSize, offsets: { probe: onProbe.at - onProbe.master, idle: onIdle.at - onIdle.master },
+      covenant: state.covenant, route: state.route,
+    });
+  }, 300_000);
+
+  it('settles honest probe and idle batches, and the entry covenant accepts the victim spend', async () => {
+    expect(state.honest.probe, 'honest probe batch').toEqual([]);
+    expect(state.honest.idle, 'honest idle batch').toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+    await expect(state.bus.batch([{ function: 'probe', args: [2n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+    await expect(state.bus.batch([{ function: 'idle', args: [2n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+  }, 300_000);
+
+  // The hole: a native assembly row claims the whole block.
+  it('accepts a side entry rewritten in the block beside a native assembly row', () => {
+    expect(state.route.probe).toBe(true);
+  });
+
+  // The hole: an unsafe(2) row claims the whole block.
+  it('accepts a side entry rewritten in the block beside an unsafe(2) row', () => {
+    expect(state.route.idle).toBe(true);
   });
 });

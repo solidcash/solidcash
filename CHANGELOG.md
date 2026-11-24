@@ -68,6 +68,29 @@
   their whole block or band (lifecycle rows, function pointers, inline assembly, delegatecall, calls to
   address(this), chunked values): see the security ledger.
 
+- A returning call on an element of a state array read its call record by digest but never checked that the record
+  was its callee's (CRITICAL, in 0.51.1 and earlier): a record minted in any other category, with the honest digest and
+  any result, was accepted, so a caller credited whatever the forger wrote. Each element's record must now carry the
+  claimed callee's category.
+- More calls could let two callers credit one callee run (in 0.51.1 and earlier): a call through a function pointer
+  or a selector table, a raw or opaque `call`, and a call in a loop over a parameter array, computed targets or a state
+  array. Each now binds its callee's record to the caller's input (a raw call in a contract that keeps state pins the
+  callee's reader); a stateless caller, which has nothing to credit twice, is unchanged.
+- A call leaving arguments to its callee now binds its method in message-bus builds, in loops and in constructor
+  calls, and a void call through a one-method interface in a message-bus build now reads its callee's record (the first
+  void entry of a message-bus contract grows by about 68 bytes). Witness lists must be fully consumed, so their bytes
+  cannot be changed by others.
+- A message-bus route left more records unheld than its rows could write: rows with inline assembly, an `unsafe`
+  tier, a lifecycle or deployment step, a chunked value, or a lane the route only reads. A spender could rewrite such
+  a record beside an honest batch. Each row now holds what it does not write. A route handler with assembly that is
+  not kernel-safe, a `delegatecall` or a low-level call to `address(this)` compiles direct instead.
+- Value: a deployer `new{value:}` now checks the creator's container like a transfer. A value call to a function that
+  takes none, below dust, or nested (A to B to C) is refused by name (`CallValueUnpayableError`), and a raw value call
+  to a target the compiler can see is a stateful contract is refused (`StatefulRawValueCallError`): send value to a
+  stateful contract with a typed `{value:}` call.
+- A low-level call in a loop of run-time turns, or over an array of targets, is refused by name
+  (`LOW_LEVEL_CALL_IN_LOOP`): one callee run would have answered every turn.
+
 ### Fixed
 
 - A call listed with `withExternalCall()` or `withCall()` is refused by name when the calling function's guard skips

@@ -140,9 +140,13 @@ interface Deployed {
   readonly container: Uint8Array;
 }
 
-/** Deploys `artifact` with `state`; a `balance` funds its satoshi container, which pays the contract's `{value:}`. */
+/**
+ * Deploys `artifact` with `state`; a `balance` funds its satoshi container, which pays the contract's `{value:}`, and
+ * `externals` names the contracts its own calls reach.
+ */
 async function deploy(
   provider: Provider, artifact: Artifact, state: Record<string, bigint>, balance?: bigint,
+  externals?: Record<string, StatefulContract<any>>,
 ): Promise<Deployed> {
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, state, { saltContract: true });
@@ -150,7 +154,7 @@ async function deploy(
   const container = getSatoshiContainerAddress(inner, categoryId);
   if (balance !== undefined) await (provider as any).addUtxo(container, { txid: nextTxid(), vout: 0, satoshis: balance });
   return {
-    sc: StatefulContract.withCategory(contract, categoryId),
+    sc: StatefulContract.withCategory(contract, categoryId, externals === undefined ? undefined : { externals } as never),
     category: categoryId,
     lock: hexToBin(inner.lockingBytecode),
     container: addressToLockScript(container),
@@ -482,4 +486,67 @@ describe('a typed {value:} call that reads no record of its callee', () => {
     const source = SOURCE.replace('ISingle(v).deposit{value: 3000}(id);', 'ISingle(msg.sender).deposit{value: 3000}(id);');
     expect(() => compileStringMulti(source)).toThrow(/sends \{value:\} with ISingle\.deposit\(\), which reads no record/);
   });
+});
+
+/** Value calls the builder cannot pay: a callee that takes no value, a value below dust, a callee that pays on. */
+const UNPAYABLE = `pragma solidcash >=0.8.0;
+interface ISingle { function deposit(int id) external; }
+interface IMiddle { function relay(address v, int id) external; }
+contract Vault() {
+  int total;
+  int last;
+  function deposit(int id) public { this.total = this.total + msg.value; this.last = id; }
+}
+contract Plain() {
+  int last;
+  function deposit(int id) public { this.last = id; }
+}
+contract Payer() {
+  int calls;
+  function fund(address v, int id) public { ISingle(v).deposit{value: 3000}(id); this.calls = this.calls + 1; }
+  function tip(address v, int id) public { ISingle(v).deposit{value: 100}(id); this.calls = this.calls + 1; }
+}
+contract Middle() {
+  int calls;
+  function relay(address v, int id) public { ISingle(v).deposit{value: 3000}(id); this.calls = this.calls + 1; }
+}
+contract Top() {
+  int calls;
+  function go(address m, address v, int id) public { IMiddle(m).relay(v, id); this.calls = this.calls + 1; }
+}`;
+
+describe('a typed {value:} call the builder cannot pay', () => {
+  let unpayable: Record<string, Artifact> | undefined;
+  const compiledUnpayable = (): Record<string, Artifact> => {
+    unpayable ??= compileStringMulti(UNPAYABLE) as Record<string, Artifact>;
+    return unpayable;
+  };
+
+  it('is refused by name when the callee\'s entry digests no value', async () => {
+    const provider = createTestProvider();
+    const plain = await deploy(provider, compiledUnpayable().Plain, { last: 0n });
+    const payer = await deploy(provider, compiledUnpayable().Payer, { calls: 0n }, BALANCE);
+    await expect((payer.sc as any).fund(plain.lock, ID).withExternalCall(plain.sc, 'deposit', [ID]).send())
+      .rejects.toThrow(/sends \{value:\} to an entry whose record digests no value/);
+  }, TIMEOUT);
+
+  it('is refused by name below the dust a deposit needs', async () => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, compiledUnpayable().Vault, { total: 0n, last: 0n });
+    const payer = await deploy(provider, compiledUnpayable().Payer, { calls: 0n }, BALANCE);
+    await expect((payer.sc as any).tip(vault.lock, ID).withExternalCall(vault.sc, 'deposit', [ID]).send())
+      .rejects.toThrow(/sends \{value: 100\}, below the \d+ satoshis a deposit into the callee's satoshi container needs/);
+    expect((await vault.sc.getState()).total).toBe(0n);
+  }, TIMEOUT);
+
+  it('is refused by name when its callee sends value on (A to B to C)', async () => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, compiledUnpayable().Vault, { total: 0n, last: 0n });
+    const middle = await deploy(provider, compiledUnpayable().Middle, { calls: 0n }, BALANCE, { ISingle: vault.sc });
+    const top = await deploy(provider, compiledUnpayable().Top, { calls: 0n });
+    await expect((top.sc as any).go(middle.lock, vault.lock, ID)
+      .withExternalCall(middle.sc, 'relay', [vault.lock, ID]).send())
+      .rejects.toThrow(/Top\.go calls Middle\.relay\(\), which sends \{value:\} with ISingle\.deposit\(\)/);
+    expect((await vault.sc.getState()).total).toBe(0n);
+  }, TIMEOUT);
 });

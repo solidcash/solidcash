@@ -173,6 +173,20 @@ describe('B8.8: a value through a creating call', () => {
     expect(verify(moveOne(creation, at, change))).not.toBe(true);
   });
 
+  it('refuses a creation that leaves the creator\'s container coin and pays v from other funds', () => {
+    // The wallet's coin takes the container's input, and the wallet takes the container's output: the child's v is
+    // the wallet's, while the creator counts it paid out of its container.
+    const copy: Spend = structuredClone(creation);
+    const input = copy.sourceOutputs.findIndex((output: { lockingBytecode: Uint8Array }) => (
+      binToHex(output.lockingBytecode) === lockOf(factoryContainer)));
+    expect(input).toBeGreaterThanOrEqual(0);
+    copy.sourceOutputs[input] = { lockingBytecode: aliceLock, valueSatoshis: copy.sourceOutputs[input].valueSatoshis };
+    copy.transaction.inputs[input].outpointTransactionHash = hexToBin('ab'.repeat(32));
+    copy.transaction.inputs[input].outpointIndex = 0;
+    copy.transaction.outputs[outputsAt(factoryContainer).at].lockingBytecode = aliceLock;
+    expect(verify(copy)).not.toBe(true);
+  });
+
   it('passes the same moves the other way, so each refusal is the rule\'s', () => {
     const creator = outputsAt(factoryContainer);
     const child = outputsAt(childContainer);

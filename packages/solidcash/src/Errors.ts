@@ -476,6 +476,31 @@ export class RawCallCalleeRequiredError extends Error {
   }
 }
 
+export type CallValueUnpayableReason = 'callee takes no value' | 'callee sends value on' | 'below dust';
+
+/**
+ * A typed call's `{value:}` that the builder cannot pay, refused before anything is built: its callee's record would
+ * never match the caller's, which names the value, or its deposit could not be relayed.
+ */
+export class CallValueUnpayableError extends Error {
+  constructor(
+    public readonly reason: CallValueUnpayableReason,
+    /** The call as `Caller.fn's call to Callee.fn()`, or `Caller.fn calls Callee.fn()` for a nested one. */
+    public readonly call: string,
+    /** The nested call for `callee sends value on`, the value and the dust threshold for `below dust`. */
+    detail?: string,
+  ) {
+    super(reason === 'callee takes no value'
+      ? `${call} sends {value:} to an entry whose record digests no value: it is not payable and reads no msg.value, `
+        + 'or it was compiled with the message bus. Its record cannot match the caller\'s, which names the value.'
+      : reason === 'callee sends value on'
+        ? `${call}, which sends {value:} with ${detail}: a nested value call is not built, since a deposit and its `
+          + 'payer\'s debit are laid out only for the calls the root makes.'
+        : `${call} sends ${detail} a deposit into the callee's satoshi container needs to be relayed.`);
+    this.name = 'CallValueUnpayableError';
+  }
+}
+
 export class InputMissingLockingBytecodeError extends Error {
   constructor() {
     super('Input UTXO is missing its lockingBytecode. UTXOs fetched from a network provider include it automatically; '

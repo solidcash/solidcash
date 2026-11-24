@@ -11,10 +11,12 @@ import {
   encodePushdataValue,
   parseChunkCommitment,
   type AbiFunction,
+  type Artifact,
   type ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { RawCallCalleeRequiredError } from '../Errors.js';
+import { CallValueUnpayableError, RawCallCalleeRequiredError } from '../Errors.js';
+import { getDustThreshold } from '../network/dust-threshold.js';
 import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
@@ -24,7 +26,9 @@ import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-ca
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
-import { createReadOnlyDynamicChunkUnlocker, getDynamicChunkAddress } from './covenant-helpers.js';
+import {
+  createReadOnlyDynamicChunkUnlocker, getDynamicChunkAddress, getSatoshiContainerAddress,
+} from './covenant-helpers.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
@@ -596,6 +600,18 @@ export async function orchestrateCreateBuilderExternalCalls(
           'value to a co-spent callee', rawCallName(ec), `${callee}.${callInfo.functionName}`,
         );
       }
+      // A typed call's `{value:}` rides its callee's record: refuse by name what the builder cannot pay.
+      const caller = `${host.inner.artifact.contractName}.${abiFunction?.name}`;
+      const resolvedValue = callInfo && ec.callValue !== undefined ? host.resolveExternalArgs(
+        [ec.callValue], args, host.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+        undefined, 0, false, publicSelfAddress,
+      )?.[0] : undefined;
+      if (callInfo && ec.callValue !== undefined && (typeof resolvedValue !== 'bigint' || resolvedValue < 0n)) {
+        throw new Error(`The {value:} of ${caller}'s call to ${ec.interfaceName}.${ec.functionName}() does not `
+          + 'resolve to an amount from its arguments and state.');
+      }
+      const callValue = resolvedValue as bigint | undefined;
+      if (callInfo && ec.interfaceName !== '__raw__') assertCallValuePayable(caller, callInfo, callValue);
 
       const nestedPrelude = await loadCreateBuilderNestedCalleePreludeImpl(
         {
@@ -792,14 +808,6 @@ export async function orchestrateCreateBuilderExternalCalls(
 
       if (callInfo) {
         // A call whose `{value:}` rides its record: the caller's container pays it into this callee's container.
-        const callValue = ec.callValue === undefined ? undefined : host.resolveExternalArgs(
-          [ec.callValue], args, host.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
-          undefined, 0, false, publicSelfAddress,
-        )?.[0];
-        if (ec.callValue !== undefined && (typeof callValue !== 'bigint' || callValue < 0n)) {
-          throw new Error(`The {value:} of ${host.inner.artifact.contractName}.${abiFunction?.name}'s call to `
-            + `${ec.interfaceName}.${ec.functionName}() does not resolve to an amount from its arguments and state.`);
-        }
         await pushCreateBuilderDirectExternalCallGroupImpl(
           {
             deriveReturnValue: (...a: any[]) => (callInfo.externalContract as any)._deriveReturnValue(...a),
@@ -1398,4 +1406,33 @@ export async function orchestrateCreateBuilderExternalCalls(
     maxBhLocktime,
     compatLowLevelCallIndices: new Set(compatCalls.map((call) => call.callIndex)),
   };
+}
+
+/**
+ * A typed call's `{value:}` that the builder cannot pay: a callee entry whose record digests no value (not payable and
+ * reading no msg.value, or compiled with the message bus), a value below the dust its deposit needs, or a callee whose
+ * own run sends value on, whose deposit and debit are laid out for no call but the root's.
+ */
+function assertCallValuePayable(caller: string, callInfo: ExternalCallInfo, value: bigint | undefined): void {
+  const callee = callInfo.externalContract.inner.artifact as Artifact;
+  const entries = (callee.abi as readonly AbiFunction[]).filter((entry) => entry.name === callInfo.functionName);
+  const target = `${callee.contractName}.${callInfo.functionName}()`;
+  const onward = entries.flatMap((entry) => entry.externalCalls ?? []).find((call) => call.callValue !== undefined);
+  if (onward !== undefined) {
+    throw new CallValueUnpayableError(
+      'callee sends value on', `${caller} calls ${target}`, `${onward.interfaceName}.${onward.functionName}()`,
+    );
+  }
+  if (value === undefined || value === 0n) return;
+  const call = `${caller}'s call to ${target}`;
+  if (entries.every((entry) => entry.callRecordValue !== true)) {
+    throw new CallValueUnpayableError('callee takes no value', call);
+  }
+  const container = addressToLockScript(getSatoshiContainerAddress(
+    callInfo.externalContract.inner as any, (callInfo.externalContract as { categoryId: string }).categoryId,
+  ));
+  const dust = getDustThreshold({ lockingBytecode: container });
+  if (value < dust) {
+    throw new CallValueUnpayableError('below dust', call, `{value: ${value}}, below the ${dust} satoshis`);
+  }
 }

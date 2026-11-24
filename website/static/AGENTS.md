@@ -1025,8 +1025,11 @@ target.staticcall(payload);                           // low-level read-only; de
   an empty answer does not prove the callee's function returned nothing.
 - `{value: v}` pays the target where the call site can read it again (a parameter, a local, a state variable, a
   literal, `msg.sender`); any other target does not compile (`CALL_VALUE_RECIPIENT_UNBOUND`). Under `evmCompat`,
-  `{value:}`, `transfer` and `send` pay a 20-byte address's P2PKH lock. A payment to a co-spent contract would land
-  at its master lock, so the SDK refuses a typed call with value to one (`RawCallCalleeRequiredError`, reason
+  `{value:}`, `transfer` and `send` pay a 20-byte address's P2PKH lock.
+- Send value to a stateful contract only with a typed call, `C(target).f{value: v}(...)`: the builder pays v into
+  the callee's satoshi container and the callee's record binds what it received. A raw value call to a stateful
+  contract's address pays its master lock, which never spends the coin: the compiler refuses one whose target it can
+  see is stateful (`StatefulRawValueCallError`), and the SDK refuses the send (`RawCallCalleeRequiredError`, reason
   `value to a co-spent callee`), as it refuses any output paying a master lock.
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when
   no contract calls it. It is derived from the transaction's inputs, not a call frame: authorize with `checkSig`.

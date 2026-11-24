@@ -1412,9 +1412,17 @@ needs VM evidence, `rejectedWith` has no source fallback).
 - One run shared by two callers where no digest is checked (2026-11-23, residual of the one-reader fix in D50
   Fixed). A call naming fewer arguments than its method declares digests the ones it leaves as caller witnesses in a
   direct compile (S3a, "Security completion (2026-11-23)"), but in a framed, message-bus, kernel-participant or
-  deployer compile, or in a loop over targets, it still reads its record with no digest check; an opaque read checks
-  none, and neither does a table of function pointers or selectors (its callee's reader is pinned to none), so two
-  callers making such a call can still share one run. A single call through a function pointer is FIXED 2026-11-24
+  deployer compile, or in a loop over targets, it still reads its record with no digest check, and neither does a
+  table of function pointers or selectors (its callee's reader is pinned to none), so two callers making such a call
+  can still share one run. A raw `address.call` (visible or opaque payload, its result read or not) is FIXED
+  2026-11-24 (P-2): no digest over an opaque payload is sound (the caller cannot name its arguments, and the callee
+  never sees the payload), so the caller pins its callee's reader witness, the second push after an optional selector
+  push, to its own input index; one run then answers one caller (VM-confirmed before: two pullers merged into one
+  transaction each took one withdrawal, for a visible returning, a visible void and an opaque payload;
+  CallRecordSingleReader.e2e.test.ts). Residuals: a raw call through a proxy or CREATE anchor (anchor witness >= 0)
+  is left to that route; a callee entry without the record and reader witnesses at those pushes fails closed; an
+  interface-cast low-level call, `IFoo(a).call(data)`, synthesizes its result and is not pinned (its address-parameter
+  form crashes the compiler, on master too). A single call through a function pointer is FIXED 2026-11-24
   (P-1): its caller digests the record with the selector the pointer holds, its reader and its arguments, and a void
   one reads the void record, so the run answers one caller and the method and arguments it names (VM-confirmed before:
   two callers merged into one transaction each took one withdrawal; CallRecordSingleReader.e2e.test.ts). A kernel

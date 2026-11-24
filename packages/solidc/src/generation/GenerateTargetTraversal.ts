@@ -32959,6 +32959,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData); // [remaining]
   }
 
+  /**
+   * Whether a raw `call` of `node` binds its co-spent callee's run to this caller (emitRawCalleeReaderPin): a direct
+   * entry's regular call, outside a constructor, whose callee settles records naming their reader.
+   */
+  private bindsRawCalleeReader(node: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
+    return slot.interfaceName === '__raw__' && slot.functionName === '__raw__'
+      && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
+      && this.directConvention && !this.framedMaster && !this.inGenesisMode && !node.graphEmissionHandler
+      && !this.isCompilerMessageBusRoute(node);
+  }
+
+  /**
+   * `[.., idx] -> [.., idx]`: the raw call's callee at input idx runs for this caller alone. The caller digests no
+   * method or argument of an opaque payload, so the reader the callee's record names, its second push after an
+   * optional push4 selector (the record witness, then the reader witness), must be this input's index. Two callers
+   * sit at two inputs, so one run answers at most one of them, and its record names that one. A callee pushing no
+   * reader witness there fails.
+   */
+  private emitRawCalleeReaderPin(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_INPUTBYTECODE, loc);                  // [idx, ubc]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(1n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                           // [idx, ubc, first]
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_EQUAL, loc);                          // [idx, ubc, isPush4]
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(5n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);                            // [idx, rest]
+    this.emit(Op.OP_ENDIF, loc);
+    this.emitGenericPushdataDecode(new BytesType(), loc); // [idx, record witness, rest]
+    this.emit(Op.OP_NIP, loc);                            // [idx, rest]
+    this.emitGenericPushdataDecode(PrimitiveType.INT, loc); // [idx, reader, rest]
+    this.emit(Op.OP_DROP, loc);                           // [idx, reader]
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);                 // [idx]
+  }
+
   /** A literal empty payload (`call{value: v}("")`): no callee function runs, so there is nothing to pin. */
   private isEmptyLiteralPayload(data: ExpressionNode): boolean {
     if (data instanceof StringLiteralNode) return data.value.length === 0;
@@ -55614,6 +55654,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_OVER, locationData);                // [idx, input_cat_33, idx]
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData); // [idx, input_cat_33, output_cat_33]
       this.emit(Op.OP_EQUALVERIFY, locationData);         // [idx]
+
+      // A raw call checks no digest of its callee's record: an opaque payload names no arguments to digest. Its
+      // callee's run answers this caller alone instead (emitRawCalleeReaderPin). A proxy route (anchor >= 0) binds
+      // its frame otherwise.
+      if (this.bindsRawCalleeReader(node, slot)) {
+        if (anchorParamIdx >= 0) {
+          this.emit(Op.OP_FROMALTSTACK, locationData);
+          this.emit(Op.OP_DUP, locationData);
+          this.emit(Op.OP_TOALTSTACK, locationData);
+          this.emit(encodeInt(0n), locationData);
+          this.emit(Op.OP_LESSTHAN, locationData);
+          this.emit(Op.OP_IF, locationData);
+          this.emitRawCalleeReaderPin(locationData);
+          this.emit(Op.OP_ENDIF, locationData);
+        } else {
+          this.emitRawCalleeReaderPin(locationData);
+        }
+      }
 
       // 4. Verify B's function selector (REGULAR only, skip for call/staticcall)
       if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification) {

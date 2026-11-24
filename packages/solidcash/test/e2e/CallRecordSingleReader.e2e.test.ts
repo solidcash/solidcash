@@ -373,6 +373,96 @@ describe('a call record answers one reader', () => {
   }, 300_000);
 });
 
+const RAW_SOURCE = `pragma solidcash >=0.8.0;
+interface IVault {
+  function withdraw(int amount) external returns (int);
+  function spend(int amount) external;
+}
+contract Vault() {
+  int balance;
+  function withdraw(int amount) public returns (int) {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+    return amount;
+  }
+  function spend(int amount) public {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+  }
+}
+contract Puller() {
+  int credited;
+  function pullRaw(address vault, int amount) public {
+    (bool ok, bytes memory data) = vault.call(abi.encodeWithSelector(IVault.withdraw.selector, amount));
+    require(ok);
+    this.credited = this.credited + abi.decode(data, (int));
+  }
+  function payRaw(address vault, int amount) public {
+    (bool ok, bytes memory data) = vault.call(abi.encodeWithSelector(IVault.spend.selector, amount));
+    require(ok);
+    this.credited = this.credited + amount;
+  }
+  function pullOpaque(address vault, bytes payload, int amount) public {
+    (bool ok, bytes memory data) = vault.call(payload);
+    require(ok);
+    require(data.length > 0);
+    this.credited = this.credited + amount;
+  }
+}`;
+
+let rawCompiled: Record<string, Artifact> | undefined;
+const rawArtifacts = (): Record<string, Artifact> => {
+  rawCompiled ??= compileStringMulti(RAW_SOURCE) as Record<string, Artifact>;
+  return rawCompiled;
+};
+
+describe('a raw call whose callee runs once', () => {
+  // A raw call's payload names the method and arguments (visible) or is bytes the spend gives (opaque); the caller
+  // digests neither, and binds its callee's run to itself by the reader that run names. Two pullers each make the
+  // call, merged into one transaction where the vault runs once. Before that binding both took the run, each
+  // credited for one withdrawal (VM-confirmed).
+  const ROWS = [
+    { kind: 'visible returning', entry: 'pullRaw', method: 'withdraw', args: (): unknown[] => [AMOUNT] },
+    { kind: 'visible void', entry: 'payRaw', method: 'spend', args: (): unknown[] => [AMOUNT] },
+    {
+      kind: 'opaque returning', entry: 'pullOpaque', method: 'withdraw',
+      args: (): unknown[] => [hexToBin(abiOf(rawArtifacts().Vault, 'withdraw').selector!), AMOUNT],
+    },
+  ] as const;
+  it.each(ROWS)('settles a $kind raw call honestly, its callee naming the caller', async (row) => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, rawArtifacts().Vault, { balance: BALANCE });
+    const puller = await deploy(provider, rawArtifacts().Puller, { credited: 0n });
+    await (puller.sc as any)[row.entry](vault.lock, ...row.args())
+      .withExternalCall(vault.sc, row.method, [AMOUNT]).send();
+    expect((await puller.sc.getState()).credited).toBe(AMOUNT);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it.each(ROWS)('refuses two callers sharing one run of a $kind raw call', async (row) => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, rawArtifacts().Vault, { balance: BALANCE });
+    const p1 = await deploy(provider, rawArtifacts().Puller, { credited: 0n });
+    const p2 = await deploy(provider, rawArtifacts().Puller, { credited: 0n });
+    const call = (puller: Deployed) => (): Promise<unknown> => (puller.sc as any)[row.entry](
+      vault.lock, ...row.args(),
+    ).withExternalCall(vault.sc, row.method, [AMOUNT]).send();
+    const a = await capture(provider, call(p1));
+    const b = await capture(provider, call(p2));
+    const { tx, inputOf } = await merge(
+      provider, a, b, new Map([[p2.category, abiOf(rawArtifacts().Puller, row.entry)]]), vault.category,
+    );
+    const second = inputOf(inputOfCoin(await coinsOf(provider, b), p2.category, 'minting'));
+    // The vault's one run names the first puller as its reader, so the second is refused at its own input.
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('mandatory-script-verify-flag-failed');
+    expect(outcome).toContain(`error in evaluating input index ${second}:`);
+    expect((await p2.sc.getState()).credited).toBe(0n);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+});
+
 // A proxy whose fallback delegates its call to the implementation the spend names (NestedCalleeOtherPathsGuard).
 const FALLBACK_PROXY = `pragma solidcash >=0.8.0;
 contract Proxy() {

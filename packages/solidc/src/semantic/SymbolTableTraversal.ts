@@ -5408,11 +5408,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // An entry that delegatecalls settles no record of its own: its delegate's answers the call.
     const delegatecalls = describeFunctionLowLevelCallsites(node).some((site) => site.callMode === 'delegatecall');
     // A fallback or receive entry publishes no inputs, so no caller could supply the witness. A message-bus route
-    // settles no record of its own (each row's handler answers its call), so it reserves no carrier. Native assembly the
-    // compiler cannot isolate may take the values the entry keeps across its body, the digest its record settles among
-    // them, so such an entry keeps its pre-fix-B settlement too.
+    // settles no record of its own (each row's handler answers its call), so it reserves no carrier. In a message-bus
+    // build, an entry whose native assembly the compiler cannot isolate keeps the settlement it had before such builds
+    // pinned void records: that assembly may take the digest the entry keeps across its body for its record.
     if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
-      && !isMessageBusRouteFunction(node) && !bodyHasUnsafeNativeAssembly(node.body)
+      && !isMessageBusRouteFunction(node)
+      && !(isMessageBusCompile(this.compilerOptions) && bodyHasUnsafeNativeAssembly(node.body))
       && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
       && !readsExternalStorage && !delegatecalls && !node.isFallback && !node.isReceive
       && this.compilerOptions.composition !== 'framed' && this.compilerOptions.messageBusDirectParticipant !== true

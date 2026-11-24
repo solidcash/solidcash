@@ -2338,3 +2338,29 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   so a handler that takes no parameters and writes dynamic state ran without the base check: by DYN-1's mechanism, a
   spender passing a base below -1 could skip its chunk verification. The branch now runs the same statements as the
   others (found through the KernelMultiDynamicShrink regression above; not separately VM-tested on the old code).
+- **A void entry whose native assembly takes its own call digest** (by reading, 2026-11-24; `sec-argsleft-holes`).
+  16ef0a5d6 gave a message-bus build's direct void entries the void record's carrier witness. Such an entry takes
+  `__internal__callDigest` at entry and nothing is pushed above it before the body when the entry makes no call, loop
+  or edge, so native assembly that reads values it did not push (`assembly { OP_DUP }`, `OP_DROP`, `OP_1 OP_LSHIFT
+  OP_DROP` first in the body) renames it in the code generator's stack model, and the record's settlement fails to
+  compile (`StackVariableUnavailableError: '__internal__callDigest'`): KERNEL_OPAQUE_EFFECT's fixtures stopped
+  compiling. In a message-bus build such an entry now takes no carrier witness (`bodyHasUnsafeNativeAssembly`, assembly
+  the kernel cannot isolate), as before 16ef0a5d6; a direct build keeps master's behaviour.
+  - A message-bus caller reading that entry's void record (a void call through a single-function interface) is
+    refused at run time: no carrier stands at the output its record read names.
+  - Open, pre-existing (direct builds, master): the same rename. A direct build's void entry settles the universal void
+    record from the same digest, so `function touch() public { assembly { OP_DUP } x = 1; require(true); }` in a
+    stateful direct build fails to compile with that error, as does a non-isolated `OP_ROLL` anywhere in the body,
+    which renames every value the model tracks. A returning entry takes its digest the same way in any build. Fail
+    closed (a compile error); not changed.
+  - Forging the absent record: the carrier is an NFT of the callee's category (no capability, an `OP_TRUE` lock,
+    `digest || 01`, which the caller's read checks), so it is minted only in a run that spends the callee's minting
+    master, under the callee's own covenant. A run that settles no record refuses one where the callee has an entry
+    returning values or the multi-call entry (`emitCallRecordCount`: zero carriers beside its pinned edges) or declares
+    events (`emitOwnCategoryImmutableNftOutputPin`: no own-category immutable NFT outside its checked outputs). Open,
+    by reading, not VM-confirmed: a callee with neither (all entries void, no events) counts only its edges in such a
+    run (`emitSharedOwnEdgeCount`, which skips the record lock), so nothing refuses a carrier minted there, nor an
+    earlier carrier respent (its lock is `OP_TRUE`). This predates the message-bus change: every entry of such a
+    contract that settles no record (one reading external storage, one that delegatecalls, a lifecycle or `unsafe`
+    entry, and now this assembly in a message-bus build) lets a single-interface caller accept a record its callee's
+    run did not settle.

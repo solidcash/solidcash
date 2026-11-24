@@ -56646,6 +56646,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // A raw `call` checks no digest of this iteration's record: its callee's run answers this caller alone instead, by
+    // the reader that run names (emitRawCalleeReaderPin), as a raw call outside a loop does.
+    if (node.opaqueReturn && this.bindsRawCalleeReader(this.currentFunction, slot)) {
+      this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc); // [..., inputidx]
+      this.emitRawCalleeReaderPin(loc);
+      this.emit(Op.OP_DROP, loc);           // [...]
+    }
+
     // --- TYPED (non-opaque) call: no opaque return-event. The identity + preservation above already pinned the
     // callee master to targets[i]; verify its selector matches the slot's (so a co-spent pair can't be driven with
     // a different method), then clean up the loop temps and return. `IFoo(targets[i]).m(..)` / Router02 pair.swap. ---

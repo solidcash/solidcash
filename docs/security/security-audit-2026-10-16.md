@@ -1426,7 +1426,13 @@ needs VM evidence, `rejectedWith` has no source fallback).
   never sees the payload), so the caller pins its callee's reader witness, the second push after an optional selector
   push, to its own input index; one run then answers one caller (VM-confirmed before: two pullers merged into one
   transaction each took one withdrawal, for a visible returning, a visible void and an opaque payload;
-  CallRecordSingleReader.e2e.test.ts). Residuals: a raw call through a proxy or CREATE anchor (anchor witness >= 0)
+  CallRecordSingleReader.e2e.test.ts). A raw call in a loop over targets (`targets[i].call(data[i])`) pins each
+  iteration's callee reader the same way, FIXED 2026-11-24 (P-3); its double credit is unconfirmed, as the SDK's
+  honest build of such a loop in a stateful caller already fails its preflight at the caller (pre-existing), and the
+  pin is VM-run on hand-built spends (InlineLoopDispatch.test.ts). The stateless opaque builders (solidcash/loop-call)
+  derive co-spends that name no reader, so a `call` loop built through them now fails closed; a `staticcall` loop is
+  not pinned, as a read-only run shared by two callers changes nothing either takes.
+  Residuals: a raw call through a proxy or CREATE anchor (anchor witness >= 0)
   is left to that route; a callee entry without the record and reader witnesses at those pushes fails closed; an
   interface-cast low-level call, `IFoo(a).call(data)`, synthesizes its result and is not pinned (its address-parameter
   form crashes the compiler, on master too). A single call through a function pointer is FIXED 2026-11-24

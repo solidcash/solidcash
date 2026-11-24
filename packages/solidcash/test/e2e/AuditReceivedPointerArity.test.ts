@@ -101,11 +101,26 @@ function selectorInput(builder: any, s: Uint8Array): number {
   throw new Error('selector input not found');
 }
 
-/** Run the mem-cash VM over the built fireN(1, v) under a chain state past its anti-malleability locktime. */
+/** P2SH32 of `OP_1`, spent with a push of its redeem script: the SDK's mocknet fee funder. */
+const FUNDER = hexToBin('aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087');
+
+/**
+ * Run the mem-cash VM over the built fireN(1, v) under a chain state past its anti-malleability locktime. A built call
+ * is the transaction its send funds: the record each table call adds is paid there, so a plain coin covers it here.
+ */
 function runVm(fireN: any): { success: boolean; error?: string } {
   const tx = fireN.buildLibauthTransaction();
-  const hex = binToHex(encodeTransaction(tx));
   const sourceOutputs = generateLibauthSourceOutputs(fireN.inputs);
+  const deficit = tx.outputs.reduce((sum: bigint, output: any) => sum + output.valueSatoshis, 0n)
+    - sourceOutputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+  if (deficit >= 0n) {
+    tx.inputs.push({
+      outpointTransactionHash: hexToBin('5e'.repeat(32)), outpointIndex: 0, sequenceNumber: 0xffffffff,
+      unlockingBytecode: Uint8Array.of(0x01, 0x51),
+    });
+    sourceOutputs.push({ lockingBytecode: FUNDER, valueSatoshis: deficit + 1000n });
+  }
+  const hex = binToHex(encodeTransaction(tx));
   const lt = Number(tx.locktime);
   const chain = lt < 500000000
     ? { height: lt + 1, medianTimePast: 1700000000 } : { height: 133700, medianTimePast: lt + 1 };

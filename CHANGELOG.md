@@ -172,6 +172,11 @@
   with such a local compile to new, smaller bytes: in the repository corpus 2 of 352 contracts (by 272 and 56 bytes),
   in the external Solidity corpus 1 of 644 files (by 108). `scalarReplaceStructLocals: false` keeps the old
   lowering.
+- `solidcash/loop-call`: a typed loop whose call names its arguments now reads each target's void record, so
+  `buildTypedLoopCallTransaction` fills the record base and lays out one record per target at output 1 + n + i from
+  `cospends[i].record`, on a carrier of the target's token category, and `deriveTypedLoopCoSpends` builds each target's
+  frame with the record's output and reader 0 (the caller) and fills that record from the target's artifact. A target
+  co-spend for such a loop needs a token.
 
 ## 0.51.1
 

@@ -7,6 +7,7 @@ import { createTxVerifier } from '@mem-cash/validation';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
+import { callRecordDigest } from '../../src/stateful/call-record.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
@@ -17,8 +18,10 @@ import { generateLibauthSourceOutputs } from '../../src/utils.js';
  * `genesisCalls` (on by default, A7) makes of every qualifying contract, takes three: its record witness, the reader
  * its record names, and then its genesis call. The pin used to know only the first, so every call through a received
  * pointer into such a callee was refused at the caller. The genesis call of a call that is not a constructor's is
- * empty, so the caller admits it only as OP_0; it checks no digest of a pointer call, so the reader must name none
- * (-1), and so must a void pointer's record witness.
+ * empty, so the caller admits it only as OP_0. A single pointer call reads its callee's record by the digest of the
+ * selector the pointer holds, its reader and its arguments, so the record witness and the reader are free there and
+ * name the record and the caller's input. A call through a table of pointers reads its element's record the same way
+ * (P-3, tables), by the selector its element holds, so they are free there as well.
  *
  * Every honest call settles under the BCH 2026 standard VM. Each refusal edits the honest call's callee unlocking,
  * one push replaced or added, and the caller, input 0, must refuse it.
@@ -96,6 +99,11 @@ function selectorInput(builder: any, s: Uint8Array): number {
   throw new Error('selector input not found');
 }
 
+/** The input spending the coin at `lock`. */
+function inputAt(builder: any, lock: string): number {
+  return generateLibauthSourceOutputs(builder.inputs).findIndex((output) => binToHex(output.lockingBytecode) === lock);
+}
+
 /** The pushes of the callee's unlocking, as opcodes (a data push reads as its hex). */
 function pushes(builder: any, input: number): string[] {
   return decodeAuthenticationInstructions(builder.buildLibauthTransaction().inputs[input].unlockingBytecode)
@@ -124,11 +132,26 @@ const replacePush = (builder: any, input: number, at: number, data: Uint8Array):
 const insertPush = (builder: any, input: number, at: number, data: Uint8Array): any =>
   rewrite(builder, input, (all) => [...all.slice(0, at), encodeDataPush(data), ...all.slice(at)]);
 
-/** Run the BCH 2026 standard VM over the built transaction, past its anti-malleability locktime. */
+/** P2SH32 of `OP_1`, spent with a push of its redeem script: the SDK's mocknet fee funder. */
+const FUNDER = hexToBin('aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087');
+
+/**
+ * Run the BCH 2026 standard VM over the built transaction, past its anti-malleability locktime. A built call is the
+ * transaction its send funds: the records a table's calls add are paid there, so a plain coin covers them here.
+ */
 function runVm(builder: any): Verdict {
   const tx = builder.buildLibauthTransaction();
-  const hex = binToHex(encodeTransaction(tx));
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const deficit = tx.outputs.reduce((sum: bigint, output: any) => sum + output.valueSatoshis, 0n)
+    - sourceOutputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+  if (deficit >= 0n) {
+    tx.inputs.push({
+      outpointTransactionHash: hexToBin('5e'.repeat(32)), outpointIndex: 0, sequenceNumber: 0xffffffff,
+      unlockingBytecode: Uint8Array.of(0x01, 0x51),
+    });
+    sourceOutputs.push({ lockingBytecode: FUNDER, valueSatoshis: deficit + 1000n });
+  }
+  const hex = binToHex(encodeTransaction(tx));
   const lt = Number(tx.locktime);
   const chain = lt < 500000000
     ? { height: lt + 1, medianTimePast: 1700000000 } : { height: 133700, medianTimePast: lt + 1 };
@@ -138,10 +161,15 @@ function runVm(builder: any): Verdict {
 
 const OP_0 = 'op0';
 const OP_1NEGATE = 'op79';
+/** An input index as its minimal push reads in `pushes`. */
+const indexPush = (index: number): string => (index === 0 ? OP_0 : index <= 16 ? `op${0x50 + index}`
+  : binToHex(Uint8Array.of(index)));
 
 describe('a table of received pointers into a record-sound callee (VM)', () => {
-  /** fireN(1, 3) through a table holding one pointer to the callee's `inc`; the callee's input is returned too. */
-  async function build(options: Record<string, unknown> = {}): Promise<{ call: any; callee: number }> {
+  /** fireN(1, 3) through a table holding one pointer to the callee's `inc`; the callee's and caller's inputs too. */
+  async function build(options: Record<string, unknown> = {}): Promise<{
+    call: any; callee: number; caller: number; handler: any;
+  }> {
     const provider = createTestProvider();
     const handler = compileString(HANDLER, options);
     const table = compileString(TABLE);
@@ -151,14 +179,17 @@ describe('a table of received pointers into a record-sound callee (VM)', () => {
     const pointer = table.abi.find((entry: any) => entry.name === 'fireN')!.externalCalls![0]!.interfaceName;
     t.sc.registerExternalArray(pointer, [h.sc], ['inc']);
     const call = await t.sc.fireN(1n, 3n).build();
-    return { call, callee: selectorInput(call, selectorOf(handler, 'inc')) };
+    return { call, callee: selectorInput(call, selectorOf(handler, 'inc')), caller: inputAt(call, t.lock), handler };
   }
 
-  it('settles the honest call: the record witness and the reader name none and the genesis call is empty', async () => {
-    const { call, callee } = await build();
-    // The selector, the record witness, the reader, the genesis call, the argument and the redeem.
-    expect(pushes(call, callee).slice(1, 4)).toEqual([OP_1NEGATE, OP_1NEGATE, OP_0]);
-    expect(pushes(call, callee)).toHaveLength(6);
+  it('settles the honest call: the record witness names its record, the reader the caller', async () => {
+    const { call, callee, caller } = await build();
+    // The selector, the record witness, the reader, the genesis call, the argument and the redeem. The call reads its
+    // element's record, so the record witness and the reader are free, as for a single pointer.
+    const calleePushes = pushes(call, callee);
+    expect(calleePushes[1]).not.toBe(OP_1NEGATE);
+    expect(calleePushes.slice(2, 4)).toEqual([indexPush(caller), OP_0]);
+    expect(calleePushes).toHaveLength(6);
     const r = runVm(call);
     expect(r.error ?? 'ok').toBe('ok');
     expect(r.success).toBe(true);
@@ -184,18 +215,25 @@ describe('a table of received pointers into a record-sound callee (VM)', () => {
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
 
-  it('refuses a record witness that names an output beside an empty genesis call at the caller', async () => {
+  it('refuses a record witness that names another output, at the callee', async () => {
+    // The record witness is free: the callee pins its record where it names, and output 17 holds none. The caller
+    // reads the record its own witness names, which the edit leaves, so the callee is the one to refuse.
     const { call, callee } = await build();
-    const r = runVm(replacePush(call, callee, 1, Uint8Array.of(2)));
+    const r = runVm(replacePush(call, callee, 1, Uint8Array.of(0x11)));
     expect(r.success).toBe(false);
-    expect(r.error ?? '').toMatch(/input index 0/);
+    expect(r.error ?? '').toMatch(new RegExp(`input index ${callee}`));
   }, 300_000);
 
-  it('refuses a reader that names an input at the caller', async () => {
-    const { call, callee } = await build();
-    const r = runVm(replacePush(call, callee, 2, Uint8Array.of(1)));
+  it('refuses a callee run naming another reader, its record rewritten to match, at the caller', async () => {
+    const { call, callee, caller, handler } = await build();
+    const record = call.outputs.findIndex((output: any) => (typeof output.to === 'string' ? output.to
+      : binToHex(output.to)) === '51' && output.token?.nft?.capability === 'none');
+    expect(record).toBeGreaterThanOrEqual(0);
+    const digest = callRecordDigest(handler.abi.find((entry: any) => entry.name === 'inc'), [3n], {}, 0, caller + 1)!;
+    call.outputs[record].token.nft.commitment = `${binToHex(digest)}01`;
+    const r = runVm(replacePush(call, callee, 2, Uint8Array.of(caller + 1)));
     expect(r.success).toBe(false);
-    expect(r.error ?? '').toMatch(/input index 0/);
+    expect(r.error ?? '').toMatch(new RegExp(`input index ${caller}`));
   }, 300_000);
 
   it('refuses a fourth push ahead of the argument at the caller, empty as it is', async () => {
@@ -207,19 +245,21 @@ describe('a table of received pointers into a record-sound callee (VM)', () => {
 });
 
 describe('a received pointer parameter into a record-sound callee (VM)', () => {
-  async function build(): Promise<{ call: any; callee: number }> {
+  async function build(): Promise<{ call: any; callee: number; caller: number }> {
     const provider = createTestProvider();
     const handler = compileString(HANDLER);
     const h = await deploy(provider, handler, { counter: 5n });
     const p = await deploy(provider, compileString(PARAM), { bumps: 0n });
     const call = await p.sc.fireWith(hexToBin(h.lock), selectorOf(handler, 'inc'), 3n)
       .withExternalCall(h.sc, 'inc', [3n]).build();
-    return { call, callee: selectorInput(call, selectorOf(handler, 'inc')) };
+    return { call, callee: selectorInput(call, selectorOf(handler, 'inc')), caller: inputAt(call, p.lock) };
   }
 
-  it('settles the honest call', async () => {
-    const { call, callee } = await build();
-    expect(pushes(call, callee).slice(1, 4)).toEqual([OP_1NEGATE, OP_1NEGATE, OP_0]);
+  it('settles the honest call: the record witness names its record, the reader the caller', async () => {
+    const { call, callee, caller } = await build();
+    const calleePushes = pushes(call, callee);
+    expect(calleePushes[1]).not.toBe(OP_1NEGATE);
+    expect(calleePushes.slice(2, 4)).toEqual([indexPush(caller), OP_0]);
     const r = runVm(call);
     expect(r.error ?? 'ok').toBe('ok');
     expect(r.success).toBe(true);
@@ -234,7 +274,7 @@ describe('a received pointer parameter into a record-sound callee (VM)', () => {
 });
 
 describe('a stored returning pointer into a record-sound callee (VM)', () => {
-  async function build(options: Record<string, unknown> = {}): Promise<{ call: any; callee: number }> {
+  async function build(options: Record<string, unknown> = {}): Promise<{ call: any; callee: number; caller: number }> {
     const provider = createTestProvider();
     const handler = compileString(HANDLER_R, options);
     const h = await deploy(provider, handler, { counter: 5n });
@@ -242,14 +282,14 @@ describe('a stored returning pointer into a record-sound callee (VM)', () => {
       stored: hexToBin(h.lock), __fnsel_stored: selectorOf(handler, 'inc'), lastResult: 0n,
     });
     const call = await s.sc.run(alicePub, sig()).withExternalCall(h.sc, 'inc', [alicePub, sig()]).build();
-    return { call, callee: selectorInput(call, selectorOf(handler, 'inc')) };
+    return { call, callee: selectorInput(call, selectorOf(handler, 'inc')), caller: inputAt(call, s.lock) };
   }
 
-  it('settles the honest call: the record witness names its record, the reader none, an empty genesis call', async () => {
-    const { call, callee } = await build();
+  it('settles the honest call: the record witness names its record, the reader the caller', async () => {
+    const { call, callee, caller } = await build();
     const calleePushes = pushes(call, callee);
     expect(calleePushes[1]).not.toBe(OP_1NEGATE);
-    expect(calleePushes.slice(2, 4)).toEqual([OP_1NEGATE, OP_0]);
+    expect(calleePushes.slice(2, 4)).toEqual([indexPush(caller), OP_0]);
     const r = runVm(call);
     expect(r.error ?? 'ok').toBe('ok');
     expect(r.success).toBe(true);

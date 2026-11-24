@@ -3,12 +3,14 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
   encodeDataPush, encodeTransaction, hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';
-import { CALL_RECORD_READER_INPUT, type AbiFunction, type Artifact } from '@solidcash/utils';
+import { CALL_RECORD_READER_INPUT, encodePushdataValue, type AbiFunction, type Artifact } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../direct-compile.js';
-import { Contract, Signer } from '../../src/index.js';
+import { Contract, Signer, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract, getContractFactory, upgrades } from '../../src/stateful/index.js';
 import { callRecordDigest } from '../../src/stateful/call-record.js';
-import { addProvenUtxo, createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  addProvenUtxo, createFeeFunder, createTestProvider, setupStatefulUtxos, verifyTransaction,
+} from '../test-util.js';
 
 /**
  * One call record answers one reader (docs/security/security-audit-2026-10-16.md, "One record read by two callers").
@@ -21,7 +23,8 @@ import { addProvenUtxo, createTestProvider, setupStatefulUtxos } from '../test-u
  * record. The control merges A1 -> T1 and A2 -> T2 the same way and settles, so only the shared record is refused.
  * The merge discovers every position from the transactions and the ABI, so it runs on a build without the binding,
  * where the attack settles. A void call through an interface naming several methods reads the callee's record too,
- * in place of its selector check. A call an implementation makes behind a proxy names the implementation's input.
+ * in place of its selector check, and a call through a function pointer reads it by the digest of the selector the
+ * pointer holds. A call an implementation makes behind a proxy names the implementation's input.
  */
 
 const SOURCE = `pragma solidcash >=0.8.0;
@@ -169,7 +172,12 @@ const valueOf = (instruction: Instruction): bigint => {
 };
 
 // The covenant witnesses that name an input or an output of the transaction; -1 names none.
-const INPUT_WITNESS = /^__internal__(?:externalCallInputBase|extcallMasterIdx\d*|extcallAnchorIdx\d*|callRecordReader)$/;
+const INPUT_WITNESS = new RegExp('^__internal__(?:externalCallInputBase|extcallMasterIdx\\d*|extcallAnchorIdx\\d*'
+  + '|callRecordReader|dynamicChunkInputBase)$');
+// A chunk base an entry only reads names chunk input `i` as `-(i + 3)` (resolveDynamicChunkInputBase).
+const READ_CHUNK_BASE = '__internal__dynamicChunkInputBase';
+// A table of received pointers names each element's callee input in a list of framed indices.
+const INPUT_LIST = /^__internal__extcallIdxList\d*$/;
 const OUTPUT_WITNESS = /^__internal__(?:returnOutputIdx|externalReturnOutputIdx\d*|callEdgeOutputIdx\d*)$/;
 
 /** A master's unlocking (selector, one push per ABI input with input 0 last, redeem) with its coordinates moved. */
@@ -183,6 +191,14 @@ function moveMaster(
     const at = instructions.length - 2 - position;
     const value = move === undefined ? -1n : valueOf(instructions[at]!);
     if (value >= 0n) instructions[at] = pushOf(BigInt(move!(Number(value))));
+    if (input.name === READ_CHUNK_BASE && value < -2n) instructions[at] = pushOf(-BigInt(inputOf(Number(-value - 3n)) + 3));
+    if (INPUT_LIST.test(input.name)) {
+      const list = (decodeAuthenticationInstructions(instructions[at]!.data ?? new Uint8Array()) as Instruction[])
+        .map((element) => encodePushdataValue(BigInt(inputOf(Number(valueOf(element)))), 'bigint'));
+      instructions[at] = decodeAuthenticationInstructions(encodeDataPush(Uint8Array.of(
+        ...list.flatMap((element) => [...element]),
+      )))[0] as Instruction;
+    }
   });
   return encodeAuthenticationInstructions(instructions as any);
 }
@@ -372,6 +388,509 @@ describe('a call record answers one reader', () => {
   }, 300_000);
 });
 
+const RAW_SOURCE = `pragma solidcash >=0.8.0;
+interface IVault {
+  function withdraw(int amount) external returns (int);
+  function spend(int amount) external;
+}
+contract Vault() {
+  int balance;
+  function withdraw(int amount) public returns (int) {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+    return amount;
+  }
+  function spend(int amount) public {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+  }
+}
+contract Puller() {
+  int credited;
+  function pullRaw(address vault, int amount) public {
+    (bool ok, bytes memory data) = vault.call(abi.encodeWithSelector(IVault.withdraw.selector, amount));
+    require(ok);
+    this.credited = this.credited + abi.decode(data, (int));
+  }
+  function payRaw(address vault, int amount) public {
+    (bool ok, bytes memory data) = vault.call(abi.encodeWithSelector(IVault.spend.selector, amount));
+    require(ok);
+    this.credited = this.credited + amount;
+  }
+  function pullOpaque(address vault, bytes payload, int amount) public {
+    (bool ok, bytes memory data) = vault.call(payload);
+    require(ok);
+    require(data.length > 0);
+    this.credited = this.credited + amount;
+  }
+}`;
+
+// A stateless caller of a raw call: it keeps no state a shared run could credit twice.
+const RELAY_SOURCE = `pragma solidcash >=0.8.0;
+contract Relay() {
+  function relay(address target, bytes payload) public {
+    (bool ok, bytes memory data) = target.call(payload);
+    require(ok);
+    require(data.length == 0);
+  }
+}`;
+
+let rawCompiled: Record<string, Artifact> | undefined;
+const rawArtifacts = (): Record<string, Artifact> => {
+  rawCompiled ??= compileStringMulti(RAW_SOURCE) as Record<string, Artifact>;
+  return rawCompiled;
+};
+
+describe('a raw call whose callee runs once', () => {
+  // A raw call's payload names the method and arguments (visible) or is bytes the spend gives (opaque); the caller
+  // digests neither, and binds its callee's run to itself by the reader that run names. Two pullers each make the
+  // call, merged into one transaction where the vault runs once. Before that binding both took the run, each
+  // credited for one withdrawal (VM-confirmed).
+  const ROWS = [
+    { kind: 'visible returning', entry: 'pullRaw', method: 'withdraw', args: (): unknown[] => [AMOUNT] },
+    { kind: 'visible void', entry: 'payRaw', method: 'spend', args: (): unknown[] => [AMOUNT] },
+    {
+      kind: 'opaque returning', entry: 'pullOpaque', method: 'withdraw',
+      args: (): unknown[] => [hexToBin(abiOf(rawArtifacts().Vault, 'withdraw').selector!), AMOUNT],
+    },
+  ] as const;
+  it.each(ROWS)('settles a $kind raw call honestly, its callee naming the caller', async (row) => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, rawArtifacts().Vault, { balance: BALANCE });
+    const puller = await deploy(provider, rawArtifacts().Puller, { credited: 0n });
+    await (puller.sc as any)[row.entry](vault.lock, ...row.args())
+      .withExternalCall(vault.sc, row.method, [AMOUNT]).send();
+    expect((await puller.sc.getState()).credited).toBe(AMOUNT);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it.each(ROWS)('refuses two callers sharing one run of a $kind raw call', async (row) => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, rawArtifacts().Vault, { balance: BALANCE });
+    const p1 = await deploy(provider, rawArtifacts().Puller, { credited: 0n });
+    const p2 = await deploy(provider, rawArtifacts().Puller, { credited: 0n });
+    const call = (puller: Deployed) => (): Promise<unknown> => (puller.sc as any)[row.entry](
+      vault.lock, ...row.args(),
+    ).withExternalCall(vault.sc, row.method, [AMOUNT]).send();
+    const a = await capture(provider, call(p1));
+    const b = await capture(provider, call(p2));
+    const { tx, inputOf } = await merge(
+      provider, a, b, new Map([[p2.category, abiOf(rawArtifacts().Puller, row.entry)]]), vault.category,
+    );
+    const second = inputOf(inputOfCoin(await coinsOf(provider, b), p2.category, 'minting'));
+    // The vault's one run names the first puller as its reader, so the second is refused at its own input.
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('mandatory-script-verify-flag-failed');
+    expect(outcome).toContain(`error in evaluating input index ${second}:`);
+    expect((await p2.sc.getState()).credited).toBe(0n);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+
+  it('builds a stateless caller\'s raw call to a target that is no SolidCash contract', async () => {
+    // The reader is bound for a caller that keeps state. A stateless one stays caller-permissive (TARGET-5): its call
+    // to an OP_TRUE coin, which pushes no reader, settles, its empty answer standing for the record none pins.
+    const provider = createTestProvider();
+    const relay = new Contract(compileString(RELAY_SOURCE), [], { provider });
+    const OP_TRUE = hexToBin('51');
+    const token = { category: 'a0'.repeat(32), amount: 0n, nft: { capability: 'minting' as const, commitment: '' } };
+    const funder = await createFeeFunder(provider, 10000n);
+    const tb = new TransactionBuilder({ provider });
+    // target, payload, the callee's input (base and master index), no anchor, no record, no preimage
+    tb.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, relay.unlock.relay(
+      OP_TRUE, new Uint8Array(), 1n, 1n, -1n, -1n, new Uint8Array(),
+    ) as never);
+    tb.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1200n, token }, {
+      generateLockingBytecode: (): Uint8Array => OP_TRUE,
+      generateUnlockingBytecode: (): Uint8Array => new Uint8Array(),
+    } as never);
+    tb.addInput(funder.utxo, funder.unlocker);
+    tb.addOutput({ to: relay.address, amount: 100000n });
+    tb.addOutput({ to: OP_TRUE, amount: 1200n, token });
+    tb.addOutput({ to: OP_TRUE, amount: 7000n });
+    verifyTransaction(tb);
+  }, 300_000);
+});
+
+const LOOP_SOURCE = `pragma solidcash >=0.8.0;
+interface IVault {
+  function withdraw(int amount) external returns (int);
+  function spend(int amount) external;
+}
+contract Vault() {
+  int balance;
+  function withdraw(int amount) public returns (int) {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+    return amount;
+  }
+  function spend(int amount) public {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+  }
+}
+contract Looper() {
+  int credited;
+  function payEach(address[] ts, int amount) public {
+    for (uint i = 0; i < ts.length; i++) { IVault(ts[i]).spend(amount); }
+    this.credited = this.credited + amount;
+  }
+  function pullEach(address[] ts, int amount) public {
+    for (uint i = 0; i < ts.length; i++) { this.credited = this.credited + IVault(ts[i]).withdraw(amount); }
+  }
+}`;
+
+let loopCompiled: Record<string, Artifact> | undefined;
+const loopArtifacts = (): Record<string, Artifact> => {
+  loopCompiled ??= compileStringMulti(LOOP_SOURCE) as Record<string, Artifact>;
+  return loopCompiled;
+};
+
+describe('a loop over targets whose callee runs once', () => {
+  // Each iteration reads its callee's record, a void one `digest || 01`, at the return base plus its index, by the
+  // digest of its method, its reader and its arguments. Two loopers each make the call, merged into one transaction
+  // where the vault runs once. Before the void loop read its records, both took the run, each credited for one
+  // payment (VM-confirmed); the returning loop already digested its records and was refused.
+  const ROWS = [
+    { kind: 'void', entry: 'payEach', method: 'spend' },
+    { kind: 'returning', entry: 'pullEach', method: 'withdraw' },
+  ] as const;
+  const setupLoop = async (row: typeof ROWS[number]): Promise<{
+    provider: Provider; vault: Deployed; loopers: Deployed[]; call: (looper: Deployed) => () => Promise<unknown>;
+  }> => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, loopArtifacts().Vault, { balance: BALANCE });
+    const loopers = [
+      await deploy(provider, loopArtifacts().Looper, { credited: 0n }),
+      await deploy(provider, loopArtifacts().Looper, { credited: 0n }),
+    ];
+    for (const looper of loopers) (looper.sc as any).registerExternalArray('IVault', [vault.sc], [row.method]);
+    const call = (looper: Deployed) => (): Promise<unknown> => (looper.sc as any)[row.entry](
+      [vault.lock], AMOUNT,
+    ).send();
+    return { provider, vault, loopers, call };
+  };
+
+  it.each(ROWS)('settles a $kind loop call honestly, its record naming the caller', async (row) => {
+    const { provider, vault, loopers: [looper], call } = await setupLoop(row);
+    const tx = await capture(provider, call(looper!));
+    const record = outputWith(tx, '51', vault.category);
+    const caller = inputOfCoin(await coinsOf(provider, tx), looper!.category, 'minting');
+    const digest = callRecordDigest(abiOf(loopArtifacts().Vault, row.method), [AMOUNT], {}, 0, caller)!;
+    expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digest));
+    await call(looper!)();
+    expect((await looper!.sc.getState()).credited).toBe(AMOUNT);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it.each(ROWS)('refuses two callers sharing one run of a $kind loop call', async (row) => {
+    const { provider, vault, loopers: [l1, l2], call } = await setupLoop(row);
+    const a = await capture(provider, call(l1!));
+    const b = await capture(provider, call(l2!));
+    const { tx, inputOf } = await merge(
+      provider, a, b, new Map([[l2!.category, abiOf(loopArtifacts().Looper, row.entry)]]), vault.category,
+    );
+    const second = inputOf(inputOfCoin(await coinsOf(provider, b), l2!.category, 'minting'));
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('mandatory-script-verify-flag-failed');
+    expect(outcome).toContain(`error in evaluating input index ${second}:`);
+    expect((await l2!.sc.getState()).credited).toBe(0n);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+});
+
+const STATE_LOOP_SOURCE = `pragma solidcash >=0.8.0;
+interface IVault {
+  function withdraw(int amount) external returns (int);
+  function spend(int amount) external;
+}
+contract Vault() {
+  int balance;
+  function withdraw(int amount) public returns (int) {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+    return amount;
+  }
+  function spend(int amount) public {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+  }
+}
+contract Keeper() {
+  address[] ts;
+  int credited;
+  function reg(address t) public { this.ts.push(t); }
+  function payAll(int amount) public {
+    for (uint i = 0; i < ts.length; i++) { IVault(ts[i]).spend(amount); }
+    this.credited = this.credited + amount;
+  }
+  function pullAll(int amount) public {
+    for (uint i = 0; i < ts.length; i++) { this.credited = this.credited + IVault(ts[i]).withdraw(amount); }
+  }
+}`;
+
+let stateLoopCompiled: Record<string, Artifact> | undefined;
+const stateLoopArtifacts = (): Record<string, Artifact> => {
+  stateLoopCompiled ??= compileStringMulti(STATE_LOOP_SOURCE) as Record<string, Artifact>;
+  return stateLoopCompiled;
+};
+
+describe('a loop over a state array whose callee runs once', () => {
+  // Each turn reads its callee's record at the return base plus its element, by the digest of its method, its reader
+  // and its arguments, and checks the record's carrier is the callee's. Two keepers each make the call, merged into one
+  // transaction where the vault runs once.
+  const ROWS = [
+    { kind: 'void', entry: 'payAll', method: 'spend' },
+    { kind: 'returning', entry: 'pullAll', method: 'withdraw' },
+  ] as const;
+  /** Two keepers whose tables hold one vault each: the same one, or with `own` one each. */
+  const setupKeepers = async (row: typeof ROWS[number], own = false, balance = BALANCE): Promise<{
+    provider: Provider; vaults: Deployed[]; keepers: Deployed[]; call: (keeper: Deployed) => () => Promise<unknown>;
+  }> => {
+    const provider = createTestProvider();
+    const vaults: Deployed[] = [];
+    const keepers: Deployed[] = [];
+    for (let at = 0; at < 2; at++) {
+      if (at === 0 || own) vaults.push(await deploy(provider, stateLoopArtifacts().Vault, { balance }));
+      const vault = vaults[vaults.length - 1]!;
+      const keeper = await deployContract(provider, new Contract(stateLoopArtifacts().Keeper, [], { provider }),
+        { ts: [], credited: 0n } as never);
+      await (keeper.sc as any).reg(vault.lock).send();
+      (keeper.sc as any).registerExternalArray('IVault', [vault.sc], [row.method]);
+      keepers.push(keeper);
+    }
+    const call = (keeper: Deployed) => (): Promise<unknown> => (keeper.sc as any)[row.entry](AMOUNT).send();
+    return { provider, vaults, keepers, call };
+  };
+  const digestAt = (method: string, reader: number): Uint8Array => callRecordDigest(
+    abiOf(stateLoopArtifacts().Vault, method), [AMOUNT], {}, 0, reader,
+  )!;
+
+  it.each(ROWS)('settles a $kind call honestly, its record naming the caller', async (row) => {
+    const { provider, vaults: [vault], keepers: [keeper], call } = await setupKeepers(row);
+    const tx = await capture(provider, call(keeper!));
+    const record = outputWith(tx, '51', vault!.category);
+    const caller = inputOfCoin(await coinsOf(provider, tx), keeper!.category, 'minting');
+    expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digestAt(row.method, caller)));
+    await call(keeper!)();
+    expect((await keeper!.sc.getState()).credited).toBe(AMOUNT);
+    expect((await vault!.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it.each(ROWS)('settles two $kind callers merged into one transaction, each with a callee of its own', async (row) => {
+    const { provider, vaults: [first, second], keepers: [k1, k2], call } = await setupKeepers(row, true);
+    const a = await capture(provider, call(k1!));
+    const b = await capture(provider, call(k2!));
+    const runs = new Map([[k2!.category, abiOf(stateLoopArtifacts().Keeper, row.entry)],
+      [second!.category, abiOf(stateLoopArtifacts().Vault, row.method)]]);
+    const { tx, inputOf } = await merge(provider, a, b, runs);
+    // K2 moved: its callee's record names the input it now reads at.
+    const record = outputWith(tx, '51', second!.category);
+    const reader = inputOf(inputOfCoin(await coinsOf(provider, b), k2!.category, 'minting'));
+    if (record >= 0) setDigest(tx.outputs[record]!, digestAt(row.method, reader));
+    expect(await outcomeOf(provider, tx)).toBe('ACCEPTED');
+    for (const keeper of [k1!, k2!]) expect((await keeper.sc.getState()).credited).toBe(AMOUNT);
+    for (const vault of [first!, second!]) expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it.each(ROWS)('refuses two callers sharing one run of a $kind call', async (row) => {
+    const { provider, vaults: [vault], keepers: [k1, k2], call } = await setupKeepers(row);
+    const a = await capture(provider, call(k1!));
+    const b = await capture(provider, call(k2!));
+    const { tx, inputOf } = await merge(
+      provider, a, b, new Map([[k2!.category, abiOf(stateLoopArtifacts().Keeper, row.entry)]]), vault!.category,
+    );
+    const second = inputOf(inputOfCoin(await coinsOf(provider, b), k2!.category, 'minting'));
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('mandatory-script-verify-flag-failed');
+    expect(outcome).toContain(`error in evaluating input index ${second}:`);
+    expect((await k2!.sc.getState()).credited).toBe(0n);
+    expect((await vault!.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+
+  it('refuses a returning call\'s record minted in a category other than its callee\'s', async () => {
+    // The vault pins its record of withdraw(30) at another output; where the keeper reads, a record of the same digest
+    // names 1,000 in a category minted beside it, and the keeper's outputs credit 1,000, as an honest pullAll(1000) does.
+    const { provider, vaults: [vault], keepers: [keeper], call } = await setupKeepers(ROWS[1], false, 2000n);
+    const tx = await capture(provider, call(keeper!));
+    const rich = await capture(provider, () => (keeper!.sc as any).pullAll(1000n).send());
+    tx.outputs.forEach((output, at) => {
+      if (ofCategory(output.token?.category, keeper!.category)) tx.outputs[at] = rich.outputs[at]!;
+    });
+    expect(tx.outputs.filter((output, at) => ofCategory(output.token?.category, keeper!.category)
+      && ofCategory(rich.outputs[at]?.token?.category, keeper!.category)).length).toBeGreaterThan(0);
+    const read = outputWith(tx, '51', vault!.category);
+    const honest = tx.outputs[read]!;
+    const commitment = honest.token!.nft!.commitment;
+    expect(binToHex(commitment.slice(31))).toBe(binToHex(Uint8Array.of(1, ...encodeDataPush(bigIntToVmNumber(AMOUNT)))));
+    const minter = await funderCoin(provider, 2000n);
+    tx.inputs.push(minter);
+    const moved = tx.outputs.length;
+    tx.outputs.push(honest);
+    tx.outputs[read] = {
+      lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1000n,
+      token: { category: minter.outpointTransactionHash, amount: 0n, nft: {
+        capability: 'none',
+        commitment: Uint8Array.of(...commitment.slice(0, 32), ...encodeDataPush(bigIntToVmNumber(1000n))),
+      } },
+    } as TxOutput;
+    const coins = await coinsOf(provider, tx);
+    const callee = inputOfCoin(coins, vault!.category, 'minting');
+    tx.inputs[callee]!.unlockingBytecode = moveMaster(tx.inputs[callee]!.unlockingBytecode,
+      abiOf(stateLoopArtifacts().Vault, 'withdraw'), (index) => index, (index) => (index === read ? moved : index));
+    const caller = inputOfCoin(coins, keeper!.category, 'minting');
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain(`error in evaluating input index ${caller}:`);
+    expect((await keeper!.sc.getState()).credited).toBe(0n);
+    expect((await vault!.sc.getState()).balance).toBe(2000n);
+  }, 300_000);
+});
+
+// IVault declares the vault's state, so a call through the interface table co-spends each vault with its data record:
+// its callee blocks are two inputs wide, as the SDK lays them out.
+const TABLE_SOURCE = `pragma solidcash >=0.8.0;
+interface IVault {
+  public int balance;
+  function spend(int amount) external;
+  function give(int amount) external;
+}
+contract Vault() {
+  int balance;
+  function spend(int amount) public {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+  }
+  function give(int amount) public {
+    require(amount >= 0);
+    this.balance = this.balance + amount;
+  }
+}
+contract PointerKeeper() {
+  function(int) external[] fns;
+  int credited;
+  function reg(function(int) external p) public { this.fns.push(p); }
+  function payAll(int amount) public {
+    for (uint i = 0; i < fns.length; i++) { fns[i](amount); }
+    this.credited = this.credited + amount;
+  }
+}
+contract MethodKeeper() {
+  function(int) external[] fns;
+  int credited;
+  function regSpend(address a) public { this.fns.push(IVault(a).spend); }
+  function regGive(address a) public { this.fns.push(IVault(a).give); }
+  function payAll(int amount) public {
+    for (uint i = 0; i < fns.length; i++) { fns[i](amount); }
+    this.credited = this.credited + amount;
+  }
+}`;
+
+let tableCompiled: Record<string, Artifact> | undefined;
+const tableArtifacts = (): Record<string, Artifact> => {
+  tableCompiled ??= compileStringMulti(TABLE_SOURCE) as Record<string, Artifact>;
+  return tableCompiled;
+};
+
+describe.each([
+  { kind: 'received pointers', keeper: 'PointerKeeper' },
+  { kind: 'pointers to several methods', keeper: 'MethodKeeper' },
+] as const)('a table of $kind whose callee runs once', ({ keeper: name }) => {
+  // Each element's call reads its callee's void record at the return base plus the element, by the digest of the
+  // method the element names, its reader and its arguments, carried by that callee.
+  const keeperArtifact = (): Artifact => tableArtifacts()[name]!;
+  const setupTables = async (own = false): Promise<{
+    provider: Provider; vaults: Deployed[]; keepers: Deployed[]; call: (keeper: Deployed) => () => Promise<unknown>;
+  }> => {
+    const provider = createTestProvider();
+    const vaults: Deployed[] = [];
+    const keepers: Deployed[] = [];
+    const spend = hexToBin(abiOf(tableArtifacts().Vault!, 'spend').selector!);
+    const table = abiOf(keeperArtifact(), 'payAll').externalCalls![0]!.interfaceName;
+    for (let at = 0; at < 2; at++) {
+      if (at === 0 || own) vaults.push(await deploy(provider, tableArtifacts().Vault!, { balance: BALANCE }));
+      const vault = vaults[vaults.length - 1]!;
+      const keeper = await deployContract(provider, new Contract(keeperArtifact(), [], { provider }),
+        { fns: [], __fnsel_fns: [], credited: 0n } as never);
+      if (name === 'PointerKeeper') await (keeper.sc as any).reg(vault.lock, spend).send();
+      else await (keeper.sc as any).regSpend(vault.lock).send();
+      (keeper.sc as any).registerExternalArray(table, [vault.sc], ['spend']);
+      keepers.push(keeper);
+    }
+    const call = (keeper: Deployed) => (): Promise<unknown> => (keeper.sc as any).payAll(AMOUNT).send();
+    return { provider, vaults, keepers, call };
+  };
+  const digestAt = (reader: number): Uint8Array => callRecordDigest(
+    abiOf(tableArtifacts().Vault!, 'spend'), [AMOUNT], {}, 0, reader,
+  )!;
+
+  it('settles a call honestly, its record naming the caller', async () => {
+    const { provider, vaults: [vault], keepers: [keeper], call } = await setupTables();
+    const tx = await capture(provider, call(keeper!));
+    const record = outputWith(tx, '51', vault!.category);
+    const caller = inputOfCoin(await coinsOf(provider, tx), keeper!.category, 'minting');
+    expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digestAt(caller)));
+    await call(keeper!)();
+    expect((await keeper!.sc.getState()).credited).toBe(AMOUNT);
+    expect((await vault!.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it('settles a call through two elements, each record naming the caller at the return base plus its element', async () => {
+    const { provider, vaults: [vault], keepers: [keeper], call } = await setupTables();
+    const other = await deploy(provider, tableArtifacts().Vault!, { balance: BALANCE });
+    const spend = hexToBin(abiOf(tableArtifacts().Vault!, 'spend').selector!);
+    if (name === 'PointerKeeper') await (keeper!.sc as any).reg(other.lock, spend).send();
+    else await (keeper!.sc as any).regSpend(other.lock).send();
+    const table = abiOf(keeperArtifact(), 'payAll').externalCalls![0]!.interfaceName;
+    // Registration appends: the table's second element is the second vault.
+    (keeper!.sc as any).registerExternalArray(table, [other.sc], ['spend']);
+    const tx = await capture(provider, call(keeper!));
+    const caller = inputOfCoin(await coinsOf(provider, tx), keeper!.category, 'minting');
+    const records = [vault!, other].map((callee) => outputWith(tx, '51', callee.category));
+    expect(records[1]).toBe(records[0]! + 1);
+    for (const record of records) {
+      expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digestAt(caller)));
+    }
+    await call(keeper!)();
+    expect((await keeper!.sc.getState()).credited).toBe(AMOUNT);
+    for (const callee of [vault!, other]) expect((await callee.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it('settles two callers merged into one transaction, each with a callee of its own', async () => {
+    const { provider, vaults: [first, second], keepers: [k1, k2], call } = await setupTables(true);
+    const a = await capture(provider, call(k1!));
+    const b = await capture(provider, call(k2!));
+    const runs = new Map([[k2!.category, abiOf(keeperArtifact(), 'payAll')],
+      [second!.category, abiOf(tableArtifacts().Vault!, 'spend')]]);
+    const { tx, inputOf } = await merge(provider, a, b, runs);
+    // K2 moved: its callee's record names the input it now reads at.
+    const record = outputWith(tx, '51', second!.category);
+    const reader = inputOf(inputOfCoin(await coinsOf(provider, b), k2!.category, 'minting'));
+    if (record >= 0) setDigest(tx.outputs[record]!, digestAt(reader));
+    expect(await outcomeOf(provider, tx)).toBe('ACCEPTED');
+    for (const keeper of [k1!, k2!]) expect((await keeper.sc.getState()).credited).toBe(AMOUNT);
+    for (const vault of [first!, second!]) expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it('refuses two callers sharing one run', async () => {
+    const { provider, vaults: [vault], keepers: [k1, k2], call } = await setupTables();
+    const a = await capture(provider, call(k1!));
+    const b = await capture(provider, call(k2!));
+    const { tx, inputOf } = await merge(
+      provider, a, b, new Map([[k2!.category, abiOf(keeperArtifact(), 'payAll')]]), vault!.category,
+    );
+    const second = inputOf(inputOfCoin(await coinsOf(provider, b), k2!.category, 'minting'));
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('mandatory-script-verify-flag-failed');
+    expect(outcome).toContain(`error in evaluating input index ${second}:`);
+    expect((await k2!.sc.getState()).credited).toBe(0n);
+    expect((await vault!.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+});
+
 // A proxy whose fallback delegates its call to the implementation the spend names (NestedCalleeOtherPathsGuard).
 const FALLBACK_PROXY = `pragma solidcash >=0.8.0;
 contract Proxy() {
@@ -491,12 +1010,13 @@ const chooserArtifacts = (): Record<string, Artifact> => {
 };
 
 describe('a call whose method or receiver is chosen when it runs', () => {
-  // A pointer's caller checks no digest of its callee's record, so the record names no reader; a call through a
-  // ternary target names a fixed method, so its record names the caller's input. A void pointer reads no record.
+  // A pointer's caller digests its callee's record with the selector it picks, its reader and its arguments, and a
+  // void pointer reads the void record; a call through a ternary target names a fixed method. Each record names the
+  // caller's input.
   it.each([
-    { kind: 'returning pointer', entry: 'pullEither', method: 'withdraw', reader: 'none' },
-    { kind: 'void pointer', entry: 'payEither', method: 'spend', reader: 'no record' },
-    { kind: 'ternary-target', entry: 'pullTernary', method: 'withdraw', reader: 'caller' },
+    { kind: 'returning pointer', entry: 'pullEither', method: 'withdraw' },
+    { kind: 'void pointer', entry: 'payEither', method: 'spend' },
+    { kind: 'ternary-target', entry: 'pullTernary', method: 'withdraw' },
   ] as const)('settles a $kind call honestly', async (row) => {
     const provider = createTestProvider();
     const vault = await deploy(provider, chooserArtifacts().Vault, { balance: BALANCE });
@@ -506,19 +1026,43 @@ describe('a call whose method or receiver is chosen when it runs', () => {
       .withExternalCall(vault.sc, row.method, [AMOUNT]).send();
     const tx = await capture(provider, call);
     const record = outputWith(tx, '51', vault.category);
-    if (row.reader === 'no record') {
-      expect(record).toBe(-1);
-    } else {
-      const caller = inputOfCoin(await coinsOf(provider, tx), chooser.category, 'minting');
-      expect(caller).toBeGreaterThanOrEqual(0);
-      const reader = row.reader === 'caller' ? caller : -1;
-      const digest = callRecordDigest(abiOf(chooserArtifacts().Vault, row.method), [AMOUNT], {}, 0, reader)!;
-      expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digest));
-    }
+    const caller = inputOfCoin(await coinsOf(provider, tx), chooser.category, 'minting');
+    expect(caller).toBeGreaterThanOrEqual(0);
+    const digest = callRecordDigest(abiOf(chooserArtifacts().Vault, row.method), [AMOUNT], {}, 0, caller)!;
+    expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digest));
 
     await call();
     expect((await chooser.sc.getState()).credited).toBe(AMOUNT);
     expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
     expect((await other.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+
+  // Two choosers make one pointer call each, merged into one transaction where the vault runs once. Before the
+  // pointer's caller digested the record, both took that run, each credited for one withdrawal (VM-confirmed).
+  it.each([
+    { kind: 'returning pointer', entry: 'pullEither', method: 'withdraw' },
+    { kind: 'void pointer', entry: 'payEither', method: 'spend' },
+  ] as const)('refuses two callers sharing one run of a $kind call', async (row) => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, chooserArtifacts().Vault, { balance: BALANCE });
+    const other = await deploy(provider, chooserArtifacts().Vault, { balance: BALANCE });
+    const c1 = await deploy(provider, chooserArtifacts().Chooser, { credited: 0n });
+    const c2 = await deploy(provider, chooserArtifacts().Chooser, { credited: 0n });
+    const call = (chooser: Deployed) => (): Promise<unknown> => (chooser.sc as any)[row.entry](
+      true, vault.lock, other.lock, AMOUNT,
+    ).withExternalCall(vault.sc, row.method, [AMOUNT]).send();
+    const a = await capture(provider, call(c1));
+    const b = await capture(provider, call(c2));
+    const { tx, inputOf } = await merge(
+      provider, a, b, new Map([[c2.category, abiOf(chooserArtifacts().Chooser, row.entry)]]), vault.category,
+    );
+    const second = inputOf(inputOfCoin(await coinsOf(provider, b), c2.category, 'minting'));
+    // The vault's one record names the first chooser's input, so the second, reading it, is refused.
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('mandatory-script-verify-flag-failed');
+    expect(outcome).toContain(`error in evaluating input index ${second}:`);
+    expect((await c2.sc.getState()).credited).toBe(0n);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE);
   }, 300_000);
 });

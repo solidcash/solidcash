@@ -37,6 +37,9 @@ interface Shape {
   callerState: Record<string, bigint>;
   // A returning call keeps its selector check through a multi-function interface; a void one reads its record instead.
   keepsSelector: boolean;
+  // The single-function interfaces naming A and B.
+  ifaceA: string;
+  ifaceB: string;
 }
 
 const SHAPES: Shape[] = [{
@@ -62,12 +65,19 @@ contract Named() {
   int calls;
   function oneA(address a, int v) { IDeposit(a).deposit(v); this.calls = this.calls + 1; }
   function oneB(address a, int v) { IWithdraw(a).withdraw(v); this.calls = this.calls + 1; }
+}
+contract Looper() {
+  int calls;
+  function oneA(address[] ts) { for (uint i = 0; i < ts.length; i++) { IDeposit(ts[i]).deposit(); } this.calls = 1; }
+  function oneB(address[] ts) { for (uint i = 0; i < ts.length; i++) { IWithdraw(ts[i]).withdraw(); } this.calls = 1; }
 }`,
   a: 'deposit',
   b: 'withdraw',
   calleeState: { balance: 10n },
   callerState: { calls: 0n },
   keepsSelector: false,
+  ifaceA: 'IDeposit',
+  ifaceB: 'IWithdraw',
 }, {
   name: 'returning',
   // B returns what A returns, without adding v to the counter.
@@ -91,12 +101,19 @@ contract Named() {
   int last;
   function oneA(address a, int v) { int r = ITake(a).take(v); this.last = r; }
   function oneB(address a, int v) { int r = IPeek(a).peek(v); this.last = r; }
+}
+contract Looper() {
+  int last;
+  function oneA(address[] ts) { for (uint i = 0; i < ts.length; i++) { int r = ITake(ts[i]).take(); this.last = r; } }
+  function oneB(address[] ts) { for (uint i = 0; i < ts.length; i++) { int r = IPeek(ts[i]).peek(); this.last = r; } }
 }`,
   a: 'take',
   b: 'peek',
   calleeState: { counter: 5n },
   callerState: { last: 0n },
   keepsSelector: true,
+  ifaceA: 'ITake',
+  ifaceB: 'IPeek',
 }];
 
 interface Deployed {
@@ -112,10 +129,15 @@ interface Spend { tx: any; sourceOutputs: any[] }
 
 const verifier = createTxVerifier({ vmVersion: 'BCH_2026_05', standard: true, skipFeePolicy: true });
 
+/** The compile options of the caller and of the callee. */
+interface Convention { name: string; caller: object; callee: object }
+const DIRECT: Convention = { name: 'direct', caller: {}, callee: {} };
+
 const compiled = new Map<string, any>();
-const artifactsOf = (shape: Shape): any => {
-  if (!compiled.has(shape.name)) compiled.set(shape.name, compileStringMulti(shape.source));
-  return compiled.get(shape.name);
+const artifactsOf = (shape: Shape, options: object = {}): any => {
+  const key = `${shape.name}:${JSON.stringify(options)}`;
+  if (!compiled.has(key)) compiled.set(key, compileStringMulti(shape.source, options));
+  return compiled.get(key);
 };
 
 const ofCategory = (output: any, category: string): boolean => output?.token !== undefined
@@ -137,9 +159,9 @@ const SELECTOR = /^__internal__externalCallSelector\d*$/;
 /** An F1 edge carrier (`OP_1 OP_NOP`): a named call's own output, committing to the call it makes. */
 const isEdge = (output: any): boolean => binToHex(output.lockingBytecode) === '5161';
 
-async function deploy(shape: Shape, caller = 'Caller'): Promise<Deployed> {
+async function deploy(shape: Shape, caller = 'Caller', convention = DIRECT): Promise<Deployed> {
   const provider = createTestProvider();
-  const arts = artifactsOf(shape);
+  const arts = { ...artifactsOf(shape, convention.caller), Callee: artifactsOf(shape, convention.callee).Callee };
   const calleeBase = new Contract(arts.Callee, [], { provider });
   const { categoryId: calleeCat } = await setupStatefulUtxos(
     provider, calleeBase, arts.Callee.stateLayout!, shape.calleeState, { saltContract: true },
@@ -162,6 +184,16 @@ async function deploy(shape: Shape, caller = 'Caller'): Promise<Deployed> {
 async function spend(d: Deployed, entry: string, method: string, named = false): Promise<Spend> {
   const args = named ? [d.calleeAddr, 3n] : [d.calleeAddr];
   const call = await d.caller[entry](...args).withExternalCall(d.callee, method, [3n]).build();
+  return { tx: call.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(call.inputs) };
+}
+
+/**
+ * The honest spend of a looper's `entry` over one target, the callee, which runs `method(3)` as its one turn: the
+ * looper lists the callee for the loop's interface and names the turn's arguments, which the call leaves to it.
+ */
+async function loopSpend(d: Deployed, entry: string, iface: string, method: string): Promise<Spend> {
+  d.caller.registerExternalArray(iface, [d.callee], [method]);
+  const call = await d.caller[entry]([d.calleeAddr]).withExternalCall(d.callee, method, [3n]).build();
   return { tx: call.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(call.inputs) };
 }
 
@@ -269,6 +301,77 @@ describe('the method a direct call names, against a callee running another of th
         expectOnlyTheMethodDiffers(d, shape, a, b);
         expect(runVm(a)).toEqual({ success: true });
         expect(runVm(b)).toEqual({ success: true });
+        expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
+      }, 300_000);
+    });
+  }
+});
+
+/**
+ * The same calls in compiles other than the direct convention. A message-bus build keeps each function's direct entry
+ * beside its route, and an ordinary call spends that entry; a direct-only participant of a kernel composition is an
+ * ordinary direct caller of an ordinary callee.
+ */
+const CONVENTIONS: Convention[] = [
+  { name: 'message-bus', caller: { messageBus: true }, callee: { messageBus: true } },
+  { name: 'direct participant', caller: { messageBusDirectParticipant: true }, callee: {} },
+];
+
+describe('the method an args-left call names, in other conventions (VM)', () => {
+  for (const convention of CONVENTIONS) {
+    for (const shape of SHAPES) {
+      describe(`${convention.name}, ${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
+        it(`settles the honest ${shape.a}() through a single-function interface, and ${shape.b}()`, async () => {
+          const d = await deploy(shape, 'Caller', convention);
+          // The argument the call leaves is a witness; a message-bus build's callee pins a void record for it too.
+          expect(hidden(d, 'Caller', 'oneA', LEFT_ARGUMENT)).toEqual(['__internal__callArgument0_0']);
+          const a = await spend(d, 'oneA', shape.a);
+          const b = await spend(d, 'oneB', shape.b);
+          expectOnlyTheMethodDiffers(d, shape, a, b);
+          expect(runVm(a)).toEqual({ success: true });
+          expect(runVm(b)).toEqual({ success: true });
+        }, 300_000);
+
+        // The caller digests the argument it leaves from its witness, so B's record does not match A's call.
+        it(`refuses ${shape.a}() co-spent with ${shape.b} at the caller (single-function)`, async () => {
+          const d = await deploy(shape, 'Caller', convention);
+          const a = await spend(d, 'oneA', shape.a);
+          expectRefusedAt(runVm(splice(a, await spend(d, 'oneB', shape.b), d.callerCat)), master(a, d.callerCat));
+        }, 300_000);
+
+        if (convention.name !== 'message-bus') return;
+        // A named call through a single-function interface, in the same build.
+        it(`refuses ${shape.a}(v) co-spent with ${shape.b} at the caller (single-function, named)`, async () => {
+          const d = await deploy(shape, 'Named', convention);
+          const a = await spend(d, 'oneA', shape.a, true);
+          const b = await spend(d, 'oneB', shape.b, true);
+          expectOnlyTheMethodDiffers(d, shape, a, b);
+          expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
+        }, 300_000);
+      });
+    }
+  }
+});
+
+describe('the method an args-left call names, made once per turn of a loop over targets (VM)', () => {
+  for (const shape of SHAPES) {
+    describe(`${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
+      it(`settles the honest loop of ${shape.a}() through a single-function interface, and of ${shape.b}()`, async () => {
+        const d = await deploy(shape, 'Looper');
+        // The argument each turn's call leaves is an element of a witness list the SDK fills from the turn's callee.
+        expect(hidden(d, 'Looper', 'oneA', /^__internal__callArgumentList\d+_\d+$/))
+          .toEqual(['__internal__callArgumentList0_0']);
+        const a = await loopSpend(d, 'oneA', shape.ifaceA, shape.a);
+        const b = await loopSpend(d, 'oneB', shape.ifaceB, shape.b);
+        expectOnlyTheMethodDiffers(d, shape, a, b);
+        expect(runVm(a)).toEqual({ success: true });
+        expect(runVm(b)).toEqual({ success: true });
+      }, 300_000);
+
+      it(`refuses a turn's callee running ${shape.b} for the ${shape.a}() the loop names, at the caller`, async () => {
+        const d = await deploy(shape, 'Looper');
+        const a = await loopSpend(d, 'oneA', shape.ifaceA, shape.a);
+        const b = await loopSpend(d, 'oneB', shape.ifaceB, shape.b);
         expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
       }, 300_000);
     });

@@ -135,7 +135,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
 import {
-  callArgumentWitnessName, externalResultMayNeedPreimage, namesCallRecordArguments,
+  callArgumentListName, callArgumentWitnessName, externalResultMayNeedPreimage, namesCallRecordArguments,
 } from './ExternalResultEncoding.js';
 import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
@@ -4860,16 +4860,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         // witnesses (leftCallArgumentPositions); where the caller takes none it keeps its selector check. A call with
         // `{value:}` reads it as well: nothing else binds its method through a one-method interface, and no record of
         // one run answers two callers.
-        // The exploit this closes exists for every ungrouped single-interface void call, not only an explicit
-        // messageBus:false opt-out. An inferred (auto) compile direct-lowers a call it does not route - `messageBus`
-        // is folded to true for auto, so the mode, not that flag, says whether lowering is direct. Bind for disabled
-        // and auto; an explicitly enabled (or verifier-required) bus authenticates co-spent methods itself. Grouped
-        // slots are already removed above, and this block only runs off-route, so it reaches only direct calls.
-        const busMode = (this.compilerOptions as CompilerOptions
-        & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
-        const directConventionVoidBinding = (busMode === 'disabled' || busMode === 'auto')
-          && this.compilerOptions.composition !== 'framed';
-        if (directConventionVoidBinding && node.isEntryPoint) {
+        // The exploit this closes exists for every ungrouped single-interface void call a direct entry makes, a
+        // message-bus build's included: a route binds the rows it runs, but an ordinary call spends the direct entry,
+        // which binds its calls where it runs. A framed body binds its calls by their frames. Grouped slots are already
+        // removed above, and this block only runs off-route, so it reaches only direct calls.
+        const directConventionVoidBinding = this.compilerOptions.composition !== 'framed';
+        if (directConventionVoidBinding && node.isEntryPoint && !node.graphEmissionHandler) {
           for (const slot of externalCallSlots) {
             if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
             if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar) continue;
@@ -4893,6 +4889,69 @@ export default class SymbolTableTraversal extends AstTraversal {
             slot.hasReturnValues = true;
             slot.voidCallRecord = true;
             slot.needsSelectorVerification = false;
+          }
+          // A call through a function pointer, whose method its caller picks when it runs, reads its callee's record
+          // by the digest of that method's selector, its reader and its arguments: two callers cannot both take one
+          // run, and the run is of the method and the arguments the call names. A void one reads the void record. It
+          // keeps its selector check and the pin of its callee's pushes (emitRequirePointerCalleePushes). A pointer in
+          // a loop or a selector table is no single call.
+          for (const slot of externalCallSlots) {
+            if (!slot.fnPtrCall || !slot.runtimeSelector || slot.loopArrayVar || slot.selectorArrayVar
+              || slot.inlineLoopDispatch || slot.batchInvocations || slot.opaqueReturn) continue;
+            if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+            if (slot.sourceCallNode === undefined || this.loopNestedExternalCalls.has(slot.sourceCallNode)) continue;
+            const method = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+            if (!method) continue;
+            slot.callRecordParameterTypes = method.parameterTypes;
+            slot.runtimeRecordSelector = true;
+            if (!slot.hasReturnValues) {
+              slot.hasReturnValues = true;
+              slot.voidCallRecord = true;
+            }
+          }
+          // A void call in a loop over the targets a parameter holds (or a witness for computed ones) reads each
+          // iteration's callee's void record at the return base plus the iteration's index, by the digest of its
+          // method, its reader and that iteration's arguments, as a returning one reads its record. One leaving
+          // arguments to its callee digests them from its witness lists (leftCallArgumentListPositions). A loop over a
+          // state array reads it at the return base plus the element it claims, for a call naming its arguments.
+          for (const slot of externalCallSlots) {
+            if (!slot.loopArrayVar || slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
+            if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar || slot.batchInvocations) continue;
+            if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+            const loopArray = slot.loopArrayVar;
+            const stateArray = !loopArray.startsWith('__internal__loopTargets')
+              && !node.parameters.some((parameter) => parameter.name === loopArray);
+            const recordMethod = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+            if (!recordMethod || slot.sourceCallNode === undefined) continue;
+            const digested = recordMethod.parameterTypes.flatMap((type) => (type instanceof FunctionType
+              && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
+            if ((stateArray || !this.takesLeftCallArguments())
+              && !namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length)) continue;
+            slot.callRecordSelector = this.calleeMethodSelector(slot.functionName, recordMethod.parameterTypes);
+            slot.callRecordParameterTypes = recordMethod.parameterTypes;
+            slot.hasReturnValues = true;
+            slot.voidCallRecord = true;
+            slot.needsSelectorVerification = false;
+          }
+          // A void call through a table whose elements name their own methods (received pointers, or pointers to
+          // several methods) reads each element's void record the same way, by the digest of the method its element
+          // names (loopRecordSelector), its reader and its arguments. A record, not a pin of the callee's reader: a
+          // received method wider than the table's type, taking no witnesses, would run an extra parameter on the
+          // pinned reader, while its record digests every argument it takes.
+          for (const slot of externalCallSlots) {
+            if (!slot.loopArrayVar || !slot.selectorArrayVar || slot.loopRecordSelector === undefined) continue;
+            if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn || slot.runtimeSelector
+              || slot.batchInvocations) continue;
+            if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+            const method = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+            if (!method || slot.sourceCallNode === undefined) continue;
+            const digested = method.parameterTypes.flatMap((type) => (type instanceof FunctionType
+              && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
+            if (!namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length)) continue;
+            slot.callRecordParameterTypes = method.parameterTypes;
+            slot.runtimeRecordSelector = true;
+            slot.hasReturnValues = true;
+            slot.voidCallRecord = true;
           }
         }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot
@@ -5352,10 +5411,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(returnOutputIdxParam);
     }
 
-    // B-side (approach B, single-interface method binding): an ordinary void entry of a direct stateful contract
-    // attests the method it ran via a void call record so a single-function-interface caller can bind the co-spent
-    // method. It needs the carrier output index its caller pins the record at. Lifecycle and unsafe entries keep
-    // their own covenant settlement, and the multi-call candidate path below injects this witness itself.
+    // B-side (approach B, single-interface method binding): an ordinary void entry of a stateful contract, a
+    // message-bus build's direct entry included, attests the method it ran via a void call record so a
+    // single-function-interface caller can bind the co-spent method. It needs the carrier output index its caller pins
+    // the record at. Lifecycle and unsafe entries keep their own covenant settlement, and the multi-call candidate path
+    // below injects this witness itself.
     const voidRecordLifecycleOrUnsafe = node.modifiers.some((modifier) =>
       modifier === FunctionModifier.UPGRADE || modifier === FunctionModifier.DEPLOY
       || modifier === FunctionModifier.SELFDESTRUCT || modifier === FunctionModifier.SPLIT
@@ -5374,8 +5434,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
       && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
       && !readsExternalStorage && !delegatecalls && !node.isFallback && !node.isReceive
-      && this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed'
-      && this.compilerOptions.messageBusDirectParticipant !== true
+      && this.compilerOptions.composition !== 'framed' && this.compilerOptions.messageBusDirectParticipant !== true
       && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
       const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
       voidRecordIdxParam.location = node.location;
@@ -5467,8 +5526,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A call leaving arguments to its callee takes each one its record digests as a witness, which the SDK fills
       // from the callee's arguments: the record then binds the method and every argument (leftCallArgumentPositions).
       for (const slot of this.takesLeftCallArguments() ? node.externalCalls : []) {
-        for (const position of this.leftCallArgumentPositions(slot)) {
-          const name = callArgumentWitnessName(slot.slotIndex, position);
+        const names = [
+          ...this.leftCallArgumentPositions(slot).map((position) => callArgumentWitnessName(slot.slotIndex, position)),
+          ...this.leftCallArgumentListPositions(slot, node)
+            .map((position) => callArgumentListName(slot.slotIndex, position)),
+        ];
+        for (const name of names) {
           const param = new ParameterNode(new BytesType(), name);
           param.location = node.location;
           param.syntheticallyUsed = true;
@@ -5621,6 +5684,22 @@ export default class SymbolTableTraversal extends AstTraversal {
             condition: callsiteShapes[index].condition,
           }),
         }));
+        // The direct convention pins each low-level call's callee as one co-spent input (`__internal__callInputIndex`),
+        // which every turn of a loop reads, so one run of the callee would answer each turn of a `call`. A message-bus
+        // route refuses such a call too (LowLevelCallShapes), a framed body binds each frame, and a staticcall reads.
+        const looped = this.compilerOptions.messageBus === true || this.compilerOptions.composition === 'framed'
+          || node.graphEmissionHandler || node.messageBusRoute ? -1
+          : node.lowLevelCalls.findIndex((call) => call.callMode === 'call' && call.occurrence === 'loop'
+            && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1));
+        if (looped >= 0) {
+          throw new SolidcDiagnosticError(
+            'LOW_LEVEL_CALL_IN_LOOP',
+            `Function '${node.name}' makes low-level call ${looped} in a loop that may turn more than once. Its callee `
+            + 'is one co-spent input, so one run of it would answer every turn. Hoist the call out of the loop, or '
+            + 'make it a typed interface call.',
+            { functionName: node.name, callIndex: looped },
+          );
+        }
         // A Solidity-compat call/staticcall site pins its co-spent callee to the call's target (see
         // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.
         if (this.compilerOptions.evmCompat && this.compilerOptions.composition !== 'framed') {
@@ -12460,6 +12539,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // runtime param the SDK fills, not a fixed block offset (the callee's layout is unknown at compile time).
         ...(node.callInfo.interfaceName.startsWith('__FnPtr_') && { fnPtrCall: true }),
         ...(node.runtimeSelector && { runtimeSelector: node.runtimeSelector }),
+        ...(node.loopRecordSelector && { loopRecordSelector: node.loopRecordSelector }),
         ...(node.opaqueReturn && { opaqueReturn: true }),
         ...(hasEffectiveCallValue(node.callOptions?.value) && { callValueEffect: true }),
         ...(callValueSource && { callValueSource }),
@@ -16574,15 +16654,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * Whether a caller takes the arguments its calls leave to their callees as witnesses (leftCallArgumentPositions):
-   * a direct compile, where void calls read records too. A framed body, a message-bus compile, a kernel direct
-   * participant and the deployer program bind such calls otherwise or take no such witness.
+   * every direct entry, a message-bus build's (its bound compile included) and a kernel direct participant's, since a
+   * spender may spend it whatever route the build also has, and the deployer program's `create`, whose constructor
+   * calls digest their tagged records with them (deployer.ts fills them). A framed body binds its calls by their
+   * frames (callSiteCheckScript).
    */
   private takesLeftCallArguments(): boolean {
-    const busMode = (this.compilerOptions as CompilerOptions
-    & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
-    return (busMode === 'disabled' || busMode === 'auto') && this.compilerOptions.composition !== 'framed'
-      && this.compilerOptions.messageBusDirectParticipant !== true
-      && (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram === undefined;
+    return this.compilerOptions.composition !== 'framed';
   }
 
   /**
@@ -16592,9 +16670,26 @@ export default class SymbolTableTraversal extends AstTraversal {
    * None for a call naming them all, one reading no record by its digest, or one a loop runs per target.
    */
   private leftCallArgumentPositions(slot: ExternalCallSlot): number[] {
+    return slot.loopArrayVar || slot.inlineLoopDispatch ? [] : this.leftDigestedPositions(slot);
+  }
+
+  /**
+   * The arguments a call made once per turn of a loop over targets, a parameter array or a computed-target witness
+   * (the inline loop dispatch), leaves to each turn's callee: the caller takes a witness list of each
+   * (callArgumentListName) and digests each turn's element, so each turn's record binds its method and arguments.
+   */
+  private leftCallArgumentListPositions(slot: ExternalCallSlot, node: FunctionDefinitionNode): number[] {
+    const loopArray = slot.loopArrayVar;
+    if (loopArray === undefined || (!loopArray.startsWith('__internal__loopTargets')
+      && !node.parameters.some((parameter) => parameter.name === loopArray))) return [];
+    return this.leftDigestedPositions(slot);
+  }
+
+  /** The positions leftCallArgumentPositions and leftCallArgumentListPositions name, whatever the loop. */
+  private leftDigestedPositions(slot: ExternalCallSlot): number[] {
     if (!slot.hasReturnValues || slot.callRecordSelector === undefined || slot.sourceCallNode === undefined
-      || slot.opaqueReturn || slot.runtimeSelector || slot.selectorArrayVar || slot.fnPtrCall || slot.loopArrayVar
-      || slot.inlineLoopDispatch || slot.batchInvocations || !this.interfaceMap.has(slot.interfaceName)) return [];
+      || slot.opaqueReturn || slot.runtimeSelector || slot.selectorArrayVar || slot.fnPtrCall
+      || slot.batchInvocations || !this.interfaceMap.has(slot.interfaceName)) return [];
     const declared = (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
       && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
     const named = slot.sourceCallNode.parameters.length;
@@ -19664,6 +19759,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // reach this path, not the 7037 statement path.
         if (node.runtimeSelector) callNode.runtimeSelector = this.visit(node.runtimeSelector) as ExpressionNode;
         if (node.selectorArrayVar) callNode.selectorArrayVar = node.selectorArrayVar;
+        if (node.loopRecordSelector) {
+          callNode.loopRecordSelector = this.visit(node.loopRecordSelector) as ExpressionNode;
+        }
         if (callNode.callOptions?.value) {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }
@@ -19845,6 +19943,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // b.selector`, folds to a runtime bytes4). The covenant binds the co-spent method to it (see codegen).
         if (node.runtimeSelector) callNode.runtimeSelector = this.visit(node.runtimeSelector) as ExpressionNode;
         if (node.selectorArrayVar) callNode.selectorArrayVar = node.selectorArrayVar;
+        if (node.loopRecordSelector) {
+          callNode.loopRecordSelector = this.visit(node.loopRecordSelector) as ExpressionNode;
+        }
         if (callNode.callOptions?.value) {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }

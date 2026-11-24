@@ -10,9 +10,8 @@ import { StatefulContract } from '../../src/stateful/index.js';
 import {
   createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos, verifyTransaction,
 } from '../test-util.js';
-import { trivialCallee } from '../trivial-callee.js';
+import { standInToken, standInVoidRecord, trivialCallee } from '../trivial-callee.js';
 import { SignatureTemplate } from '../../src/index.js';
-import { callRecordDigest } from '../../src/stateful/call-record.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 
 /**
@@ -83,9 +82,9 @@ describe('calls on different targets', () => {
   }, 300_000);
 });
 
-// The loop's callee for iteration i sits at base + i, the call after it at base + 1. The loop's calls check their
-// selector; the call after it reads its callee's void record, `digest || 0x01`, which the spend lays out for the
-// stand-in callee: an `OP_TRUE` carrier of the category whose minting token the callee's coin holds.
+// The loop's callee for iteration i sits at base + i, the call after it at base + 1. Each iteration and the call after
+// the loop read their callee's void record, `digest || 0x01`, which the spend lays out for the stand-in callees: an
+// `OP_TRUE` carrier of the category whose minting token each callee's coin holds.
 const LOOP_THEN_CALL = `pragma solidcash >=0.8.0;
 interface IFoo { function m(int x) external; function n() external; }
 contract C(address a) {
@@ -104,34 +103,31 @@ describe('a loop over targets followed by a call', () => {
   const A = callee.lock;
   const X = Uint8Array.of(...callee.lock, 0x61);
   const OP_TRUE = hexToBin('51');
-  // The record of m(7) read by input 0, the call's ordinal 0, as the call after the loop digests it.
-  const category = 'ab'.repeat(32);
-  const minting = { category, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } };
-  const digest = callRecordDigest({ inputs: [{ name: 'x', type: 'int' }], selector: binToHex(M) }, [7n],
-    { namesReader: true }, 0, 0)!;
-  const record = { category, amount: 0n, nft: { capability: 'none' as const, commitment: `${binToHex(digest)}01` } };
 
-  /** `C(A).run(loop, 7)` with `callees` co-spent from input 1 on; A's coin holds the record's minting token. */
+  /**
+   * `C(A).run(loop, 7)` with `callees` co-spent from input 1 on, each coin holding the stand-in token; the loop's
+   * records, then the call's, follow the change.
+   */
   async function spend(loop: Uint8Array[], callees: Uint8Array[]): Promise<TransactionBuilder> {
     const provider = createTestProvider();
     const contract = new Contract(compileString(LOOP_THEN_CALL), [A], { provider });
     const funder = await createFeeFunder(provider, 10000n);
     const builder = new TransactionBuilder({ provider });
-    const carrier = BigInt(callees.length + 2);
-    builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n },
-      contract.unlock.run(encodePushdataValue(loop, 'address[]'), 7n, 1n, M, -1n, carrier) as never);
-    const token = (lock: Uint8Array): { token?: typeof minting } => (lock === A ? { token: minting } : {});
+    const records = BigInt(callees.length + 2);
+    builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, contract.unlock.run(
+      encodePushdataValue(loop, 'address[]'), 7n, 1n, -1n, records, records + BigInt(loop.length),
+    ) as never);
     callees.forEach((lock, at) => builder.addInput({
-      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, ...token(lock),
+      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, token: standInToken(),
     }, {
       generateLockingBytecode: (): Uint8Array => lock,
       generateUnlockingBytecode: (): Uint8Array => callee.unlocking,
     } as never));
     builder.addInput(funder.utxo, funder.unlocker);
     builder.addOutput({ to: contract.address, amount: 100000n });
-    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n, ...token(lock) });
-    builder.addOutput({ to: OP_TRUE, amount: 6000n });
-    builder.addOutput({ to: OP_TRUE, amount: 1000n, token: record });
+    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n, token: standInToken() });
+    builder.addOutput({ to: OP_TRUE, amount: 3000n });
+    for (let record = 0; record <= loop.length; record += 1) builder.addOutput(standInVoidRecord(M, [7n]));
     return builder;
   }
 
@@ -159,7 +155,11 @@ describe('loop iterations naming one callee', () => {
   const callee = trivialCallee([7n]);
   const A = callee.lock;
   const OP_TRUE = hexToBin('51');
+  const M = hexToBin(compileString(`pragma solidcash >=0.8.0;
+    contract D() { bigint c; function m(int x) { this.c = this.c + x; } function n() { this.c = this.c + 1; } }`)
+    .abi.find((entry) => entry.name === 'm')!.selector!);
 
+  /** Each iteration reads its callee's void record at the return base plus the index its target reads. */
   async function spend(which: bigint[], callees: Uint8Array[]): Promise<TransactionBuilder> {
     const provider = createTestProvider();
     const contract = new Contract(compileString(PICKED), [], { provider });
@@ -167,15 +167,20 @@ describe('loop iterations naming one callee', () => {
     const builder = new TransactionBuilder({ provider });
     builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, contract.unlock.run(
       encodePushdataValue([A, A], 'address[]'), encodePushdataValue(which, 'uint256[]'), 7n, 1n,
+      BigInt(callees.length + 2),
     ) as never);
-    callees.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n }, {
+    callees.forEach((lock, at) => builder.addInput({
+      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, token: standInToken(),
+    }, {
       generateLockingBytecode: (): Uint8Array => lock,
       generateUnlockingBytecode: (): Uint8Array => callee.unlocking,
     } as never));
     builder.addInput(funder.utxo, funder.unlocker);
     builder.addOutput({ to: contract.address, amount: 100000n });
-    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n });
-    builder.addOutput({ to: OP_TRUE, amount: 7000n });
+    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n, token: standInToken() });
+    builder.addOutput({ to: OP_TRUE, amount: 5000n });
+    builder.addOutput(standInVoidRecord(M, [7n]));
+    builder.addOutput(standInVoidRecord(M, [7n]));
     return builder;
   }
 

@@ -127,6 +127,13 @@ export const callArgumentWitnessName = (callsite: number, position: number): str
   `__internal__callArgument${callsite}_${position}`;
 
 /**
+ * The caller's witness list of the argument at `position` that its call at `callsite`, made once per turn of a loop
+ * over targets, leaves to each turn's callee: one pushdata-framed element per call made, in the order they are made.
+ */
+export const callArgumentListName = (callsite: number, position: number): string =>
+  `__internal__callArgumentList${callsite}_${position}`;
+
+/**
  * A result a call record may carry only as its SHA256, so the caller takes the bytes from a preimage witness: one
  * whose encoding may exceed the record's inline capacity.
  */

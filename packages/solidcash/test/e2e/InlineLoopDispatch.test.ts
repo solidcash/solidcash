@@ -222,3 +222,44 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     expect(tb.inputs.length).toBe(4);
   });
 });
+
+// The same loop through `call`. A stateless caller keeps no state a shared run could credit twice, so it binds no
+// reader to its callees' runs: a loop over targets that are no SolidCash contract, which push none, stays
+// caller-permissive (TARGET-5) and builds through the stateless loop builder (solidcash/loop-call). A stateful caller
+// pins each iteration's callee reader, as a raw call outside a loop does (P-2).
+const CALL_SRC = `
+pragma solidcash >=0.8.0;
+contract MiniCall() {
+    function run(address[] targets, bytes[] data) {
+        uint total = 0;
+        for (uint i = 0; i < targets.length; i++) {
+            bool ok, bytes r = targets[i].call(data[i]);
+            require(ok);
+            total = total + r.length;
+        }
+        require(total >= 0);
+    }
+}`;
+
+describe('inline loop dispatch through call', () => {
+  it('builds a stateless caller\'s loop over targets that are no SolidCash contract', async () => {
+    const provider = createTestProvider();
+    const contract = new Contract(compileString(CALL_SRC), [], { provider });
+    await provider.addUtxo(contract.address, { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n });
+    const cospend = (txid: string, category: string, result: string): unknown => ({
+      utxo: {
+        txid, vout: 0, satoshis: 1200n,
+        token: { category, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+      },
+      unlocker: trueUnlocker(),
+      returnData: hexToBin(result),
+    });
+    const funder = await createFeeFunder(provider, 10000n);
+    const tb = await (contract as any).run(
+      [OP_TRUE, OP_TRUE], [new Uint8Array([]), new Uint8Array([])],
+      { cospends: [cospend('01'.repeat(32), C0, 'deadbeef'), cospend('02'.repeat(32), C1, 'cafe')], funder },
+    ) as TransactionBuilder;
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
+  });
+});

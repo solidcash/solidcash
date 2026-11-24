@@ -34,6 +34,9 @@
  * - A handler that writes a collection only in a runtime loop claims no lane of it: beside a `spread` batch, whose
  *   stream the route's clone runs in the trailing band, a `side` entry rewritten at a lane only `triple` reads is
  *   refused (it once claimed every lane), and the stream settles.
+ * - A writer whose key may take a lane chosen at run time claims every such lane (R2): a pool lane `putPair`'s
+ *   run did not write, and the alternate tuple lane a `place` run did not write, each hold a record rewritten beside
+ *   the honest batch; both rewrites are refused.
  *
  * Each attack row asserts the route's refusal; the entry covenant alone accepts every one of these spends.
  */
@@ -138,6 +141,16 @@ const STREAM = `contract StreamBook() {
   function triple(int a, int b, int c) public { require(this.side[a] + this.side[b] + this.side[c] >= 0); }
 }`;
 
+// Two orientations of one nested key: a writer's key tuple may take either of two complete tuple lanes.
+const TUPLE = `contract TupleBook() {
+  mapping(uint => mapping(uint => uint)) values;
+  function place(uint outer, uint inner, uint value) public { this.values[outer][inner] = value; require(true); }
+  function placeReversed(uint inner, uint outer, uint value) public {
+    this.values[outer][inner] = value;
+    require(true);
+  }
+}`;
+
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
   maximumInputBytes: 1_000_000, suppressWarnings: true,
@@ -187,6 +200,15 @@ function failures(vm: Vm, spend: Spend): Array<{ inputIndex: number; error: stri
 
 function eligibleOf(artifact: Artifact): Set<string> {
   return new Set(artifact.messageBus?.handlers.filter((handler) => handler.eligible).map((handler) => handler.name));
+}
+
+/** The offsets of the lanes a handler's writes may take at run time (its published entry-slot alternatives). */
+function alternativeLanes(artifact: Artifact, name: string): number[] {
+  const handler = artifact.messageBus!.handlers.find((candidate) => candidate.name === name);
+  const slots = new Set((handler?.physicalEntrySlotAlternatives ?? []).flat());
+  return artifact.messageBus!.route.blockLayout!.slots
+    .filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined && slots.has(slot.slotIndex))
+    .map((slot) => slot.offset);
 }
 
 async function connect(
@@ -867,6 +889,85 @@ describe('bound route without its verifier: a reader\'s lane beside a runtime st
 
   // spread writes side only in a runtime loop, so it claims no lane of it (it once claimed every one).
   it('refuses a side entry rewritten at a lane only triple reads, beside a stream batch', () => {
+    expect(state.route).not.toBe(true);
+  });
+});
+
+describe('bound route without its verifier: a pool lane a writer\'s run does not write', () => {
+  let state: {
+    honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict; lanes: number[]; offset: number;
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(PAIR, { ...KERNEL, messageBusHandlers: ['put', 'putPair'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'putPair']));
+    // putPair's second key may take any lane of a bounded pool, and its claim names the whole pool.
+    const lanes = alternativeLanes(artifact, 'putPair');
+    expect(lanes.length, 'putPair publishes a lane pool').toBeGreaterThan(2);
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    for (const [key, value] of [[5n, 7n], [9n, 1n], [7n, 4n]]) await bus.call.put(key, value).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    // Two distinct keys: the second takes one pool lane, the rest of the pool is left to pads.
+    const pair = spendOf(await bus.batch([{ function: 'putPair', args: [5n, 2n, 9n, 3n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, pair);
+    const master = masterOf(pair, victim);
+    const spare = lanes.map((offset) => master + offset).find((at) => padIndex(pair, at, at + 1) === at);
+    expect(spare, 'the batch leaves a pool lane to a pad').toBeDefined();
+    const rewrite = placed(pair, victim, master, spare!, rewritten(victim));
+    state = {
+      honest: failures(vm, pair), covenant: verdict(vm, rewrite, spare!), route: verdict(vm, rewrite, master),
+      lanes, offset: spare! - master,
+    };
+    console.log('pool lane a run does not write', state);
+  }, 300_000);
+
+  it('settles the batch, and the entry covenant accepts the victim spend', () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+  });
+
+  it('refuses a side entry rewritten at a pool lane the run did not write', () => {
+    expect(state.route).not.toBe(true);
+  });
+});
+
+describe('bound route without its verifier: a tuple lane a writer\'s run does not write', () => {
+  let state: {
+    honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict; lanes: number[]; offset: number;
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(TUPLE, { ...KERNEL, messageBusHandlers: ['place', 'placeReversed'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['place', 'placeReversed']));
+    // place's key tuple may take its primary or its alternate tuple lane, and its claim names both.
+    const lanes = alternativeLanes(artifact, 'place');
+    expect(lanes.length, 'place publishes an alternate tuple lane').toBeGreaterThanOrEqual(2);
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    for (const [outer, nested, value] of [[1n, 2n, 11n], [3n, 4n, 7n]]) {
+      await bus.call.place(outer, nested, value).send();
+    }
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const honest = spendOf(await bus.batch([{ function: 'place', args: [1n, 2n, 12n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, honest, 'values');
+    const master = masterOf(honest, victim);
+    const spare = lanes.map((offset) => master + offset).find((at) => padIndex(honest, at, at + 1) === at);
+    expect(spare, 'the batch leaves the alternate tuple lane to a pad').toBeDefined();
+    const rewrite = placed(honest, victim, master, spare!, rewritten(victim));
+    state = {
+      honest: failures(vm, honest), covenant: verdict(vm, rewrite, spare!), route: verdict(vm, rewrite, master),
+      lanes, offset: spare! - master,
+    };
+    console.log('tuple lane a run does not write', state);
+  }, 300_000);
+
+  it('settles the batch, and the entry covenant accepts the victim spend', () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+  });
+
+  it('refuses a values entry rewritten at the alternate tuple lane the run did not write', () => {
     expect(state.route).not.toBe(true);
   });
 });

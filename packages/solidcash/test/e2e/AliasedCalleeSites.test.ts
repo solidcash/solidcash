@@ -635,7 +635,11 @@ describe('a void call on a state-array element', () => {
     tx.inputs[listener]!.unlockingBytecode = encodeAuthenticationInstructions(pushes[listener]!);
     const outcome = await provider.sendRawTransaction(binToHex(encodeTransaction(tx)))
       .then(() => 'ACCEPTED').catch((e: Error) => e.message);
-    expectScriptRejection(outcome, caller);
+    // The caller reads its element's record, the digest of hear(10, 7) and its reader, in place of checking the
+    // listener's pushes: the record it reads is the honest one, so the run of hear(5, 7) is refused at the listener,
+    // whose own record would name that call. A record rewritten to name it answers no call the caller makes.
+    expect(caller).toBeLessThan(listener);
+    expectScriptRejection(outcome, listener);
 
     await provider.sendRawTransaction(honest);
     for (const entry of listeners) expect((await entry.sc.getState()).heard).toBe(1n);

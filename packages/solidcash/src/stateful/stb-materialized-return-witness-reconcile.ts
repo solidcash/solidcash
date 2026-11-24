@@ -19,6 +19,9 @@ import {
   logicalReturnGroupIndex,
 } from './value-chunk-geometry.js';
 
+/** The witness naming the output a callee pins its record at. */
+const CALLEE_RECORD_WITNESS = '__internal__returnOutputIdx';
+
 export type MaterializedReturnPendingEvent = {
   categoryId: string;
   commitment: Uint8Array;
@@ -117,6 +120,23 @@ export function reconcileMaterializedReturnWitnesses(
     changed = true;
   }
   const changedCarriers = new Set<ExternalCallUtxoGroup>();
+  // A callee pins its record where the builder placed it, the output its caller's witness names (rebound from the
+  // same placement), so a layout shift moves the caller's read and the callee's record together: a loop's callees,
+  // whose records follow the caller's base in turn, included.
+  for (const [groupIdx, outputIndex] of resolved) {
+    const group = host.externalCallUtxoGroups[groupIdx];
+    if (!group?.refreshInternalArgs || group.sharedGroupIndex !== undefined
+      || groupOwnsInBlockReturnEvent(host.externalCallUtxoGroups, groupIdx)) continue;
+    const unlocker = 'unlocker' in group.masterUtxo ? group.masterUtxo.unlocker : undefined;
+    const position = unlocker !== undefined && isContractUnlocker(unlocker)
+      ? unlocker.abiFunction.inputs.findIndex((input) => input.name === CALLEE_RECORD_WITNESS) : -1;
+    const own = group.internalArgs?.[CALLEE_RECORD_WITNESS]
+      ?? (position >= 0 && unlocker !== undefined && isContractUnlocker(unlocker) ? unlocker.params[position] : undefined);
+    if (typeof own !== 'bigint' || own < 0n || own === BigInt(outputIndex)) continue;
+    group.refreshInternalArgs({ [CALLEE_RECORD_WITNESS]: BigInt(outputIndex) }, { shiftPredOut: false });
+    changedCarriers.add(group);
+    changed = true;
+  }
   for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
     if (!carrier.refreshInternalArgs
       || (!carrier.returnWitnessGroups && !carrier.returnPreimageWitnessGroups)) continue;

@@ -773,6 +773,7 @@ import {
   calleeConsumedInputs,
   calleeOutputSpan,
   calleePinsNoRecord,
+  settlesUniversalVoidRecord,
 } from './external-call-utxo-group.js';
 
 export {
@@ -5790,6 +5791,28 @@ export class StatefulTransactionBuilder {
     return commitment;
   }
 
+  /**
+   * The record a group's call settles when its callee entry is void and takes the record witness (fix B's universal
+   * void record): `digest || 01`, the digest of the call, its reader and its arguments.
+   */
+  private voidEntryRecord(identity: string): Uint8Array | undefined {
+    const external = /^external-call:(\d+)(?::(\d+))?$/.exec(identity);
+    const group = external === null ? undefined : this.externalCallUtxoGroups[Number(external[1])];
+    if (!group || group.compilerRoute || group.callBatchUnit !== undefined) return undefined;
+    const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
+    const functionName = group.logicalFunctionName ?? group.functionName;
+    const entry = artifact?.abi.find((candidate) => candidate.name === functionName);
+    if (!artifact || !entry || entry.callRecord === true || !settlesUniversalVoidRecord(entry)) return undefined;
+    const occurrence = Number(external![2] ?? 0);
+    const args = occurrence > 0 && group.resolveLoopFunctionArgs
+      ? group.resolveLoopFunctionArgs(occurrence) : group.logicalFunctionArgs ?? group.functionArgs;
+    if (args === undefined) return undefined;
+    const digest = callRecordDigest(entry, args, {
+      structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
+    }, 0, this.groupCallRecordReader(group), group.callValue ?? 0n);
+    return digest === undefined ? undefined : callRecordCommitment(new Uint8Array(), digest);
+  }
+
   setReturnEventOutput(
     categoryId: string, commitment: Uint8Array, identity = categoryId, provisional = false,
     trace?: readonly AuthenticationProgramStateCommon[],
@@ -5798,8 +5821,10 @@ export class StatefulTransactionBuilder {
     const coordinate = parseExternalCallReturnCoordinate(identity);
     if (coordinate !== undefined
       && isCallBatchMember(this.externalCallUtxoGroups[coordinate.groupIndex], coordinate.groupIndex)) return this;
+    // A void entry's record is its call's digest and an empty result, which the call names: a probe's reading of the
+    // record's coordinate, taken before the record forms there, is not it.
     // eslint-disable-next-line no-param-reassign
-    commitment = this.rawOfReturnRecord(identity, commitment, trace);
+    commitment = this.voidEntryRecord(identity) ?? this.rawOfReturnRecord(identity, commitment, trace);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
       console.error('set-return-event-output', {
         identity, categoryId, commitment: binToHex(commitment),

@@ -57535,7 +57535,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitCallerCallRecordDigest(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData, withValue = false,
   ): boolean {
-    const selector = node.opaqueReturn ? undefined : slot.callRecordSelector ?? this.runtimeRecordSelector(slot, loc);
+    const selector = node.opaqueReturn ? undefined
+      : slot.callRecordSelector ?? this.runtimeRecordSelector(slot, loc, node);
     if (selector === undefined) return false;
     const declared = this.callRecordDeclaredTypes(slot);
     // An argument left to the callee is digested from the caller's witness of it; without one the call digests none.
@@ -57598,11 +57599,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the selector its pointer holds where the call runs, required four bytes wide, so its record's preimage keeps the
    * layout every callee digests (selector, then the two-byte reader, then the length-prefixed arguments).
    */
-  private runtimeRecordSelector(slot: ExternalCallSlot, loc: SingleLocationData): (() => void) | undefined {
+  private runtimeRecordSelector(
+    slot: ExternalCallSlot, loc: SingleLocationData, node: ExternalFunctionCallNode,
+  ): (() => void) | undefined {
     const expression = slot.runtimeRecordSelector === true ? slot.loopRecordSelector ?? slot.runtimeSelector : undefined;
     if (expression === undefined) return undefined;
     return (): void => {
-      this.visit(cloneNode(expression) as ExpressionNode);
+      const selector = cloneNode(expression) as ExpressionNode;
+      // A table's selector array is read at the element the call itself takes (emitLoopElementFloor), by the index
+      // the call names: the lowering's copy of that index is no node the checks typed.
+      if (slot.loopRecordSelector !== undefined) {
+        const read = selector instanceof CastNode ? selector.expression : selector;
+        const index = this.loopElementIndex(node.addressExpression);
+        if (index === undefined) throw new Error(`Table call ${slot.interfaceName}.${slot.functionName} names no element`);
+        if (read instanceof ArrayAccessNode) read.index = cloneNode(index) as ExpressionNode;
+        else if (read instanceof MappingAccessNode) read.keys[0] = cloneNode(index) as ExpressionNode;
+        else throw new Error(`Table call ${slot.interfaceName}.${slot.functionName} reads no selector element`);
+      }
+      this.visit(selector);
       this.emit(Op.OP_SIZE, loc);
       this.emit(Op.OP_4, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
@@ -57787,6 +57801,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return this.stateVariables.length > 0 || this.collectionCount > 0 || this.eventDefinitions.length > 0
       || this.currentContractReadsBlockhash || this.currentContractEmitsEvent
       || (this.compilerOptions.forceStateful ?? false);
+  }
+
+  /** The index of the element a call on an array element names, its target unwrapped of casts. */
+  private loopElementIndex(target: ExpressionNode): ExpressionNode | undefined {
+    if (target instanceof CastNode) return this.loopElementIndex(target.expression);
+    if (target instanceof FunctionCallNode && target.parameters.length === 1) {
+      return this.loopElementIndex(target.parameters[0]);
+    }
+    if (target instanceof MappingAccessNode) return target.keys[0];
+    if (target instanceof ArrayAccessNode) return target.index;
+    if (target instanceof FieldAccessNode) return this.loopElementIndex(target.expression);
+    return undefined;
   }
 
   /** A call on an element of a state array: its loop's epilogue checks every element's callee, in order. */

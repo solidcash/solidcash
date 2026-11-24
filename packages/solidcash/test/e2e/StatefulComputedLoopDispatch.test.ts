@@ -313,14 +313,16 @@ describe('stateful computed-target loop (IFoo(pairFor(path[i], path[i+1])).m() o
   it('fills the witness correctly when the interface is multi-method (selector param follows in the ABI)', async () => {
     const pubArt = compileString(PUBLISHER_MULTI);
     const subArt = compileString(SUBSCRIBER_MULTI);
-    // Sanity: the ABI must order externalCallInputBase, then loopTargets, then the selector param.
+    // Sanity: the ABI orders externalCallInputBase, then loopTargets, then the record base. Each turn reads its
+    // callee's void record by the digest of the method (56ef7cfa7), so no selector witness follows any more.
     const runInputs = pubArt.abi.find((f) => f.name === 'notify')!.inputs.map((i) => i.name);
     const iBase = runInputs.indexOf('__internal__externalCallInputBase');
     const iWit = runInputs.findIndex((n) => n.startsWith('__internal__loopTargets'));
-    const iSel = runInputs.findIndex((n) => n.startsWith('__internal__externalCallSelector'));
+    const iRecord = runInputs.indexOf('__internal__externalReturnOutputIdx');
     expect(iBase).toBeGreaterThanOrEqual(0);
     expect(iWit).toBeGreaterThan(iBase);
-    expect(iSel).toBeGreaterThan(iWit);
+    expect(iRecord).toBeGreaterThan(iWit);
+    expect(runInputs.some((n) => n.startsWith('__internal__externalCallSelector'))).toBe(false);
 
     const sub1 = new Contract(subArt, [], { provider });
     const { categoryId: c1 } = await setupStatefulUtxos(

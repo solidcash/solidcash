@@ -797,10 +797,17 @@ contract NoWrite() {
     const expected = fnPtrSlots(compileString(source, { forceStateful: true }).stateLayout);
     expect(expected).toEqual(['total@0.0', 'handlers@0.1', '__fnsel_handlers@0.2']);
     const union = compileStringSplit(source, options);
-    const divided = compileStringSplit(source, {
+    // The broadcast's facet must hold no writer of the table. A limit one byte under the union's no longer leaves
+    // fireAll alone since its calls read their elements' records: the limit is then one byte under the facet the
+    // split gave it.
+    let divided = compileStringSplit(source, {
       ...options, maxShardBytes: union.manifest.facets[0].estimatedRedeemBytes - 1,
     });
-    const broadcast = divided.manifest.facets.find((f) => f.functions.includes('fireAll'))!;
+    let broadcast = divided.manifest.facets.find((f) => f.functions.includes('fireAll'))!;
+    for (let shrink = 0; shrink < 3 && broadcast.functions.length > 1; shrink++) {
+      divided = compileStringSplit(source, { ...options, maxShardBytes: broadcast.estimatedRedeemBytes - 1 });
+      broadcast = divided.manifest.facets.find((f) => f.functions.includes('fireAll'))!;
+    }
     expect(broadcast.functions).toEqual(['fireAll']);
     expect(fnPtrSlots(divided.facets[broadcast.name].stateLayout)).toEqual(expected);
     expect(fnPtrSlots(divided.root.stateLayout)).toEqual(expected);

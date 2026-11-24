@@ -2353,14 +2353,16 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     stateful direct build fails to compile with that error, as does a non-isolated `OP_ROLL` anywhere in the body,
     which renames every value the model tracks. A returning entry takes its digest the same way in any build. Fail
     closed (a compile error); not changed.
-  - Forging the absent record: the carrier is an NFT of the callee's category (no capability, an `OP_TRUE` lock,
-    `digest || 01`, which the caller's read checks), so it is minted only in a run that spends the callee's minting
-    master, under the callee's own covenant. A run that settles no record refuses one where the callee has an entry
-    returning values or the multi-call entry (`emitCallRecordCount`: zero carriers beside its pinned edges) or declares
-    events (`emitOwnCategoryImmutableNftOutputPin`: no own-category immutable NFT outside its checked outputs). Open,
-    by reading, not VM-confirmed: a callee with neither (all entries void, no events) counts only its edges in such a
-    run (`emitSharedOwnEdgeCount`, which skips the record lock), so nothing refuses a carrier minted there, nor an
-    earlier carrier respent (its lock is `OP_TRUE`). This predates the message-bus change: every entry of such a
-    contract that settles no record (one reading external storage, one that delegatecalls, a lifecycle or `unsafe`
-    entry, and now this assembly in a message-bus build) lets a single-interface caller accept a record its callee's
-    run did not settle.
+  - Forging the absent record (FIXED 2026-11-24, `sec-argsleft-holes`; VM-confirmed before,
+    `RecordlessRunCarrier.e2e.test.ts`). The carrier is an NFT of the callee's category (no capability, an `OP_TRUE`
+    lock, `digest || 01`, which the caller's read checks). A run that settled no record counted its category's
+    carriers only where the contract had an entry returning values or the multi-call entry (`emitCallRecordCount`),
+    and otherwise its edges alone. A void-only, event-less vault's storage reader (`sync`) run beside a caller of the
+    vault's `deposit(3)`: refused at the caller with no carrier; ACCEPTED with a carrier minted in the run; ACCEPTED
+    with an earlier honest carrier moved there (its lock is `OP_TRUE`). Every run that settles no record of its own
+    now counts its category's carriers, records and edges, to the edges it pinned (`emitRecordlessCarrierCount`): the
+    full branch, and split, merge and tiered `unsafe` runs; a delegate's own category and a proxy whose delegate did
+    not run (`emitOwnCarrierCount`); a message-bus route, to its result carrier when it returns
+    (`emitRouteCarrierCount`, in place of its output scan's edge refusal). Both rows are now refused at the vault.
+    `unsafe(0)` keeps no covenant, by design. The vault: 1,624 -> 1,598 B (its count reuses the record count's
+    subroutine).

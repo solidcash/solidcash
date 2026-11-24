@@ -1417,8 +1417,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   each iteration reads its callee's void record at the loop's record base plus its index, by the digest of the method,
   the reader and that iteration's arguments, as a returning one already did (VM-confirmed before: two loopers merged
   into one transaction each took one payment; CallRecordSingleReader.e2e.test.ts). The stateless loop helpers lay
-  those records out (solidcash/loop-call). An explicit message-bus build's loop entry does not read them yet. Neither
-  does a
+  those records out (solidcash/loop-call). A message-bus build's direct entry reads them as well, since its void calls
+  read records (16ef0a5d6); a looped call the bus binds on its route leaves its direct entry refusing it, and the
+  route binds its rows (RouteOnlyLoopArrayDirectSpend.test.ts). Neither does a
   table of function pointers or selectors (its callee's reader is pinned to none), so two callers making such a call
   can still share one run. A raw `address.call` (visible or opaque payload, its result read or not) is FIXED
   2026-11-24 (P-2): no digest over an opaque payload is sound (the caller cannot name its arguments, and the callee

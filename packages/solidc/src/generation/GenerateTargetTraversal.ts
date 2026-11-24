@@ -4840,18 +4840,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * also required for delegates: the absent container slot may be occupied by the co-spent implementation.
    * The transfer-output covenant remains unconditional and proves that every inactive slot carries exactly zero.
    */
-  private emitPendingTransferValueGuard(locationData: SingleLocationData): void {
+  private emitPendingTransferValueGuard(locationData: SingleLocationData, countsSentValues = false): void {
     this.emit(encodeBool(false), locationData);
     this.pushToStack('(__native_value_transfer_active)');
-    for (const transfer of this.pendingTransfers) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(transfer.amountStackName))), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      this.emit(Op.OP_0NOTEQUAL, locationData);
-      this.emit(Op.OP_BOOLOR, locationData);
-    }
-    // The value of calls whose `{value:}` rides their record leaves the container too: a nonzero one spends it.
-    if (this.getStackIndex(CALL_VALUE_SENT, true) >= 0) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(CALL_VALUE_SENT))), locationData);
+    // The value of calls whose `{value:}` rides their record and of deployer `new`s leaves the container with no
+    // transfer output: a nonzero one spends it too.
+    const sent = countsSentValues ? [CALL_VALUE_SENT, DEPLOYER_VALUE_SENT,
+      ...this.deployerNewValues.map((deploy) => deploy.amountStackName)] : [];
+    for (const amount of [...this.pendingTransfers.map((transfer) => transfer.amountStackName), ...sent]) {
+      if (this.getStackIndex(amount, true) < 0) continue;
+      this.emit(encodeInt(BigInt(this.getStackIndex(amount))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_0NOTEQUAL, locationData);
       this.emit(Op.OP_BOOLOR, locationData);
@@ -64414,7 +64412,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
       // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot. A function
       // that pays the miner fee, or holds the one container of `pragma satoshicontainer single`, always spends it.
-      if (!spendsContainer) this.emitPendingTransferValueGuard(locationData);
+      if (!spendsContainer) this.emitPendingTransferValueGuard(locationData, true);
       this.emitSatoshiContainerIdentity(locationData);
       if (singleContainer) this.emitContainerStaysSingle('satoshiContainer', undefined, locationData);
 

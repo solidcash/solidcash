@@ -63308,7 +63308,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[]` -> `[claimed]`: bit k is set where an own-category record at `master + k` is one this run may rewrite. That
-   * is the route's own (data band, sidecar, route-owned entry), or one a row that ran claims by the row counter its
+   * is the route's own (data band, sidecar, a route-owned entry it writes or deletes; one it only reads, as the
+   * lanes it absorbs from its clones' reads, stays pinned), or one a row that ran claims by the row counter its
    * selector branch increments: a handler-managed lane of a collection its handler writes (its own lanes, stamped
    * as `lanes`; a collection it writes only in runtime loops has none), or an input a runtime-loop stream of the run
    * authenticated, by the run's own mask (emitMarkRuntimeLoopEntryInput), ORed in. A lane no such row claims stays
@@ -63331,6 +63332,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const routeEntry = slot.kind === 'entry' && slot.slotIndex !== undefined && !handlerManaged.has(slot.slotIndex);
       if ((!own.has(slot.kind) && !routeEntry) || assigned.has(slot.offset)) continue;
       assigned.add(slot.offset);
+      // A route-owned lane the route only reads comes back at its own index, as any read does: no claim.
+      if (routeEntry && !this.entrySlots[slot.slotIndex!]?.operations
+        .some((operation) => operation === 'write' || operation === 'delete')) continue;
       ownMask |= bit(slot.offset);
     }
     // Lanes with one set of claimers share a mask.

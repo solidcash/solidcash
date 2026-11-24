@@ -29,6 +29,11 @@
  *   its run pinned or spent: beside a long `notes` write over a long note, a `side` entry rewritten at an unused
  *   trailing slot is refused (it once claimed the whole band), and the honest write, which spends the old note's
  *   chunks, settles.
+ * - A lane the route only reads (one it absorbs from its clones' reads) is not claimed as the route's own: beside a
+ *   `fill` batch (two literal-key writes), a `side` entry rewritten at such a lane is refused, and the batch settles.
+ * - A handler that writes a collection only in a runtime loop claims no lane of it: beside a `spread` batch, whose
+ *   stream the route's clone runs in the trailing band, a `side` entry rewritten at a lane only `triple` reads is
+ *   refused (it once claimed every lane), and the stream settles.
  *
  * Each attack row asserts the route's refusal; the entry covenant alone accepts every one of these spends.
  */
@@ -110,12 +115,24 @@ const NOTES = `contract NoteBook() {
   function put(int key, int value) public { this.side[key] = value; require(true); }
 }`;
 
-// A loop writer, which projects no fixed lane of `side`, beside a writer that does.
+// `fill`'s constant-bound loop unrolls into two literal-key writes, at side's first two lanes. The route also keeps
+// two lanes it absorbs from its clones' reads, which no handler writes.
 const LOOP = `contract LoopBook() {
   mapping(int => int) public side;
   function put(int key, int value) public { this.side[key] = value; require(true); }
   function fill(int value) public {
     for (int i = 0; i < 2; i += 1) { this.side[i] = value; }
+    require(true);
+  }
+  function triple(int a, int b, int c) public { require(this.side[a] + this.side[b] + this.side[c] >= 0); }
+}`;
+
+// A public-bound loop writer: a runtime stream, which writes no fixed lane of `side`.
+const STREAM = `contract StreamBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function spread(int n, int value) public {
+    for (int i = 0; i < n; i = i + 1) { this.side[i] = value; }
     require(true);
   }
   function triple(int a, int b, int c) public { require(this.side[a] + this.side[b] + this.side[c] >= 0); }
@@ -763,9 +780,9 @@ describe('bound route without its verifier: a writer lane its run leaves to a pa
 });
 
 
-describe('bound route without its verifier: another handler\'s lane beside a loop writer', () => {
+describe('bound route without its verifier: a lane the route only reads, beside a literal-key writer', () => {
   let state: { eligible: Set<string>; honest?: ReturnType<typeof failures>; covenant?: Verdict; route?: Verdict };
-  // fill's loop writes side at the first two lanes; triple alone reads the others.
+  // fill writes side at the first two lanes; the others are the route's own read lanes.
 
   beforeAll(async () => {
     const provider = createMessageBusCapstoneTestProvider();
@@ -787,7 +804,7 @@ describe('bound route without its verifier: another handler\'s lane beside a loo
     state = {
       ...state, honest: failures(vm, fill), covenant: verdict(vm, rewrite, lane!), route: verdict(vm, rewrite, master),
     };
-    console.log('another handler\'s lane beside a loop writer', {
+    console.log('a lane the route only reads, beside a literal-key writer', {
       lanes, offset: lane! - master, honest: state.honest, covenant: state.covenant, route: state.route,
     });
   }, 300_000);
@@ -797,8 +814,59 @@ describe('bound route without its verifier: another handler\'s lane beside a loo
     expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
   });
 
-  // The hole: a writer that projects no fixed lane claims every lane of its collection, triple's included.
-  it('accepts a side entry rewritten at a lane only triple uses, beside a fill batch', () => {
-    expect(state.route).toBe(true);
+  // fill claims its own two lanes; a lane the route only reads is no longer claimed as the route's own.
+  it('refuses a side entry rewritten at a lane the route only reads, beside a fill batch', () => {
+    expect(state.route).not.toBe(true);
+  });
+});
+
+describe('bound route without its verifier: a reader\'s lane beside a runtime stream', () => {
+  let state: {
+    honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict;
+    stream: number[]; trailingBase: number; offset: number;
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(STREAM, { ...KERNEL, messageBusHandlers: ['put', 'spread', 'triple'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'spread', 'triple']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    const slotsOf = (name: string): number[] => artifact.messageBus!.handlers
+      .find((handler) => handler.name === name)?.physicalEntrySlots ?? [];
+    // A lane only triple reads: handler-managed, and no writer projects it.
+    const lanes = layout.slots.filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined
+      && slotsOf('triple').includes(slot.slotIndex) && !slotsOf('put').includes(slot.slotIndex))
+      .map((slot) => slot.offset);
+    expect(lanes.length, 'triple reads a lane put does not write').toBeGreaterThan(0);
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    for (const [key, value] of [[0n, 1n], [1n, 2n], [5n, 7n]]) await bus.call.put(key, value).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const spread = spendOf(await bus.batch([{ function: 'spread', args: [2n, 4n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, spread);
+    const master = masterOf(spread, victim);
+    const lock = binToHex(victim.source.lockingBytecode);
+    const stream = spread.sourceOutputs.flatMap((output, index) =>
+      (binToHex(output.lockingBytecode) === lock ? [index - master] : []));
+    const lane = lanes.map((offset) => master + offset).find((at) => padIndex(spread, at, at + 1) === at);
+    expect(lane, 'the stream batch leaves triple\'s lane to a pad').toBeDefined();
+    const rewrite = placed(spread, victim, master, lane!, rewritten(victim));
+    state = {
+      honest: failures(vm, spread), covenant: verdict(vm, rewrite, lane!), route: verdict(vm, rewrite, master),
+      stream, trailingBase: layout.trailingBase!, offset: lane! - master,
+    };
+    console.log('a reader\'s lane beside a runtime stream', state);
+  }, 300_000);
+
+  // The route's clone runs the stream at the route's trailing base, so its inputs sit in the band.
+  it('settles the honest stream batch, whose inputs sit in the trailing band, and the covenant accepts the victim', () => {
+    expect(state.honest).toEqual([]);
+    expect(state.stream.length).toBe(2);
+    expect(state.stream.every((offset) => offset >= state.trailingBase)).toBe(true);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+  });
+
+  // spread writes side only in a runtime loop, so it claims no lane of it (it once claimed every one).
+  it('refuses a side entry rewritten at a lane only triple reads, beside a stream batch', () => {
+    expect(state.route).not.toBe(true);
   });
 });

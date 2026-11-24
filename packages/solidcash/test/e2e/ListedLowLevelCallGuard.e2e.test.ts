@@ -40,6 +40,13 @@ const SOURCE = `pragma solidcash ^0.51.0;
       }
       runs = runs + 1;
     }
+    function compatLoop(address t, uint n) external {
+      for (uint i = 0; i < n; i++) {
+        (bool ok, bytes data) = t.call{value: 0}(abi.encodeWithSelector(IT.set.selector, 5, 5));
+        require(ok);
+      }
+      runs = runs + 1;
+    }
   }`;
 
 const compileOptions = (primary: string): never => ({
@@ -147,6 +154,22 @@ describe('R\'s compat low-level call to T, with T listed by withCall(), under a 
     const before = c.sentCount();
     const { text, error } = await c.outcome('compatNever', [c.tLock], [4n, 4n]);
     expect(text).toMatch(/^refused: R\.compatNever's call of T\.set \(low-level call 0\) cannot be built: it runs only /);
+    expect(error).toBeInstanceOf(CallGuardUndecidedError);
+    expect(c.sentCount()).toBe(before);
+    expect(await c.tState()).toEqual({ height: 0n, clock: 0n, calls: 0n });
+    expect(await c.runs()).toBe(0n);
+  });
+});
+
+describe('R\'s compat low-level call to T in a loop, with T listed by withCall()', () => {
+  // The call's row publishes no number of turns for its loop, so the SDK cannot tell whether R makes the call: at zero
+  // turns, as here, the listed T would run uncalled.
+  it('refuses the listed call by name, before sending', async () => {
+    const c = await chain();
+    const before = c.sentCount();
+    const { text, error } = await c.outcome('compatLoop', [c.tLock, 0n], [5n, 5n]);
+    expect(text).toMatch(/^refused: R\.compatLoop's call of T\.set \(low-level call 0\) cannot be built: /);
+    expect(text).toContain('it runs once per turn of a loop');
     expect(error).toBeInstanceOf(CallGuardUndecidedError);
     expect(c.sentCount()).toBe(before);
     expect(await c.tState()).toEqual({ height: 0n, clock: 0n, calls: 0n });

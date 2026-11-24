@@ -4859,16 +4859,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         // witnesses (leftCallArgumentPositions); where the caller takes none it keeps its selector check. A call with
         // `{value:}` reads it as well: nothing else binds its method through a one-method interface, and no record of
         // one run answers two callers.
-        // The exploit this closes exists for every ungrouped single-interface void call, not only an explicit
-        // messageBus:false opt-out. An inferred (auto) compile direct-lowers a call it does not route - `messageBus`
-        // is folded to true for auto, so the mode, not that flag, says whether lowering is direct. Bind for disabled
-        // and auto; an explicitly enabled (or verifier-required) bus authenticates co-spent methods itself. Grouped
-        // slots are already removed above, and this block only runs off-route, so it reaches only direct calls.
-        const busMode = (this.compilerOptions as CompilerOptions
-        & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
-        const directConventionVoidBinding = (busMode === 'disabled' || busMode === 'auto')
-          && this.compilerOptions.composition !== 'framed';
-        if (directConventionVoidBinding && node.isEntryPoint) {
+        // The exploit this closes exists for every ungrouped single-interface void call a direct entry makes, a
+        // message-bus build's included: a route binds the rows it runs, but an ordinary call spends the direct entry,
+        // which binds its calls where it runs. A framed body binds its calls by their frames. Grouped slots are already
+        // removed above, and this block only runs off-route, so it reaches only direct calls.
+        const directConventionVoidBinding = this.compilerOptions.composition !== 'framed';
+        if (directConventionVoidBinding && node.isEntryPoint && !node.graphEmissionHandler) {
           for (const slot of externalCallSlots) {
             if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
             if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar) continue;
@@ -5351,10 +5347,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(returnOutputIdxParam);
     }
 
-    // B-side (approach B, single-interface method binding): an ordinary void entry of a direct stateful contract
-    // attests the method it ran via a void call record so a single-function-interface caller can bind the co-spent
-    // method. It needs the carrier output index its caller pins the record at. Lifecycle and unsafe entries keep
-    // their own covenant settlement, and the multi-call candidate path below injects this witness itself.
+    // B-side (approach B, single-interface method binding): an ordinary void entry of a stateful contract, a
+    // message-bus build's direct entry included, attests the method it ran via a void call record so a
+    // single-function-interface caller can bind the co-spent method. It needs the carrier output index its caller pins
+    // the record at. Lifecycle and unsafe entries keep their own covenant settlement, and the multi-call candidate path
+    // below injects this witness itself.
     const voidRecordLifecycleOrUnsafe = node.modifiers.some((modifier) =>
       modifier === FunctionModifier.UPGRADE || modifier === FunctionModifier.DEPLOY
       || modifier === FunctionModifier.SELFDESTRUCT || modifier === FunctionModifier.SPLIT
@@ -5373,8 +5370,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
       && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
       && !readsExternalStorage && !delegatecalls && !node.isFallback && !node.isReceive
-      && this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed'
-      && this.compilerOptions.messageBusDirectParticipant !== true
+      && this.compilerOptions.composition !== 'framed' && this.compilerOptions.messageBusDirectParticipant !== true
       && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
       const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
       voidRecordIdxParam.location = node.location;

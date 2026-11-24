@@ -293,16 +293,11 @@ const CONVENTIONS: Convention[] = [
 describe('the method an args-left call names, in other conventions (VM)', () => {
   for (const convention of CONVENTIONS) {
     for (const shape of SHAPES) {
-      // OPEN: a message-bus build's callee pins no void record, and its caller reads none, so a void call through a
-      // single-function interface binds no method there, named or not. These rows settle; drop `.fails` once a void
-      // record binds them.
-      const voidRecordless = convention.name === 'message-bus' && shape.name === 'void' ? it.fails : it;
       describe(`${convention.name}, ${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
         it(`settles the honest ${shape.a}() through a single-function interface, and ${shape.b}()`, async () => {
           const d = await deploy(shape, 'Caller', convention);
-          // Where the call reads a record, the argument it leaves is a witness; a recordless void call takes none.
-          expect(hidden(d, 'Caller', 'oneA', LEFT_ARGUMENT))
-            .toEqual(voidRecordless === it ? ['__internal__callArgument0_0'] : []);
+          // The argument the call leaves is a witness; a message-bus build's callee pins a void record for it too.
+          expect(hidden(d, 'Caller', 'oneA', LEFT_ARGUMENT)).toEqual(['__internal__callArgument0_0']);
           const a = await spend(d, 'oneA', shape.a);
           const b = await spend(d, 'oneB', shape.b);
           expectOnlyTheMethodDiffers(d, shape, a, b);
@@ -311,7 +306,7 @@ describe('the method an args-left call names, in other conventions (VM)', () => 
         }, 300_000);
 
         // The caller digests the argument it leaves from its witness, so B's record does not match A's call.
-        voidRecordless(`refuses ${shape.a}() co-spent with ${shape.b} at the caller (single-function)`, async () => {
+        it(`refuses ${shape.a}() co-spent with ${shape.b} at the caller (single-function)`, async () => {
           const d = await deploy(shape, 'Caller', convention);
           const a = await spend(d, 'oneA', shape.a);
           expectRefusedAt(runVm(splice(a, await spend(d, 'oneB', shape.b), d.callerCat)), master(a, d.callerCat));
@@ -319,7 +314,7 @@ describe('the method an args-left call names, in other conventions (VM)', () => 
 
         if (convention.name !== 'message-bus') return;
         // A named call through a single-function interface, in the same build.
-        voidRecordless(`refuses ${shape.a}(v) co-spent with ${shape.b} at the caller (single-function, named)`, async () => {
+        it(`refuses ${shape.a}(v) co-spent with ${shape.b} at the caller (single-function, named)`, async () => {
           const d = await deploy(shape, 'Named', convention);
           const a = await spend(d, 'oneA', shape.a, true);
           const b = await spend(d, 'oneB', shape.b, true);

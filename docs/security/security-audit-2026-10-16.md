@@ -2286,5 +2286,11 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     place of the change output (both at the executor input). Not built: the `messageBusProxyForwardEnvelope`
     transport, whose envelope rides in two carriers, the executor's route frame and the proxy master's copy
     (compose-assemble.ts); its route takes the same claims.
+  - Zero-parameter rows (`4625e4a7a`): the route's zero-parameter selector branch set neither the row's claim
+    counter nor the DYN-1 writer flag, which only the parameterised branch set, so such a row claimed nothing.
+    KernelMultiDynamicShrink's graph compose of `shrink()` was refused at the Store master: its old chunks, inside
+    the band, were pinned with the band-lock list empty. The branch now runs both. A getter or a fixed-state writer
+    claims nothing and emits as before; a zero-parameter dynamic-state writer takes the base check every writer row
+    takes. Not yet re-run: the file's one run failed before this fix.
   - Cost of a verifier path where one is used: one verifier input of at least 9,000 B unlocking bytecode
     (`MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES`) and a deployed verifier UTXO per transaction.

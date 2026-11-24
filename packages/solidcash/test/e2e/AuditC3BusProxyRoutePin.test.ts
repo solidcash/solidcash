@@ -5,12 +5,15 @@
  * standalone (`__internal__activeVerifierIndex` -1), and the certified default proxy drops its record count, so the
  * delegate route now runs the route record pin (emitRouteOutsideBlockRecordPin): every proxy-category mutable input
  * outside `[proxy master, proxy master + size)`, other than the route's verifier, comes back at its own index.
- * The route takes no claim flags, so `size` is `__internal__participantBlockSize` once its verifier ran and the
- * compile-time block otherwise.
+ * Since step C of the route-band work (065341ecf) a delegate route takes claims like any bound route, its layout
+ * being based at the proxy master: inside the block only the records its rows that ran claim are free, cut to
+ * `__internal__participantBlockSize` once its verifier ran, and without a verifier the claims stay within the
+ * compile-time block. That is narrower than the window it skipped before in both runs.
  *
- * Compile level: the delegate route of a proxied two-mapping ledger carries that pin, with the window picked from the
- * verifier index, beside the claim-flag pin of the same contract's non-proxy route. Honest: with a long `side` value
- * among the proxy's records, a compose that reaches the ledger through its delegate route settles.
+ * Compile level: the delegate route of a proxied two-mapping ledger carries that pin, testing each parked input
+ * against its claims and cutting them at the verifier index, as the same contract's non-proxy route does. Honest:
+ * with a long `side` value among the proxy's records, a compose that reaches the ledger through its delegate route
+ * settles.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -56,6 +59,10 @@ const KEY = 5n;
 const VALUE = new Uint8Array(96).fill(0xab);
 // The route pin's second pass: pop each parked index until the -1 sentinel.
 const PIN_PASS = /OP_BEGIN OP_FROMALTSTACK OP_DUP OP_1ADD OP_IF .* OP_1ADD OP_NOT OP_UNTIL/;
+// Each parked input's claim bit: its offset from the master, floored at 0, against the claims mask.
+const CLAIM_BIT = 'OP_SUB OP_0 OP_MAX OP_2 OP_PICK OP_SWAP OP_RSHIFTNUM OP_2 OP_MOD';
+// Once the verifier ran (index >= 0) the claims are cut to the physical size: claimed mod (1 << size).
+const VERIFIER_CUT = /OP_0 OP_GREATERTHANOREQUAL OP_IF OP_1 .{0,80}?OP_PICK OP_LSHIFTNUM OP_MOD OP_ENDIF/;
 const VERIFIER_COMMITMENT_DOMAIN = '4c335631';
 
 type Artifact = ReturnType<typeof compileString>;
@@ -102,12 +109,14 @@ describe('C3: a message-bus route on a proxy\'s block pins the proxy records out
       plainRoute: plain.functionBodies![plain.messageBus!.route.selector!]!.length / 2,
       delegateRoute: delegate!.functionBodies![delegate!.messageBus!.route.selector!]!.length / 2,
     }));
-    // The non-proxy route pins through its claim flags; the delegate route now runs the same park-and-pin passes,
-    // its window `__internal__participantBlockSize` once the verifier ran, else the compile-time block.
-    expect(own, 'the non-proxy route carries the record pin').toMatch(PIN_PASS);
-    expect(proxied, 'the delegate route carries the record pin').toMatch(PIN_PASS);
-    expect(proxied, 'the delegate route picks its window from the verifier index').toContain(windowChoice(blockSize));
-    expect(own, 'the non-proxy route claims instead').not.toContain(windowChoice(blockSize));
+    // Both routes run the park-and-pin passes and test each parked input against the claims of the rows that ran,
+    // cut to `__internal__participantBlockSize` once the verifier ran; neither skips a whole window.
+    for (const [body, route] of [[own, 'the non-proxy route'], [proxied, 'the delegate route']] as const) {
+      expect(body, `${route} carries the record pin`).toMatch(PIN_PASS);
+      expect(body, `${route} tests each parked input against its claims`).toContain(CLAIM_BIT);
+      expect(body, `${route} cuts its claims to the physical block once the verifier ran`).toMatch(VERIFIER_CUT);
+      expect(body, `${route} skips no whole window`).not.toContain(windowChoice(blockSize));
+    }
   }, 300_000);
 
   it('settles a compose through the delegate route beside a long value the proxy keeps in value chunks', async () => {

@@ -12943,7 +12943,8 @@ function synthesizeMessageBusRoute(
           ? 'require(__message_bus_active_lifecycle_mode == 3 && __message_bus_active_lifecycle_count == 1);'
           : kernelLifecycleHandlers.size > 0
             ? 'require(__message_bus_active_lifecycle_mode == 0);' : '';
-        return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
+        // A selected row sets its writer flag and claim counter whatever its arity, as the branch below does.
+        return `${condition} { ${dynamicWriteFlag} ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
           ${signatureAuthorization} require(rowArgs.length == 0);
           ${zeroParamLifecycleAuthorization}
           ${senderChecks} ${invoke(entryOnly.join(', '))}

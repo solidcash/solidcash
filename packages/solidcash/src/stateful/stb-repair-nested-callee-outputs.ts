@@ -99,6 +99,9 @@ export function repairNestedCalleeOutputs(
     ));
     const index = fixedIdentityIndices.has(inputIndex) ? inputIndex : -1;
     if (index < 0) {
+      // A relocatable identity never takes a same-index identity's slot, where an output laid ahead of it (a proxied
+      // callee's record) would push it: that identity is laid at its own index first.
+      while (fixedIdentityIndices.has(builder.outputs.length)) restoreIdentity(host.allInputs[builder.outputs.length]);
       builder.addOutput(output);
       return;
     }

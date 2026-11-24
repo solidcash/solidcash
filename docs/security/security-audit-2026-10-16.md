@@ -2200,7 +2200,11 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     even where a run writes one. VM-checked at `a2065ef8c`: an aliased putPair(5, 2, 5, 3) leaves its second lane
     to a pad, and a side entry rewritten there is refused in the route body outside the C3 pin, so that shape is
     held. By reading, a conditional write's unused lane round-trips under its conditional write flag
-    (markConditionalSortedWriteFlag). Pools and alternatives are still claimed whole.
+    (markConditionalSortedWriteFlag). Pools and alternatives checked the same way (`a9d56686d`): beside a non-aliased
+    putPair(5, 2, 9, 3), a side entry rewritten at a pool lane the run did not write is refused, and beside a
+    `place` batch (one nested key in two orientations), a values entry rewritten at the alternate tuple lane the run
+    did not write is refused; both honest batches settle. The writer's static claim names those lanes, so the pin
+    skips them and the route body holds the record. No R2 shape is reachable this way; the claims stay as they are.
   - R-B, corrected (`2be6b2c9f`, `53c0fc1a8`). The LoopBook row (`dcbaea853`) was not a loop writer. A kernel
     compile unrolls `fill`'s constant-bound loop before admission (UnrollFixedBoundEntryLoop ahead of
     LowerVMapCounterLoops), so `fill` is a two-lane literal-key writer, and a diagnostic compile showed its claim
@@ -2214,11 +2218,13 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     lane. The stream runs in the route's clone, which shares the route layout, so its inputs sit in the trailing
     band, where the row's lock claim admits them. StreamBook in the same test VM-checks both: the honest `spread`
     batch's stream inputs sit at offsets >= trailingBase and it settles, and a `side` entry rewritten at a lane only
-    `triple` reads is refused. The same commit records each input a stream authenticates in a route-threaded mask
-    the pin claims. By reading, every kernel stream runs in a body with the route's layout (entry-touching helpers
-    are inlined into the clones), so the mask adds no claim beyond the band's lock claim; it is kept fail-closed.
-    Run once: AuditRouteUnusedClaimedSlot, AuditComposeUntouchedRecordRow, KernelHeteroLoopStreamsCompose,
-    KernelPendingScalarRows, KernelDelegateDualRuntimeSet (53/53), KernelMixedRuntimeFixedCollectionFence (1/1).
+    `triple` reads is refused. `d12d5561e` also threaded a mask of the inputs each stream authenticated into the
+    pin's claims. With the stream in the band, and no R2 arm needing a run-time record (above), it added no claim,
+    so `2c3143a9c` removes it; the no-lane rule stays. Bytes saved, by reading: about 25 B per bound route with a
+    runtime loop, 20-50 B per marking site (one to four per loop, one in the scalar first-touch arm) and 6-15 B per
+    call into a body that carried it. Run once without it: AuditRouteUnusedClaimedSlot,
+    AuditComposeUntouchedRecordRow, KernelHeteroLoopStreamsCompose, KernelPendingScalarRows,
+    KernelDelegateDualRuntimeSet (57/57), KernelMixedRuntimeFixedCollectionFence (1/1).
   - R-C, stage 1 (`a57d01f69`, holes VM-confirmed at `88bfbcd87` and `a83db74a4`): a kernel-safe native assembly
     row and an unsafe(2) row each claimed the whole block; beside a standalone batch of either, a `side` entry
     rewritten at the block's pad settled. Kernel-safe native assembly is a closed computation and unsafe(2) writes

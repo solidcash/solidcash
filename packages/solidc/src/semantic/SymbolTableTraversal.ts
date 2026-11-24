@@ -5616,6 +5616,22 @@ export default class SymbolTableTraversal extends AstTraversal {
             condition: callsiteShapes[index].condition,
           }),
         }));
+        // The direct convention pins each low-level call's callee as one co-spent input (`__internal__callInputIndex`),
+        // which every turn of a loop reads, so one run of the callee would answer each turn of a `call`. A message-bus
+        // route refuses such a call too (LowLevelCallShapes), a framed body binds each frame, and a staticcall reads.
+        const looped = this.compilerOptions.messageBus === true || this.compilerOptions.composition === 'framed'
+          || node.graphEmissionHandler || node.messageBusRoute ? -1
+          : node.lowLevelCalls.findIndex((call) => call.callMode === 'call' && call.occurrence === 'loop'
+            && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1));
+        if (looped >= 0) {
+          throw new SolidcDiagnosticError(
+            'LOW_LEVEL_CALL_IN_LOOP',
+            `Function '${node.name}' makes low-level call ${looped} in a loop that may turn more than once. Its callee `
+            + 'is one co-spent input, so one run of it would answer every turn. Hoist the call out of the loop, or '
+            + 'make it a typed interface call.',
+            { functionName: node.name, callIndex: looped },
+          );
+        }
         // A Solidity-compat call/staticcall site pins its co-spent callee to the call's target (see
         // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.
         if (this.compilerOptions.evmCompat && this.compilerOptions.composition !== 'framed') {

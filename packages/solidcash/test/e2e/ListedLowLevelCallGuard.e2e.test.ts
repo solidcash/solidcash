@@ -41,9 +41,11 @@ const SOURCE = `pragma solidcash ^0.51.0;
       runs = runs + 1;
     }
     function compatLoop(address t, uint n) external {
-      for (uint i = 0; i < n; i++) {
-        (bool ok, bytes data) = t.call{value: 0}(abi.encodeWithSelector(IT.set.selector, 5, 5));
-        require(ok);
+      for (uint i = 0; i < 1; i++) {
+        if (n > 0) {
+          (bool ok, bytes data) = t.call{value: 0}(abi.encodeWithSelector(IT.set.selector, 5, 5));
+          require(ok);
+        }
       }
       runs = runs + 1;
     }
@@ -162,8 +164,9 @@ describe('R\'s compat low-level call to T, with T listed by withCall(), under a 
 });
 
 describe('R\'s compat low-level call to T in a loop, with T listed by withCall()', () => {
-  // The call's row publishes no number of turns for its loop, so the SDK cannot tell whether R makes the call: at zero
-  // turns, as here, the listed T would run uncalled.
+  // The call's row publishes no number of turns for its loop, so the SDK cannot tell whether R makes the call: with
+  // n = 0, as here, the loop makes none and the listed T would run uncalled. (A call a loop may make more than once
+  // does not compile in the direct convention: LOW_LEVEL_CALL_IN_LOOP.)
   it('refuses the listed call by name, before sending', async () => {
     const c = await chain();
     const before = c.sentCount();

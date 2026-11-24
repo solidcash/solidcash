@@ -63,6 +63,8 @@ export type SolidcDiagnosticCode =
   | 'STATE_RECORD_CAPACITY'
   // A Solidity-compat low-level call whose payload arguments the covenant cannot bind to the co-spent callee.
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
+  // A low-level `call` a loop may make more than once, whose one co-spent callee would answer every turn.
+  | 'LOW_LEVEL_CALL_IN_LOOP'
   // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
   | 'SIGNATURE_CHECK_IN_SUBROUTINE'
   // A payment to a `new` result whose category cannot be read at the payment site (branch or loop).

@@ -2196,13 +2196,22 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   - Residual (lanes, R2): a writer's row claims all of its own lanes, alternatives and alias priors included, even
     where a run writes one; a written collection it projects no lane of keeps every lane of it. Narrowing that needs
     the lanes a run writes, recorded at run time.
-  - Residual (whole block, the rest of R3): a row still claims its whole block where it is a lifecycle row (a kernel
-    lifecycle or deployment handler, or a `deploy`, `upgrade`, `selfdestruct`, `split`, `merge` or `unsafe`
-    modifier), has an unknown effect (a call through a function pointer), inline assembly, a `delegatecall` (a
-    library call lowered to one included), or a low-level call to `address(this)` (lowered to an internal call in the
-    same row). In this repository: UniswapV2.scash (createPair deploys) and marketplace.scash in the SDK fixtures;
-    upgrade_mapping.scash, upgrade_counter_data_nft.scash, selfdestruct_counter.scash, proxy_delegatecall.scash and
-    asm_simple.scash in the compiler's valid-contract-files.
+  - R-C, stage 1 (`a57d01f69`, holes VM-confirmed at `88bfbcd87` and `a83db74a4`): a kernel-safe native assembly
+    row and an unsafe(2) row each claimed the whole block; beside a standalone batch of either, a `side` entry
+    rewritten at the block's pad settled. Kernel-safe native assembly is a closed computation and unsafe(2) writes
+    no record, so neither claims anything of its own now. The admission walks read the contract's own functions only,
+    so a handler whose free function held assembly that is not kernel-safe was admitted and claimed the whole block
+    (VM-confirmed the same way). The shapes whose writes a route cannot bound (such assembly, a delegatecall in any
+    spelling, a low-level call to `address(this)` still present at synthesis) are now refused by name over the
+    closure with free functions; the handler compiles direct. An unknown effect was already refused. Test:
+    `AuditRouteUnusedClaimedSlot.test.ts` (QuietBook, StirBook). No other bus test changes: no bus test source has a
+    free function with assembly or a delegatecall, every delegatecall in a bus test has an identifier receiver
+    (already refused), and none calls `address(this)` at a low level.
+  - Residual (whole block, lifecycle rows): a row still claims its whole block where it is a lifecycle row (a kernel
+    lifecycle or deployment handler, or a `deploy`, `upgrade`, `selfdestruct`, `split` or `merge` modifier). In this
+    repository: UniswapV2.scash (createPair deploys) and marketplace.scash in the SDK fixtures;
+    upgrade_mapping.scash, upgrade_counter_data_nft.scash and selfdestruct_counter.scash in the compiler's
+    valid-contract-files.
   - Bytes: bound non-graph census-path routes only; a read-only handler's flag goes (about 10-15 B), a dynamic-state
     writer adds the band lock check (about 60-90 B). Direct entries, graph and proxy routes, framed builds: unchanged.
 - **Inputless mint at a handler-managed collection** (HIGH; `dffcec4ac`, made exact in `6d6a6913f`; found 2026-11-23

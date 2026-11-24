@@ -35046,6 +35046,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether this body runs on a compiler-owned route, whose record pin admits the trailing band by the run's
+   * value-chunk lock list: the route, or a handler it invokes, which reaches the list by its band ordinal. The
+   * route's output scan admits a spent chunk's lock as a mutable input's, so listing it admits no other output.
+   */
+  private routePinReadsChunkLockList(): boolean {
+    if (this.isDefineSubTraversal) return this.chunkLockListBandOrdinal() !== undefined;
+    return this.isCompilerMessageBusRoute() && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
+  }
+
+  /**
    * `[.., coSlot, coNext, coValue]` with `rawCells` untracked items above the tracked frame -> unchanged. An in-place
    * UPDATE spends the entry's OLD value chunks at their own lock (slot, old root), not the lock the new value's
    * chunks take. Append that lock to VALUE_CHUNK_LOCK_LIST so the outside-layout walk admits the spent chunks instead
@@ -35617,7 +35627,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // A direct write's node sits at the entry slot's own output either way, so the bracket guards one tail.
         this.emit(Op.OP_NOTIF, loc);
         this.emitSortedPredecessorBracket(loc);
-        if (this.isChunkableValue(collection.innermostValueType) && this.outsideLayoutWalkReadsChunkLockList()) {
+        if (this.isChunkableValue(collection.innermostValueType)
+          && (this.outsideLayoutWalkReadsChunkLockList() || this.routePinReadsChunkLockList())) {
           // An in-place update spends the entry's OLD value chunks beside the block.
           this.emit(Op.OP_ELSE, loc);
           this.emitAdmitUpdatedOldValueChunks(collection.name, 5, loc);
@@ -35776,7 +35787,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // re-points this entry: effNext = (repoint != 0) ? repoint : coNext32. The merge covenant already verified
     // coSlot < repoint < coNext, so this closes the chain msg.sender -> new node (whose NEW node the loop minted). ---
     // A direct delegate's outside-layout pin reaches the OLD value chunks this update spends: admit them by lock.
-    if (this.isChunkableValue(collection.innermostValueType) && this.delegatePinReadsChunkLockList()) {
+    if (this.isChunkableValue(collection.innermostValueType)
+      && (this.delegatePinReadsChunkLockList() || this.routePinReadsChunkLockList())) {
       this.emitAdmitUpdatedOldValueChunks(collection.name, 5, loc);
     }
     if (hasRepoint) {
@@ -38913,7 +38925,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // DS-6: admit the consumed OLD value chunks of the deleted node, so the outside-layout walk consumes them
     // instead of preserving them 1:1 against the replacement chunk (whose lock/root differ).
     if (this.isChunkableValue(node.collection!.innermostValueType)
-      && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0) {
+      && (this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0 || this.routePinReadsChunkLockList())) {
       this.emit(Op.OP_DUP, loc); // coValue copy
       this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_DROP, loc); this.emit(Op.OP_BIN2NUM, loc);
@@ -62945,10 +62957,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     const trailingBase = node.blockLayout?.trailingBase;
     const bandLocks = inBlock && trailingBase !== undefined ? this.routeBandLockClaims(node) : undefined;
+    // A sorted value's chunks a write that ran pinned or spent, by the run's own lock list (cleared at entry).
+    const valueChunks = inBlock && trailingBase !== undefined && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
     // The entries' plain walks and pinned counts take the same helper (contractRoutePinsByIndex). Its mask is a graph
     // route's claims, or else the window. A route on a proxy's block keeps the inline pass.
     const proxyBlock = node.parameters.some((parameter) => parameter.name === '__internal__proxyMasterIndex');
-    if ((!inBlock || graphSized) && bandLocks === undefined && byIndex && !proxyBlock && this.invokeParkedRecordPin(() => {
+    const parked = (!inBlock || graphSized) && bandLocks === undefined && !valueChunks && byIndex && !proxyBlock;
+    if (parked && this.invokeParkedRecordPin(() => {
       if (inBlock) {
         this.emitRouteBlockClaims(node, blockSize, loc);
         this.popFromStack();
@@ -63010,11 +63025,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_RSHIFTNUM, loc);
       this.emit(encodeInt(2n), loc);
       this.emit(Op.OP_MOD, loc);             // [claimed, i, claimedAt]
+      const physicalSize = this.getStackIndex(ACTIVE_VERIFIER_INDEX, true) >= 0
+        && !node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory')
+        ? this.routePhysicalSize(node) : undefined;
       if (bandLocks !== undefined) {
-        this.emitRouteBandLockClaim(trailingBase!, blockSize, this.getStackIndex(ACTIVE_VERIFIER_INDEX, true) >= 0
-          && !node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory')
-          ? this.routePhysicalSize(node) : undefined, loc);
+        this.emitRouteBandLockClaim(ROUTE_BAND_LOCKS, trailingBase!, blockSize, physicalSize, loc);
       }
+      if (valueChunks) this.emitRouteBandLockClaim(VALUE_CHUNK_LOCK_LIST, trailingBase!, blockSize, physicalSize, loc);
     } else {
       this.emit(Op.OP_DUP, loc);
       emitSize();
@@ -63043,14 +63060,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The trailing band's lock-qualified claims, as groups of row counters and the locks a row of any of them may
    * rewrite there. The dynamic-state writers form one group with the chunk lock of each dynamic state the route
    * writes: once any writer ran, the route settles all of them (emitDynamicWriteVerification), so each writer may move
-   * the chunks of all of them. Where one of them keeps no chunk lock of its own, the writers claim the whole band
-   * instead (emitRouteBlockClaims). Each row with `bandCollections` forms a group of its own with their entry locks.
+   * the chunks of all of them. Each row with `bandCollections` forms a group of its own with their entry locks.
    */
   private routeBandLockClaims(node: FunctionDefinitionNode): BandLockGroup[] | undefined {
     const claims = node.messageBusRecordClaims ?? [];
     const groups: BandLockGroup[] = [];
     const flags = claims.flatMap((claim) => (claim.bandStates !== undefined
-      && this.routeBandStatesHaveLocks(this.routeBandStates(node, claim.bandStates)) ? [claim.flag] : []));
+      && this.routeBandStates(node, claim.bandStates).length > 0 ? [claim.flag] : []));
     if (flags.length > 0) {
       const names = new Set(claims
         .flatMap((claim) => (flags.includes(claim.flag) ? this.routeBandStates(node, claim.bandStates!) : [])));
@@ -63063,7 +63079,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     }
     for (const claim of claims) {
-      if (claim.bandCollections === undefined || claim.trailing === true) continue;
+      if (claim.bandCollections === undefined) continue;
       groups.push({
         flags: [claim.flag],
         hashes: claim.bandCollections.map((name) => {
@@ -63076,15 +63092,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return groups.length > 0 ? groups : undefined;
   }
 
-  /** The dynamic state a writer of `written` may rewrite in the trailing band: it, and every state the route writes. */
+  /**
+   * The dynamic state a writer of `written` may rewrite in the trailing band: it, and every state the route writes,
+   * where it keeps its records as chunks at a lock of its own. A packed state is one data record, the route's own.
+   */
   private routeBandStates(node: FunctionDefinitionNode, written: readonly string[]): string[] {
     const readOnly = new Set(node.messageBusRouteReadOnlyDynamicResources ?? []);
-    return [...new Set([...written, ...[...this.pendingDynamicWrites.keys()].filter((name) => !readOnly.has(name))])];
-  }
-
-  /** Each named state keeps its records as chunks at a lock of its own. */
-  private routeBandStatesHaveLocks(names: readonly string[]): boolean {
-    return names.every((name) => this.stateVariables.some((variable) => variable.name === name && variable.isDynamic));
+    return [...new Set([...written, ...[...this.pendingDynamicWrites.keys()].filter((name) => !readOnly.has(name))])]
+      .filter((name) => this.stateVariables.some((variable) => variable.name === name && variable.isDynamic));
   }
 
   /**
@@ -63120,12 +63135,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[locks, claimed, i, claimedAt]` -> `[locks, claimed, i, claimedAt']`: an input the claims leave pinned that sits
-   * in the trailing band `[trailingBase, blockSize)` is claimed where its lock is one of `locks`. With `physicalSize`,
-   * the band ends at the participant's physical block, that witness, once the verifier ran (emitRouteBlockClaims).
+   * `[.., claimed, i, claimedAt]` -> `[.., claimed, i, claimedAt']`: an input the claims leave pinned that sits in the
+   * trailing band `[trailingBase, blockSize)` is claimed where its lock is one of the 35-byte locks of the tracked
+   * `list`. With `physicalSize`, the band ends at the participant's physical block, that witness, once the verifier
+   * ran (emitRouteBlockClaims).
    */
   private emitRouteBandLockClaim(
-    trailingBase: number, blockSize: number, physicalSize: string | undefined, loc: SingleLocationData,
+    list: string, trailingBase: number, blockSize: number, physicalSize: string | undefined, loc: SingleLocationData,
   ): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOTIF, loc);
@@ -63144,10 +63160,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(blockSize)), loc);
       this.emit(Op.OP_ENDIF, loc);
     } else this.emit(encodeInt(BigInt(blockSize)), loc);
-    this.emit(Op.OP_WITHIN, loc);            // [locks, claimed, i, inBand]
+    this.emit(Op.OP_WITHIN, loc);            // [.., claimed, i, inBand]
     this.emit(Op.OP_IF, loc);
     // The untracked i sits above the tracked frame.
-    this.emit(encodeInt(BigInt(this.getStackIndex(ROUTE_BAND_LOCKS) + 1)), loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(list) + 1)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_SWAP, loc);              // [.., i, found, rest]
@@ -63229,9 +63245,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `[]` -> `[claimed]`: bit k is set where an own-category record at `master + k` is one this run may rewrite. That
    * is the route's own (data band, sidecar, route-owned entry), or one a row that ran claims by the row counter its
    * selector branch increments: a handler-managed lane of a collection its handler writes (its own lanes, stamped
-   * as `lanes`, or every lane of the collection where none were), or the trailing band. A lane no such row claims
-   * stays pinned, as a read brings it back at its own index. Each offset belongs to one group, so the masks add. No
-   * row claims the whole block. Once the verifier ran
+   * as `lanes`, or every lane of the collection where none were). A lane no such row claims stays pinned, as a read
+   * brings it back at its own index. The trailing band is claimed by lock only (emitRouteBandLockClaim). Each offset
+   * belongs to one group, so the masks add. No row claims the whole block. Once the verifier ran
    * (`__internal__activeVerifierIndex` >= 0) the claims are cut to the physical block its binding digest proves
    * (routePhysicalSize); they are not widened to it, as the verifier holds a record no row touched only to a
    * resource row the composer writes. A local-caller route runs its verifier only for a lifecycle row, so
@@ -63262,12 +63278,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         : collection !== undefined && (claim.collections?.includes(collection) ?? false))).map((claim) => claim.flag);
       if (flags.length > 0) laneMasks.set(flags.join(' '), (laneMasks.get(flags.join(' ')) ?? 0n) | bit(slot.offset));
     }
-    let bandMask = 0n;
-    for (const slot of slots) {
-      if (slot.kind !== 'trailing' || assigned.has(slot.offset)) continue;
-      assigned.add(slot.offset);
-      bandMask |= bit(slot.offset);
-    }
     const local = node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory');
     const physicalSize = this.routePhysicalSize(node);
     const witnesses = [
@@ -63291,11 +63301,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     };
     for (const [flags, mask] of laneMasks) addWhereRan(flags.split(' '), mask);
-    // A band claim by written dynamic state admits only those chunk locks (routeBandLockClaims), unless one of the
-    // states has none of its own.
-    addWhereRan(claims.flatMap((claim) => (claim.trailing === true || (claim.bandStates !== undefined
-      && !this.routeBandStatesHaveLocks(this.routeBandStates(node, claim.bandStates))) ? [claim.flag] : [])),
-    bandMask);
     if (local) return;
     // On chain an index >= 0 ran the binder (routeVerifierSkipsByIndex), whose digest proves the size (>= 1). The
     // verifier holds a record no row touched only to the composer's resource row, so the claims stay those of the

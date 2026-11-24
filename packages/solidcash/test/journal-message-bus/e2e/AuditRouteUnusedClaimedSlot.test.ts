@@ -25,6 +25,10 @@
  *   entry rewritten at the block's pad is refused (both once claimed the whole block). A handler whose free function
  *   holds assembly that is not kernel-safe is no longer admitted (it was, and claimed the whole block); it runs as
  *   a direct call.
+ * - A row touching a sorted collection with a chunkable value admits, in the trailing band, only the value-chunk locks
+ *   its run pinned or spent: beside a long `notes` write over a long note, a `side` entry rewritten at an unused
+ *   trailing slot is refused (it once claimed the whole band), and the honest write, which spends the old note's
+ *   chunks, settles.
  *
  * Each attack row asserts the route's refusal; the entry covenant alone accepts every one of these spends.
  */
@@ -699,8 +703,8 @@ describe('bound route without its verifier: a trailing slot beside a chunkable m
       .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
   }, 300_000);
 
-  // The hole: a row touching a chunkable sorted collection claims the whole trailing band.
-  it('accepts a side entry rewritten at an unused trailing slot beside a write batch', () => {
-    expect(state.route).toBe(true);
+  // The band admits only the value-chunk locks the run itself pinned or spent; a side entry's lock is not one.
+  it('refuses a side entry rewritten at an unused trailing slot beside a write batch', () => {
+    expect(state.route).not.toBe(true);
   });
 });

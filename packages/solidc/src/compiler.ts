@@ -7083,12 +7083,14 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
 }
 
 /**
- * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. For the trailing
- * band, `band` `any` where it may consume a sorted collection's chunked
- * value there (a value chunk's lock depends on the entry's slot and value version), else the dynamic state it writes,
- * whose chunk locks it rewrites there, and `bandCollections`, whose entry locks it may consume there (a non-sorted
- * collection's records, or every collection it touches where it has a loop or a delete); and the sorted collections
- * it writes, whose fixed entry slots it may rewrite. A sorted entry or dynamic state the row only
+ * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. In the trailing
+ * band, `bandStates`, the dynamic state it writes, whose chunk locks it rewrites there, and `bandCollections`, whose
+ * entry locks it may consume there (a non-sorted collection's records, or every collection it touches where it has a
+ * loop or a delete); and the sorted collections it writes, whose fixed entry slots it may rewrite. A sorted value's
+ * chunks need no claim: the route admits, in the band, the locks the run itself pinned or spent (its value-chunk lock
+ * list, which only a write that ran fills). A token container holds no own-category record, and a state array's
+ * records are its chunks (a dynamic one) or the route's own data record (a packed or fixed one). A sorted entry or
+ * dynamic state the row only
  * reads comes back at its own index (the SDK keeps a read-only entry's commitment, a journal flushes only a written
  * cache, read-only chunks lead the band 1:1), which is what the pin requires, so a read claims none of them.
  * A typed external call claims nothing of its own: the callee runs as its own row, in its own block, and a call back
@@ -7138,11 +7140,12 @@ function routeUnboundedWriteShape(closure: readonly FunctionDefinitionNode[], ke
 
 function messageBusRecordClaim(
   footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
-  collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, kernel: boolean,
-): { band?: 'any' | string[]; bandCollections?: string[]; collections: string[] } {
+  collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>,
+  states: readonly StateVariableNode[], kernel: boolean,
+): { bandStates?: string[]; bandCollections?: string[]; collections: string[] } {
   const unbounded = footprint.unknown ? 'unresolved-or-effectful-handler' : routeUnboundedWriteShape(closure, kernel);
   if (unbounded !== undefined) throw new Error(`message-bus record claims: an admitted handler holds ${unbounded}`);
-  const reach = { anyBand: false, sweeps: false };
+  const reach = { sweeps: false };
   const bandStates = new Set<string>();
   const bandCollections = new Set<string>();
   const touched = new Set<string>();
@@ -7155,11 +7158,17 @@ function messageBusRecordClaim(
       if (written && dynamicState.has(name)) bandStates.add(name);
     } else if (kind === 'collection') {
       const collection = collections.get(name);
+      if (collection === undefined) {
+        if (!written || name === 'tokens') continue;
+        const state = states.find((candidate) => candidate.name === name);
+        if (state === undefined) throw new Error(`message-bus record claims: '${name}' is no collection or state`);
+        if (state.type instanceof MappingType) named.add(name);
+        else if (dynamicState.has(name)) bandStates.add(name);
+        continue;
+      }
       touched.add(name);
-      if (collection === undefined) reach.anyBand = true;
-      else if (collection.sorted === true && isChunkableValueType(collection.innermostValueType)) reach.anyBand = true;
-      else if (collection.sorted !== true) bandCollections.add(name);
-      if (collection?.sorted === true && written) named.add(name);
+      if (collection.sorted !== true) bandCollections.add(name);
+      else if (written) named.add(name);
     }
   }
   const visit = (node: unknown): void => {
@@ -7168,10 +7177,9 @@ function messageBusRecordClaim(
   };
   for (const member of closure) walkInvocationAst(member.body, visit);
   if (reach.sweeps) for (const name of touched) bandCollections.add(name);
-  const band = reach.anyBand ? 'any' : bandStates.size > 0 ? [...bandStates].sort() : undefined;
   return {
-    ...(band !== undefined ? { band } : {}),
-    ...(!reach.anyBand && bandCollections.size > 0 ? { bandCollections: [...bandCollections].sort() } : {}),
+    ...(bandStates.size > 0 ? { bandStates: [...bandStates].sort() } : {}),
+    ...(bandCollections.size > 0 ? { bandCollections: [...bandCollections].sort() } : {}),
     collections: [...named],
   };
 }
@@ -12743,15 +12751,15 @@ function synthesizeMessageBusRoute(
       const closure = [...collectNamedFunctionClosure(fn, signatureClosureByName)]
         .flatMap((name) => signatureClosureByName.get(name) ?? []);
       const claim = messageBusRecordClaim(eligibleFootprint(fn), closure, collectionByName, dynamicState,
-        compilerOptions.messageBusKernel === true);
-      if (claim.band === undefined && claim.bandCollections === undefined && claim.collections.length === 0) continue;
+        contract.stateVariables, compilerOptions.messageBusKernel === true);
+      if (claim.bandStates === undefined && claim.bandCollections === undefined
+        && claim.collections.length === 0) continue;
       // The handler's own lanes are stamped on this claim once the route's physical entry slots are assigned.
       const flag = `__message_bus_claim_${routeRecordClaims.length}`;
       fn.messageBusRecordClaimFlag = flag;
       routeRecordClaims.push({
         flag,
-        ...(claim.band === 'any' ? { trailing: true as const } : {}),
-        ...(Array.isArray(claim.band) ? { bandStates: claim.band } : {}),
+        ...(claim.bandStates !== undefined ? { bandStates: claim.bandStates } : {}),
         ...(claim.bandCollections !== undefined ? { bandCollections: claim.bandCollections } : {}),
         ...(claim.collections.length > 0 ? { collections: claim.collections } : {}),
       });

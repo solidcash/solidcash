@@ -129,8 +129,9 @@ describe('genesisCalls is on by default', () => {
  * Each code's SHA-256 as the compiler gave it before the default changed, at this tree: with the option unset, and with
  * `genesisCalls: false`. Before, an unset option compiled no genesis call but flagged a record-sound contract, and
  * `false` flagged one with a returning entry. Taken again once call records named their reader, which every contract
- * here with a record-publishing entry digests (the `unsafe` one has none, and is unchanged), and the `delegate` one
- * again once a delegate's void entry pinned the record of its proxy's call.
+ * here with a record-publishing entry digests (the `unsafe` one has none, and is unchanged), the `delegate` one
+ * again once a delegate's void entry pinned the record of its proxy's call, and the `fallback` one again once a run that
+ * settles no record counted its category's records as well as its edges.
  */
 const BEFORE = {
   unsafe: {
@@ -141,8 +142,8 @@ const BEFORE = {
   fallback: {
     source: `${P} contract C { int s; function a() { s = s + 1; } fallback() external { s = s + 2; } }`,
     options: { allowUnsafeOperations: true },
-    unset: '9ce9fb259acb18616def68252c29a99fd9aec7416c133e6708f9bbd0357ab8dd',
-    off: '9ce9fb259acb18616def68252c29a99fd9aec7416c133e6708f9bbd0357ab8dd',
+    unset: '7fa8515b069bc81387475fa15f4b68d89a77c19d8f74a7168e04683a15f181aa',
+    off: '7fa8515b069bc81387475fa15f4b68d89a77c19d8f74a7168e04683a15f181aa',
   },
   delegate: {
     source: `${P} contract C { int s; function a() { s = s + 1; } function d() delegate { s = s + 2; } }`,

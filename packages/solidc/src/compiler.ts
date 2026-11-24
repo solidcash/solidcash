@@ -18196,9 +18196,9 @@ function compileResolvedAst(
   }
   // C3 record claims: a handler that writes a sorted collection claims its own lanes of it, the route entry slots
   // its fixed accesses project to (alternatives included), and the earlier lanes a runtime alias may move a write to.
-  // A collection it writes only in runtime loops claims no lane: the run's mask claims the inputs its streams
-  // authenticate (emitMarkRuntimeLoopEntryInput), and an input no stream marks stays pinned. Any other written
-  // collection it projects no lane of keeps every lane of it.
+  // A collection it writes only in runtime loops claims no lane: the stream runs in the route's clone, which shares
+  // the route layout, so its inputs sit in the trailing band, claimed there by the collection's lock. Any other
+  // written collection it projects no lane of keeps every lane of it.
   for (const route of ast.contract.functions) {
     if (!route.messageBusRoute || !route.messageBusRecordClaims) continue;
     const entries = (route.entryAccesses ?? []).filter((entry) => !entry.inLoop);

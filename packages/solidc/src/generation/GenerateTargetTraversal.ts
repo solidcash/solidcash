@@ -2765,9 +2765,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // and the physical epilogue will consume it during the final flush.
   private runtimeLoopEntryJournalCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_JOURNAL_COUNT = '__internal__runtimeLoopEntryJournalCount';
-  // The inputs the run's runtime-loop streams authenticated, bit i for input i (emitMarkRuntimeLoopEntryInput).
-  // Threaded beside the input cursor; a bound route's record pin claims them (emitRouteBlockClaims).
-  private static readonly RUNTIME_LOOP_ENTRY_INPUT_MASK = '__internal__runtimeLoopEntryInputMask';
   /** Compact route-entry carrier identity and validated cardinality retained across row execution. */
   private static readonly KERNEL_JOURNAL_RECORDS_EXPECTED_COUNT = '__internal__kernelJournalRecordsExpectedCount';
   private static readonly KERNEL_JOURNAL_RECORDS_INITIAL_HASH = '__internal__kernelJournalRecordsInitialHash';
@@ -2805,8 +2802,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // ABI shared by every caller, including independently compiled direct entry points.
   private runtimeLoopEntryOutputCountFunctionIds: Set<number> = new Set();
   private runtimeLoopEntryInputCountFunctionIds: Set<number> = new Set();
-  // Contract-wide, as those sets: a bound route takes record claims, so every input-cursor body threads the mask.
-  private runtimeLoopEntryInputMaskThreaded = false;
 
   // X151. Every chunk-backed read loop emitted in this contract, with the trailing-offset basis it was built
   // from. `verifyDynamicReadBases` re-derives each one from the function's FINAL published footprint at the end
@@ -8555,7 +8550,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.journalWriterFunctionIds = this.journalWriterFunctionIds;
       probe.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
       probe.runtimeLoopEntryInputCountFunctionIds = this.runtimeLoopEntryInputCountFunctionIds;
-      probe.runtimeLoopEntryInputMaskThreaded = this.runtimeLoopEntryInputMaskThreaded;
       probe.runtimeLoopEntryOutputCountFunctionIds = this.runtimeLoopEntryOutputCountFunctionIds;
       probe.runtimeLoopEventContextFunctionIds = this.runtimeLoopEventContextFunctionIds;
       probe.preambleComputedFor = node;
@@ -9292,7 +9286,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
     subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
     subTraversal.runtimeLoopEntryInputCountFunctionIds = this.runtimeLoopEntryInputCountFunctionIds;
-    subTraversal.runtimeLoopEntryInputMaskThreaded = this.runtimeLoopEntryInputMaskThreaded;
     subTraversal.runtimeLoopEntryOutputCountFunctionIds = this.runtimeLoopEntryOutputCountFunctionIds;
     subTraversal.runtimeLoopEventContextFunctionIds = this.runtimeLoopEventContextFunctionIds;
     subTraversal.constantExpressions = new Map(this.constantExpressions);
@@ -9657,7 +9650,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
       subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
       subTraversal.runtimeLoopEntryInputCountFunctionIds = this.runtimeLoopEntryInputCountFunctionIds;
-      subTraversal.runtimeLoopEntryInputMaskThreaded = this.runtimeLoopEntryInputMaskThreaded;
       subTraversal.runtimeLoopEntryOutputCountFunctionIds = this.runtimeLoopEntryOutputCountFunctionIds;
       subTraversal.runtimeLoopEventContextFunctionIds = this.runtimeLoopEventContextFunctionIds;
       subTraversal.constantExpressions = new Map(this.constantExpressions);
@@ -11593,9 +11585,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The altstack journal's record count follows the input cursor in the hidden copy-in/copy-out frame. Keeping
       // both under the same closure guarantees that every caller capable of invoking a runtime-entry body owns it.
       this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true);
-      if (this.functionNeedsRuntimeLoopEntryInputMask(node)) {
-        this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK, true);
-      }
     }
     if (this.isDefineSubTraversal && runtimeLoopEntryOutputCountRequired) {
       // Copy-in/copy-out context supplied by visitUserFunctionCall. It is declared before journal fields to match
@@ -11946,11 +11935,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
         this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
         this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT);
-        // Only a route whose pin reads it owns the mask; another caller passes 0 and drops what comes back.
-        if (this.functionNeedsRuntimeLoopEntryInputMask(node) && node.messageBusRecordClaims !== undefined) {
-          this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
-          this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK);
-        }
       }
       this.runtimeLoopEntryInputCountActive = true;
       this.runtimeLoopEntryJournalCountActive = true;
@@ -12385,9 +12369,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (runtimeLoopEntryInputCountRequired) {
         journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
         journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT);
-        if (this.functionNeedsRuntimeLoopEntryInputMask(node)) {
-          journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK);
-        }
       }
       if (runtimeLoopEntryOutputCountRequired) {
         journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT);
@@ -15966,7 +15947,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.runtimeLoopEntryInputCountFunctionIds = runtimeInputIds;
-    this.runtimeLoopEntryInputMaskThreaded = functions.some((fn) => fn.messageBusRecordClaims !== undefined);
     const dynamicWriteLoopIds = functions
       .filter((fn) => fn.functionId !== undefined
         && this.journalWriterFunctionIds.has(fn.functionId)
@@ -16150,11 +16130,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private functionNeedsRuntimeLoopEntryInputCount(node: FunctionDefinitionNode): boolean {
     return node.functionId !== undefined
       && this.runtimeLoopEntryInputCountFunctionIds.has(node.functionId);
-  }
-
-  /** A body threads the stream input mask beside its input cursor where a bound route takes record claims. */
-  private functionNeedsRuntimeLoopEntryInputMask(node: FunctionDefinitionNode): boolean {
-    return this.runtimeLoopEntryInputMaskThreaded && this.functionNeedsRuntimeLoopEntryInputCount(node);
   }
 
   private functionNeedsRuntimeLoopEntryOutputCount(node: FunctionDefinitionNode): boolean {
@@ -20612,9 +20587,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callerOwnsRuntimeLoopEntryJournal = this.stack.includes(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
     );
-    const callerOwnsRuntimeLoopEntryInputMask = this.stack.includes(
-      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK,
-    );
     const callerOwnsRuntimeLoopEntryOutputCount = this.stack.includes(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT,
     );
@@ -20636,8 +20608,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? [
           GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
           GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
-          ...(this.functionNeedsRuntimeLoopEntryInputMask(targetFunc)
-            ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK] : []),
         ] : []),
       ...(targetRuntimeLoopEntryOutputCount
         ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT] : []),
@@ -20669,7 +20639,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.stack.includes(stackName)) {
         if (stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT
           || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT
-          || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK
           || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT
           || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START
           || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END) {
@@ -21141,8 +21110,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && !callerOwnsRuntimeLoopEntryInputCount)
         || (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT
           && !callerOwnsRuntimeLoopEntryJournal)
-        || (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK
-          && !callerOwnsRuntimeLoopEntryInputMask)
         || (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT
           && !callerOwnsRuntimeLoopEntryOutputCount)
         || ((originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START
@@ -21491,8 +21458,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           ? [
             GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
             GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
-            ...(this.functionNeedsRuntimeLoopEntryInputMask(this.currentFunction)
-              ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK] : []),
           ] : []),
         ...(this.functionNeedsRuntimeLoopEntryOutputCount(this.currentFunction)
           ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT] : []),
@@ -42884,7 +42849,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // read [P_slot32, P_oldnext32, P_value]. All N new keys fall in P's gap; the SDK mints the sorted chain
     // P' -> k1 -> .. -> kN -> P.oldnext.
     this.emitTrailingBlockBase(blockSize, loc); // [addr, Pidx(u)]
-    this.emitMarkRuntimeLoopEntryInput(loc, 1);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(encodeInt(BigInt(addrD() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // [addr, Pidx]
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -45539,7 +45503,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex(inCountName) + 4)), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     } // slot,next,value,input index
-    this.emitMarkRuntimeLoopEntryInput(loc, 4);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopAddrName) + 5)), loc);
     this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
@@ -46343,7 +46306,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const emitNormalStep = (): void => {
       // 3. co-spend INPUT[master+blockSize+iterCounter]: bytecode==addr, mutable + base==master, read [coSlot,coNext,coValue].
       pushIdx(this.sortedUpsertLoopCounterName, 0, 0); // [.., nodeIdx]
-      this.emitMarkRuntimeLoopEntryInput(loc, 1);
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
       if (this.readsRecordsFromFrame) {
         // A framed frame names the entry address by its stable bottom ordinal: `pushIdx` leaves a number of
@@ -47278,33 +47240,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReplaceCompilerRouteFrameValue(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, this.currentFunction,
     );
-    this.popFromStack();
-  }
-
-  /**
-   * `[.., i]` -> `[.., i]`: set bit i of the run's stream input mask, once, where a runtime-loop stream
-   * authenticates input i. A frame without the mask records nothing, so an input it misses stays pinned by the record
-   * pin. `untrackedStackItems` counts the untracked items above the tracked frame, i included.
-   */
-  private emitMarkRuntimeLoopEntryInput(locationData: SingleLocationData, untrackedStackItems: number): void {
-    const mask = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK;
-    if (this.getStackIndex(mask, true) < 0) return;
-    this.emitPickCompilerRouteFrameValue(mask, locationData, untrackedStackItems);
-    this.emit(Op.OP_OVER, locationData);
-    this.emit(Op.OP_2DUP, locationData);
-    this.emit(Op.OP_RSHIFTNUM, locationData);
-    this.emit(Op.OP_2, locationData);
-    this.emit(Op.OP_MOD, locationData);      // [.., i, mask, i, bit i]
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_LSHIFTNUM, locationData);
-    this.emit(Op.OP_ADD, locationData);
-    this.emit(Op.OP_ENDIF, locationData);    // [.., i, mask']
-    this.pushToStack('(runtime_loop_entry_input_mask_next)');
-    this.emitReplaceCompilerRouteFrameValue(mask, this.currentFunction, untrackedStackItems);
     this.popFromStack();
   }
 
@@ -63311,10 +63246,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * is the route's own (data band, sidecar, a route-owned entry it writes or deletes; one it only reads, as the
    * lanes it absorbs from its clones' reads, stays pinned), or one a row that ran claims by the row counter its
    * selector branch increments: a handler-managed lane of a collection its handler writes (its own lanes, stamped
-   * as `lanes`; a collection it writes only in runtime loops has none), or an input a runtime-loop stream of the run
-   * authenticated, by the run's own mask (emitMarkRuntimeLoopEntryInput), ORed in. A lane no such row claims stays
-   * pinned, as a read brings it back at its own index. The trailing band is claimed by lock only
-   * (emitRouteBandLockClaim). Each lane offset belongs to one group, so the lane masks add. No row claims the whole
+   * as `lanes`; a collection it writes only in runtime loops has none, as its stream runs in the trailing band). A
+   * lane no such row claims stays pinned, as a read brings it back at its own index. The trailing band is claimed by
+   * lock only (emitRouteBandLockClaim). Each offset belongs to one group, so the masks add. No row claims the whole
    * block. Once the verifier ran (`__internal__activeVerifierIndex` >= 0) the claims are cut to the physical block its
    * binding digest proves (routePhysicalSize); they are not widened to it, as the verifier holds a record no row
    * touched only to a resource row the composer writes. A local-caller route runs its verifier only for a lifecycle
@@ -63371,29 +63305,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     };
     for (const [flags, mask] of laneMasks) addWhereRan(flags.split(' '), mask);
-    // The inputs the run's streams authenticated (emitMarkRuntimeLoopEntryInput), inside the block, never the
-    // master's bit: [claimed] -> [claimed | ((streams >> (master + 1)) << 1) mod (1 << blockSize)].
-    const streams = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_MASK;
-    if (this.getStackIndex(streams, true) >= 0) {
-      const width = BigInt(Math.floor(blockSize / 8) + 1);
-      this.emitPickTrackedFromBottom(streams, loc);
-      this.emitMasterInputIndex(loc, 1);
-      this.emit(Op.OP_1ADD, loc);
-      this.emit(Op.OP_RSHIFTNUM, loc);
-      this.emit(Op.OP_1, loc);
-      this.emit(Op.OP_LSHIFTNUM, loc);
-      this.emit(Op.OP_1, loc);
-      this.emit(encodeInt(BigInt(blockSize)), loc);
-      this.emit(Op.OP_LSHIFTNUM, loc);
-      this.emit(Op.OP_MOD, loc);
-      this.emit(encodeInt(width), loc);
-      this.emit(Op.OP_NUM2BIN, loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(encodeInt(width), loc);
-      this.emit(Op.OP_NUM2BIN, loc);
-      this.emit(Op.OP_OR, loc);
-      this.emit(Op.OP_BIN2NUM, loc);
-    }
     if (local) return;
     // On chain an index >= 0 ran the binder (routeVerifierSkipsByIndex), whose digest proves the size (>= 1). The
     // verifier holds a record no row touched only to the composer's resource row, so the claims stay those of the

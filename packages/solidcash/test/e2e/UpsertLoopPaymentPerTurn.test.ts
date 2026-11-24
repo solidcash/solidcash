@@ -1,13 +1,12 @@
 /**
  * A sorted-mapping loop that pays BCH every turn beside its mapping write, on the direct convention.
  *
- * A direct call's covenant mints the loop's entries from emitTrailingWriteOutputBase, which a plain call compacts into
- * the block's inactive returnEvent slot, and reads the per-turn payments from past the complete fixed block plus the
- * entry band (emitRuntimeLoopEffectVerification). The slot then sits between the entries and the payments. The SDK
- * plans a direct call's payments as a trailing segment of their own, and under that plan it based the entries on the
- * complete block: it padded the slot ahead of the entries, which put every entry one output past where the covenant
- * reads it. It now compacts the entry band as the covenant does and pads the slot between the entries and the
- * payments. Each call is checked with stock libauth's standard VM under the production profile, honest and tampered.
+ * A direct call's covenant mints the loop's entries from emitTrailingWriteOutputBase and reads the per-turn payments
+ * from past the complete fixed block plus the entry band (emitRuntimeLoopEffectVerification). The SDK once based the
+ * entries on the complete block and padded a returnEvent slot ahead of them, which put every entry one output past
+ * where the covenant reads it. A void entry running a runtime mapping loop reserves no returnEvent slot (7c7650814),
+ * so the payments follow the entries directly. Each call is checked with stock libauth's standard VM under the
+ * production profile, honest and tampered.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -92,18 +91,14 @@ function moveOne(spend: Spend, from: number, to: number): Spend {
   return copy;
 }
 
-/**
- * Where the covenant reads each output: the entries side by side, then one output that holds no token (the block's
- * inactive returnEvent slot), then the payments side by side.
- */
+/** Where the covenant reads each output: the entries side by side, then the payments side by side. */
 function expectLayout(spend: Spend, entryCount: number, paymentCount: number): void {
   const entries = entriesOf(spend);
   const payments = outputsAt(spend, payeeLock);
   expect(entries).toHaveLength(entryCount);
   expect(payments).toHaveLength(paymentCount);
   entries.forEach((index, ordinal) => expect(index).toBe(entries[0]! + ordinal));
-  expect(spend.transaction.outputs[entries.at(-1)! + 1].token).toBeUndefined();
-  payments.forEach((index, ordinal) => expect(index).toBe(entries.at(-1)! + 2 + ordinal));
+  payments.forEach((index, ordinal) => expect(index).toBe(entries.at(-1)! + 1 + ordinal));
 }
 
 interface Book {

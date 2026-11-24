@@ -31260,7 +31260,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         : `__internal__externalReturnOutputIdx${returnSlotIndex}`;
       // The record names the call it answers: the digest of this call's method and the arguments the source passes,
       // which the callee computes over the call it executed.
+      // A call on a state array's element digests this turn's element of each witness list of the arguments it leaves.
+      const turn = this.emitTurnLeftCallArguments(node, physicalSlot, locationData);
       const verifiesDigest = this.emitCallerCallRecordDigest(node, physicalSlot, locationData, true);
+      this.dropTurnLeftCallArguments(turn, locationData);
       // A counted call in a loop has no epilogue: it binds its callee and its record's carrier where it runs, and
       // reads its record at its return index plus its ordinal.
       const counter = verifiesDigest ? this.liveCallOrdinalCounter(physicalSlot) : undefined;
@@ -31401,7 +31404,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitVoidCallRecordRead(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
   ): void {
-    if (!this.emitCallerCallRecordDigest(node, slot, loc, true)) {
+    // A call on a state array's element digests this turn's element of each witness list of the arguments it leaves.
+    const turn = this.emitTurnLeftCallArguments(node, slot, loc);
+    const digested = this.emitCallerCallRecordDigest(node, slot, loc, true);
+    this.dropTurnLeftCallArguments(turn, loc);
+    if (!digested) {
       // A call dispatched through its callee's own multi-call entry has its record read and bound by that entry's
       // machinery, not by a caller-side digest. Fix B's single-interface void-record read does not apply here;
       // defer to the multi-call binding, as the pre-fix-B direct read did. So does a call leaving arguments to its

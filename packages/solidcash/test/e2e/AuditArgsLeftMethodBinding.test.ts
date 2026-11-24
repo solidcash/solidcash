@@ -70,6 +70,13 @@ contract Looper() {
   int calls;
   function oneA(address[] ts) { for (uint i = 0; i < ts.length; i++) { IDeposit(ts[i]).deposit(); } this.calls = 1; }
   function oneB(address[] ts) { for (uint i = 0; i < ts.length; i++) { IWithdraw(ts[i]).withdraw(); } this.calls = 1; }
+}
+contract StateLooper() {
+  address[] ts;
+  int calls;
+  function reg(address t) { this.ts.push(t); }
+  function oneA() { for (uint i = 0; i < ts.length; i++) { IDeposit(ts[i]).deposit(); } this.calls = 1; }
+  function oneB() { for (uint i = 0; i < ts.length; i++) { IWithdraw(ts[i]).withdraw(); } this.calls = 1; }
 }`,
   a: 'deposit',
   b: 'withdraw',
@@ -106,6 +113,13 @@ contract Looper() {
   int last;
   function oneA(address[] ts) { for (uint i = 0; i < ts.length; i++) { int r = ITake(ts[i]).take(); this.last = r; } }
   function oneB(address[] ts) { for (uint i = 0; i < ts.length; i++) { int r = IPeek(ts[i]).peek(); this.last = r; } }
+}
+contract StateLooper() {
+  address[] ts;
+  int last;
+  function reg(address t) { this.ts.push(t); }
+  function oneA() { for (uint i = 0; i < ts.length; i++) { int r = ITake(ts[i]).take(); this.last = r; } }
+  function oneB() { for (uint i = 0; i < ts.length; i++) { int r = IPeek(ts[i]).peek(); this.last = r; } }
 }`,
   a: 'take',
   b: 'peek',
@@ -159,7 +173,9 @@ const SELECTOR = /^__internal__externalCallSelector\d*$/;
 /** An F1 edge carrier (`OP_1 OP_NOP`): a named call's own output, committing to the call it makes. */
 const isEdge = (output: any): boolean => binToHex(output.lockingBytecode) === '5161';
 
-async function deploy(shape: Shape, caller = 'Caller', convention = DIRECT): Promise<Deployed> {
+async function deploy(
+  shape: Shape, caller = 'Caller', convention = DIRECT, callerState: Record<string, unknown> = shape.callerState,
+): Promise<Deployed> {
   const provider = createTestProvider();
   const arts = { ...artifactsOf(shape, convention.caller), Callee: artifactsOf(shape, convention.callee).Callee };
   const calleeBase = new Contract(arts.Callee, [], { provider });
@@ -168,7 +184,7 @@ async function deploy(shape: Shape, caller = 'Caller', convention = DIRECT): Pro
   );
   const callerBase = new Contract(arts[caller], [], { provider });
   const { categoryId: callerCat } = await setupStatefulUtxos(
-    provider, callerBase, arts[caller].stateLayout!, shape.callerState, { saltContract: true },
+    provider, callerBase, arts[caller].stateLayout!, callerState, { saltContract: true },
   );
   return {
     arts,
@@ -194,6 +210,20 @@ async function spend(d: Deployed, entry: string, method: string, named = false):
 async function loopSpend(d: Deployed, entry: string, iface: string, method: string): Promise<Spend> {
   d.caller.registerExternalArray(iface, [d.callee], [method]);
   const call = await d.caller[entry]([d.calleeAddr]).withExternalCall(d.callee, method, [3n]).build();
+  return { tx: call.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(call.inputs) };
+}
+
+/** A looper over a state array of targets, which holds the callee as its one element. */
+async function deployStateLooper(shape: Shape): Promise<Deployed> {
+  const d = await deploy(shape, 'StateLooper', DIRECT, { ...shape.callerState, ts: [] });
+  await d.caller.reg(d.calleeAddr).send();
+  return d;
+}
+
+/** The honest spend of a state looper's `entry`, its element's callee running `method(3)`, named by the looper. */
+async function stateLoopSpend(d: Deployed, entry: string, iface: string, method: string): Promise<Spend> {
+  d.caller.registerExternalArray(iface, [d.callee], [method]);
+  const call = await d.caller[entry]().withExternalCall(d.callee, method, [3n]).build();
   return { tx: call.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(call.inputs) };
 }
 
@@ -372,6 +402,31 @@ describe('the method an args-left call names, made once per turn of a loop over 
         const d = await deploy(shape, 'Looper');
         const a = await loopSpend(d, 'oneA', shape.ifaceA, shape.a);
         const b = await loopSpend(d, 'oneB', shape.ifaceB, shape.b);
+        expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
+      }, 300_000);
+    });
+  }
+});
+
+describe('the method an args-left call names, on each element of a state array of targets (VM)', () => {
+  for (const shape of SHAPES) {
+    describe(`${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
+      it(`settles the honest loop of ${shape.a}() over a state array, and of ${shape.b}()`, async () => {
+        const d = await deployStateLooper(shape);
+        // The argument each element's call leaves is an element of a witness list, as over a parameter array.
+        expect(hidden(d, 'StateLooper', 'oneA', /^__internal__callArgumentList\d+_\d+$/))
+          .toEqual(['__internal__callArgumentList0_0']);
+        const a = await stateLoopSpend(d, 'oneA', shape.ifaceA, shape.a);
+        const b = await stateLoopSpend(d, 'oneB', shape.ifaceB, shape.b);
+        expectOnlyTheMethodDiffers(d, shape, a, b);
+        expect(runVm(a)).toEqual({ success: true });
+        expect(runVm(b)).toEqual({ success: true });
+      }, 300_000);
+
+      it(`refuses an element's callee running ${shape.b} for the ${shape.a}() the loop names, at the caller`, async () => {
+        const d = await deployStateLooper(shape);
+        const a = await stateLoopSpend(d, 'oneA', shape.ifaceA, shape.a);
+        const b = await stateLoopSpend(d, 'oneB', shape.ifaceB, shape.b);
         expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
       }, 300_000);
     });

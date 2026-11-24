@@ -4912,19 +4912,16 @@ export default class SymbolTableTraversal extends AstTraversal {
           // iteration's callee's void record at the return base plus the iteration's index, by the digest of its
           // method, its reader and that iteration's arguments, as a returning one reads its record. One leaving
           // arguments to its callee digests them from its witness lists (leftCallArgumentListPositions). A loop over a
-          // state array reads it at the return base plus the element it claims, for a call naming its arguments.
+          // state array reads it at the return base plus the element it claims.
           for (const slot of externalCallSlots) {
             if (!slot.loopArrayVar || slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
             if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar || slot.batchInvocations) continue;
             if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
-            const loopArray = slot.loopArrayVar;
-            const stateArray = !loopArray.startsWith('__internal__loopTargets')
-              && !node.parameters.some((parameter) => parameter.name === loopArray);
             const recordMethod = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
             if (!recordMethod || slot.sourceCallNode === undefined) continue;
             const digested = recordMethod.parameterTypes.flatMap((type) => (type instanceof FunctionType
               && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
-            if ((stateArray || !this.takesLeftCallArguments())
+            if (!this.takesLeftCallArguments()
               && !namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length)) continue;
             slot.callRecordSelector = this.calleeMethodSelector(slot.functionName, recordMethod.parameterTypes);
             slot.callRecordParameterTypes = recordMethod.parameterTypes;
@@ -5507,8 +5504,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const slot of this.takesLeftCallArguments() ? node.externalCalls : []) {
         const names = [
           ...this.leftCallArgumentPositions(slot).map((position) => callArgumentWitnessName(slot.slotIndex, position)),
-          ...this.leftCallArgumentListPositions(slot, node)
-            .map((position) => callArgumentListName(slot.slotIndex, position)),
+          ...this.leftCallArgumentListPositions(slot).map((position) => callArgumentListName(slot.slotIndex, position)),
         ];
         for (const name of names) {
           const param = new ParameterNode(new BytesType(), name);
@@ -16648,15 +16644,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * The arguments a call made once per turn of a loop over targets, a parameter array or a computed-target witness
-   * (the inline loop dispatch), leaves to each turn's callee: the caller takes a witness list of each
-   * (callArgumentListName) and digests each turn's element, so each turn's record binds its method and arguments.
+   * The arguments a call made once per turn of a loop over targets (a parameter array, a computed-target witness or a
+   * state array: code generation refuses any other) leaves to each turn's callee: the caller takes a witness list of
+   * each (callArgumentListName) and digests each turn's element, so each turn's record binds its method and arguments.
    */
-  private leftCallArgumentListPositions(slot: ExternalCallSlot, node: FunctionDefinitionNode): number[] {
-    const loopArray = slot.loopArrayVar;
-    if (loopArray === undefined || (!loopArray.startsWith('__internal__loopTargets')
-      && !node.parameters.some((parameter) => parameter.name === loopArray))) return [];
-    return this.leftDigestedPositions(slot);
+  private leftCallArgumentListPositions(slot: ExternalCallSlot): number[] {
+    return slot.loopArrayVar === undefined ? [] : this.leftDigestedPositions(slot);
   }
 
   /** The positions leftCallArgumentPositions and leftCallArgumentListPositions name, whatever the loop. */

@@ -64,9 +64,6 @@
   0.51.1 and earlier). Rows now claim only what they may write, and each such collection's nodes must equal its inputs
   plus the inserts of the run. A route handler that takes no parameters and writes dynamic state now gets the
   dynamic-write base check every other writer gets. Contracts with message-bus routes compile to new bytes.
-  Some row kinds still claim
-  their whole block or band (lifecycle rows, function pointers, inline assembly, delegatecall, calls to
-  address(this), chunked values): see the security ledger.
 - A contract run that settled no call record of its own refused a record carrier of its category beside it only when
   the contract had an entry returning values (in 0.51.0 and 0.51.1). In a contract whose entries are all void, a
   spender could run an entry that settles no record, such as one reading another contract's storage, beside a caller
@@ -74,7 +71,6 @@
   earlier call: the caller credited a method its callee never ran. Every run that settles no record now counts the
   carriers of its category, records and edges, to the edges it pinned; a message-bus route counts them to its own
   result carrier. Stateful contracts compile to new bytes: recompile and redeploy them.
-
 - A returning call on an element of a state array read its call record by digest but never checked that the record
   was its callee's (CRITICAL, in 0.51.1 and earlier): a record minted in any other category, with the honest digest and
   any result, was accepted, so a caller credited whatever the forger wrote. Each element's record must now carry the

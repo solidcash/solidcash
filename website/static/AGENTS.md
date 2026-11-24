@@ -1031,6 +1031,12 @@ target.staticcall(payload);                           // low-level read-only; de
   contract's address pays its master lock, which never spends the coin: the compiler refuses one whose target it can
   see is stateful (`StatefulRawValueCallError`), and the SDK refuses the send (`RawCallCalleeRequiredError`, reason
   `value to a co-spent callee`), as it refuses any output paying a master lock.
+- A typed value call is refused where nothing could bind its value: in a loop, through a function pointer or a
+  runtime selector, or to `msg.sender` (`CALL_VALUE_UNBOUND`, at compile time). The SDK refuses one to a function
+  that takes no value or is compiled with the message bus, one below the dust threshold of the callee's container,
+  and one whose callee sends the value on (`CallValueUnpayableError`).
+- A low-level call a loop may make more than once (run-time turns, or an array of targets) is refused
+  (`LOW_LEVEL_CALL_IN_LOOP`): one callee run would answer every turn.
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when
   no contract calls it. It is derived from the transaction's inputs, not a call frame: authorize with `checkSig`.
 

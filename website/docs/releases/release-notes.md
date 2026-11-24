@@ -2,6 +2,44 @@
 title: Release Notes
 ---
 
+## v0.52.0
+
+SolidCash 0.52.0 is a security release. It closes holes in how calls bind the callee run they answer and in how
+message-bus routes hold the records they do not write. In 0.51.1 and earlier, the shapes the changelog lists let a
+spender have a caller credit a run its callee never made, credit one callee run to two callers, or rewrite another
+participant's records in a composed transaction. Every stateful contract compiles to new bytecode, so its address
+changes: recompile and redeploy, callers and callees together. Please refer to the
+[migration notes](/docs/releases/migration-notes#v051-to-v052). Like 0.51, this is a beta, and it has had no outside
+audit.
+
+- A call record names the input that reads it, so one callee run answers one caller. This covers typed calls, calls
+  through function pointers and selector tables, raw calls, and calls in loops over parameter arrays, computed targets
+  and state arrays. A returning call on a state-array element checks that the record is its callee's.
+- A void call through a one-method interface binds the method and the arguments its callee ran, in direct and
+  message-bus builds, in loops and in constructor calls, including arguments the call leaves to its callee. A
+  contract behind a proxy can be called this way: its implementation pins the record of the call its proxy forwarded.
+- A run that settles no record of its own refuses any record carrier of its category beside it, so a record can no
+  longer be minted, or moved from an earlier call, for a method that did not run.
+- A message-bus route holds every record of its block except those its rows may write, whether or not its verifier
+  runs, and a row claims only what it writes.
+- Also fixed: the expression form of `delegatecall` is pinned to its implementation; a co-spent callee stands for a
+  20-byte identity only as a P2SH32 or P2PKH lock; a call through a copy of a stored target goes where the EVM's
+  would; event reads no longer count a replayed event NFT, and now need the provider's `getRawTransaction`; a typed
+  `{value:}` call to a stateful contract binds the value its callee receives.
+- Refused by name where nothing could bind them: mixed 0.52.0 and older artifacts in one call
+  (`MixedCallRecordReaderError`), unbindable value calls (`CALL_VALUE_UNBOUND`, `CallValueUnpayableError`,
+  `StatefulRawValueCallError`) and a low-level call a loop may make more than once (`LOW_LEVEL_CALL_IN_LOOP`).
+
+Known issues:
+
+- A raw value call, `addr.call{value: v}(data)`, to a stateful contract the compiler cannot see as one pays the
+  contract's lock, which nothing spends. Send value to a stateful contract with a typed `{value:}` call.
+- A value call to a contract compiled with the message bus does not build; the SDK refuses it by name.
+- A void call that reaches a split contract's facet, or a proxied contract run through its implementation's
+  message-bus route, does not build: the call's record is not settled there, and the call fails closed.
+- A function whose native assembly reads stack values it did not push can fail to compile
+  (`StackVariableUnavailableError`), as in 0.51.1.
+
 ## v0.51.1
 
 SolidCash 0.51.1 fixes contract creation through deployer coins from an external wallet. Bytecode and addresses are

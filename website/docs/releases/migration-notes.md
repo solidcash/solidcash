@@ -2,6 +2,28 @@
 title: Migration Notes
 ---
 
+## v0.51 to v0.52
+
+- Change `pragma solidcash ^0.51.0` to `pragma solidcash ^0.52.0`, and move all six packages to 0.52.0 together. A
+  caret range on 0.x pins the minor version, so the 0.52.0 compiler refuses `^0.51.0`.
+- Recompile, and deploy a new category for every stateful contract: call records now name their reader, a run that
+  settles no record counts its category's record carriers, and message-bus routes hold the records their rows do not
+  write, so the bytecode and the address change. Measured against 0.51.1, a minimal counter grows from 1,394 to 1,401
+  bytes and an OpenZeppelin-based BCH-native ERC20 from 9,508 to 9,529. A contract behind a proxy compiles to new
+  bytes; the default proxy does not.
+- Recompile callers and callees together. The SDK refuses a call whose caller and callee were compiled on different
+  sides of 0.52.0 (`MixedCallRecordReaderError`).
+- Event reads (`queryFilter`, `queryEvents`, `on()`/`once()`, `readEventsFromChain`) now check that each event NFT was
+  created by its contract, which needs the provider's `getRawTransaction`. A provider that cannot serve a transaction,
+  such as a node without a transaction index, makes the read throw `EventProvenanceError`.
+- Send value to a stateful contract with a typed call, `C(target).f{value: v}(...)`. A raw value call to a target the
+  compiler sees as stateful is refused (`StatefulRawValueCallError`), and a value call nothing could bind is refused
+  (`CALL_VALUE_UNBOUND` at compile time, `CallValueUnpayableError` in the SDK).
+- A low-level call that a loop may make more than once is refused (`LOW_LEVEL_CALL_IN_LOOP`). Call the target once,
+  or through a typed interface.
+- A message-bus route handler with native assembly the compiler cannot isolate, a `delegatecall`, or a low-level call
+  to `address(this)` now compiles to the direct convention instead of a route.
+
 ## v0.50 to v0.51
 
 - Change `pragma solidcash ^0.50.0` to `pragma solidcash ^0.51.0`, and move all six packages to 0.51.0 together. A

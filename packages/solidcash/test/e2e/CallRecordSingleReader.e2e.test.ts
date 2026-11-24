@@ -3,7 +3,7 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
   encodeDataPush, encodeTransaction, hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';
-import type { AbiFunction, Artifact } from '@solidcash/utils';
+import { CALL_RECORD_READER_INPUT, type AbiFunction, type Artifact } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../direct-compile.js';
 import { Contract, Signer } from '../../src/index.js';
 import { StatefulContract, getContractFactory, upgrades } from '../../src/stateful/index.js';
@@ -350,9 +350,17 @@ describe('a call record answers one reader', () => {
   });
 
   it('refuses a call that mixes a reader-bound artifact with one compiled before, naming why', async () => {
-    const unbound = (artifact: Artifact): Artifact => ({ ...artifact, callRecordReader: undefined } as Artifact);
+    // An artifact compiled before records named their reader: no `callRecordReader`, and no entry takes the reader
+    // witness. A callee's run names a reader where its entry takes that witness, whatever its flag says.
+    const compiledBefore = (artifact: Artifact): Artifact => ({
+      ...artifact,
+      callRecordReader: undefined,
+      abi: artifact.abi.map((entry) => ({
+        ...entry, inputs: entry.inputs.filter((input) => input.name !== CALL_RECORD_READER_INPUT),
+      })),
+    } as Artifact);
     for (const [caller, callee] of [
-      [artifacts().Account, unbound(artifacts().Vault)], [unbound(artifacts().Account), artifacts().Vault],
+      [artifacts().Account, compiledBefore(artifacts().Vault)], [compiledBefore(artifacts().Account), artifacts().Vault],
     ] as const) {
       const provider = createTestProvider();
       const vault = await deploy(provider, callee, { balance: BALANCE });

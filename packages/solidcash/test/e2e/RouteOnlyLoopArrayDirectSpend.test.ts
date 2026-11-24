@@ -51,11 +51,17 @@ async function buildBusLoopTx(targetsArg: Uint8Array[], callee = CALLEE): Promis
 }
 
 describe('a bus-build array-element loop binds per row with no route-only guard', () => {
-  it('compiles the bus build without the spurious guard (byte-identical to the direct build)', () => {
+  it('compiles the bus build without the spurious guard', () => {
     const bus = compileString(SRC, { messageBus: true });
     const direct = compileString(SRC, { messageBus: false });
     expect(bus.abi.find((entry) => entry.name === 'run')?.routeOnly).toBeUndefined();
-    expect(hex(bus.bytecode)).toBe(hex(direct.bytecode));
+    // The two builds are no longer byte-identical: the direct build reads each iteration's void record at its record
+    // base, so one callee run answers one caller, and an explicit message-bus build does not read them yet.
+    const inputs = (artifact: typeof bus): string[] => artifact.abi.find((entry) => entry.name === 'run')!.inputs
+      .map((input) => input.name);
+    expect(inputs(direct)).toContain('__internal__externalReturnOutputIdx');
+    expect(inputs(bus)).not.toContain('__internal__externalReturnOutputIdx');
+    expect(hex(bus.bytecode)).not.toBe(hex(direct.bytecode));
   });
 
   it('co-spends N witness targets + every input passes the VM on an honest direct spend', async () => {

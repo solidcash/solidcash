@@ -4912,6 +4912,28 @@ export default class SymbolTableTraversal extends AstTraversal {
               slot.voidCallRecord = true;
             }
           }
+          // A void call in a loop over the targets a parameter holds (or a witness for computed ones), naming its
+          // arguments, reads each iteration's callee's void record at the return base plus the iteration's index, by
+          // the digest of its method, its reader and that iteration's arguments, as a returning one reads its record.
+          // A call leaving arguments to its callee is not one of them.
+          for (const slot of externalCallSlots) {
+            if (!slot.loopArrayVar || slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
+            if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar || slot.batchInvocations) continue;
+            if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+            const loopArray = slot.loopArrayVar;
+            if (!loopArray.startsWith('__internal__loopTargets')
+              && !node.parameters.some((parameter) => parameter.name === loopArray)) continue;
+            const recordMethod = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+            if (!recordMethod || slot.sourceCallNode === undefined) continue;
+            const digested = recordMethod.parameterTypes.flatMap((type) => (type instanceof FunctionType
+              && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
+            if (!namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length)) continue;
+            slot.callRecordSelector = this.calleeMethodSelector(slot.functionName, recordMethod.parameterTypes);
+            slot.callRecordParameterTypes = recordMethod.parameterTypes;
+            slot.hasReturnValues = true;
+            slot.voidCallRecord = true;
+            slot.needsSelectorVerification = false;
+          }
         }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot
         let slotIndex = 0;

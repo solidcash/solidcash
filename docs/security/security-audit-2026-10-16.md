@@ -1412,7 +1412,13 @@ needs VM evidence, `rejectedWith` has no source fallback).
 - One run shared by two callers where no digest is checked (2026-11-23, residual of the one-reader fix in D50
   Fixed). A call naming fewer arguments than its method declares digests the ones it leaves as caller witnesses in a
   direct compile (S3a, "Security completion (2026-11-23)"), but in a framed, message-bus, kernel-participant or
-  deployer compile, or in a loop over targets, it still reads its record with no digest check, and neither does a
+  deployer compile, or in a loop over targets, it still reads its record with no digest check. A void call naming its
+  arguments in a loop over the targets a parameter holds, or a witness for computed ones, is FIXED 2026-11-24 (P-3):
+  each iteration reads its callee's void record at the loop's record base plus its index, by the digest of the method,
+  the reader and that iteration's arguments, as a returning one already did (VM-confirmed before: two loopers merged
+  into one transaction each took one payment; CallRecordSingleReader.e2e.test.ts). The stateless loop helpers lay
+  those records out (solidcash/loop-call). An explicit message-bus build's loop entry does not read them yet. Neither
+  does a
   table of function pointers or selectors (its callee's reader is pinned to none), so two callers making such a call
   can still share one run. A raw `address.call` (visible or opaque payload, its result read or not) is FIXED
   2026-11-24 (P-2): no digest over an opaque payload is sound (the caller cannot name its arguments, and the callee

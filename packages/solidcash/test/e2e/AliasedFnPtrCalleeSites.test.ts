@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, TransactionBuilder } from '../../src/index.js';
-import { callRecordDigest } from '../../src/stateful/call-record.js';
 import { createFeeFunder, createTestProvider, verifyTransaction } from '../test-util.js';
-import { trivialCallee } from '../trivial-callee.js';
+import { standInToken, standInVoidRecord, trivialCallee } from '../trivial-callee.js';
 
 /**
  * A function-pointer external call resolves its co-spent callee by a spender-supplied witness input index. That index
@@ -24,18 +23,15 @@ contract C {
   }
 }`;
 
-// A pointer's call reads its callee's void record, `digest || 01`, by the digest of the selector the pointer holds,
-// its reader and its argument. The spends lay it out for the stand-in callee: an `OP_TRUE` carrier of the category
-// whose minting token each callee coin holds, and ahead of the argument the stand-in pushes the record's output and
-// the reader, input 0, as a record-sound callee does.
-const category = 'ab'.repeat(32);
-const minting = { category, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } };
-type RecordToken = { category: string; amount: bigint; nft: { capability: 'none'; commitment: string } };
-const recordOf = (selector: Uint8Array): RecordToken => {
-  const digest = callRecordDigest({ inputs: [{ name: 'x', type: 'int' }], selector: binToHex(selector) }, [7n],
-    { namesReader: true }, 0, 0)!;
-  return { category, amount: 0n, nft: { capability: 'none', commitment: `${binToHex(digest)}01` } };
-};
+// Each loop iteration and the pointer's call read their callee's void record, `digest || 01`: the pointer's by the
+// digest of the selector the pointer holds, its reader and its argument, an iteration's by its method's. The spends lay
+// them out for the stand-in callees (standInVoidRecord) on carriers of the category whose minting token each callee
+// coin holds, and ahead of the argument the stand-in pushes the pointer's record output and the reader, input 0, as a
+// record-sound callee does.
+/** The selector of the method m(int) the loops call. */
+const M_INT = hexToBin(compileString(`pragma solidcash >=0.8.0;
+  contract D() { bigint c; function m(int x) { this.c = this.c + x; } function n() { this.c = this.c + 1; } }`)
+  .abi.find((entry) => entry.name === 'm')!.selector!);
 
 describe('a loop over targets followed by a pointer call', () => {
   const SEL = hexToBin('00000000');
@@ -53,22 +49,25 @@ describe('a loop over targets followed by a pointer call', () => {
     const contract = new Contract(compileString(LOOP_THEN_PTR), [], { provider });
     const funder = await createFeeFunder(provider, 10000n);
     const builder = new TransactionBuilder({ provider });
-    const carrier = callees.length + 2;
-    const callee = calleeFor(carrier);
+    // The loop's record, then the pointer's, after the callees' outputs and the change.
+    const records = callees.length + 2;
+    const callee = calleeFor(records + 1);
     builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, contract.unlock.run(
-      encodePushdataValue([T], 'address[]'), T, SEL, 7n, base, SEL, ptrIdx, -1n, BigInt(carrier),
+      encodePushdataValue([T], 'address[]'), T, SEL, 7n, base, SEL, ptrIdx, -1n, BigInt(records),
+      BigInt(records + 1),
     ) as never);
     callees.forEach((lock, at) => builder.addInput({
-      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, token: minting,
+      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, token: standInToken(),
     }, {
       generateLockingBytecode: (): Uint8Array => lock,
       generateUnlockingBytecode: (): Uint8Array => callee.unlocking,
     } as never));
     builder.addInput(funder.utxo, funder.unlocker);
     builder.addOutput({ to: contract.address, amount: 100000n });
-    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n, token: minting });
-    builder.addOutput({ to: OP_TRUE, amount: 6000n });
-    builder.addOutput({ to: OP_TRUE, amount: 1000n, token: recordOf(SEL) });
+    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n, token: standInToken() });
+    builder.addOutput({ to: OP_TRUE, amount: 5000n });
+    builder.addOutput(standInVoidRecord(M_INT, [7n]));
+    builder.addOutput(standInVoidRecord(SEL, [7n]));
     return builder;
   }
 
@@ -86,8 +85,8 @@ describe('a loop over targets followed by a pointer call', () => {
 
 // A loop over targets, then a fixed call on a constructor address, then a single pointer call: the pointer's witness
 // must also differ from the fixed call's fixed-offset input (the fixed call keeps no witness in a loop function).
-// The loop's call checks its selector; the fixed call and the pointer's read their callee's void records, which the
-// spend lays out for the stand-in callees.
+// The loop's call, the fixed call and the pointer's read their callee's void records, which the spend lays out for the
+// stand-in callees.
 const LOOP_FIXED_PTR = `pragma solidcash >=0.8.0;
 interface IFoo { function m(int x) external; function n() external; }
 contract C(address a) {
@@ -115,25 +114,24 @@ describe('a loop, a fixed call, then a pointer call', () => {
     const contract = new Contract(compileString(LOOP_FIXED_PTR), [A], { provider });
     const funder = await createFeeFunder(provider, 10000n);
     const builder = new TransactionBuilder({ provider });
-    // The fixed call's record, then the pointer's, after the callees' outputs and the change.
-    const carrier = callees.length + 2;
-    const callee = calleeFor(carrier + 1);
+    // The loop's record, the fixed call's and the pointer's, after the callees' outputs and the change.
+    const records = callees.length + 2;
+    const callee = calleeFor(records + 2);
     builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, contract.unlock.run(
-      encodePushdataValue([X], 'address[]'), pTarget, M, 7n, 1n, M, M, ptrIdx, -1n, -1n, BigInt(carrier),
-      BigInt(carrier + 1),
+      encodePushdataValue([X], 'address[]'), pTarget, M, 7n, 1n, M, ptrIdx, -1n, -1n, BigInt(records),
+      BigInt(records + 1), BigInt(records + 2),
     ) as never);
     callees.forEach((lock, at) => builder.addInput({
-      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, token: minting,
+      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, token: standInToken(),
     }, {
       generateLockingBytecode: (): Uint8Array => lock,
       generateUnlockingBytecode: (): Uint8Array => callee.unlocking,
     } as never));
     builder.addInput(funder.utxo, funder.unlocker);
     builder.addOutput({ to: contract.address, amount: 100000n });
-    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n, token: minting });
-    builder.addOutput({ to: OP_TRUE, amount: 5000n });
-    builder.addOutput({ to: OP_TRUE, amount: 1000n, token: recordOf(M) });
-    builder.addOutput({ to: OP_TRUE, amount: 1000n, token: recordOf(M) });
+    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n, token: standInToken() });
+    builder.addOutput({ to: OP_TRUE, amount: 4000n });
+    for (let record = 0; record < 3; record += 1) builder.addOutput(standInVoidRecord(M, [7n]));
     return builder;
   }
 

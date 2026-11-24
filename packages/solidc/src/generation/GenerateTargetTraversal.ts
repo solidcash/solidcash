@@ -56468,6 +56468,57 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * `[..]` -> `[.., retidx]` (untracked): this iteration's record carrier, at the return base `retParam` names plus the
+   * live index `(ilc_i)`, is a carrier of the category of this iteration's callee `(ilc_inidx)`, with no capability,
+   * no fungible amount, an `OP_TRUE` lock and at most 1,200 satoshis.
+   */
+  private emitInlineLoopRecordCarrier(retParam: string, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.getStackIndex(retParam))), loc);
+    this.emit(Op.OP_PICK, loc);           // [..., retbase]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);           // [..., retbase, i]
+    this.emit(Op.OP_ADD, loc);            // [..., retidx]
+    // a. return-event category == callee master category (cross-check via (ilc_inidx))
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);           // [..., retidx, retcat32]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)') + 2)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);    // [..., retidx]
+    // b. capability 'none'
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    // c. FT amount 0
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    // d. anyone-can-spend (OP_TRUE locking bytecode)
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(hexToBin('51'), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    // e. value bounded
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(encodeInt(1200n), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);         // [..., retidx]
+  }
+
+  /**
    * Inline loop-indexed external dispatch for `targets[i].call/staticcall(data[i])` over a calldata/parameter
    * address array whose per-element return is consumed in the loop body (the MultiCall pattern). The source
    * for-loop is a runtime OP_BEGIN/OP_UNTIL loop, so this runs once per iteration with the live index `i`:
@@ -56631,49 +56682,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const loopReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
         const loopRetParam = loopReturningCount === 1
           ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
-        this.emit(encodeInt(BigInt(this.getStackIndex(loopRetParam))), loc);
-        this.emit(Op.OP_PICK, loc);           // [..., retbase]
-        this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc);
-        this.emit(Op.OP_PICK, loc);           // [..., retbase, i]
-        this.emit(Op.OP_ADD, loc);            // [..., retidx]
-        // a. return-event category == callee master category (cross-check via (ilc_inidx))
-        this.emit(Op.OP_DUP, loc);
-        this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc);
-        this.emit(Op.OP_SPLIT, loc);
-        this.emit(Op.OP_DROP, loc);           // [..., retidx, retcat32]
-        this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)') + 2)), loc);
-        this.emit(Op.OP_PICK, loc);
-        this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc);
-        this.emit(Op.OP_SPLIT, loc);
-        this.emit(Op.OP_DROP, loc);
-        this.emit(Op.OP_EQUALVERIFY, loc);    // [..., retidx]
-        // b. capability 'none'
-        this.emit(Op.OP_DUP, loc);
-        this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc);
-        this.emit(Op.OP_SPLIT, loc);
-        this.emit(Op.OP_SWAP, loc);
-        this.emit(Op.OP_DROP, loc);
-        this.emit(encodeInt(0n), loc);
-        this.emit(Op.OP_EQUALVERIFY, loc);
-        // c. FT amount 0
-        this.emit(Op.OP_DUP, loc);
-        this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
-        this.emit(encodeInt(0n), loc);
-        this.emit(Op.OP_EQUALVERIFY, loc);
-        // d. anyone-can-spend (OP_TRUE locking bytecode)
-        this.emit(Op.OP_DUP, loc);
-        this.emit(Op.OP_OUTPUTBYTECODE, loc);
-        this.emit(hexToBin('51'), loc);
-        this.emit(Op.OP_EQUALVERIFY, loc);
-        // e. value bounded
-        this.emit(Op.OP_DUP, loc);
-        this.emit(Op.OP_OUTPUTVALUE, loc);
-        this.emit(encodeInt(1200n), loc);
-        this.emit(Op.OP_LESSTHANOREQUAL, loc);
-        this.emit(Op.OP_VERIFY, loc);         // [..., retidx]
+        this.emitInlineLoopRecordCarrier(loopRetParam, loc); // [..., retidx]
         // read the record + TYPED-decode its result by the return types (mirrors the non-loop returning read)
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., digest?, record]
         this.emitInlineCallRecordField(verifiesDigest, loc); // [..., blob]
@@ -56703,6 +56712,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.removeFromStack(idx);
         }
         return;
+      }
+      // A void call that names its arguments reads this iteration's callee's void record, `digest || 01`, at the
+      // return base plus i, as a returning one reads its record: the run answers this caller, the method and these
+      // arguments, so two callers cannot both take it.
+      if (slot.voidCallRecord === true && this.emitCallerCallRecordDigest(node, slot, loc)) {
+        const loopReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
+        const loopRetParam = loopReturningCount === 1
+          ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
+        this.emitInlineLoopRecordCarrier(loopRetParam, loc); // [..., digest, retidx]
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.emit(Op.OP_1, loc);
+        this.emit(Op.OP_CAT, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        this.popFromStack();
       }
       // A void call binds the arguments it names against this iteration's callee unlocking, as outside a loop.
       const binding = this.directCallArgumentBinding(node, slot, true);

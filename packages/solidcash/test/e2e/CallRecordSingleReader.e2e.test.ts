@@ -463,6 +463,94 @@ describe('a raw call whose callee runs once', () => {
   }, 300_000);
 });
 
+const LOOP_SOURCE = `pragma solidcash >=0.8.0;
+interface IVault {
+  function withdraw(int amount) external returns (int);
+  function spend(int amount) external;
+}
+contract Vault() {
+  int balance;
+  function withdraw(int amount) public returns (int) {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+    return amount;
+  }
+  function spend(int amount) public {
+    require(amount <= this.balance);
+    this.balance = this.balance - amount;
+  }
+}
+contract Looper() {
+  int credited;
+  function payEach(address[] ts, int amount) public {
+    for (uint i = 0; i < ts.length; i++) { IVault(ts[i]).spend(amount); }
+    this.credited = this.credited + amount;
+  }
+  function pullEach(address[] ts, int amount) public {
+    for (uint i = 0; i < ts.length; i++) { this.credited = this.credited + IVault(ts[i]).withdraw(amount); }
+  }
+}`;
+
+let loopCompiled: Record<string, Artifact> | undefined;
+const loopArtifacts = (): Record<string, Artifact> => {
+  loopCompiled ??= compileStringMulti(LOOP_SOURCE) as Record<string, Artifact>;
+  return loopCompiled;
+};
+
+describe('a loop over targets whose callee runs once', () => {
+  // Each iteration reads its callee's record, a void one `digest || 01`, at the return base plus its index, by the
+  // digest of its method, its reader and its arguments. Two loopers each make the call, merged into one transaction
+  // where the vault runs once. Before the void loop read its records, both took the run, each credited for one
+  // payment (VM-confirmed); the returning loop already digested its records and was refused.
+  const ROWS = [
+    { kind: 'void', entry: 'payEach', method: 'spend' },
+    { kind: 'returning', entry: 'pullEach', method: 'withdraw' },
+  ] as const;
+  const setupLoop = async (row: typeof ROWS[number]): Promise<{
+    provider: Provider; vault: Deployed; loopers: Deployed[]; call: (looper: Deployed) => () => Promise<unknown>;
+  }> => {
+    const provider = createTestProvider();
+    const vault = await deploy(provider, loopArtifacts().Vault, { balance: BALANCE });
+    const loopers = [
+      await deploy(provider, loopArtifacts().Looper, { credited: 0n }),
+      await deploy(provider, loopArtifacts().Looper, { credited: 0n }),
+    ];
+    for (const looper of loopers) (looper.sc as any).registerExternalArray('IVault', [vault.sc], [row.method]);
+    const call = (looper: Deployed) => (): Promise<unknown> => (looper.sc as any)[row.entry](
+      [vault.lock], AMOUNT,
+    ).send();
+    return { provider, vault, loopers, call };
+  };
+
+  it.each(ROWS)('settles a $kind loop call honestly, its record naming the caller', async (row) => {
+    const { provider, vault, loopers: [looper], call } = await setupLoop(row);
+    const tx = await capture(provider, call(looper!));
+    const record = outputWith(tx, '51', vault.category);
+    const caller = inputOfCoin(await coinsOf(provider, tx), looper!.category, 'minting');
+    const digest = callRecordDigest(abiOf(loopArtifacts().Vault, row.method), [AMOUNT], {}, 0, caller)!;
+    expect(binToHex(tx.outputs[record]!.token!.nft!.commitment.slice(0, 31))).toBe(binToHex(digest));
+    await call(looper!)();
+    expect((await looper!.sc.getState()).credited).toBe(AMOUNT);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE - AMOUNT);
+  }, 300_000);
+
+  it.each(ROWS)('refuses two callers sharing one run of a $kind loop call', async (row) => {
+    const { provider, vault, loopers: [l1, l2], call } = await setupLoop(row);
+    const a = await capture(provider, call(l1!));
+    const b = await capture(provider, call(l2!));
+    const { tx, inputOf } = await merge(
+      provider, a, b, new Map([[l2!.category, abiOf(loopArtifacts().Looper, row.entry)]]), vault.category,
+    );
+    const second = inputOf(inputOfCoin(await coinsOf(provider, b), l2!.category, 'minting'));
+    const outcome = await outcomeOf(provider, tx);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('mandatory-script-verify-flag-failed');
+    expect(outcome).toContain(`error in evaluating input index ${second}:`);
+    expect((await l2!.sc.getState()).credited).toBe(0n);
+    expect((await vault.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+});
+
 // A proxy whose fallback delegates its call to the implementation the spend names (NestedCalleeOtherPathsGuard).
 const FALLBACK_PROXY = `pragma solidcash >=0.8.0;
 contract Proxy() {

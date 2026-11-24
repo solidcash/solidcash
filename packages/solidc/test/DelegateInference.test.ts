@@ -289,10 +289,10 @@ describe('delegate inference', () => {
       expect(readNumber(routedCall.instructions[routedCursor - 4])).toBeDefined();
 
       // The independently compiled ABI entry invokes the same widened helper, but derives recovery A from its
-      // own compute base. The digest is computed through the keccak/abi helper chain, then the trailing
-      // arguments are rolled immediately before the helper id + invoke (how many depends on the entry's frame,
-      // which holds its void record's digest and witnesses); the hidden-coordinate derivation (OP_ADD) sits
-      // earlier in the body.
+      // own compute base. The digest is computed through the keccak/abi helper chain; then the entry takes its
+      // own input index and rolls the trailing arguments immediately before the helper id + invoke (how many
+      // depends on the entry's frame, which holds its void record's digest and witnesses); the hidden-coordinate
+      // derivation (OP_ADD) sits earlier in the body.
       const applySelector = artifact.abi.find((entry) => entry.name === 'apply')?.selector;
       expect(applySelector).toBeDefined();
       const directCall = findHelperInvoke(artifact.functionBodies?.[applySelector!]!);
@@ -302,7 +302,9 @@ describe('delegate inference', () => {
         expect(readNumber(directCall.instructions[directCursor - 1])).toBeDefined();
         directCursor -= 2;
       }
-      expect(directCall.instructions[directCursor].opcode).toBe(OpcodesBCH.OP_INVOKE);
+      expect(directCall.instructions[directCursor].opcode).toBe(OpcodesBCH.OP_INPUTINDEX);
+      expect(directCall.instructions.slice(0, directCursor)
+        .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
       expect(directCall.instructions.slice(0, directCall.index)
         .some((instruction) => instruction.opcode === OpcodesBCH.OP_ADD)).toBe(true);
     } finally {

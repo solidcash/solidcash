@@ -57,8 +57,9 @@ describe('ordinary direct dynamic output coordinates', () => {
       if (!isContractUnlocker(unlocker)) throw new Error('Missing direct ledger unlocker');
       const outputIndex = unlocker.abiFunction.inputs.findIndex((input) =>
         input.name === '__internal__dynamicChunkOutputBase');
+      // The returning call's record index: the void call to the sink reads its own record too, at index 1.
       const returnIndex = unlocker.abiFunction.inputs.findIndex((input) =>
-        input.name === '__internal__externalReturnOutputIdx');
+        input.name === '__internal__externalReturnOutputIdx0');
       expect(outputIndex).toBeGreaterThanOrEqual(0);
       expect(returnIndex).toBeGreaterThanOrEqual(0);
       const actual = unlocker.params[outputIndex] as bigint;

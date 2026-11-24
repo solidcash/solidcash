@@ -134,7 +134,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
-import { bodyHasUnsafeNativeAssembly } from './LowerInlineAssembly.js';
+import { hasUnsafeNativeAssembly } from './NativeAssemblyKernelSafety.js';
 import {
   callArgumentListName, callArgumentWitnessName, externalResultMayNeedPreimage, namesCallRecordArguments,
 } from './ExternalResultEncoding.js';
@@ -4534,8 +4534,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.messageBusRoute) {
       walkInvocationAst(node.body, (candidate) => {
         if (!(candidate instanceof FunctionCallNode)) return;
-        const target = (this.functionDefinitions.get(candidate.identifier.name) ?? [])
-          .find((definition) => definition.parameters.length === candidate.parameters.length);
+        const target = this.routeCallTarget(candidate);
         if (!target?.collectionIterations?.length) return;
         const existing = node.collectionIterations ?? [];
         node.collectionIterations = [
@@ -5434,7 +5433,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // pinned void records: that assembly may take the digest the entry keeps across its body for its record.
     if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
       && !isMessageBusRouteFunction(node)
-      && !(isMessageBusCompile(this.compilerOptions) && bodyHasUnsafeNativeAssembly(node.body))
+      && !(isMessageBusCompile(this.compilerOptions) && hasUnsafeNativeAssembly(node.body))
       && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
       && !readsExternalStorage && !delegatecalls && !node.isFallback && !node.isReceive
       && this.compilerOptions.composition !== 'framed' && this.compilerOptions.messageBusDirectParticipant !== true
@@ -5558,8 +5557,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.messageBusRoute) {
         walkInvocationAst(node.body, (candidate) => {
           if (!(candidate instanceof FunctionCallNode)) return;
-          const target = (this.functionDefinitions.get(candidate.identifier.name) ?? [])
-            .find((definition) => definition.parameters.length === candidate.parameters.length);
+          const target = this.routeCallTarget(candidate);
           for (const access of target?.tokenContainerAccesses ?? []) {
             // A key of the contract's own category or of its state is the same whichever row forwards it, so the
             // access joins the route as the handler states it, under a key no argument can be named.
@@ -16673,6 +16671,21 @@ export default class SymbolTableTraversal extends AstTraversal {
    */
   private leftCallArgumentPositions(slot: ExternalCallSlot): number[] {
     return slot.loopArrayVar || slot.inlineLoopDispatch ? [] : this.leftDigestedPositions(slot);
+  }
+
+  /**
+   * The definition a message-bus route's call invokes. The route spells each call at the arity its callee had before
+   * this traversal gave it hidden witnesses, which padMessageBusCloneCalls pads after it: the definition of that
+   * arity, or the one definition whose parameters past it are all hidden.
+   */
+  private routeCallTarget(call: FunctionCallNode): FunctionDefinitionNode | undefined {
+    const definitions = this.functionDefinitions.get(call.identifier.name) ?? [];
+    const exact = definitions.find((definition) => definition.parameters.length === call.parameters.length);
+    if (exact !== undefined) return exact;
+    const padded = definitions.filter((definition) => definition.parameters.length > call.parameters.length
+      && definition.parameters.slice(call.parameters.length)
+        .every((parameter) => parameter.name.startsWith('__internal__')));
+    return padded.length === 1 ? padded[0] : undefined;
   }
 
   /**

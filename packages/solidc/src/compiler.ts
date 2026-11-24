@@ -6248,11 +6248,15 @@ function padMessageBusCloneCalls(ast: Ast): void {
   // A call to one of several overloads names it by its visible arguments, declared with that overload's parameter
   // types: it takes that overload's witnesses and keeps the overload as its resolution, since overload resolution
   // matches visible signatures only and the padded call has more arguments than any. A call naming none keeps the
-  // last overload's witnesses, which overload resolution then refuses.
+  // last overload's witnesses, which overload resolution then refuses. A call already resolved keeps its function, so a
+  // second pass pads nothing the first did.
   const calleeOf = (node: FunctionCallNode): { callee?: FunctionDefinitionNode; resolved?: FunctionDefinitionNode } => {
     const overloads = callees.filter((fn) => fn.name === node.identifier.name);
     const last = byName.get(node.identifier.name);
     if (overloads.length < 2) return { callee: last };
+    if (node.resolvedFunction !== undefined && overloads.includes(node.resolvedFunction)) {
+      return { callee: node.resolvedFunction, resolved: node.resolvedFunction };
+    }
     const spelled = node.parameters.map((argument) => (argument instanceof IdentifierNode
       ? argument.definition?.type : argument.type)?.toString());
     const named = overloads.filter((fn) => {
@@ -6263,7 +6267,7 @@ function padMessageBusCloneCalls(ast: Ast): void {
     return named.length === 1 ? { callee: named[0], resolved: named[0] } : { callee: last };
   };
   const padCall = (
-    node: FunctionCallNode, callerParams: Set<string>, requireOwnedPassThrough: boolean,
+    node: FunctionCallNode, callerParams: Set<string>, requireOwnedPassThrough: boolean, row = false,
   ): void => {
     const { callee, resolved } = calleeOf(node);
     if (!callee || node.parameters.length >= callee.parameters.length) return;
@@ -6272,9 +6276,13 @@ function padMessageBusCloneCalls(ast: Ast): void {
       && !extras.every((parameter) => parameter.name.startsWith('__internal__')
         && callerParams.has(parameter.name))) return;
     for (const parameter of extras) {
-      const arg = callerParams.has(parameter.name) || routeParams.has(parameter.name)
-        ? Object.assign(new IdentifierNode(parameter.name), { location: node.location })
-        : createDefaultValueExpression(parameter.type, node.location);
+      // A route's row answers no call: a void entry run as one pins no record (index -1) and names no reader.
+      const noRecord = row && callee.returnTypes.length === 0
+        && (parameter.name === '__internal__returnOutputIdx' || parameter.name === '__internal__callRecordReader');
+      const arg = noRecord ? Object.assign(new IntLiteralNode(-1n), { location: node.location })
+        : callerParams.has(parameter.name) || routeParams.has(parameter.name)
+          ? Object.assign(new IdentifierNode(parameter.name), { location: node.location })
+          : createDefaultValueExpression(parameter.type, node.location);
       arg.type = parameter.type;
       node.parameters.push(arg);
     }
@@ -6283,14 +6291,14 @@ function padMessageBusCloneCalls(ast: Ast): void {
   walkInvocationAst(ast.contract, (node) => {
     if (!(node instanceof FunctionCallNode)) return;
     if (!node.identifier.name.startsWith('__message_bus_')) return;
-    padCall(node, routeParams, false);
+    padCall(node, routeParams, false, true);
   });
   // ST injects hidden `__internal__*` parameters onto the public handler after the route source is
   // generated. Library-inlined IERC20 edges are the measured case: the route still spells `denied(to, amt)`.
   if (route) {
     walkInvocationAst(route.body, (node) => {
       if (!(node instanceof FunctionCallNode)) return;
-      padCall(node, routeParams, false);
+      padCall(node, routeParams, false, true);
     });
   }
   for (const fn of callees) {

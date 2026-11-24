@@ -110,6 +110,17 @@ const NOTES = `contract NoteBook() {
   function put(int key, int value) public { this.side[key] = value; require(true); }
 }`;
 
+// A loop writer, which projects no fixed lane of `side`, beside a writer that does.
+const LOOP = `contract LoopBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function fill(int value) public {
+    for (int i = 0; i < 2; i += 1) { this.side[i] = value; }
+    require(true);
+  }
+  function triple(int a, int b, int c) public { require(this.side[a] + this.side[b] + this.side[c] >= 0); }
+}`;
+
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
   maximumInputBytes: 1_000_000, suppressWarnings: true,
@@ -748,5 +759,46 @@ describe('bound route without its verifier: a writer lane its run leaves to a pa
   // first checked this refused it in the route body, outside the C3 pin (ip 10830).
   it('refuses a side entry rewritten at the lane the run left to a pad', () => {
     expect(state.route).not.toBe(true);
+  });
+});
+
+
+describe('bound route without its verifier: another handler\'s lane beside a loop writer', () => {
+  let state: { eligible: Set<string>; honest?: ReturnType<typeof failures>; covenant?: Verdict; route?: Verdict };
+  // fill's loop writes side at the first two lanes; triple alone reads the others.
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(LOOP, { ...KERNEL, messageBusHandlers: ['put', 'fill', 'triple'] });
+    state = { eligible: eligibleOf(artifact) };
+    expect(state.eligible).toEqual(new Set(['put', 'fill', 'triple']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    const lanes = layout.slots.filter((slot) => slot.kind === 'entry').map((slot) => slot.offset);
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const fill = spendOf(await bus.batch([{ function: 'fill', args: [4n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, fill);
+    const master = masterOf(fill, victim);
+    const lane = lanes.map((offset) => master + offset).find((at) => padIndex(fill, at, at + 1) === at);
+    expect(lane, 'the fill batch leaves a fixed side lane to a pad').toBeDefined();
+    const rewrite = placed(fill, victim, master, lane!, rewritten(victim));
+    state = {
+      ...state, honest: failures(vm, fill), covenant: verdict(vm, rewrite, lane!), route: verdict(vm, rewrite, master),
+    };
+    console.log('another handler\'s lane beside a loop writer', {
+      lanes, offset: lane! - master, honest: state.honest, covenant: state.covenant, route: state.route,
+    });
+  }, 300_000);
+
+  it('settles the honest fill batch, and the entry covenant accepts the victim spend', () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+  });
+
+  // The hole: a writer that projects no fixed lane claims every lane of its collection, triple's included.
+  it('accepts a side entry rewritten at a lane only triple uses, beside a fill batch', () => {
+    expect(state.route).toBe(true);
   });
 });

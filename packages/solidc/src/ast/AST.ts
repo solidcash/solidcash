@@ -1957,6 +1957,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   messageBusRuntimeMutationIndexExpression?: ExpressionNode;
   /** Set only after LowerVMapCounterLoops successfully publishes this write's authenticated journal stream. */
   messageBusJournalTransport?: { collection: string; varyingArrayParam: string };
+  /** A collection journal's flush: it runs exactly where bit `bit` of the route-local dirty word `word` is set. */
+  journalDirtyBit?: { word: string; bit: number };
   /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
   messageBusRuntimeReadOnly?: boolean;
   /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */

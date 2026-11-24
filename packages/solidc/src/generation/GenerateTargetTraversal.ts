@@ -1114,7 +1114,7 @@ const GRAPH_BLOCK_SIZE = '__internal__graphBlockSize';
 const PARTICIPANT_BLOCK_SIZE = '__internal__participantBlockSize';
 /** A bound route's C3 pin: the chunk locks its rows that ran may rewrite in the trailing band. */
 const ROUTE_BAND_LOCKS = '(__route_band_locks)';
-/** A bound route's lanes a sorted write of this run ran at, bit k for `master + k` (markRouteWrittenLane). */
+/** A bound route's lanes a sorted write outside its journal flushes ran at, bit k for `master + k`. */
 const ROUTE_WRITTEN_LANES = '__internal__routeWrittenLanes';
 /** A route's band-lock group: the row counters whose rows, where one ran, may rewrite records at these locks. */
 interface BandLockGroup {
@@ -1588,6 +1588,26 @@ class IdentifierUsageCollector extends AstTraversal {
 
   visitIdentifier(node: IdentifierNode): Node {
     this.names.add(node.name);
+    return node;
+  }
+}
+
+/** The entry slots of a body's sorted collection writes other than journal flushes (noteRouteLaneWrite). */
+class UnflushedSortedWriteCollector extends AstTraversal {
+  slots = new Set<number>();
+
+  visitMappingAssign(node: MappingAssignNode): Node {
+    if (node.collection?.sorted && node.journalDirtyBit === undefined) this.slots.add(node.entrySlotIndex);
+    return node;
+  }
+
+  visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
+    if (node.collection?.sorted) this.slots.add(node.entrySlotIndex);
+    return node;
+  }
+
+  visitMappingDelete(node: MappingDeleteNode): Node {
+    if (node.collection?.sorted) this.slots.add(node.entrySlotIndex);
     return node;
   }
 }
@@ -3439,8 +3459,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Fixed sorted-write slots under a branch/switch arm (or a helper reached from one). Each carries a runtime "write
   // ran" flag, and the epilogue preserves the co-spent node where the write did not run. Direct convention only.
   private conditionalSortedWriteFlagSlots: Set<number> = new Set();
-  /** The route entry slots with a sorted write site in this route, whose lanes the run's own record claims. */
-  private routeWrittenLaneSlots: Set<number> = new Set();
+  /**
+   * A bound route's sorted write statements by entry slot (noteRouteLaneWrite): the journal dirty bits of the flushes
+   * among them, and whether another statement writes the slot, which the route's record of written lanes marks.
+   */
+  private routeLaneWrites = new Map<number, { sources: Map<string, { word: string; bit: number }>; plain: boolean }>();
   // The flagged slots of a framed master whose write the body does not make wherever it reaches it: a frame may
   // declare such a write skipped, and its access publishes the condition it runs under.
   private framedSkippableSlots: Set<number> = new Set();
@@ -11280,7 +11303,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Copy entry access info from semantic analysis
     this.entrySlots = node.entryAccesses ?? [];
-    this.routeWrittenLaneSlots = new Set();
+    this.routeLaneWrites = new Map();
 
     // The flag bit extraction pattern uses 2^i OP_DIV, which overflows for i >= 63
     // (8-byte Script Number limit). Reject contracts that exceed this limit at compile time.
@@ -11944,8 +11967,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.runtimeLoopEntryInputCountActive = true;
       this.runtimeLoopEntryJournalCountActive = true;
     }
-    // A route whose record pin takes claims records the lanes its sorted writes ran at (markRouteWrittenLane).
-    if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node) && node.messageBusRecordClaims !== undefined) {
+    // A route whose record pin takes claims records the lanes its sorted writes outside journal flushes ran at.
+    if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node) && node.messageBusRecordClaims !== undefined
+      && this.routeHasUnflushedLaneWrite(node)) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(ROUTE_WRITTEN_LANES);
     }
@@ -24742,6 +24766,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // pre-lowering last-use marker still points at that read.
       && !(this.currentFunction.collectionJournal
         && (node.name.startsWith('__cj_') || node.name.startsWith('__dcj_')))
+      // A bound route's record pin reads its journal dirty words after the flushes (emitRouteBlockClaims).
+      && !(this.currentFunction.messageBusRecordClaims !== undefined && node.name.startsWith('__cj_cache_dirty_mask_'))
       && this.currentFunction.opRolls.get(node.name) === node && this.scopeDepth === 0;
   }
 
@@ -36038,7 +36064,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitGraphStaticDirty(node);
     if (node.collection?.sorted) {
       this.passSortedEntryWrite(node.entrySlotIndex);
-      this.markRouteWrittenLane(node.entrySlotIndex, node);
+      this.noteRouteLaneWrite(node);
     }
     // A vmap (sorted linked-list) mapping write inside a DYNAMIC runtime loop (`for(i<n) m[k[i]]=v`) is a per-iteration
     // sorted INSERT: each iteration co-spends the bracketing predecessor and mints one NEW node (emitSortedInsertLoop
@@ -37968,7 +37994,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (re-chunk + pin). Reuses emitSortedSetRead + emitSortedValueUpsert like a scalar RMW, co-spending once.
     if (node.collection?.sorted) {
       this.passSortedEntryWrite(node.entrySlotIndex);
-      this.markRouteWrittenLane(node.entrySlotIndex, node);
+      this.noteRouteLaneWrite(node);
     }
     if (node.collection?.sorted && this.isChunkableValue(node.collection.innermostValueType)) {
       return this.emitSortedStructFieldWrite(node);
@@ -38282,7 +38308,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitGraphStaticDirty(node);
     if (node.collection?.sorted) {
       this.passSortedEntryWrite(node.entrySlotIndex);
-      this.markRouteWrittenLane(node.entrySlotIndex, node);
+      this.noteRouteLaneWrite(node);
     }
     // A sorted (vmap) mapping `delete m[k]` == assign the type default (Solidity semantics: delete is an assignment,
     // never a physical removal - libsolidity storageSetToZero). Route it through the upsert with value = default:
@@ -61998,23 +62024,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /** The offset of a function's entry lane `slotIndex` inside its block, if it has one past the master. */
+  private routeLaneOffset(fn: FunctionDefinitionNode, slotIndex: number): number | undefined {
+    const lane = fn.blockLayout?.slots.find((slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex);
+    return lane !== undefined && lane.offset > 0 ? lane.offset : undefined;
+  }
+
+  /** A bound route marks its record of written lanes for a sorted write at a lane outside its journal flushes. */
+  private routeHasUnflushedLaneWrite(node: FunctionDefinitionNode): boolean {
+    const collector = new UnflushedSortedWriteCollector();
+    if (node.body !== undefined) collector.visit(node.body);
+    return [...collector.slots].some((slot) => this.routeLaneOffset(node, slot) !== undefined);
+  }
+
   /**
-   * A route's sorted write statement at `slotIndex` (assign, field assign or delete) runs: set its lane's bit, once,
-   * in the route's own record of written lanes, which its record pin claims (emitRouteBlockClaims) in place of the
-   * writer's static lanes. Route frame only; addressed from the bottom and replaced by depth, so untracked items
-   * above the frame do not move it.
+   * A sorted write statement of a bound route (assign, field assign or delete) at a lane of its block, for its record
+   * pin (emitRouteBlockClaims). A journal flush runs exactly where its dirty bit is set, so it is noted with that bit.
+   * Any other write sets its lane's bit, once, in the route's record of written lanes. Route frame only; addressed
+   * from the bottom and replaced by depth, so untracked items above the frame do not move it.
    */
-  private markRouteWrittenLane(slotIndex: number, node: Node): void {
-    if (!this.isCompilerMessageBusRoute() || this.getStackIndex(ROUTE_WRITTEN_LANES, true) < 0) return;
-    const lane = this.currentFunction.blockLayout?.slots
-      .find((slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex);
-    if (lane === undefined || lane.offset <= 0) return;
-    this.routeWrittenLaneSlots.add(slotIndex);
+  private noteRouteLaneWrite(node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode): void {
+    if (this.isDefineSubTraversal || !this.isCompilerMessageBusRoute()
+      || this.currentFunction.messageBusRecordClaims === undefined) return;
+    const slot = node.entrySlotIndex;
+    const offset = this.routeLaneOffset(this.currentFunction, slot);
+    if (offset === undefined) return;
+    const writes = this.routeLaneWrites.get(slot) ?? { sources: new Map(), plain: false };
+    this.routeLaneWrites.set(slot, writes);
+    const dirty = node instanceof MappingAssignNode ? node.journalDirtyBit : undefined;
+    if (dirty !== undefined) {
+      writes.sources.set(`${dirty.word}:${dirty.bit}`, dirty);
+      return;
+    }
+    if (this.getStackIndex(ROUTE_WRITTEN_LANES, true) < 0) {
+      throw new Error(`message-bus record pin: the write at lane ${offset} has no record of written lanes`);
+    }
+    writes.plain = true;
     const loc = { location: node.location, positionHint: PositionHint.END };
     this.emitPickCompilerRouteFrameValue(ROUTE_WRITTEN_LANES, loc);
-    this.emit(encodeInt(1n << BigInt(lane.offset)), loc);
+    this.emit(encodeInt(1n << BigInt(offset)), loc);
     this.emit(Op.OP_OVER, loc);
-    this.emit(encodeInt(BigInt(lane.offset)), loc);
+    this.emit(encodeInt(BigInt(offset)), loc);
     this.emit(Op.OP_RSHIFTNUM, loc);
     this.emit(Op.OP_2, loc);
     this.emit(Op.OP_MOD, loc);               // [lanes, bit, set]
@@ -63297,9 +63347,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * pinned), or one a row that ran claims by the row counter its
    * selector branch increments: a handler-managed lane of a collection its handler writes (its own lanes, stamped
    * as `lanes`; a collection it writes only in runtime loops has none, as its stream runs in the trailing band). A
-   * lane the route's own sorted writes reach is claimed only where one ran (markRouteWrittenLane), so a pool, tuple or
-   * alias lane a run did not write stays pinned whatever its batch witnesses say. A lane no such row or write claims
-   * stays pinned, as a read brings it back at its own index. The trailing band is claimed by lock only
+   * lane the route's own sorted writes reach is claimed only where one ran (noteRouteLaneWrite): a journal flush
+   * where its dirty bit is set, any other write by the route's record. So a pool, tuple or alias lane a run did not
+   * write stays pinned whatever its batch witnesses say. A lane no such row or write claims stays pinned, as a read
+   * brings it back at its own index. The trailing band is claimed by lock only
    * (emitRouteBandLockClaim). Each offset belongs to one group, so the masks add. No row claims the whole block.
    * Once the verifier ran (`__internal__activeVerifierIndex` >= 0) the claims are cut to the physical block its
    * binding digest proves (routePhysicalSize); they are not widened to it, as the verifier holds a record no row
@@ -63314,6 +63365,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const bit = (offset: number): bigint => 1n << BigInt(offset);
     const assigned = new Set<number>();
     let ownMask = 0n;
+    // The lanes the route's own sorted writes reach, by offset: claimed only where such a write ran (below), so
+    // neither mask names them.
+    const written = new Map<number, { sources: Map<string, { word: string; bit: number }>; plain: boolean }>();
+    for (const [slotIndex, writes] of this.routeLaneWrites) {
+      const offset = this.routeLaneOffset(node, slotIndex);
+      if (offset === undefined || offset >= blockSize) continue;
+      const lane = written.get(offset) ?? { sources: new Map(), plain: false };
+      writes.sources.forEach((source, key) => lane.sources.set(key, source));
+      lane.plain ||= writes.plain;
+      written.set(offset, lane);
+    }
+    const unwritten = (slot: BlockLayoutSlot): boolean => !written.has(slot.offset)
+      && (slot.slotIndex === undefined || !this.routeLaneWrites.has(slot.slotIndex));
     for (const slot of slots) {
       const routeEntry = slot.kind === 'entry' && slot.slotIndex !== undefined && !handlerManaged.has(slot.slotIndex);
       if ((!own.has(slot.kind) && !routeEntry) || assigned.has(slot.offset)) continue;
@@ -63322,7 +63386,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // writes (a pool or alternate tuple lane its journal flushes) is claimed where a write of this run ran there.
       if (routeEntry && !this.entrySlots[slot.slotIndex!]?.operations
         .some((operation) => operation === 'write' || operation === 'delete')) continue;
-      if (routeEntry && this.routeWrittenLaneSlots.has(slot.slotIndex!)) continue;
+      if (!unwritten(slot)) continue;
       ownMask |= bit(slot.offset);
     }
     // Lanes with one set of claimers share a mask.
@@ -63331,8 +63395,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (slot.kind !== 'entry' || slot.slotIndex === undefined || assigned.has(slot.offset)) continue;
       assigned.add(slot.offset);
       const lane = slot.slotIndex;
-      // A lane the route writes is claimed by the run's own record of the writes that ran, not by a row counter.
-      if (this.routeWrittenLaneSlots.has(lane)) continue;
+      // A lane the route writes is claimed where its write ran, not by a row counter.
+      if (!unwritten(slot)) continue;
       const collection = this.entrySlots[lane]?.collection;
       const flags = claims.filter((claim) => (claim.lanes !== undefined ? claim.lanes.includes(lane)
         : collection !== undefined && (claim.collections?.includes(collection) ?? false))).map((claim) => claim.flag);
@@ -63343,7 +63407,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const witnesses = [
       ...(local ? [] : [ACTIVE_VERIFIER_INDEX, physicalSize]), ...claims.map((claim) => claim.flag),
     ];
-    const lost = witnesses.find((name) => this.getStackIndex(name, true) < 0);
+    const evidence = [...written.values()].flatMap((lane) => [
+      ...[...lane.sources.values()].map((source) => source.word), ...(lane.plain ? [ROUTE_WRITTEN_LANES] : []),
+    ]);
+    const lost = [...witnesses, ...evidence].find((name) => this.getStackIndex(name, true) < 0);
     if (lost !== undefined) throw new Error(`message-bus record pin: '${lost}' is not live at the route census`);
     const claimed = '(__route_claimed)';
     this.emit(encodeInt(ownMask), loc);
@@ -63361,9 +63428,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     };
     for (const [flags, mask] of laneMasks) addWhereRan(flags.split(' '), mask);
-    // The lanes a sorted write of this run ran at (markRouteWrittenLane), inside the block; bit 0 is never set.
-    // They may overlap the route's own lanes, so they are ORed in: [claimed] -> [claimed | written].
-    if (this.routeWrittenLaneSlots.size > 0 && this.getStackIndex(ROUTE_WRITTEN_LANES, true) >= 0) {
+    // [claimed] -> [claimed + each written lane whose flush's dirty bit is set]. No claim above names a written lane,
+    // and each lane is added once. Consecutive bits of one word on consecutive lanes are one shift:
+    // ((word >> bit0) mod 2^n) << offset0.
+    const single = [...written].filter(([, lane]) => lane.sources.size === 1)
+      .map(([offset, lane]) => ({ offset, ...[...lane.sources.values()][0] }))
+      .sort((left, right) => (left.word === right.word ? left.bit - right.bit : left.word < right.word ? -1 : 1));
+    for (let start = 0; start < single.length;) {
+      let end = start + 1;
+      while (end < single.length && single[end].word === single[start].word
+        && single[end].bit === single[end - 1].bit + 1 && single[end].offset === single[end - 1].offset + 1) end += 1;
+      this.emitPickTrackedFromBottom(single[start].word, loc);
+      if (single[start].bit > 0) {
+        this.emit(encodeInt(BigInt(single[start].bit)), loc);
+        this.emit(Op.OP_RSHIFTNUM, loc);
+      }
+      this.emit(encodeInt(1n << BigInt(end - start)), loc);
+      this.emit(Op.OP_MOD, loc);
+      this.emit(encodeInt(BigInt(single[start].offset)), loc);
+      this.emit(Op.OP_LSHIFTNUM, loc);
+      this.emit(Op.OP_ADD, loc);
+      start = end;
+    }
+    for (const [offset, lane] of [...written].filter(([, candidate]) => candidate.sources.size > 1)) {
+      [...lane.sources.values()].forEach((source, index) => {
+        this.emitPickTrackedFromBottom(source.word, loc);
+        if (source.bit > 0) {
+          this.emit(encodeInt(BigInt(source.bit)), loc);
+          this.emit(Op.OP_RSHIFTNUM, loc);
+        }
+        this.emit(Op.OP_2, loc);
+        this.emit(Op.OP_MOD, loc);
+        if (index > 0) this.emit(Op.OP_BOOLOR, loc);
+      });
+      this.emit(Op.OP_IF, loc);
+      this.emit(encodeInt(bit(offset)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    // The record's lanes, inside the block (bit 0 is never set), may also be flushed above, so they are ORed in:
+    // [claimed] -> [claimed | record].
+    if ([...written.values()].some((lane) => lane.plain)) {
       const width = BigInt(Math.floor(blockSize / 8) + 1);
       this.emitPickTrackedFromBottom(ROUTE_WRITTEN_LANES, loc);
       this.emit(Op.OP_1, loc);

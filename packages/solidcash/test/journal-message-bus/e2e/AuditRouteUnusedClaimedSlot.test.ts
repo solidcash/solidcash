@@ -86,6 +86,14 @@ const QUIET = `contract QuietBook() {
   function idle(int x) unsafe(2) { require(x >= 0); }
 }`;
 
+// A free function's body runs in the row; its assembly borrows a value it did not push.
+const STIR = `function stir() { assembly { OP_DUP OP_DROP } }
+contract StirBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function churn(int x) public { stir(); require(x >= 0); }
+}`;
+
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
   maximumInputBytes: 1_000_000, suppressWarnings: true,
@@ -625,5 +633,38 @@ describe('bound route without its verifier: a block slot beside a row that write
   // The hole: an unsafe(2) row claims the whole block.
   it('accepts a side entry rewritten in the block beside an unsafe(2) row', () => {
     expect(state.route.idle).toBe(true);
+  });
+});
+
+
+describe('bound route without its verifier: a block slot beside a row whose free function holds opaque assembly', () => {
+  let state: { honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(STIR, { ...KERNEL, messageBusHandlers: ['put', 'churn'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'churn']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const churn = spendOf(await bus.batch([{ function: 'churn', args: [1n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, churn);
+    const master = masterOf(churn, victim);
+    const at = padIndex(churn, master + 1, master + layout.blockSize);
+    expect(at, 'the churn batch leaves a pad in its block').toBeDefined();
+    const rewrite = placed(churn, victim, master, at!, rewritten(victim));
+    state = { honest: failures(vm, churn), covenant: verdict(vm, rewrite, at!), route: verdict(vm, rewrite, master) };
+    console.log('block slot beside a free function with opaque assembly', {
+      blockSize: layout.blockSize, offset: at! - master, covenant: state.covenant, route: state.route,
+    });
+  }, 300_000);
+
+  // The hole: the admission walk reads the contract's functions only, and the row claims the whole block.
+  it('admits churn and accepts a side entry rewritten in the block beside it', () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant).toBe(true);
+    expect(state.route).toBe(true);
   });
 });

@@ -86,7 +86,8 @@ describe('Call Options ({value: X, gas: Y})', () => {
     };
     /** A function's one call as published, less where it sits in the source. */
     const callOf = (fn: AbiFunction): object => {
-      const { sourceLocation: _sourceLocation, ...call } = fn.externalCalls![0] as { sourceLocation?: unknown };
+      const call: Record<string, unknown> = { ...(fn.externalCalls![0] as unknown as Record<string, unknown>) };
+      delete call.sourceLocation;
       return call;
     };
 

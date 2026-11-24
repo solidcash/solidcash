@@ -2207,11 +2207,14 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     `AuditRouteUnusedClaimedSlot.test.ts` (QuietBook, StirBook). No other bus test changes: no bus test source has a
     free function with assembly or a delegatecall, every delegatecall in a bus test has an identifier receiver
     (already refused), and none calls `address(this)` at a low level.
-  - Residual (whole block, lifecycle rows): a row still claims its whole block where it is a lifecycle row (a kernel
-    lifecycle or deployment handler, or a `deploy`, `upgrade`, `selfdestruct`, `split` or `merge` modifier). In this
-    repository: UniswapV2.scash (createPair deploys) and marketplace.scash in the SDK fixtures;
-    upgrade_mapping.scash, upgrade_counter_data_nft.scash and selfdestruct_counter.scash in the compiler's
-    valid-contract-files.
+  - R-C, stage 2 (`48a9c5e4b`, hole VM-confirmed at `25db4a41c`): a lifecycle row (a kernel lifecycle or deployment
+    handler, or a `deploy`, `upgrade`, `selfdestruct`, `split` or `merge` modifier) claimed its whole block. Beside a
+    compose's Factory.create row (a child deployment), an untouched `side` entry rewritten at the unused lane under
+    a declared resource row settled. A lifecycle row now claims what its body writes, and no row claims the whole
+    block: the verifier holds a split, merge or selfdestruct participant to its exact span (master, data records, a
+    funding or consumed-master tail), a routed upgrade's contract keeps no record (UpgradeStrandsBoundStateError),
+    and a child's records take its new category. Those four had no record in their span to rewrite, so no attack
+    on them could be built. Test: the deploy describe of `AuditComposeUntouchedRecordRow.test.ts`.
   - Bytes: bound non-graph census-path routes only; a read-only handler's flag goes (about 10-15 B), a dynamic-state
     writer adds the band lock check (about 60-90 B). Direct entries, graph and proxy routes, framed builds: unchanged.
 - **Inputless mint at a handler-managed collection** (HIGH; `dffcec4ac`, made exact in `6d6a6913f`; found 2026-11-23

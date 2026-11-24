@@ -32969,10 +32969,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Whether a raw `call` of `node` binds its co-spent callee's run to this caller (emitRawCalleeReaderPin): a direct
-   * entry's regular call, outside a constructor, whose callee settles records naming their reader.
+   * entry's regular call, outside a constructor, whose callee settles records naming their reader, made by a caller
+   * that keeps state. A stateless caller keeps no state a shared run could credit twice, and its call to a target that
+   * is no SolidCash contract, which pushes no reader, stays caller-permissive (TARGET-5).
    */
   private bindsRawCalleeReader(node: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
-    return slot.interfaceName === '__raw__' && slot.functionName === '__raw__'
+    return slot.interfaceName === '__raw__' && slot.functionName === '__raw__' && this.keepsState()
       && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
       && this.directConvention && !this.framedMaster && !this.inGenesisMode && !node.graphEmissionHandler
       && !this.isCompilerMessageBusRoute(node);
@@ -56672,10 +56674,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // A raw `call` checks no digest of this iteration's record: a stateful caller's callee run answers it alone instead,
-    // by the reader that run names (emitRawCalleeReaderPin), as a raw call outside a loop does. A stateless caller keeps
-    // no state a shared run could credit twice, and its loop over targets that are no SolidCash contract, which push no
-    // reader, stays caller-permissive (TARGET-5).
-    if (node.opaqueReturn && this.keepsState() && this.bindsRawCalleeReader(this.currentFunction, slot)) {
+    // by the reader that run names (emitRawCalleeReaderPin), as a raw call outside a loop does (bindsRawCalleeReader).
+    if (node.opaqueReturn && this.bindsRawCalleeReader(this.currentFunction, slot)) {
       this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc); // [..., inputidx]
       this.emitRawCalleeReaderPin(loc);
       this.emit(Op.OP_DROP, loc);           // [...]

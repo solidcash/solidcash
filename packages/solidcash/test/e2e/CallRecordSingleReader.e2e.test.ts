@@ -5,10 +5,12 @@ import {
 } from '@bitauth/libauth';
 import { CALL_RECORD_READER_INPUT, encodePushdataValue, type AbiFunction, type Artifact } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../direct-compile.js';
-import { Contract, Signer } from '../../src/index.js';
+import { Contract, Signer, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract, getContractFactory, upgrades } from '../../src/stateful/index.js';
 import { callRecordDigest } from '../../src/stateful/call-record.js';
-import { addProvenUtxo, createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  addProvenUtxo, createFeeFunder, createTestProvider, setupStatefulUtxos, verifyTransaction,
+} from '../test-util.js';
 
 /**
  * One call record answers one reader (docs/security/security-audit-2026-10-16.md, "One record read by two callers").
@@ -423,6 +425,16 @@ contract Puller() {
   }
 }`;
 
+// A stateless caller of a raw call: it keeps no state a shared run could credit twice.
+const RELAY_SOURCE = `pragma solidcash >=0.8.0;
+contract Relay() {
+  function relay(address target, bytes payload) public {
+    (bool ok, bytes memory data) = target.call(payload);
+    require(ok);
+    require(data.length == 0);
+  }
+}`;
+
 let rawCompiled: Record<string, Artifact> | undefined;
 const rawArtifacts = (): Record<string, Artifact> => {
   rawCompiled ??= compileStringMulti(RAW_SOURCE) as Record<string, Artifact>;
@@ -473,6 +485,30 @@ describe('a raw call whose callee runs once', () => {
     expect(outcome).toContain(`error in evaluating input index ${second}:`);
     expect((await p2.sc.getState()).credited).toBe(0n);
     expect((await vault.sc.getState()).balance).toBe(BALANCE);
+  }, 300_000);
+
+  it('builds a stateless caller\'s raw call to a target that is no SolidCash contract', async () => {
+    // The reader is bound for a caller that keeps state. A stateless one stays caller-permissive (TARGET-5): its call
+    // to an OP_TRUE coin, which pushes no reader, settles, its empty answer standing for the record none pins.
+    const provider = createTestProvider();
+    const relay = new Contract(compileString(RELAY_SOURCE), [], { provider });
+    const OP_TRUE = hexToBin('51');
+    const token = { category: 'a0'.repeat(32), amount: 0n, nft: { capability: 'minting' as const, commitment: '' } };
+    const funder = await createFeeFunder(provider, 10000n);
+    const tb = new TransactionBuilder({ provider });
+    // target, payload, the callee's input (base and master index), no anchor, no record, no preimage
+    tb.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, relay.unlock.relay(
+      OP_TRUE, new Uint8Array(), 1n, 1n, -1n, -1n, new Uint8Array(),
+    ) as never);
+    tb.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1200n, token }, {
+      generateLockingBytecode: (): Uint8Array => OP_TRUE,
+      generateUnlockingBytecode: (): Uint8Array => new Uint8Array(),
+    } as never);
+    tb.addInput(funder.utxo, funder.unlocker);
+    tb.addOutput({ to: relay.address, amount: 100000n });
+    tb.addOutput({ to: OP_TRUE, amount: 1200n, token });
+    tb.addOutput({ to: OP_TRUE, amount: 7000n });
+    verifyTransaction(tb);
   }, 300_000);
 });
 

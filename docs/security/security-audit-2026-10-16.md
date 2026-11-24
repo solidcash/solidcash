@@ -1437,17 +1437,18 @@ needs VM evidence, `rejectedWith` has no source fallback).
   build whose tables its graph handlers bind lowers no record selector, and is left to those handlers. A raw
   `address.call` (visible or opaque payload, its result read or not) is FIXED
   2026-11-24 (P-2): no digest over an opaque payload is sound (the caller cannot name its arguments, and the callee
-  never sees the payload), so the caller pins its callee's reader witness, the second push after an optional selector
-  push, to its own input index; one run then answers one caller (VM-confirmed before: two pullers merged into one
-  transaction each took one withdrawal, for a visible returning, a visible void and an opaque payload;
+  never sees the payload), so a caller that keeps state pins its callee's reader witness, the second push after an
+  optional selector push, to its own input index; one run then answers one caller (VM-confirmed before: two pullers
+  merged into one transaction each took one withdrawal, for a visible returning, a visible void and an opaque payload;
   CallRecordSingleReader.e2e.test.ts). A raw call in a loop over targets (`targets[i].call(data[i])`) in a stateful
   caller pins each iteration's callee reader the same way, FIXED 2026-11-24 (P-3). Its double credit is unconfirmed:
   the SDK's honest build of such a loop in a stateful caller already fails its preflight at the caller (pre-existing).
   The per-iteration pin was VM-run on hand-built spends of a stateless caller (`f04812060`) before it was confined to
-  stateful callers. A stateless caller keeps no state a shared run could credit twice, and its Multicall over targets
-  that are no SolidCash contract, which push no reader, stays caller-permissive (TARGET-5): the stateless loop builders
-  (solidcash/loop-call) still build it (InlineLoopDispatch.test.ts). A `staticcall` loop is not pinned, as a read-only
-  run shared by two callers changes nothing either takes.
+  stateful callers. A stateless caller pins no reader, for a single raw call or a loop: it keeps no state a shared run
+  could credit twice, and its call to a target that is no SolidCash contract, which pushes no reader, stays
+  caller-permissive (TARGET-5). Its single call to an `OP_TRUE` coin settles (CallRecordSingleReader.e2e.test.ts), and
+  the stateless loop builders (solidcash/loop-call) still build its Multicall (InlineLoopDispatch.test.ts). A
+  `staticcall` loop is not pinned, as a read-only run shared by two callers changes nothing either takes.
   Residuals: a raw call through a proxy or CREATE anchor (anchor witness >= 0)
   is left to that route; a callee entry without the record and reader witnesses at those pushes fails closed; an
   interface-cast low-level call, `IFoo(a).call(data)`, synthesizes its result and is not pinned (its address-parameter

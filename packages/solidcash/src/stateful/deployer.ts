@@ -35,6 +35,7 @@ import {
 import { decodeScriptNumber, extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
 import { fillerOutput } from './filler.js';
+import { CALL_ARGUMENT_WITNESS, leftCallArgumentWitness } from './call-record.js';
 import { getDustThreshold } from '../network/dust-threshold.js';
 import { evaluateFaithfulOrDebugTrace } from './faithful-probe-trace.js';
 import { assertSpendableCode, assertSpendableContract } from './spendable-code.js';
@@ -1451,7 +1452,7 @@ export function unboundCallWitnesses(deployer: DeployerAbi): Record<string, bigi
   const witnesses: Record<string, bigint | Uint8Array> = {};
   for (const input of deployer.abi.find((entry) => entry.name === 'create')?.inputs ?? []) {
     if (!/^__internal__(externalCallInputBase|extcall|callEdgeOutputIdx|externalReturnOutputIdx|externalCallSelector)/
-      .test(input.name)) continue;
+      .test(input.name) && !CALL_ARGUMENT_WITNESS.test(input.name)) continue;
     witnesses[input.name] = input.type.startsWith('bytes') ? new Uint8Array() : -1n;
   }
   return witnesses;
@@ -1589,6 +1590,16 @@ export async function placeConstructorCalls(options: {
         const selector = has(`__internal__externalCallSelector${slot}`)
           ? `__internal__externalCallSelector${slot}` : '__internal__externalCallSelector';
         if (has(selector) && block.fn.selector !== undefined) synthetic[selector] = hexToBin(block.fn.selector);
+        // An argument the constructor's call leaves to its callee: the callee's, as its record digests it.
+        for (const input of create?.inputs ?? []) {
+          const witness = CALL_ARGUMENT_WITNESS.exec(input.name);
+          if (witness === null || Number(witness[1]) !== slot) continue;
+          const value = leftCallArgumentWitness({
+            functionName: block.functionName, functionArgs: block.args,
+            externalContract: { inner: { artifact: block.contract.artifact } },
+          }, Number(witness[2]));
+          if (value !== undefined) synthetic[input.name] = value;
+        }
       });
       return synthetic;
     },

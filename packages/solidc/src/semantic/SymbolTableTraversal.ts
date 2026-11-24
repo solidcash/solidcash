@@ -16582,12 +16582,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   /**
    * Whether a caller takes the arguments its calls leave to their callees as witnesses (leftCallArgumentPositions):
    * every direct entry, a message-bus build's (its bound compile included) and a kernel direct participant's, since a
-   * spender may spend it whatever route the build also has. A framed body binds its calls by their frames
-   * (callSiteCheckScript), and the deployer program takes no such witness.
+   * spender may spend it whatever route the build also has, and the deployer program's `create`, whose constructor
+   * calls digest their tagged records with them (deployer.ts fills them). A framed body binds its calls by their
+   * frames (callSiteCheckScript).
    */
   private takesLeftCallArguments(): boolean {
-    return this.compilerOptions.composition !== 'framed'
-      && (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram === undefined;
+    return this.compilerOptions.composition !== 'framed';
   }
 
   /**

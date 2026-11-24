@@ -39,6 +39,8 @@ Known issues:
   message-bus route, does not build: the call's record is not settled there, and the call fails closed.
 - A function whose native assembly reads stack values it did not push can fail to compile
   (`StackVariableUnavailableError`), as in 0.51.1.
+- On the experimental framed convention, the EACC marketplace port does not deploy through a framed proxy, and 41 of
+  its 65 flows without a proxy fail, exactly as in 0.51.1.
 
 ## v0.51.1
 

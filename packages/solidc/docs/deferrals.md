@@ -3477,3 +3477,17 @@ fails to compile (`StackVariableUnavailableError: '__internal__callDigest'`). Fa
 **What it'd take:** keep the digest out of reach of unpushed reads (the alt stack, or recompute it at settlement).
 
 **Revisit if:** a port's native assembly in a stateful entry hits the error.
+
+## The EACC marketplace on the framed convention (2026-11-24)
+
+**Deferred (pre-existing):** both marketplace ladder lanes fail, identically on v0.51.1, on the session-start master
+(`af630cc60`), on master `5c0013c47` and on the 0.52.0 candidate. The proxied lane fails all 66 rows at
+`upgrades.deployProxy`: the framed proxy's `initialize` hop is refused (`validator/1: Program failed an OP_VERIFY
+operation`). The lane without a proxy fails the same 41 of 65 rows, at `publishJobPost` (refused at `validator/1`, and
+"the run-time loop over `allowedWorkers_` makes no call at its site 9"). The libauth build is the same in every run, and
+the EACC checkout has not changed since 2025-10.
+
+**What it'd take:** bisect from the last green ladder (TRE v2, `0f833efcc`, 2026-11-01; the 10-19 readiness run) to the
+change that broke it, then fix the framed proxy's `initialize` hop and the framed run-time loop's call site.
+
+**Revisit if:** before the framed convention or the EACC port is claimed to work.

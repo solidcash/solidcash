@@ -11,7 +11,8 @@ import { hexToBin } from '@bitauth/libauth';
 
 // Array-element external call: `for (i < subscriberList.length) IEventSubscriber(subscriberList[i]).m()`.
 // The SDK co-spends every subscriber in array order; the covenant reads the array and loop-verifies each
-// co-spent callee's master LBC == subscriberList[i] (the EventsAdvanced pattern).
+// co-spent callee's master LBC == subscriberList[i] (the EventsAdvanced pattern). Each turn reads its subscriber's
+// void record, naming the publisher's input, at the record base plus its element.
 // The publisher's sig authorizes the publisher's own input; it is NOT forwarded to subscribers
 // (one sig cannot validate multiple inputs - each has a distinct sighash). Subscribers update state
 // permissionlessly when co-spent; the publisher covenant verifies each callee's identity + selector.
@@ -104,6 +105,9 @@ describe('array-element external call (IFoo(arr[i]).m() loop)', () => {
 
     pubSc.registerExternalArray('IEventSubscriber', [sub1Sc, sub2Sc]);
 
+    const notify = pubArt.abi.find((entry) => entry.name === 'notify')!;
+    expect(notify.externalCalls![0]!.hasReturnValues).toBe(true);
+    expect(notify.inputs.map((input) => input.name)).toContain('__internal__externalReturnOutputIdx');
     const tx = await pubSc.notify(10n, alicePub, sig()).send();
     expect(tx.txid).toBeDefined();
     expect((await sub1Sc.getState()).received).toBe(10n);

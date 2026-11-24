@@ -1417,15 +1417,27 @@ needs VM evidence, `rejectedWith` has no source fallback).
   each iteration reads its callee's void record at the loop's record base plus its index, by the digest of the method,
   the reader and that iteration's arguments, as a returning one already did (VM-confirmed before: two loopers merged
   into one transaction each took one payment; CallRecordSingleReader.e2e.test.ts). The stateless loop helpers lay
-  those records out (solidcash/loop-call). An explicit message-bus build's loop entry does not read them yet. Neither
-  does a
-  table of function pointers or selectors (its callee's reader is pinned to none), so two callers making such a call
-  can still share one run. A raw `address.call` (visible or opaque payload, its result read or not) is FIXED
+  those records out (solidcash/loop-call). A message-bus build's direct entry reads them as well, since its void calls
+  read records (16ef0a5d6); a looped call the bus binds on its route leaves its direct entry refusing it, and the
+  route binds its rows (RouteOnlyLoopArrayDirectSpend.test.ts). A void call naming its arguments on the elements of a
+  state array (an address array, a struct array's address field, or a table of pointers to one method) is FIXED
+  2026-11-24 the same way: each turn reads its callee's void record at the return base plus the element it claims,
+  carried by that callee (VM-confirmed before: two keepers merged into one transaction each took one payment;
+  CallRecordSingleReader.e2e.test.ts). Such a call leaving arguments to its callee still reads none, as its arguments
+  take no witness list there. A table whose elements name their own methods (received pointers, or pointers to several
+  methods) reads none either (its callee's reader is pinned to none), so two callers making such a call can still
+  share one run. A raw `address.call` (visible or opaque payload, its result read or not) is FIXED
   2026-11-24 (P-2): no digest over an opaque payload is sound (the caller cannot name its arguments, and the callee
   never sees the payload), so the caller pins its callee's reader witness, the second push after an optional selector
   push, to its own input index; one run then answers one caller (VM-confirmed before: two pullers merged into one
   transaction each took one withdrawal, for a visible returning, a visible void and an opaque payload;
-  CallRecordSingleReader.e2e.test.ts). Residuals: a raw call through a proxy or CREATE anchor (anchor witness >= 0)
+  CallRecordSingleReader.e2e.test.ts). A raw call in a loop over targets (`targets[i].call(data[i])`) pins each
+  iteration's callee reader the same way, FIXED 2026-11-24 (P-3); its double credit is unconfirmed, as the SDK's
+  honest build of such a loop in a stateful caller already fails its preflight at the caller (pre-existing), and the
+  pin is VM-run on hand-built spends (InlineLoopDispatch.test.ts). The stateless opaque builders (solidcash/loop-call)
+  derive co-spends that name no reader, so a `call` loop built through them now fails closed; a `staticcall` loop is
+  not pinned, as a read-only run shared by two callers changes nothing either takes.
+  Residuals: a raw call through a proxy or CREATE anchor (anchor witness >= 0)
   is left to that route; a callee entry without the record and reader witnesses at those pushes fails closed; an
   interface-cast low-level call, `IFoo(a).call(data)`, synthesizes its result and is not pinned (its address-parameter
   form crashes the compiler, on master too). A single call through a function pointer is FIXED 2026-11-24
@@ -1529,6 +1541,14 @@ Design: `docs/wip/call-records/DESIGN.md`.
   refused and settle the same way. A call an implementation makes behind the default proxy or a fallback proxy names
   the implementation's input, and settles (rows in the same file). Residuals: Open, "One run shared by two callers
   where no digest is checked".
+- **A call on a state-array element read a record its callee did not pin** (found and fixed 2026-11-24, branch
+  `sec-digest-holes`). A returning call in a loop over a state array (`IVault(ts[i]).withdraw(x)`) read its record at
+  the return base plus the element by its digest, but nothing bound the record's carrier to the callee: the checks
+  after the body pass over loop calls, and the body made none. A spender could lay a record of a category it mints,
+  with the call's digest and any result. VM-confirmed before: a keeper credited 1,000 for a vault's withdraw(30),
+  its outputs those of an honest pullAll(1000) (CallRecordSingleReader.e2e.test.ts). Each turn now checks its record's
+  carrier as a counted call does: the category of the element's callee input, no capability, no fungible amount, an
+  `OP_TRUE` lock and at most 1,200 satoshis.
 
 ### Open, or bound otherwise
 

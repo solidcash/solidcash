@@ -31265,13 +31265,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // reads its record at its return index plus its ordinal.
       const counter = verifiesDigest ? this.liveCallOrdinalCounter(physicalSlot) : undefined;
       const bindsInline = counter !== undefined && this.isExternalCallSlotLoopNested(physicalSlot);
+      // A call on a state-array element reads its record at its return index plus the element, carried by its callee.
+      const element = this.isStateArrayElementCall(physicalSlot);
       if (bindsInline) this.emitLoopCallCalleeCategory(physicalSlot, node, locationData);
-      const untracked = bindsInline ? 1 : 0;
+      else if (element) this.emitLoopElementCalleeCategory(physicalSlot, locationData);
+      const untracked = bindsInline || element ? 1 : 0;
       const returnOutputIdxIdx = this.getStackIndex(returnParamName);
       this.emit(encodeInt(BigInt(returnOutputIdxIdx + untracked)), locationData);
       this.emit(Op.OP_PICK, locationData);
       if (bindsInline) {
         this.emitPickAt(this.getStackIndex(counter) + 2, locationData);
+        this.emit(Op.OP_ADD, locationData);
+      } else if (element) {
+        this.emitPickAt(this.getStackIndex(this.loopInputFloorName(physicalSlot)) + 2, locationData);
         this.emit(Op.OP_ADD, locationData);
       } else if (this.plainLoopDepth > 0) {
         // A rolled `for` over `tags_[i]` reuses one return-output ABI slot. Each iteration
@@ -31307,7 +31313,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_0, locationData);    // empty returndata
         this.emit(Op.OP_ELSE, locationData);
       }
-      if (bindsInline) this.emitLoopCallRecordCarrierChecks(locationData);
+      if (bindsInline || element) this.emitLoopCallRecordCarrierChecks(locationData);
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
       // Stack: [digest?, record] (record untracked): the call's digest, a form byte, then the result or its SHA256.
       this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), locationData);
@@ -31406,10 +31412,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
     const counter = this.liveCallOrdinalCounter(slot);
     const bindsInline = counter !== undefined && this.isExternalCallSlotLoopNested(slot);
+    const element = this.isStateArrayElementCall(slot);
     if (bindsInline) this.emitLoopCallCalleeCategory(slot, node, loc);
-    this.emitPickAt(this.getStackIndex(returnParamName) + (bindsInline ? 1 : 0), loc);
-    if (bindsInline) {
-      this.emitPickAt(this.getStackIndex(counter) + 2, loc);
+    else if (element) this.emitLoopElementCalleeCategory(slot, loc);
+    this.emitPickAt(this.getStackIndex(returnParamName) + (bindsInline || element ? 1 : 0), loc);
+    if (bindsInline || element) {
+      this.emitPickAt(this.getStackIndex(bindsInline ? counter : this.loopInputFloorName(slot)) + 2, loc);
       this.emit(Op.OP_ADD, loc);
       this.emitLoopCallRecordCarrierChecks(loc);
     }
@@ -56648,6 +56656,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // A raw `call` checks no digest of this iteration's record: its callee's run answers this caller alone instead, by
+    // the reader that run names (emitRawCalleeReaderPin), as a raw call outside a loop does.
+    if (node.opaqueReturn && this.bindsRawCalleeReader(this.currentFunction, slot)) {
+      this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc); // [..., inputidx]
+      this.emitRawCalleeReaderPin(loc);
+      this.emit(Op.OP_DROP, loc);           // [...]
+    }
+
     // --- TYPED (non-opaque) call: no opaque return-event. The identity + preservation above already pinned the
     // callee master to targets[i]; verify its selector matches the slot's (so a co-spent pair can't be driven with
     // a different method), then clean up the loop temps and return. `IFoo(targets[i]).m(..)` / Router02 pair.swap. ---
@@ -57696,6 +57712,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(1200n), loc);
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
+  }
+
+  /** A call on an element of a state array: its loop's epilogue checks every element's callee, in order. */
+  private isStateArrayElementCall(slot: ExternalCallSlot): boolean {
+    return slot.loopArrayVar !== undefined && !slot.inlineLoopDispatch && !slot.fnPtrCall
+      && this.stateVariables.some((variable) => variable.name === slot.loopArrayVar)
+      && this.getStackIndex(this.loopInputFloorName(slot), true) >= 0;
+  }
+
+  /**
+   * `[..]` -> `[.., category]` (untracked): the category of the callee input of the state-array element this call
+   * claimed (emitLoopElementFloor), `base + offset + element * stride`, which the epilogue binds to that element.
+   */
+  private emitLoopElementCalleeCategory(slot: ExternalCallSlot, loc: SingleLocationData): void {
+    const stride = 1 + slot.requiredDataNftIndices.length;
+    this.emitPickTrackedFromBottom('__internal__externalCallInputBase', loc); // [.., base]
+    if (slot.computedOffset !== 0) {
+      this.emit(encodeInt(BigInt(slot.computedOffset)), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emitPickAt(this.getStackIndex(this.loopInputFloorName(slot)) + 1, loc); // [.., base, element]
+    if (stride !== 1) {
+      this.emit(encodeInt(BigInt(stride)), loc);
+      this.emit(Op.OP_MUL, loc);
+    }
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
   }
 
   /** The runtime counter of a group of calls to one callee, whose value is the next call's ordinal. */

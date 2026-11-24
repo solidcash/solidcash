@@ -24,7 +24,7 @@ import {
   binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions, encodeDataPush,
   encodeLockingBytecodeP2sh32, hash256, hexToBin,
 } from '@bitauth/libauth';
-import { compileString } from '@solidcash/solidc';
+import { compileString, compileStringMulti } from '@solidcash/solidc';
 import {
   buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, scriptToBytecode, sha256,
 } from '@solidcash/utils';
@@ -54,6 +54,25 @@ const DRIVER = `interface ILaneBus { function put(int key, int value); }
 contract LaneDriver(address bus) {
   function poke() public { ILaneBus(bus).put(5, 9); require(true); }
   function pokeAt(int key, int value) public { ILaneBus(bus).put(key, value); require(true); }
+}`;
+
+// A factory whose deploy row runs beside a mapping another handler writes.
+const FACTORY = `contract Child(int seed) {
+  int stored;
+  constructor() { this.stored = seed; }
+  function keep() public { require(true); }
+}
+interface IFactory { function create(int seed); }
+contract Factory() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function create(int seed) public {
+    Child child = new Child(seed);
+    require(true);
+  }
+}
+contract Driver(address factory) {
+  function run(int seed) public { IFactory(factory).create(seed); require(true); }
 }`;
 
 const KERNEL = {
@@ -506,5 +525,53 @@ describe('compose path on a proxy\'s block: a resource row may rewrite a record 
 
   it('refuses a node of the proxy\'s minted with no input beside the honest row', () => {
     expect(state.mint).not.toEqual([]);
+  });
+});
+
+
+/** A Driver row calling the factory's deploy row, and the untouched `side` entry rewritten in the factory's block. */
+async function deployScenario(): Promise<Omit<ComposeScenario, 'insert' | 'mint'>> {
+  const provider = createMessageBusCapstoneTestProvider();
+  const artifacts = compileStringMulti(FACTORY, KERNEL);
+  expect(artifacts.Factory.messageBus?.handlers.find((handler) => handler.name === 'create'))
+    .toMatchObject({ eligible: true });
+  const { contract: base, categoryId } = await connect(provider, artifacts.Factory, []);
+  const factory = base.registerChild(artifacts.Child);
+  const { contract: driver } = await connect(provider, artifacts.Driver, [hexToBin(factory.inner.lockingBytecode)]);
+  await factory.call.put(5n, 7n).send();
+  await factory.call.put(9n, 1n).send();
+  const compose = async (): Promise<TransactionBuilder> => {
+    const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
+    const genesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    return messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [3n] },
+        { contract: factory, functionName: 'create', args: [3n] },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+      childDeployments: [{ invocationIndex: 1, siteIndex: 0, funder: genesis }],
+    }).build();
+  };
+  const {
+    honest, honestFailures, control, attack, lane,
+  } = await untouchedRecord(provider, compose, artifacts.Factory, factory.inner, categoryId, 'side');
+  console.log('compose untouched record beside a deploy row', { lane, control, attack });
+  return { provider, honest: { builder: honest, failures: honestFailures }, control, attack, lane };
+}
+
+describe('compose path beside a deploy row: a resource row may rewrite a record no row touched', () => {
+  let state: Awaited<ReturnType<typeof deployScenario>>;
+  beforeAll(async () => { state = await deployScenario(); }, 300_000);
+
+  it('settles the honest compose, and the control that declares an untouched entry unchanged', async () => {
+    expect(state.honest.failures, 'honest compose').toEqual([]);
+    expect(state.control, 'control: the entry recreated unchanged under its row').toEqual([]);
+    await expect(state.provider.sendRawTransaction(state.honest.builder.build())).resolves.toMatch(TXID);
+  }, 300_000);
+
+  // The hole: a deploy row claims the whole block, the unused lane included.
+  it('accepts an untouched entry rewritten under a declared resource row', () => {
+    expect(state.attack).toEqual([]);
   });
 });

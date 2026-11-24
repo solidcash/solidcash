@@ -279,7 +279,9 @@ type ListedLowLevelCall = {
  * A `.withCall()` list names the callee of each low-level call, not whether the function makes it, and the SDK does
  * not wire a conditional call itself. A listed stateful callee of a call the function makes only under a guard is
  * decided as a resolved call's: refused with ListedCallNotMadeError when the guard is false, and with
- * CallGuardUndecidedError when it does not resolve or the compiler published no form of it. A call whose edge the
+ * CallGuardUndecidedError when it does not resolve or the compiler published no form of it. One the function makes in
+ * a loop is refused with CallGuardUndecidedError: a low-level call's row publishes no number of turns for its loop,
+ * so no frame can say whether the loop turns, and at none the listed callee would run uncalled. A call whose edge the
  * function counts is left to its covenant: the builder lays a low-level call's edge only for a callee that reads its
  * contract caller (stb-materialize-caller-edge-outputs.ts), and the function counts the edges it pins, so the edge of a
  * call it skips fails that count. A delegatecall is a proxy's, a raw coin runs no function, and a message-bus route
@@ -298,7 +300,8 @@ export async function refuseListedLowLevelCallsTheGuardSkips(
     || isBusCompiledEntry(artifact, abiFunction.selector)) return;
   const guarded = rows.flatMap((row, index) => {
     const listed = listedCalls?.[index];
-    if (listed?.type !== 'stateful' || row.callMode === 'delegatecall' || row.occurrence !== 'conditional') return [];
+    if (listed?.type !== 'stateful' || row.callMode === 'delegatecall'
+      || (row.occurrence !== 'conditional' && row.occurrence !== 'loop')) return [];
     const calleeArtifact = listed.contract?.inner?.artifact;
     const readsSender = calleeArtifact?.abi.find((candidate) => candidate.name === listed.functionName)
       ?.usesMsgSender === true;
@@ -312,11 +315,16 @@ export async function refuseListedLowLevelCallsTheGuardSkips(
   });
   if (guarded.length === 0) return;
   const caller = `${artifact.contractName}.${abiFunction.name}`;
-  const conditions = guarded.flatMap(({ row }) => (row.condition === undefined ? [] : [row.condition]));
+  const conditions = guarded.flatMap(({ row }) => (row.occurrence === 'loop' || row.condition === undefined
+    ? [] : [row.condition]));
   const verdictOf = conditions.length === 0 ? undefined : await readListedGuards(host, conditions, {
     abiFunction, args, artifact, state: undefined, selfAddress: publicSelfAddress,
   });
   for (const { row, call, callee } of guarded) {
+    if (row.occurrence === 'loop') {
+      throw new CallGuardUndecidedError(caller, call, callee, { loop: true },
+        'a low-level call publishes no number of turns for its loop');
+    }
     const verdict = row.condition === undefined ? undefined : verdictOf!(row.condition);
     if (verdict === undefined) {
       throw new CallGuardUndecidedError(caller, call, callee,

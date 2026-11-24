@@ -57136,7 +57136,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return !this.framedMaster && node.isEntryPoint && node.returnTypes.length === 0
       && !node.graphEmissionHandler && !this.isCompilerMessageBusRoute(node) && !this.functionHasDelegatecall
       && !this.blockEndsWithRevert(node.body) && !this.callBatchFrame && node.name !== '__construct'
-      && this.directConvention && this.compactCallRecords && !this.isLifecycleOrUnsafeEntry(node)
+      && this.directConvention && !this.isLifecycleOrUnsafeEntry(node)
       && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
   }
 

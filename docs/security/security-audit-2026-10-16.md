@@ -2204,7 +2204,15 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     putPair(5, 2, 9, 3), a side entry rewritten at a pool lane the run did not write is refused, and beside a
     `place` batch (one nested key in two orientations), a values entry rewritten at the alternate tuple lane the run
     did not write is refused; both honest batches settle. The writer's static claim names those lanes, so the pin
-    skips them and the route body holds the record. No R2 shape is reachable this way; the claims stay as they are.
+    skips them, and the route body's input census (emitVerifyChunkUtxoCount from
+    emitSortedBatchTransitionVerification) refuses the extra input there. That census counts each target's proof
+    witness, which the spender chooses. VM-confirmed at `72f489518`: with the unwritten lane's batch witnesses
+    forged into an active target over the victim's own node (proof, predOut -1, slot, next), the rewrite SETTLED at
+    the pool lane and at the alternate tuple lane; the alias lane and a forged proof alone are still refused. Fix
+    (`e991184a3`, by reading, NOT RUN): the route records each lane a sorted write statement of the run reaches, and
+    such a lane is claimed only by that record, so an unwritten lane is pinned whatever its witnesses say.
+    Residual: a lane whose record changes without its own write running (a predecessor relinked from another lane)
+    would be refused.
   - R-B, corrected (`2be6b2c9f`, `53c0fc1a8`). The LoopBook row (`dcbaea853`) was not a loop writer. A kernel
     compile unrolls `fill`'s constant-bound loop before admission (UnrollFixedBoundEntryLoop ahead of
     LowerVMapCounterLoops), so `fill` is a two-lane literal-key writer, and a diagnostic compile showed its claim

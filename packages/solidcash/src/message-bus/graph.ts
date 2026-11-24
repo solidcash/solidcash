@@ -1,6 +1,6 @@
 import {
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation,
+  MAX_MESSAGE_BUS_BLOB_BYTES, callConsumesResult, occurrenceBoundOf, occurrenceCountViolation,
 } from '@solidcash/utils';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import type {
@@ -1404,7 +1404,7 @@ export function bindConsumerCallsites(
       || callsite.functionName === row.functionName);
     if (candidates.length === 0) return undefined;
     const contract = (callsite: ExternalCallAbi): string =>
-      `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}|`
+      `${callConsumesResult(callsite)}|${(callsite.returnTypes ?? []).join(',')}|`
       + `${callsite.resultEncoding ?? 'legacy'}`;
     if (new Set(candidates.map(contract)).size > 1) {
       throw new Error(
@@ -2846,7 +2846,8 @@ export function planCompiledGraph(
         throw new Error(`messageBus: invocation ${child} has invalid framedsite value metadata`);
       }
       if (callValueEffect) boundValueBits[child] = CALL_OPTION_VALUE;
-      if (!callsite?.hasReturnValues) return;
+      // A void call reading its callee's void record consumes no result (callConsumesResult).
+      if (callsite === undefined || !callConsumesResult(callsite)) return;
       const produced = plannedBase[child].resultTypes;
       // A low-level call returns `(success, bytes)` even when the invoked method is void: the authenticated
       // result bytes are empty. This is the optional-return convention used by SafeERC20-style callers.

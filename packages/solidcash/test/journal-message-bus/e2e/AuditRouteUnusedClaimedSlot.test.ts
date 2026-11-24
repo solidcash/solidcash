@@ -971,3 +971,111 @@ describe('bound route without its verifier: a tuple lane a writer\'s run does no
     expect(state.route).not.toBe(true);
   });
 });
+
+interface RouteUnlocker {
+  readonly params: readonly unknown[];
+  readonly abiFunction: unknown;
+  readonly contract: {
+    createCompilerRouteUnlocker(abiFunction: unknown, selector: Uint8Array): (...params: unknown[]) => unknown;
+  };
+}
+
+interface LaneForgery {
+  readonly honest: ReturnType<typeof failures>;
+  readonly offset: number;
+  /** The unwritten lane's proof index names the victim, so the input census counts it. */
+  readonly proofOnly: Verdict;
+  /** The unwritten lane also passes as an active target over the victim's own node: predecessor -1, slot, next. */
+  readonly activeTarget: Verdict;
+}
+
+/**
+ * The victim rewritten at a lane `build`'s honest batch leaves to a pad, among `lanes`, with that lane's batch
+ * witnesses forged in the route's unlocking data, which the spender chooses.
+ */
+async function forgeUnwrittenLane(
+  provider: Provider, artifact: Artifact, bus: StatefulContract, categoryId: string,
+  build: () => Promise<TransactionBuilder>, lanes: readonly number[], collection: string,
+): Promise<LaneForgery> {
+  const vm = createVirtualMachineBch2026ForProvider(provider);
+  const honest = spendOf(await build());
+  const victim = await victimOf(provider, artifact, bus, categoryId, honest, collection);
+  const master = masterOf(honest, victim);
+  const at = lanes.map((offset) => master + offset).find((index) => padIndex(honest, index, index + 1) === index);
+  expect(at, 'the batch leaves a lane to a pad').toBeDefined();
+  const route = artifact.messageBus!.route;
+  const slot = route.blockLayout!.slots.find((candidate) => candidate.kind === 'entry'
+    && candidate.offset === at! - master)!.slotIndex!;
+  const commitment = victim.source.token!.nft!.commitment;
+  const forge = async (witnesses: Record<string, unknown>): Promise<Verdict> => {
+    const builder = await build();
+    const index = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
+      && (input.unlocker as unknown as { abiFunction: { name: string } }).abiFunction.name === route.name);
+    expect(index, 'the batch spends its route').toBeGreaterThanOrEqual(0);
+    const unlocker = builder.inputs[index].unlocker as unknown as RouteUnlocker;
+    const params = [...unlocker.params];
+    for (const [name, value] of Object.entries(witnesses)) {
+      const position = route.inputs.findIndex((input) => input.name === name);
+      expect(position, `the route takes '${name}'`).toBeGreaterThanOrEqual(0);
+      params[position] = value;
+    }
+    (builder.inputs[index] as { unlocker: unknown }).unlocker = unlocker.contract.createCompilerRouteUnlocker(
+      unlocker.abiFunction, hexToBin(route.selector!),
+    )(...params);
+    const rebuilt = spendOf(builder);
+    expect(masterOf(rebuilt, victim), 'the rebuilt batch keeps its master').toBe(master);
+    expect(padIndex(rebuilt, at!, at! + 1), 'the rebuilt batch keeps the pad').toBe(at);
+    return verdict(vm, placed(rebuilt, victim, master, at!, rewritten(victim)), master);
+  };
+  const proof = { [`__internal__vmapBatchProof_${slot}`]: BigInt(at! - master) };
+  return {
+    honest: failures(vm, honest),
+    offset: at! - master,
+    proofOnly: await forge(proof),
+    activeTarget: await forge({
+      ...proof,
+      [`__internal__vmapBatchPredOut_${slot}`]: -1n,
+      [`__internal__vmapBatchSlot_${slot}`]: commitment.slice(0, 32),
+      [`__internal__vmapBatchNext_${slot}`]: commitment.slice(32, 64),
+    }),
+  };
+}
+
+describe('bound route without its verifier: an unwritten lane whose batch witnesses the spender forges', () => {
+  const state: Record<'alias' | 'pool' | 'tuple', LaneForgery | undefined> = {
+    alias: undefined, pool: undefined, tuple: undefined,
+  };
+
+  beforeAll(async () => {
+    for (const shape of ['alias', 'pool'] as const) {
+      const provider = createMessageBusCapstoneTestProvider();
+      const artifact = compileString(PAIR, { ...KERNEL, messageBusHandlers: ['put', 'putPair'] });
+      const lanes = shape === 'alias'
+        ? artifact.messageBus!.route.blockLayout!.slots.filter((slot) => slot.kind === 'entry').map((slot) => slot.offset)
+        : alternativeLanes(artifact, 'putPair');
+      const { bus, categoryId } = await connect(provider, artifact, {});
+      for (const [key, value] of [[5n, 7n], [9n, 1n], [7n, 4n]]) await bus.call.put(key, value).send();
+      const args = shape === 'alias' ? [5n, 2n, 5n, 3n] : [5n, 2n, 9n, 3n];
+      state[shape] = await forgeUnwrittenLane(provider, artifact, bus, categoryId,
+        () => bus.batch([{ function: 'putPair', args }]).build(), lanes, 'side');
+    }
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(TUPLE, { ...KERNEL, messageBusHandlers: ['place', 'placeReversed'] });
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    for (const [outer, nested, value] of [[1n, 2n, 11n], [3n, 4n, 7n]]) {
+      await bus.call.place(outer, nested, value).send();
+    }
+    state.tuple = await forgeUnwrittenLane(provider, artifact, bus, categoryId,
+      () => bus.batch([{ function: 'place', args: [1n, 2n, 12n] }]).build(), alternativeLanes(artifact, 'place'),
+      'values');
+    console.log('unwritten lane with forged batch witnesses', state);
+  }, 600_000);
+
+  for (const shape of ['alias', 'pool', 'tuple'] as const) {
+    it(`refuses the ${shape} lane's rewrite with its proof or its whole target forged`, () => {
+      expect(state[shape]!.honest).toEqual([]);
+      expect(state[shape]!.proofOnly).not.toBe(true);
+      expect(state[shape]!.activeTarget).not.toBe(true);
+    });
+  }
+});

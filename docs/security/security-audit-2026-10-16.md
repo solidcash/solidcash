@@ -2187,15 +2187,24 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   - R3 (step D, `88fc180e9`): a low-level `call` or `staticcall` to another address claims nothing of its own, as a
     typed call (step B): its callee runs as its own row in its own block, a call back is another row with its own
     claims, and a value it carries leaves the tokenless satoshi container, which the pin never parks.
-  - Residual (any lock in the band): a row that reads or writes a sorted collection with a chunkable value (bytes,
-    string, an array or a struct with one), or writes dynamic state where some state the route writes keeps no chunk
-    lock of its own (not `isDynamic`). A value chunk's lock is built from the entry's slot and its value version's
-    root (`valueChunkSignature(collection, slot, root)`), so no compile-time list names it; admitting chunks by lock
-    would take the run's own list of consumed chunk locks. Such a row leaves every own-category record in the band
-    unpinned when it runs.
-  - Residual (lanes, R2): a writer's row claims all of its own lanes, alternatives and alias priors included, even
-    where a run writes one; a written collection it projects no lane of keeps every lane of it. Narrowing that needs
-    the lanes a run writes, recorded at run time.
+  - Residual (any lock in the band, R-A; VM-confirmed at `f7a108792`): a row that reads or writes a sorted collection
+    with a chunkable value (bytes, string, an array or a struct with one), or writes dynamic state where some state
+    the route writes keeps no chunk lock of its own, claims the whole trailing band. Beside a standalone batch
+    writing a long note over a long note, a `side` entry rewritten at an unused trailing slot settled
+    (`AuditRouteUnusedClaimedSlot.test.ts`, NoteBook; the row asserts the hole). A value chunk's lock is built from
+    the entry's slot and its value's root, so only the run can name it. The route's value-chunk lock list
+    (`__internal__valueChunkOutputBase`) holds only the new chunks' locks: an update appends the old value's lock
+    only where the direct walk or a direct delegate's pin reads the list (outsideLayoutWalkReadsChunkLockList, which
+    leaves compiler-owned routes out, since the route's output scan reads the same list). Admitting the band by that
+    list refused the honest update at its master (one run, reverted). Closing it needs the run's spent old-chunk
+    locks: appended to that list on routes too (the route's output scan then also admits an output at a chunk lock
+    the run spent, as the direct output check admits the lock of any mutable input), or kept in a second band list.
+    By reading, two of its cases need no band claim at all: a packed state is one data record, the route's own, and
+    a token container holds no own-category record.
+  - Residual (lanes, R2, R-B): a writer's row claims all of its own lanes, alternatives and alias priors included,
+    even where a run writes one; a written collection it projects no lane of keeps every lane of it. Narrowing that
+    needs the lanes a run writes, recorded at run time where an entry write resolves its lane (the fixed lane, an
+    alternative or a runtime alias prior) and threaded back to the route as a hidden handler context. Not started.
   - R-C, stage 1 (`a57d01f69`, holes VM-confirmed at `88bfbcd87` and `a83db74a4`): a kernel-safe native assembly
     row and an unsafe(2) row each claimed the whole block; beside a standalone batch of either, a `side` entry
     rewritten at the block's pad settled. Kernel-safe native assembly is a closed computation and unsafe(2) writes

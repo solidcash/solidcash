@@ -150,7 +150,7 @@ import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
 import {
   hasRecordSoundArms, isMessageBusCompile, isMessageBusRouteFunction, isRecordMaster, publishesCallRecord,
 } from './RecordSound.js';
-import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
+import { KERNEL_JOURNAL_ACCESS_STREAMS, VMAP_RUNTIME_INPUT_COUNT_PREFIX } from './LowerVMapCounterLoops.js';
 import { blockEndsWithReturn, nestedStatementLists } from './EarlyReturnTransformation.js';
 import { isReturnFlag } from './ConfineReturns.js';
 import {
@@ -21315,9 +21315,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Return event (output-only). A void entry that attests a universal void call record (approach B) also pins a
     // record carrier at its `__internal__returnOutputIdx`, so it reserves the same output-only slot; the SDK funds
-    // it through the existing returnEvent funder and compacts it when the run is standalone (witness -1).
+    // it through the existing returnEvent funder and compacts it when the run is standalone (witness -1). A void
+    // entry running a runtime mapping loop reserves none: the SDK keeps the slot whenever the loop lays out a
+    // predecessor or an entry after the complete block, while the covenant steps its chunk reads down whenever no
+    // record runs, so the slot cannot sit inside that block. Its record's index is witnessed; the SDK places it past.
+    const runsMappingLoop = node.parameters
+      .some((parameter) => parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX));
     if (node.returnTypes.length > 0
-      || (node.returnTypes.length === 0
+      || (node.returnTypes.length === 0 && !runsMappingLoop
         && node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx'))) {
       slots.push({ kind: 'returnEvent', offset: offset++ });
       // The message-bus route commits its complete result vector here. Atomic graph derivation extracts each

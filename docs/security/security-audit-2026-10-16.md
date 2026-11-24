@@ -2208,11 +2208,13 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     emitSortedBatchTransitionVerification) refuses the extra input there. That census counts each target's proof
     witness, which the spender chooses. VM-confirmed at `72f489518`: with the unwritten lane's batch witnesses
     forged into an active target over the victim's own node (proof, predOut -1, slot, next), the rewrite SETTLED at
-    the pool lane and at the alternate tuple lane; the alias lane and a forged proof alone are still refused. Fix
-    (`e991184a3`, by reading, NOT RUN): the route records each lane a sorted write statement of the run reaches, and
-    such a lane is claimed only by that record, so an unwritten lane is pinned whatever its witnesses say.
-    Residual: a lane whose record changes without its own write running (a predecessor relinked from another lane)
-    would be refused.
+    the pool lane and at the alternate tuple lane; the alias lane and a forged proof alone are still refused. Fixed
+    (`e991184a3`, completed in the next commit): the route records each lane a sorted write statement of the run
+    reaches, and such a lane is claimed only by that record, so an unwritten lane is pinned whatever its witnesses
+    say. The pool and alternate tuple lanes are route-owned (the handler projection maps to the lowest matching
+    slot), so the route's own mask had claimed them on every run; they now take the record too. Run once:
+    AuditRouteUnusedClaimedSlot 36/36, both forged targets refused, every honest batch settles. Residual: a lane
+    whose record changes without its own write running (a predecessor relinked from another lane) would be refused.
   - R-B, corrected (`2be6b2c9f`, `53c0fc1a8`). The LoopBook row (`dcbaea853`) was not a loop writer. A kernel
     compile unrolls `fill`'s constant-bound loop before admission (UnrollFixedBoundEntryLoop ahead of
     LowerVMapCounterLoops), so `fill` is a two-lane literal-key writer, and a diagnostic compile showed its claim

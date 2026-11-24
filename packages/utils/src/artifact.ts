@@ -1760,6 +1760,13 @@ export interface ExternalCallAbi {
   addressSource?: ArgSource; // SDK-resolvable origin for computed/local target addresses
   // Foreign fn-ptr call: the SDK fills a framed master-index witness.
   fnPtrCall?: boolean;
+  /**
+   * A call whose method its caller picks when it runs (a function pointer) and whose caller reads its callee's record
+   * by the digest of that method's selector, its reader and its arguments: the record names the caller's input. A
+   * void one reads the void record (`hasReturnValues`). Absent: the caller checks no digest of such a call, and its
+   * callee's record names no reader.
+   */
+  runtimeRecordSelector?: boolean;
   // A regular direct call needs a selector witness unless the callee has only one method.
   needsSelectorVerification?: boolean;
   requiredDataNftIndices: number[];

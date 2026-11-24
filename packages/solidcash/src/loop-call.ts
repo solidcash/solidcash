@@ -1,6 +1,8 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, encodePushdataValue } from '@solidcash/utils';
-import { CALL_RECORD_DIGEST_BYTES, callRecordCommitment } from './stateful/call-record.js';
+import {
+  CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, encodePushdataValue, type AbiFunction, type Artifact,
+} from '@solidcash/utils';
+import { CALL_RECORD_DIGEST_BYTES, callRecordCommitment, callRecordDigest } from './stateful/call-record.js';
 import type { Contract } from './Contract.js';
 import { TransactionBuilder } from './TransactionBuilder.js';
 import type { NetworkProvider } from './network/index.js';
@@ -34,6 +36,8 @@ export interface CoSpendableContract {
   lockingBytecode: string;
   unlock: Record<string, (...args: any[]) => Unlocker>;
   getUtxos: () => Promise<Utxo[]>;
+  /** Its artifact, for a typed loop's per-turn record (deriveTypedLoopCoSpends). */
+  artifact?: Pick<Artifact, 'abi' | 'structs' | 'enums'>;
 }
 
 /** A known-contract call to co-spend in an opaque loop dispatch. */
@@ -227,13 +231,18 @@ export function buildOpaqueLoopCallTransaction(opts: BuildOpaqueLoopCallOptions)
   return tb;
 }
 
-/** Per-target co-spend for a TYPED (void) loop dispatch. No return-event (the call returns nothing), so unlike
- * OpaqueLoopCoSpend there is no returnData and the target UTXO need not carry a minting NFT. */
+/** Per-target co-spend for a TYPED (void) loop dispatch. */
 export interface TypedLoopCoSpend {
   /** The UTXO to co-spend; preserved (bytecode + category) at the aligned output. */
   utxo: Utxo;
   /** Unlocker for the co-spent UTXO. */
   unlocker: Unlocker;
+  /**
+   * The void record its callee settles for this iteration's call, `digest || 01`, naming input 0, the caller, as its
+   * reader. A caller that reads each iteration's record (its ABI takes `__internal__externalReturnOutputIdx`) finds it
+   * at output 1 + n + i, on a carrier of the category of this UTXO's token; deriveTypedLoopCoSpends fills it.
+   */
+  record?: Uint8Array;
 }
 
 /** Fully-resolved options for buildTypedLoopCallTransaction (no lookups - everything present). */
@@ -271,12 +280,13 @@ export interface BuildTypedLoopCallOptions {
 /**
  * Build a transaction for a stateless TYPED per-iteration loop-dispatch function `IFoo(targets[i]).m(..)` (or a
  * computed target `IFoo(pairFor(.., path[i], ..)).m(..)` whose target the compiler rewrote to a synthesized
- * `__internal__loopTargets<n>[i]` witness param). Unlike the opaque MultiCall builder there is no return-event:
- * the covenant only verifies each co-spent input's bytecode == the claimed target (identity) and preserves it.
+ * `__internal__loopTargets<n>[i]` witness param). The covenant verifies each co-spent input's bytecode == the claimed
+ * target (identity) and preserves it, and a caller naming the call's arguments reads each iteration's void record:
  *
  *   input 0      caller (preserved)          output 0        preserved caller (bytecode + value + token)
  *   inputs 1..N  co-spent targets            outputs 1..N    preserved targets (bytecode + category + value)
- *   input  N+1   funder                      output N+1      change
+ *   input  N+1   funder                      outputs N+1..2N each target's void record (cospends[i].record)
+ *                                            last            change
  *
  * Fills the synthetic params by name: `__internal__externalCallInputBase` = 1, and any
  * `__internal__loopTargets<n>` = the encoded `targets` witness the SDK derived for the computed target (the
@@ -303,6 +313,7 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
   const fullArgs: unknown[] = [];
   let userCursor = 0;
   let viewCursor = 0;
+  let readsRecords = false;
   for (const inp of abiFn.inputs) {
     if (inp.name === '__internal__externalCallInputBase') fullArgs.push(1n);
     else if (inp.name.startsWith('__internal__extcallAnchorIdx')) fullArgs.push(-1n);
@@ -310,7 +321,12 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
     // Every target in this builder co-spends exactly one input (the target itself), so consecutive iterations are
     // one input apart. A callee that also co-spends state data NFTs is composed through the stateful builder.
     else if (inp.name.startsWith('__internal__loopTargetStride')) fullArgs.push(1n);
-    else if (inp.name.startsWith('__internal__viewReturn')) {
+    else if (inp.name.startsWith('__internal__externalReturnOutputIdx')) {
+      // Each iteration reads its callee's void record at this base plus its index, after the preserved targets.
+      if (readsRecords) throw new Error(`buildTypedLoopCallTransaction: a second record base '${inp.name}'`);
+      readsRecords = true;
+      fullArgs.push(BigInt(1 + n));
+    } else if (inp.name.startsWith('__internal__viewReturn')) {
       const vals = opts.viewReturns?.[viewCursor];
       viewCursor += 1;
       if (!vals) throw new Error(`buildTypedLoopCallTransaction: missing viewReturns[${viewCursor - 1}] for '${inp.name}'`);
@@ -338,15 +354,29 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
   tb.addInput(funder.utxo, funder.unlocker);
 
   // output 0: preserved caller; outputs 1..N: preserved targets (covenant pins bytecode + category; value mirrored
-  // so the tx balances). No return events (typed void).
+  // so the tx balances); then each target's void record when the caller reads them.
   tb.addOutput({ to: contract.address, amount: callerUtxo.satoshis, token: callerUtxo.token });
   for (let i = 0; i < n; i += 1) {
     tb.addOutput({ to: targets[i], amount: cospends[i].utxo.satoshis, token: cospends[i].utxo.token });
   }
+  const recordDust = 1000n;
+  if (readsRecords) {
+    cospends.forEach(({ utxo, record }, i) => {
+      const category = utxo.token?.category;
+      if (record === undefined || category === undefined) {
+        throw new Error(`buildTypedLoopCallTransaction: target ${i} needs its void record and a token of its `
+          + 'category: the caller reads each iteration\'s record');
+      }
+      tb.addOutput({
+        to: OP_TRUE, amount: recordDust,
+        token: { category, amount: 0n, nft: { capability: 'none', commitment: binToHex(record) } },
+      });
+    });
+  }
 
   const targetSats = cospends.reduce((s, c) => s + c.utxo.satoshis, 0n);
   const inTotal = callerUtxo.satoshis + targetSats + funder.utxo.satoshis;
-  const outTotal = callerUtxo.satoshis + targetSats;
+  const outTotal = callerUtxo.satoshis + targetSats + (readsRecords ? recordDust * BigInt(n) : 0n);
   const change = inTotal - outTotal - fee;
   if (change > 546n) tb.addOutput({ to: changeLbc, amount: change });
   return tb;
@@ -357,8 +387,9 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
  * autoderivation the SDK does for a computed-target loop `IFoo(pairFor(.., path[i], ..)).m()` once the caller
  * registers the route's target contracts: each target's locking bytecode (fills the synthesized
  * `__internal__loopTargets<n>` witness), its UTXO (provider lookup), and its unlocker (artifact + chosen fn/args).
- * Unlike deriveOpaqueLoopCoSpends there is no return-event, so no minting NFT is required - any co-spendable UTXO
- * works, and the caller's fn/args must PRESERVE the target (the covenant pins its master bytecode + category).
+ * The caller's fn/args must PRESERVE the target (the covenant pins its master bytecode + category). A target whose
+ * function settles a record (its artifact's entry takes `__internal__returnOutputIdx`) settles it at output 1 + n + i,
+ * naming input 0, the caller, as its reader, and its cospend carries that record for buildTypedLoopCallTransaction.
  * Feed the result straight into buildTypedLoopCallTransaction (targets + cospends).
  */
 export async function deriveTypedLoopCoSpends(
@@ -366,14 +397,45 @@ export async function deriveTypedLoopCoSpends(
 ): Promise<{ targets: Uint8Array[]; cospends: TypedLoopCoSpend[] }> {
   const targets: Uint8Array[] = [];
   const cospends: TypedLoopCoSpend[] = [];
-  for (const call of calls) {
+  for (const [i, call] of calls.entries()) {
     const utxos = await call.contract.getUtxos();
     const utxo = utxos.find((u) => u.token) ?? utxos[0];
     if (!utxo) throw new Error(`deriveTypedLoopCoSpends: no co-spendable UTXO at ${call.contract.address}`);
     const unlockFactory = call.contract.unlock[call.fn];
     if (!unlockFactory) throw new Error(`deriveTypedLoopCoSpends: no unlocker '${call.fn}' on the target`);
     targets.push(hexToBin(call.contract.lockingBytecode));
-    cospends.push({ utxo, unlocker: unlockFactory(...call.args) });
+    const frame = typedLoopRecordFrame(call, 1 + calls.length + i);
+    if (frame === undefined) {
+      cospends.push({ utxo, unlocker: unlockFactory(...call.args) });
+      continue;
+    }
+    const artifact = call.contract.artifact!;
+    const digest = callRecordDigest(frame.fn, frame.args as never, {
+      structs: artifact.structs, enums: artifact.enums,
+    }, 0, 0);
+    if (digest === undefined) throw new Error(`deriveTypedLoopCoSpends: '${call.fn}' has no record digest`);
+    cospends.push({ utxo, unlocker: unlockFactory(...frame.args), record: Uint8Array.of(...digest, 0x01) });
   }
   return { targets, cospends };
+}
+
+/**
+ * The complete frame of a loop target's call when its function settles a record: its arguments, an empty genesis call,
+ * reader 0 (the caller) and the record's output. undefined for a function that settles none.
+ */
+function typedLoopRecordFrame(
+  call: OpaqueLoopContractCall, recordOutput: number,
+): { fn: AbiFunction; args: unknown[] } | undefined {
+  const visible = (fn: AbiFunction): number => fn.inputs.filter((input) => !input.name.startsWith('__internal__')).length;
+  const fn = call.contract.artifact?.abi.find((entry) => entry.name === call.fn && visible(entry) === call.args.length);
+  if (fn === undefined || !fn.inputs.some((input) => input.name === '__internal__returnOutputIdx')) return undefined;
+  let cursor = 0;
+  const args = fn.inputs.map((input) => {
+    if (!input.name.startsWith('__internal__')) return call.args[cursor++];
+    if (input.name === '__internal__genesisCall') return new Uint8Array();
+    if (input.name === CALL_RECORD_READER_INPUT) return 0n;
+    if (input.name === '__internal__returnOutputIdx') return BigInt(recordOutput);
+    throw new Error(`deriveTypedLoopCoSpends: '${call.fn}' takes '${input.name}', which a loop co-spend cannot fill`);
+  });
+  return { fn, args };
 }

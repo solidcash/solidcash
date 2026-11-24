@@ -1412,9 +1412,26 @@ needs VM evidence, `rejectedWith` has no source fallback).
 - One run shared by two callers where no digest is checked (2026-11-23, residual of the one-reader fix in D50
   Fixed). A call naming fewer arguments than its method declares digests the ones it leaves as caller witnesses in a
   direct compile (S3a, "Security completion (2026-11-23)"), but in a framed, message-bus, kernel-participant or
-  deployer compile, or in a loop over targets, it still reads its record with no digest check; an opaque read checks
-  none, and neither does a call whose method is chosen at run time (a function pointer, a selector
-  table: its callee's reader is pinned to none), so two callers making such a call can still share one run. A kernel
+  deployer compile, or in a loop over targets, it still reads its record with no digest check. A void call naming its
+  arguments in a loop over the targets a parameter holds, or a witness for computed ones, is FIXED 2026-11-24 (P-3):
+  each iteration reads its callee's void record at the loop's record base plus its index, by the digest of the method,
+  the reader and that iteration's arguments, as a returning one already did (VM-confirmed before: two loopers merged
+  into one transaction each took one payment; CallRecordSingleReader.e2e.test.ts). The stateless loop helpers lay
+  those records out (solidcash/loop-call). An explicit message-bus build's loop entry does not read them yet. Neither
+  does a
+  table of function pointers or selectors (its callee's reader is pinned to none), so two callers making such a call
+  can still share one run. A raw `address.call` (visible or opaque payload, its result read or not) is FIXED
+  2026-11-24 (P-2): no digest over an opaque payload is sound (the caller cannot name its arguments, and the callee
+  never sees the payload), so the caller pins its callee's reader witness, the second push after an optional selector
+  push, to its own input index; one run then answers one caller (VM-confirmed before: two pullers merged into one
+  transaction each took one withdrawal, for a visible returning, a visible void and an opaque payload;
+  CallRecordSingleReader.e2e.test.ts). Residuals: a raw call through a proxy or CREATE anchor (anchor witness >= 0)
+  is left to that route; a callee entry without the record and reader witnesses at those pushes fails closed; an
+  interface-cast low-level call, `IFoo(a).call(data)`, synthesizes its result and is not pinned (its address-parameter
+  form crashes the compiler, on master too). A single call through a function pointer is FIXED 2026-11-24
+  (P-1): its caller digests the record with the selector the pointer holds, its reader and its arguments, and a void
+  one reads the void record, so the run answers one caller and the method and arguments it names (VM-confirmed before:
+  two callers merged into one transaction each took one withdrawal; CallRecordSingleReader.e2e.test.ts). A kernel
   direct participant's records name no reader: the V5 opaque-call proof profile admits no hidden witness beside the
   call index (`cfbbc4a77`), so its entries take none, and a caller naming its reader refuses its records and the edges
   it reads by name (fail closed; as a caller the participant names its reader). The SDK's reader binding for a call a

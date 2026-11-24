@@ -4280,6 +4280,7 @@ function buildFunctionAbiMetadata(
           ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
           ...(ec.addressSource && { addressSource: ec.addressSource }),
           ...(ec.fnPtrCall && { fnPtrCall: true }),
+          ...(ec.runtimeRecordSelector && { runtimeRecordSelector: true }),
           // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
           // witness selector; call/staticcall/delegatecall inject no selector param.
           ...(!ec.callMode && { needsSelectorVerification: !!ec.needsSelectorVerification }),

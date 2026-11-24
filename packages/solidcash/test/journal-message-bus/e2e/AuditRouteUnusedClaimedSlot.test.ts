@@ -708,3 +708,45 @@ describe('bound route without its verifier: a trailing slot beside a chunkable m
     expect(state.route).not.toBe(true);
   });
 });
+
+describe('bound route without its verifier: a writer lane its run leaves to a pad', () => {
+  let state: {
+    honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict; lanes: number[]; offset: number;
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(PAIR, { ...KERNEL, messageBusHandlers: ['put', 'putPair'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'putPair']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    const lanes = layout.slots.filter((slot) => slot.kind === 'entry').map((slot) => slot.offset);
+    expect(lanes.length, 'putPair holds two side lanes').toBeGreaterThanOrEqual(2);
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    // Both writes name side[5]: the second aliases the first lane, so the other lane is left to a pad.
+    const pair = spendOf(await bus.batch([{ function: 'putPair', args: [5n, 2n, 5n, 3n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, pair);
+    const master = masterOf(pair, victim);
+    const spare = lanes.map((offset) => master + offset).find((at) => padIndex(pair, at, at + 1) === at);
+    expect(spare, 'the aliased batch leaves a lane to a pad').toBeDefined();
+    const rewrite = placed(pair, victim, master, spare!, rewritten(victim));
+    state = {
+      honest: failures(vm, pair), covenant: verdict(vm, rewrite, spare!), route: verdict(vm, rewrite, master),
+      lanes, offset: spare! - master,
+    };
+    console.log('writer lane left to a pad', state);
+  }, 300_000);
+
+  it('settles the aliased batch, and the entry covenant accepts the victim spend', () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+  });
+
+  // The writer claims the lane its run left to a pad, but the route still holds the record there: the run that
+  // first checked this refused it in the route body, outside the C3 pin (ip 10830).
+  it('refuses a side entry rewritten at the lane the run left to a pad', () => {
+    expect(state.route).not.toBe(true);
+  });
+});

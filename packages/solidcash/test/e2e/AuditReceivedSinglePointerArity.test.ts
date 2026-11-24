@@ -265,8 +265,12 @@ describe('a single received pointer whose runtime selector names a wider method 
     expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
 
-  it('lets the caller past on the constant alone, so no spender-chosen value reaches the method', async () => {
+  it('refuses the wider method at the caller even on the constant, so no value reaches the method', async () => {
+    // The caller reads its single pointer's record (P-1), so the pin of the callee's pushes leaves the record witness
+    // and the reader free and requires both: an unsafe method taking neither has one push too few, whatever stands in
+    // its extra parameter. The constant -1 that once passed the pin is refused at the caller as well.
     const r = await spliced(-1n);
-    expect(r.error ?? '').not.toMatch(/input index 0/);
+    expect(r.success).toBe(false);
+    expect(r.error ?? '').toMatch(/input index 0/);
   }, 300_000);
 });

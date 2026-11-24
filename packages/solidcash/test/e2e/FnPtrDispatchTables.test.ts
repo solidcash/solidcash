@@ -98,9 +98,14 @@ describe('fixed-method table', () => {
       await tableSc.register(hexToBin(c1.addr), alicePub, sig()).send();
 
       // Only the first element's callee is provided. Every element's call is part of the broadcast, so the table
-      // refuses rather than advance its own state without the second call.
+      // refuses rather than advance its own state without the second call. Each call reads its element's record,
+      // carried by that element's callee (a14bfa724), so the second call is refused where it runs: the input its callee
+      // belongs at holds no token, and taking 32 bytes of its empty category fails.
       tableSc.registerExternalArray('ICounter', [c0.sc]);
-      await expect(tableSc.fireAll(3n, alicePub, sig()).send()).rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
+      await expect(tableSc.fireAll(3n, alicePub, sig()).send()).rejects.toThrow(new RegExp(
+        '^messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid '
+          + 'index\\. stack item length: 0; requested split index: 32\\.$',
+      ));
       expect((await tableSc.getState()).bumps).toBe(2n);
       expect((await c0.sc.getState()).counter).toBe(7n);
       expect((await c1.sc.getState()).counter).toBe(11n);

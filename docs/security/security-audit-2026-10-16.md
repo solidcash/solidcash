@@ -2187,20 +2187,15 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   - R3 (step D, `88fc180e9`): a low-level `call` or `staticcall` to another address claims nothing of its own, as a
     typed call (step B): its callee runs as its own row in its own block, a call back is another row with its own
     claims, and a value it carries leaves the tokenless satoshi container, which the pin never parks.
-  - Residual (any lock in the band, R-A; VM-confirmed at `f7a108792`): a row that reads or writes a sorted collection
-    with a chunkable value (bytes, string, an array or a struct with one), or writes dynamic state where some state
-    the route writes keeps no chunk lock of its own, claims the whole trailing band. Beside a standalone batch
-    writing a long note over a long note, a `side` entry rewritten at an unused trailing slot settled
-    (`AuditRouteUnusedClaimedSlot.test.ts`, NoteBook; the row asserts the hole). A value chunk's lock is built from
-    the entry's slot and its value's root, so only the run can name it. The route's value-chunk lock list
-    (`__internal__valueChunkOutputBase`) holds only the new chunks' locks: an update appends the old value's lock
-    only where the direct walk or a direct delegate's pin reads the list (outsideLayoutWalkReadsChunkLockList, which
-    leaves compiler-owned routes out, since the route's output scan reads the same list). Admitting the band by that
-    list refused the honest update at its master (one run, reverted). Closing it needs the run's spent old-chunk
-    locks: appended to that list on routes too (the route's output scan then also admits an output at a chunk lock
-    the run spent, as the direct output check admits the lock of any mutable input), or kept in a second band list.
-    By reading, two of its cases need no band claim at all: a packed state is one data record, the route's own, and
-    a token container holds no own-category record.
+  - R-A (fixed in the commit after `a127fc2b4`, hole VM-confirmed at `f7a108792`): a row touching a sorted collection
+    with a chunkable value, or writing a state with no chunk lock of its own, claimed the whole trailing band; beside
+    a long note written over a long note, a `side` entry rewritten at an unused trailing slot settled. The route now
+    admits a band input only where its lock is in the run's value-chunk lock list, which is cleared at entry and
+    filled only by write sites that ran: the new value's chunk locks and, now on routes too, the old value's (an
+    update in either upsert shape, a delete). The route's output scan already admits a spent chunk's lock as a
+    mutable input's lock, so listing it admits no other output. A packed state is one data record, the route's own,
+    and a token container holds no own-category record, so neither needs a band claim. No row claims the band as a
+    whole. Test: NoteBook in `AuditRouteUnusedClaimedSlot.test.ts` (rewrite refused, the honest write settles).
   - Residual (lanes, R2, R-B): a writer's row claims all of its own lanes, alternatives and alias priors included,
     even where a run writes one; a written collection it projects no lane of keeps every lane of it. Narrowing that
     needs the lanes a run writes, recorded at run time where an entry write resolves its lane (the fixed lane, an

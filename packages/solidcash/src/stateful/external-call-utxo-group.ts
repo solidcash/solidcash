@@ -491,6 +491,16 @@ export function voidRecordUnread(
     && callee?.inputs.some((input) => input.name === '__internal__returnOutputIdx') === true;
 }
 
+/**
+ * Whether a callee entry settles fix B's universal void record, `digest || 01`, for a caller that reads one: a void
+ * entry taking `__internal__returnOutputIdx` (calleePinsNoRecord names the others).
+ */
+export function settlesUniversalVoidRecord(
+  entry: { inputs: readonly { name: string }[]; outputs?: readonly unknown[] },
+): boolean {
+  return (entry.outputs?.length ?? 0) === 0 && entry.inputs.some((input) => input.name === '__internal__returnOutputIdx');
+}
+
 /** A callee's inputs no output mirrors: the old chunks its write consumes and its loop entries. */
 export function calleeConsumedInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
   return [...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo), ...calleeLoopEntryInputs(group)];

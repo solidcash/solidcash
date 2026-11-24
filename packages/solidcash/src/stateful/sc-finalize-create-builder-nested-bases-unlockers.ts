@@ -10,7 +10,9 @@ import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { callNamesNoReader } from './call-record.js';
 import { isPoolInfoInput } from '../oracle/pool/reader.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import { CALL_ARGUMENT_WITNESS, leftCallArgumentWitness } from './call-record.js';
+import {
+  CALL_ARGUMENT_LIST, CALL_ARGUMENT_WITNESS, leftCallArgumentList, leftCallArgumentWitness,
+} from './call-record.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import { directCallBatchUnlocker } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -443,6 +445,14 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         const child = slot < 0 ? undefined : calleeGroupForSlot(slot);
         const value = child === undefined ? undefined
           : leftCallArgumentWitness(externalCallUtxoGroups[child], Number(position));
+        if (value !== undefined) bFinalArgs.push(value);
+      } else if (CALL_ARGUMENT_LIST.test(paramName)) {
+        // The same for a call this callee makes once per turn of a loop: its child groups of that callsite, in order.
+        const [, callsite, position] = CALL_ARGUMENT_LIST.exec(paramName)!;
+        const turns = getChildGroupIndices()
+          .filter((index) => groupMetas[index].ecSlot.callsiteId === Number(callsite))
+          .map((index) => externalCallUtxoGroups[index]);
+        const value = turns.length === 0 ? undefined : leftCallArgumentList(turns, Number(position));
         if (value !== undefined) bFinalArgs.push(value);
       } else if (paramName.startsWith('__internal__externalCallSelector')) {
         // Resolve selector for child group's target function. An ordinary frame takes the callee of the slot's

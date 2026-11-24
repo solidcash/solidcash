@@ -6,6 +6,7 @@ import {
   Contract, SignatureTemplate, TransactionBuilder,
 } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
+import { trivialCallee } from '../trivial-callee.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 // Minimal isolation of the inline loop-indexed external dispatch (the MultiCall covenant): a stateless
@@ -220,5 +221,66 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     ) as TransactionBuilder;
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);
+  });
+});
+
+// The same loop through `call`: no digest binds an iteration's record, so each iteration's callee run answers this
+// caller alone by the reader it names, the second push after an optional selector (its record witness, then the reader
+// witness), which must be the caller's input. A stand-in target pushes its record output and that reader, and drops
+// both.
+const CALL_SRC = `
+pragma solidcash >=0.8.0;
+contract MiniCall() {
+    function run(address[] targets, bytes[] data) {
+        uint total = 0;
+        for (uint i = 0; i < targets.length; i++) {
+            bool ok, bytes r = targets[i].call(data[i]);
+            require(ok);
+            total = total + r.length;
+        }
+        require(total >= 0);
+    }
+}`;
+
+describe('inline loop dispatch through call binds each callee run to its caller', () => {
+  /** The callees at inputs 1 and 2 run for the readers `readers`; their records are outputs 3 and 4. */
+  async function buildCallTx(readers: [bigint, bigint]): Promise<TransactionBuilder> {
+    const art = compileString(CALL_SRC);
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const callees = readers.map((reader, at) => trivialCallee([reader, BigInt(3 + at)]));
+    const tokens = [C0, C1].map((category) => ({
+      category, amount: 0n, nft: { capability: 'minting' as const, commitment: '' },
+    }));
+    const feeFunder = await createFeeFunder(provider, 10000n);
+    const tb = new TransactionBuilder({ provider });
+    tb.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, contract.unlock.run(
+      encodePushdataValue(callees.map((callee) => callee.lock), 'address[]'),
+      encodePushdataValue([new Uint8Array([]), new Uint8Array([])], 'bytes[]'), 1n, 3n, new Uint8Array(),
+    ) as never);
+    callees.forEach((callee, at) => tb.addInput({
+      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1200n, token: tokens[at],
+    }, callee.unlocker));
+    tb.addInput(feeFunder.utxo, feeFunder.unlocker);
+    tb.addOutput({ to: contract.address, amount: 100000n });
+    callees.forEach((callee, at) => tb.addOutput({ to: callee.lock, amount: 1200n, token: tokens[at] }));
+    for (const [category, result] of [[C0, 'deadbeef'], [C1, 'cafe']] as const) {
+      tb.addOutput({
+        to: OP_TRUE, amount: 1000n,
+        token: { category, amount: 0n, nft: { capability: 'none', commitment: `${'00'.repeat(31)}01${result}` } },
+      });
+    }
+    tb.addOutput({ to: OP_TRUE, amount: 7000n });
+    return tb;
+  }
+
+  it('runs each iteration on a callee whose run names this caller', async () => {
+    verifyTransaction(await buildCallTx([0n, 0n]));
+  });
+
+  it('refuses an iteration whose callee run names another input as its reader', async () => {
+    // The second callee's run answered input 1: a second caller there could read it as well.
+    const tb = await buildCallTx([0n, 1n]);
+    expect(() => verifyTransaction(tb)).toThrow();
   });
 });

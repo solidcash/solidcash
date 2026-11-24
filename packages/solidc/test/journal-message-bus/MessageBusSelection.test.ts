@@ -286,7 +286,9 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     const save = artifact.abi.find((entry) => entry.name === 'save');
-    expect(save?.inputs.map((input) => input.type)).toEqual(['address', 'bytes4']);
+    // The pointer is one address + bytes4 pair; the void entry's record witnesses are hidden inputs beside it.
+    const visible = (input: { name: string }): boolean => !input.name.startsWith('__internal__');
+    expect(save?.inputs.filter(visible).map((input) => input.type)).toEqual(['address', 'bytes4']);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'save')?.selector)
       .toBe(save?.selector);
     expect(artifact.abi.find((entry) => entry.name === 'run')?.externalCalls).toEqual(
@@ -303,7 +305,7 @@ describe('message-bus compilation selection', () => {
       }`, { evmCompat: true, suppressWarnings: true });
     expect(unlowered.compiler.options?.messageBus).toBe(true);
     expect(unlowered.messageBus?.available).toBe(true);
-    expect(unlowered.abi.find((entry) => entry.name === 'retain')?.inputs)
+    expect(unlowered.abi.find((entry) => entry.name === 'retain')?.inputs.filter(visible))
       .toEqual([expect.objectContaining({ type: 'function()external' })]);
   });
 

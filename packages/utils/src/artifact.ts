@@ -1760,10 +1760,22 @@ export interface ExternalCallAbi {
   addressSource?: ArgSource; // SDK-resolvable origin for computed/local target addresses
   // Foreign fn-ptr call: the SDK fills a framed master-index witness.
   fnPtrCall?: boolean;
+  /**
+   * A call whose method its caller picks when it runs (a function pointer) and whose caller reads its callee's record
+   * by the digest of that method's selector, its reader and its arguments: the record names the caller's input. A
+   * void one reads the void record (`hasReturnValues`). Absent: the caller checks no digest of such a call, and its
+   * callee's record names no reader.
+   */
+  runtimeRecordSelector?: boolean;
   // A regular direct call needs a selector witness unless the callee has only one method.
   needsSelectorVerification?: boolean;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
+  /**
+   * A void call whose caller reads its callee's void record (`digest || 01`), which binds the method and arguments its
+   * callee ran. It has `hasReturnValues` for that record and consumes no result (callConsumesResult).
+   */
+  voidCallRecord?: boolean;
   returnTypes?: readonly string[];
   /** Tuple-wide result representation expected by this compiler-authored callsite. */
   resultEncoding?: ExternalResultEncoding;
@@ -2068,6 +2080,11 @@ export function assertDeployabilityCertificate(
  * input than its caller's is one no caller accepts.
  */
 export const CALL_RECORD_READER_INPUT = '__internal__callRecordReader';
+
+/** Whether a published call consumes its callee's result: a void call that reads a void record does not. */
+export function callConsumesResult(call: Pick<ExternalCallAbi, 'hasReturnValues' | 'voidCallRecord'>): boolean {
+  return call.hasReturnValues === true && call.voidCallRecord !== true;
+}
 
 /** The reader a record names when no contract reads it. Its two bytes, `01 80`, are no input index's. */
 export const CALL_RECORD_NO_READER = -1n;

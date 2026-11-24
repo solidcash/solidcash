@@ -6245,10 +6245,27 @@ function padMessageBusCloneCalls(ast: Ast): void {
   const byName = new Map(callees.map((fn) => [fn.name, fn]));
   const route = ast.contract.functions.find((fn) => fn.messageBusRoute);
   const routeParams = new Set((route?.parameters ?? []).map((parameter) => parameter.name));
+  // A call to one of several overloads names it by its visible arguments, declared with that overload's parameter
+  // types: it takes that overload's witnesses and keeps the overload as its resolution, since overload resolution
+  // matches visible signatures only and the padded call has more arguments than any. A call naming none keeps the
+  // last overload's witnesses, which overload resolution then refuses.
+  const calleeOf = (node: FunctionCallNode): { callee?: FunctionDefinitionNode; resolved?: FunctionDefinitionNode } => {
+    const overloads = callees.filter((fn) => fn.name === node.identifier.name);
+    const last = byName.get(node.identifier.name);
+    if (overloads.length < 2) return { callee: last };
+    const spelled = node.parameters.map((argument) => (argument instanceof IdentifierNode
+      ? argument.definition?.type : argument.type)?.toString());
+    const named = overloads.filter((fn) => {
+      const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+      return visible.length === spelled.length
+        && visible.every((parameter, index) => parameter.type.toString() === spelled[index]);
+    });
+    return named.length === 1 ? { callee: named[0], resolved: named[0] } : { callee: last };
+  };
   const padCall = (
     node: FunctionCallNode, callerParams: Set<string>, requireOwnedPassThrough: boolean,
   ): void => {
-    const callee = byName.get(node.identifier.name);
+    const { callee, resolved } = calleeOf(node);
     if (!callee || node.parameters.length >= callee.parameters.length) return;
     const extras = callee.parameters.slice(node.parameters.length);
     if (requireOwnedPassThrough
@@ -6261,6 +6278,7 @@ function padMessageBusCloneCalls(ast: Ast): void {
       arg.type = parameter.type;
       node.parameters.push(arg);
     }
+    if (resolved) node.resolvedFunction = resolved;
   };
   walkInvocationAst(ast.contract, (node) => {
     if (!(node instanceof FunctionCallNode)) return;

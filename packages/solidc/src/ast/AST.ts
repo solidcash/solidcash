@@ -3315,6 +3315,11 @@ export interface ExternalCallSlot {
   callOrdinal?: ExternalCallOrdinalAbi;
   /** A grouped void call: it reads its frame's record, `digest || 0x01`, through a return slot of its own. */
   voidCallRecord?: boolean;
+  /**
+   * A call whose method its caller picks when it runs (a function pointer): its record's digest takes the selector
+   * `runtimeSelector` evaluates where the call runs, in place of `callRecordSelector`.
+   */
+  runtimeRecordSelector?: boolean;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;

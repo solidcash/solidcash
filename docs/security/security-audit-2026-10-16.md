@@ -1412,9 +1412,38 @@ needs VM evidence, `rejectedWith` has no source fallback).
 - One run shared by two callers where no digest is checked (2026-11-23, residual of the one-reader fix in D50
   Fixed). A call naming fewer arguments than its method declares digests the ones it leaves as caller witnesses in a
   direct compile (S3a, "Security completion (2026-11-23)"), but in a framed, message-bus, kernel-participant or
-  deployer compile, or in a loop over targets, it still reads its record with no digest check; an opaque read checks
-  none, and neither does a call whose method is chosen at run time (a function pointer, a selector
-  table: its callee's reader is pinned to none), so two callers making such a call can still share one run. A kernel
+  deployer compile, or in a loop over targets, it still reads its record with no digest check. A void call naming its
+  arguments in a loop over the targets a parameter holds, or a witness for computed ones, is FIXED 2026-11-24 (P-3):
+  each iteration reads its callee's void record at the loop's record base plus its index, by the digest of the method,
+  the reader and that iteration's arguments, as a returning one already did (VM-confirmed before: two loopers merged
+  into one transaction each took one payment; CallRecordSingleReader.e2e.test.ts). The stateless loop helpers lay
+  those records out (solidcash/loop-call). A message-bus build's direct entry reads them as well, since its void calls
+  read records (16ef0a5d6); a looped call the bus binds on its route leaves its direct entry refusing it, and the
+  route binds its rows (RouteOnlyLoopArrayDirectSpend.test.ts). A void call naming its arguments on the elements of a
+  state array (an address array, a struct array's address field, or a table of pointers to one method) is FIXED
+  2026-11-24 the same way: each turn reads its callee's void record at the return base plus the element it claims,
+  carried by that callee (VM-confirmed before: two keepers merged into one transaction each took one payment;
+  CallRecordSingleReader.e2e.test.ts). Such a call leaving arguments to its callee still reads none, as its arguments
+  take no witness list there. A table whose elements name their own methods (received pointers, or pointers to several
+  methods) reads none either (its callee's reader is pinned to none), so two callers making such a call can still
+  share one run. A raw `address.call` (visible or opaque payload, its result read or not) is FIXED
+  2026-11-24 (P-2): no digest over an opaque payload is sound (the caller cannot name its arguments, and the callee
+  never sees the payload), so the caller pins its callee's reader witness, the second push after an optional selector
+  push, to its own input index; one run then answers one caller (VM-confirmed before: two pullers merged into one
+  transaction each took one withdrawal, for a visible returning, a visible void and an opaque payload;
+  CallRecordSingleReader.e2e.test.ts). A raw call in a loop over targets (`targets[i].call(data[i])`) pins each
+  iteration's callee reader the same way, FIXED 2026-11-24 (P-3); its double credit is unconfirmed, as the SDK's
+  honest build of such a loop in a stateful caller already fails its preflight at the caller (pre-existing), and the
+  pin is VM-run on hand-built spends (InlineLoopDispatch.test.ts). The stateless opaque builders (solidcash/loop-call)
+  derive co-spends that name no reader, so a `call` loop built through them now fails closed; a `staticcall` loop is
+  not pinned, as a read-only run shared by two callers changes nothing either takes.
+  Residuals: a raw call through a proxy or CREATE anchor (anchor witness >= 0)
+  is left to that route; a callee entry without the record and reader witnesses at those pushes fails closed; an
+  interface-cast low-level call, `IFoo(a).call(data)`, synthesizes its result and is not pinned (its address-parameter
+  form crashes the compiler, on master too). A single call through a function pointer is FIXED 2026-11-24
+  (P-1): its caller digests the record with the selector the pointer holds, its reader and its arguments, and a void
+  one reads the void record, so the run answers one caller and the method and arguments it names (VM-confirmed before:
+  two callers merged into one transaction each took one withdrawal; CallRecordSingleReader.e2e.test.ts). A kernel
   direct participant's records name no reader: the V5 opaque-call proof profile admits no hidden witness beside the
   call index (`cfbbc4a77`), so its entries take none, and a caller naming its reader refuses its records and the edges
   it reads by name (fail closed; as a caller the participant names its reader). The SDK's reader binding for a call a
@@ -1512,6 +1541,14 @@ Design: `docs/wip/call-records/DESIGN.md`.
   refused and settle the same way. A call an implementation makes behind the default proxy or a fallback proxy names
   the implementation's input, and settles (rows in the same file). Residuals: Open, "One run shared by two callers
   where no digest is checked".
+- **A call on a state-array element read a record its callee did not pin** (found and fixed 2026-11-24, branch
+  `sec-digest-holes`). A returning call in a loop over a state array (`IVault(ts[i]).withdraw(x)`) read its record at
+  the return base plus the element by its digest, but nothing bound the record's carrier to the callee: the checks
+  after the body pass over loop calls, and the body made none. A spender could lay a record of a category it mints,
+  with the call's digest and any result. VM-confirmed before: a keeper credited 1,000 for a vault's withdraw(30),
+  its outputs those of an honest pullAll(1000) (CallRecordSingleReader.e2e.test.ts). Each turn now checks its record's
+  carrier as a counted call does: the category of the element's callee input, no capability, no fungible amount, an
+  `OP_TRUE` lock and at most 1,200 satoshis.
 
 ### Open, or bound otherwise
 
@@ -2362,3 +2399,31 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   so a handler that takes no parameters and writes dynamic state ran without the base check: by DYN-1's mechanism, a
   spender passing a base below -1 could skip its chunk verification. The branch now runs the same statements as the
   others (found through the KernelMultiDynamicShrink regression above; not separately VM-tested on the old code).
+- **A void entry whose native assembly takes its own call digest** (by reading, 2026-11-24; `sec-argsleft-holes`).
+  16ef0a5d6 gave a message-bus build's direct void entries the void record's carrier witness. Such an entry takes
+  `__internal__callDigest` at entry and nothing is pushed above it before the body when the entry makes no call, loop
+  or edge, so native assembly that reads values it did not push (`assembly { OP_DUP }`, `OP_DROP`, `OP_1 OP_LSHIFT
+  OP_DROP` first in the body) renames it in the code generator's stack model, and the record's settlement fails to
+  compile (`StackVariableUnavailableError: '__internal__callDigest'`): KERNEL_OPAQUE_EFFECT's fixtures stopped
+  compiling. In a message-bus build such an entry now takes no carrier witness (`bodyHasUnsafeNativeAssembly`, assembly
+  the kernel cannot isolate), as before 16ef0a5d6; a direct build keeps master's behaviour.
+  - A message-bus caller reading that entry's void record (a void call through a single-function interface) is
+    refused at run time: no carrier stands at the output its record read names.
+  - Open, pre-existing (direct builds, master): the same rename. A direct build's void entry settles the universal void
+    record from the same digest, so `function touch() public { assembly { OP_DUP } x = 1; require(true); }` in a
+    stateful direct build fails to compile with that error, as does a non-isolated `OP_ROLL` anywhere in the body,
+    which renames every value the model tracks. A returning entry takes its digest the same way in any build. Fail
+    closed (a compile error); not changed.
+  - Forging the absent record (FIXED 2026-11-24, `sec-argsleft-holes`; VM-confirmed before,
+    `RecordlessRunCarrier.e2e.test.ts`). The carrier is an NFT of the callee's category (no capability, an `OP_TRUE`
+    lock, `digest || 01`, which the caller's read checks). A run that settled no record counted its category's
+    carriers only where the contract had an entry returning values or the multi-call entry (`emitCallRecordCount`),
+    and otherwise its edges alone. A void-only, event-less vault's storage reader (`sync`) run beside a caller of the
+    vault's `deposit(3)`: refused at the caller with no carrier; ACCEPTED with a carrier minted in the run; ACCEPTED
+    with an earlier honest carrier moved there (its lock is `OP_TRUE`). Every run that settles no record of its own
+    now counts its category's carriers, records and edges, to the edges it pinned (`emitRecordlessCarrierCount`): the
+    full branch, and split, merge and tiered `unsafe` runs; a delegate's own category and a proxy whose delegate did
+    not run (`emitOwnCarrierCount`); a message-bus route, to its result carrier when it returns
+    (`emitRouteCarrierCount`, in place of its output scan's edge refusal). Both rows are now refused at the vault.
+    `unsafe(0)` keeps no covenant, by design. The vault: 1,624 -> 1,598 B (its count reuses the record count's
+    subroutine).

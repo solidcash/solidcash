@@ -10,7 +10,7 @@ import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
-import { trivialCallee } from '../trivial-callee.js';
+import { standInToken, standInVoidRecord, trivialCallee } from '../trivial-callee.js';
 import { alicePkh } from '../fixture/vars.js';
 
 // A loop's per-iteration callee is read from a witness, since a loop-local receiver cannot reach the epilogue. Only a
@@ -36,8 +36,12 @@ const swapSelector = (): Uint8Array => {
   return hexToBin(pair.abi.find((entry) => entry.name === 'swap')!.selector!);
 };
 
-// Two trivial callees that run `swap(1)`: the contract's own, and one more `OP_NOP` the spender might pick.
+// Two trivial callees that run `swap(1)`: the contract's own, and one more `OP_NOP` the spender might pick. Each loop
+// iteration reads its callee's void record at the loop's record base plus its index, which the spends lay out for the
+// stand-ins (standInVoidRecord) on carriers of the category whose minting token each callee coin holds.
 const CALLEE = trivialCallee([1n], swapSelector());
+/** The void record a callee settles for `swap(1)` read by input 0. */
+const swapRecord = (): ReturnType<typeof standInVoidRecord> => standInVoidRecord(swapSelector(), [1n]);
 const TARGET = CALLEE.lock;
 const OTHER = Uint8Array.of(...CALLEE.lock, 0x61);
 
@@ -56,23 +60,26 @@ async function spend(callee: Uint8Array): Promise<TransactionBuilder> {
   const funder = await createFeeFunder(provider, 10000n);
   const builder = new TransactionBuilder({ provider });
   builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n },
-    contract.unlock.go(1n, encodePushdataValue([callee, callee], 'address[]'), 1n, swapSelector()) as never);
-  builder.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1500n }, unlocker(callee));
-  builder.addInput({ txid: '02'.repeat(32), vout: 0, satoshis: 1500n }, unlocker(callee));
+    contract.unlock.go(1n, encodePushdataValue([callee, callee], 'address[]'), 1n, 4n) as never);
+  builder.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1500n, token: standInToken() }, unlocker(callee));
+  builder.addInput({ txid: '02'.repeat(32), vout: 0, satoshis: 1500n, token: standInToken() }, unlocker(callee));
   builder.addInput(funder.utxo, funder.unlocker);
   builder.addOutput({ to: contract.address, amount: 100000n });
-  builder.addOutput({ to: callee, amount: 1500n });
-  builder.addOutput({ to: callee, amount: 1500n });
-  builder.addOutput({ to: OP_TRUE, amount: 7000n });
+  builder.addOutput({ to: callee, amount: 1500n, token: standInToken() });
+  builder.addOutput({ to: callee, amount: 1500n, token: standInToken() });
+  builder.addOutput({ to: OP_TRUE, amount: 5000n });
+  builder.addOutput(swapRecord());
+  builder.addOutput(swapRecord());
   return builder;
 }
 
 describe('loop targets a contract fixes', () => {
   it('binds a loop-local receiver over the contract\'s own addresses to them', async () => {
     const go = compileString(FIXED).abi.find((entry) => entry.name === 'go')!;
+    // The loop's call reads each iteration's void record at the record base, in place of its selector check.
     expect(go.inputs.map((input) => input.name)).toEqual([
       '__internal__externalCallInputBase', '__internal__loopTargets0', '__internal__loopTargetStride0',
-      '__internal__externalCallSelector',
+      '__internal__externalReturnOutputIdx',
     ]);
     verifyTransaction(await spend(TARGET));
     // The same spend through callees the spender picked: the witness no longer equals the contract's address.
@@ -94,19 +101,21 @@ contract Fixed(address a, address b) {
     const run = async (source: string, second: Uint8Array): Promise<TransactionBuilder> => {
       const provider = createTestProvider();
       const contract = new Contract(compileString(source), [TARGET, TARGET], { provider });
-      const selector = swapSelector();
       const funder = await createFeeFunder(provider, 10000n);
       const builder = new TransactionBuilder({ provider });
+      // The first loop's record at output 5, the second loop's two at outputs 6 and 7.
       builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n },
         contract.unlock.go(encodePushdataValue([TARGET], 'address[]'), 1n, encodePushdataValue([TARGET], 'address[]'), 1n,
-          encodePushdataValue([second, second], 'address[]'), 1n, selector, selector) as never);
+          encodePushdataValue([second, second], 'address[]'), 1n, 5n, 6n) as never);
       const locks = [TARGET, second, second];
-      locks.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n },
-        unlocker(lock)));
+      locks.forEach((lock, at) => builder.addInput({
+        txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, token: standInToken(),
+      }, unlocker(lock)));
       builder.addInput(funder.utxo, funder.unlocker);
       builder.addOutput({ to: contract.address, amount: 100000n });
-      for (const lock of locks) builder.addOutput({ to: lock, amount: 1500n });
-      builder.addOutput({ to: OP_TRUE, amount: 7000n });
+      for (const lock of locks) builder.addOutput({ to: lock, amount: 1500n, token: standInToken() });
+      builder.addOutput({ to: OP_TRUE, amount: 4000n });
+      locks.forEach(() => builder.addOutput(swapRecord()));
       return builder;
     };
     for (const first of ['pair', 'other']) {
@@ -159,27 +168,32 @@ describe('loop targets held by locals and written arrays', () => {
     const provider = createTestProvider();
     const artifact = compileString(source);
     const contract = new Contract(artifact, ctor, { provider });
-    const selector = swapSelector();
     const go = artifact.abi.find((entry) => entry.name === 'go')!;
+    // Loop k reads its iterations' records from its own base, after the change, in loop order.
+    const recordBase = (loop: number): bigint => BigInt(callees.length + 2
+      + witnesses.slice(0, loop).reduce((count, targets) => count + targets.length, 0));
     const args = go.inputs.map((input) => {
       if (input.name === 'chosen') return encodePushdataValue(chosen, 'address[]');
       if (input.name === '__internal__externalCallInputBase') return 1n;
       const witness = /^__internal__loopTargets(\d+)$/.exec(input.name);
       if (witness) return encodePushdataValue(witnesses[Number(witness[1])]!, 'address[]');
       if (input.name.startsWith('__internal__loopTargetStride')) return 1n;
-      if (input.name.startsWith('__internal__externalCallSelector')) return selector;
+      const records = /^__internal__externalReturnOutputIdx(\d*)$/.exec(input.name);
+      if (records) return recordBase(Number(records[1] || 0));
       if (input.name in extra) return extra[input.name];
       throw new Error(`no value for ${input.name}`);
     });
     const funder = await createFeeFunder(provider, 10000n);
     const builder = new TransactionBuilder({ provider });
     builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, (contract.unlock.go as any)(...args));
-    callees.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n },
-      unlocker(lock)));
+    callees.forEach((lock, at) => builder.addInput({
+      txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n, token: standInToken(),
+    }, unlocker(lock)));
     builder.addInput(funder.utxo, funder.unlocker);
     builder.addOutput({ to: contract.address, amount: 100000n });
-    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n });
-    builder.addOutput({ to: OP_TRUE, amount: 7000n });
+    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n, token: standInToken() });
+    builder.addOutput({ to: OP_TRUE, amount: 5000n });
+    witnesses.flat().forEach(() => builder.addOutput(swapRecord()));
     return builder;
   }
 
@@ -313,20 +327,21 @@ contract Gate(address trusted) {
       if (input.name === '__internal__externalCallInputBase') return 1n;
       if (input.name === '__internal__loopTargets0') return encodePushdataValue([witness], 'address[]');
       if (input.name === '__internal__loopTargetStride0') return 1n;
-      if (input.name === '__internal__externalCallSelector') return swapSelector();
+      if (input.name === '__internal__externalReturnOutputIdx') return 3n;
       throw new Error(`no value for ${input.name}`);
     });
     const funder = await createFeeFunder(provider, 10000n);
     const builder = new TransactionBuilder({ provider });
     builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, (contract.unlock.go as any)(...args));
-    builder.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1500n }, {
+    builder.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1500n, token: standInToken() }, {
       generateLockingBytecode: (): Uint8Array => callee.lock,
       generateUnlockingBytecode: (): Uint8Array => callee.unlocking,
     } as never);
     builder.addInput(funder.utxo, funder.unlocker);
     builder.addOutput({ to: contract.address, amount: 100000n });
-    builder.addOutput({ to: callee.lock, amount: 1500n });
-    builder.addOutput({ to: encodeLockingBytecodeP2pkh(alicePkh), amount: 7000n });
+    builder.addOutput({ to: callee.lock, amount: 1500n, token: standInToken() });
+    builder.addOutput({ to: encodeLockingBytecodeP2pkh(alicePkh), amount: 6000n });
+    builder.addOutput(swapRecord());
     return builder;
   }
 
@@ -342,7 +357,7 @@ contract Gate(address trusted) {
     const go = compileString(GATE).abi.find((entry) => entry.name === 'go')!;
     expect(go.inputs.map((input) => input.name)).toEqual([
       'chosen', '__internal__externalCallInputBase', '__internal__loopTargets0', '__internal__loopTargetStride0',
-      '__internal__externalCallSelector',
+      '__internal__externalReturnOutputIdx',
     ]);
     expect(productionVerdict(await spendGate(TRUSTED.lock, TRUSTED.lock, TRUSTED))).toBe(true);
     // The trusted element passes the registry check while the witness and the co-spend name another contract.

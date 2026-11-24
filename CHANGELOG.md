@@ -67,6 +67,13 @@
   Some row kinds still claim
   their whole block or band (lifecycle rows, function pointers, inline assembly, delegatecall, calls to
   address(this), chunked values): see the security ledger.
+- A contract run that settled no call record of its own refused a record carrier of its category beside it only when
+  the contract had an entry returning values (in 0.51.0 and 0.51.1). In a contract whose entries are all void, a
+  spender could run an entry that settles no record, such as one reading another contract's storage, beside a caller
+  of another of its methods, and place a carrier with the digest that caller reads, minted in the run or moved from an
+  earlier call: the caller credited a method its callee never ran. Every run that settles no record now counts the
+  carriers of its category, records and edges, to the edges it pinned; a message-bus route counts them to its own
+  result carrier. Stateful contracts compile to new bytes: recompile and redeploy them.
 
 ### Fixed
 
@@ -172,6 +179,11 @@
   with such a local compile to new, smaller bytes: in the repository corpus 2 of 352 contracts (by 272 and 56 bytes),
   in the external Solidity corpus 1 of 644 files (by 108). `scalarReplaceStructLocals: false` keeps the old
   lowering.
+- `solidcash/loop-call`: a typed loop whose call names its arguments now reads each target's void record, so
+  `buildTypedLoopCallTransaction` fills the record base and lays out one record per target at output 1 + n + i from
+  `cospends[i].record`, on a carrier of the target's token category, and `deriveTypedLoopCoSpends` builds each target's
+  frame with the record's output and reader 0 (the caller) and fills that record from the target's artifact. A target
+  co-spend for such a loop needs a token.
 
 ## 0.51.1
 

@@ -1808,6 +1808,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           this.at(new IdentifierNode(name), body),
         ), body);
         write.fromModifier = entry.sourceScope;
+        write.journalDirtyBit = { word: `${COLLECTION_CACHE_DIRTY_MASK}_${Math.floor(index / 256)}`, bit: index % 256 };
         const flush = this.at(new BranchNode(
           this.cacheMaskIsSet(COLLECTION_CACHE_DIRTY_MASK, index, body),
           this.at(new BlockNode([write]), body),

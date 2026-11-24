@@ -2268,6 +2268,16 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     slot), so the route's own mask had claimed them on every run; they now take the record too. Run once:
     AuditRouteUnusedClaimedSlot 36/36, both forged targets refused, every honest batch settles. Residual: a lane
     whose record changes without its own write running (a predecessor relinked from another lane) would be refused.
+    Made cheaper (`d5b957613`): the record's marks put AtomicMessageBusCompose's pooled callee input at 10,026 B,
+    over the 10,000 B limit. A journal flush writes only where its dirty bit is set, and the bits are only ever set,
+    so a lane the route writes through flushes is claimed by those bits; the record stays for any other route write.
+    Every route write in that callee and in AuditRouteUnusedClaimedSlot is a flush. Callee 8,799 -> 8,752 B, so the
+    input is about 9,979 B; routes with no sorted write compile byte-identical to the series base. No source shape
+    gives a route a write outside a flush, so the record path is removed (`5420c99c5`): route synthesis journals every
+    routed handler (events as graph handlers, kernel field and nested-array writes as whole entries, keys as
+    parameters), and a legacy field writer is not routed. 36 diagnostic compiles (kernel, legacy and graph: field,
+    array, pair, overloaded, early-returning, event, helper, delete and branch writers) found none. Such a write is
+    now a compile-time refusal by name, and the dirty bit is the only claim on a written lane.
   - R-B, corrected (`2be6b2c9f`, `53c0fc1a8`). The LoopBook row (`dcbaea853`) was not a loop writer. A kernel
     compile unrolls `fill`'s constant-bound loop before admission (UnrollFixedBoundEntryLoop ahead of
     LowerVMapCounterLoops), so `fill` is a two-lane literal-key writer, and a diagnostic compile showed its claim

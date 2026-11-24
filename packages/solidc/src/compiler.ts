@@ -7093,9 +7093,11 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
  * cache, read-only chunks lead the band 1:1), which is what the pin requires, so a read claims none of them.
  * A typed external call claims nothing of its own: the callee runs as its own row, in its own block, and a call back
  * into this contract is another row with its own claims. A low-level `call` or `staticcall` to another address runs
- * its callee the same way; a value it carries moves out of the tokenless satoshi container, no record. A delegatecall
- * runs other code on this contract's records, and a low-level call to `address(this)` lowers to an internal call in
- * the same row (LowerSelfLowLevelCalls, which may run after route synthesis), so both claim all.
+ * its callee the same way; a value it carries moves out of the tokenless satoshi container, no record. Kernel-safe
+ * native assembly is a closed computation (NativeAssemblyKernelSafety) and an unsafe(2) row writes no state, entry,
+ * container, transfer or event (SymbolTableTraversal), so neither claims anything of its own. A shape whose writes
+ * the route cannot bound (routeUnboundedWriteShape) or an unknown effect is refused admission, so reaching it here
+ * is an invariant violation. A lifecycle row claims all.
  */
 /** `address(this)` or `payable(this)` as the AstBuilder writes it: a cast to address over the input's own lock. */
 function isSelfAddressExpression(node: unknown): boolean {
@@ -7105,11 +7107,40 @@ function isSelfAddressExpression(node: unknown): boolean {
     && inner.expression instanceof NullaryOpNode && inner.expression.operator === NullaryOperator.INPUT_INDEX;
 }
 
+/**
+ * The source reason a route refuses a handler whose closure, free functions included, holds a shape whose record
+ * writes it cannot bound: assembly other than kernel-safe native assembly, a delegatecall in any spelling, or a
+ * low-level call to `address(this)` that LowerSelfLowLevelCalls left as one (a lowered one is an internal call, whose
+ * writes the footprint already has). Undefined where there is none.
+ */
+function routeUnboundedWriteShape(closure: readonly FunctionDefinitionNode[], kernel: boolean): string | undefined {
+  let found: string | undefined;
+  const visit = (node: unknown): void => {
+    if (found !== undefined) return;
+    if (node instanceof AssemblyStatementNode) {
+      if (!kernel || !isKernelSafeNativeAssembly(node)) found = 'opaque-assembly-effects-callManifest-ineligible';
+    } else if (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode) {
+      if (node.callMode === 'delegatecall') found = 'atomic-delegate-context-unpreservable';
+      else if (isSelfAddressExpression(node.targetExpression)) found = 'self-low-level-call-route-not-enabled';
+    } else if (node instanceof MethodCallNode && node.methodName === 'delegatecall') {
+      found = 'atomic-delegate-context-unpreservable';
+    } else if (node instanceof MethodCallNode && ['call', 'staticcall'].includes(node.methodName)
+      && isSelfAddressExpression(node.object)) {
+      found = 'self-low-level-call-route-not-enabled';
+    }
+  };
+  for (const member of closure) walkInvocationAst(member.body, visit);
+  return found;
+}
+
 function messageBusRecordClaim(
   footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
   collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, lifecycle: boolean,
+  kernel: boolean,
 ): { all: boolean; band?: 'any' | string[]; bandCollections?: string[]; collections: string[] } {
-  const reach = { all: lifecycle || footprint.unknown, anyBand: false, sweeps: false };
+  const unbounded = footprint.unknown ? 'unresolved-or-effectful-handler' : routeUnboundedWriteShape(closure, kernel);
+  if (unbounded !== undefined) throw new Error(`message-bus record claims: an admitted handler holds ${unbounded}`);
+  const reach = { all: lifecycle, anyBand: false, sweeps: false };
   const bandStates = new Set<string>();
   const bandCollections = new Set<string>();
   const touched = new Set<string>();
@@ -7132,13 +7163,6 @@ function messageBusRecordClaim(
   const visit = (node: unknown): void => {
     if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
       || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) reach.sweeps = true;
-    else if (node instanceof AssemblyStatementNode) reach.all = true;
-    else if (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode) {
-      if (node.callMode === 'delegatecall' || isSelfAddressExpression(node.targetExpression)) reach.all = true;
-    } else if (node instanceof MethodCallNode && ['call', 'staticcall', 'delegatecall'].includes(node.methodName)
-      && (node.methodName === 'delegatecall' || isSelfAddressExpression(node.object))) {
-      reach.all = true;
-    }
   };
   for (const member of closure) walkInvocationAst(member.body, visit);
   if (reach.sweeps) for (const name of touched) bandCollections.add(name);
@@ -10227,6 +10251,11 @@ function synthesizeMessageBusRoute(
     } else if (!reason && graphTailCallEligible && hasUnsupportedSortedRuntimeLoopWrite(fn)) {
       reason = 'verified-mapping-runtime-loop-write-unsupported';
     }
+    // The walks above see the contract's own functions only; a free function's body runs in the row too.
+    if (!reason) {
+      reason = routeUnboundedWriteShape([...collectNamedFunctionClosure(fn, signatureClosureByName)]
+        .flatMap((name) => signatureClosureByName.get(name) ?? []), compilerOptions.messageBusKernel === true);
+    }
     let deploys = false;
     if (compilerOptions.messageBusKernel === true) {
       let deploySites = 0;
@@ -12708,16 +12737,18 @@ function synthesizeMessageBusRoute(
   // A counter of an earlier synthesis attempt names nothing in this route.
   for (const fn of contract.functions) fn.messageBusRecordClaimFlag = undefined;
   if (recordClaimRoute) {
+    // The only unsafe row admitted is unsafe(2), which writes nothing.
     const claimAllModifiers = new Set([
       FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.SPLIT,
-      FunctionModifier.MERGE, FunctionModifier.UNSAFE,
+      FunctionModifier.MERGE,
     ]);
     for (const fn of eligible) {
       const closure = [...collectNamedFunctionClosure(fn, signatureClosureByName)]
         .flatMap((name) => signatureClosureByName.get(name) ?? []);
       const claim = messageBusRecordClaim(eligibleFootprint(fn), closure, collectionByName, dynamicState,
         kernelLifecycleHandlers.has(fn) || kernelDeploymentHandlers.has(fn)
-          || fn.modifiers.some((modifier) => claimAllModifiers.has(modifier)));
+          || fn.modifiers.some((modifier) => claimAllModifiers.has(modifier)),
+        compilerOptions.messageBusKernel === true);
       if (!claim.all && claim.band === undefined && claim.bandCollections === undefined
         && claim.collections.length === 0) continue;
       // The handler's own lanes are stamped on this claim once the route's physical entry slots are assigned.

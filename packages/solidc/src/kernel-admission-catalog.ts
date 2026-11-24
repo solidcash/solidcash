@@ -43,6 +43,7 @@ export function normalizeKernelAdmissionReason(reason: string): KernelCatalogCod
     || reason === 'unresolved-or-effectful-handler'
     || reason === 'batched-handler-forward-call-not-enabled'
     || reason === 'return-consuming-low-level-call-route-not-enabled'
+    || reason === 'self-low-level-call-route-not-enabled'
   ) {
     return 'KERNEL_OPAQUE_EFFECT';
   }

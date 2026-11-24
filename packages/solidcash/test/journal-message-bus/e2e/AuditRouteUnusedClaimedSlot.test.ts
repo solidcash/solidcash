@@ -21,6 +21,10 @@
  *
  * - A row with a loop or a delete claims, in the trailing band, only its collections' entry locks: beside a `drop`
  *   batch, an entry of `other`, which `drop` does not touch, rewritten at an unused trailing slot is refused.
+ * - A row that writes no record claims none: beside a kernel-safe native assembly row or an unsafe(2) row, a `side`
+ *   entry rewritten at the block's pad is refused (both once claimed the whole block). A handler whose free function
+ *   holds assembly that is not kernel-safe is no longer admitted (it was, and claimed the whole block); it runs as
+ *   a direct call.
  *
  * Each attack row asserts the route's refusal; the entry covenant alone accepts every one of these spends.
  */
@@ -625,46 +629,27 @@ describe('bound route without its verifier: a block slot beside a row that write
       .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
   }, 300_000);
 
-  // The hole: a native assembly row claims the whole block.
-  it('accepts a side entry rewritten in the block beside a native assembly row', () => {
-    expect(state.route.probe).toBe(true);
+  // Kernel-safe native assembly is a closed computation (NativeAssemblyKernelSafety): the row claims nothing.
+  it('refuses a side entry rewritten in the block beside a native assembly row', () => {
+    expect(state.route.probe).not.toBe(true);
   });
 
-  // The hole: an unsafe(2) row claims the whole block.
-  it('accepts a side entry rewritten in the block beside an unsafe(2) row', () => {
-    expect(state.route.idle).toBe(true);
+  // unsafe(2) writes no state, entry, container, transfer or event (SymbolTableTraversal): the row claims nothing.
+  it('refuses a side entry rewritten in the block beside an unsafe(2) row', () => {
+    expect(state.route.idle).not.toBe(true);
   });
 });
 
 
-describe('bound route without its verifier: a block slot beside a row whose free function holds opaque assembly', () => {
-  let state: { honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict };
-
-  beforeAll(async () => {
+describe('a handler whose free function holds opaque assembly', () => {
+  // Its writes are unbounded, so it is not admitted by name; its row would have claimed the whole block.
+  it('is refused admission and runs as a direct call', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(STIR, { ...KERNEL, messageBusHandlers: ['put', 'churn'] });
-    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'churn']));
-    const layout = artifact.messageBus!.route.blockLayout!;
-    const { bus, categoryId } = await connect(provider, artifact, {});
-    await bus.call.put(5n, 7n).send();
-    await bus.call.put(9n, 1n).send();
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    const churn = spendOf(await bus.batch([{ function: 'churn', args: [1n] }]).build());
-    const victim = await victimOf(provider, artifact, bus, categoryId, churn);
-    const master = masterOf(churn, victim);
-    const at = padIndex(churn, master + 1, master + layout.blockSize);
-    expect(at, 'the churn batch leaves a pad in its block').toBeDefined();
-    const rewrite = placed(churn, victim, master, at!, rewritten(victim));
-    state = { honest: failures(vm, churn), covenant: verdict(vm, rewrite, at!), route: verdict(vm, rewrite, master) };
-    console.log('block slot beside a free function with opaque assembly', {
-      blockSize: layout.blockSize, offset: at! - master, covenant: state.covenant, route: state.route,
-    });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put']));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'churn'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_OPAQUE_EFFECT' });
+    const { bus } = await connect(provider, artifact, {});
+    await expect(bus.call.churn(1n).send()).resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
   }, 300_000);
-
-  // The hole: the admission walk reads the contract's functions only, and the row claims the whole block.
-  it('admits churn and accepts a side entry rewritten in the block beside it', () => {
-    expect(state.honest).toEqual([]);
-    expect(state.covenant).toBe(true);
-    expect(state.route).toBe(true);
-  });
 });

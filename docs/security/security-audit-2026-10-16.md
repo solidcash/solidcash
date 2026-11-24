@@ -2335,9 +2335,15 @@ Branch `sec-value-holes` from master `5c0013c47`. Each item was run once on mast
     a stateless P2SH32 contract or a P2PKH, which a raw value call must still be able to pay. Neither closes it.
   - (a) is the one that does: a master spends a plain coin at its own lock only into its satoshi container (the
     output at the coin's index at the container's lock, at least its value, in a transaction that spends no
-    container coin, so no entry's bound can take it back). Estimated from its operations, not built: deriving the
-    97-byte container covenant in-script (about 50 bytes, about 5 where the contract already derives it) plus the
-    checks, 60 to 100 bytes on every stateful contract, and every stateful master lock changes. Contracts already
-    deployed would not gain it.
+    container coin, so no entry's bound can take it back). Measured on a prototype (branch `sec-value-sweep`,
+    `07781c2f2`, not for merge): +230 redeem bytes on each of Counter, Vault, GoldenToken and SingleCaller, since the
+    branch rebuilds the 234-byte container covenant in-script (165 bytes of its template are constants). Every
+    stateful master lock changes, and with it every container lock bound to it; deployed contracts would not gain
+    it; and a master's redeem is revealed in each spend, so each co-spent master costs 230 more bytes per
+    transaction and loses that much headroom under the 10,000-byte unlocking limit.
+  - Closed at compile time where the compiler sees the target (`8060c9cad`): a raw value call to a target typed or
+    held as a stateful contract, a child its `new` made, or an interface that declares state is refused
+    (`StatefulRawValueCallError`), naming the typed call. An `address` from a parameter, a computation, msg.sender, a
+    literal or an untyped stored value is not seen.
   - The burn needs a contract whose raw value call targets a stateful contract: no honest send of it builds, and a
     spender who picks the target could pay themselves instead. Left for the user's decision on (a).

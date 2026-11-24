@@ -3411,3 +3411,69 @@ call's is. The caller reads it at `__internal__callInputIndex[<i>]`, rebound to 
 entry's public self. `CompatCallFullCalleeBlock` pins the shape and `MasterChefDeposit` passes `deposit`. A function
 that also delegatecalls, a call without a published call-input witness and a callee function the SDK cannot resolve
 keep the master-and-data path and still fail closed.
+
+## A low-level call a loop may make more than once (2026-11-24)
+
+**Deferred:** a low-level `call` in a loop of run-time turns, or over an array of targets, is refused by name
+(`LOW_LEVEL_CALL_IN_LOOP`), and the SDK refuses one listed with `withCall()` in a loop. In the external corpora this
+refuses mistswap's Kashi `cook` (KashiPairFlat, KashiPairHelper, KashiPairMediumRiskV1), which compiled on 0.51.1, and
+OpenZeppelin's TimelockController `executeBatch`, which failed earlier on another shape.
+
+**Why now:** the loop's callee is one co-spent input, so one run of it answered every turn. Typed loop calls read each
+turn's record at the record base plus the turn (P-3); a low-level call has no such per-turn binding, so it is refused
+rather than left sharing one run.
+
+**What it'd take:** per-turn records for low-level calls: each turn reads its callee's record by the turn's payload
+digest and the reader, as typed loop calls do (`56ef7cfa7`, `d4a668146`), and the SDK co-spends one callee run per turn.
+
+**Revisit if:** a port needs a batched low-level call (Kashi `cook`, a timelock's `executeBatch`).
+
+## Value calls nothing binds (2026-11-24)
+
+**Deferred:** a typed `{value:}` call in a loop, through a function pointer or a runtime selector, or to `msg.sender`
+is refused at compile time (`CALL_VALUE_UNBOUND`). The SDK refuses a value call whose callee sends it on (A to B to C,
+V-4) and one to a callee compiled with the message bus (V-5), by name (`CallValueUnpayableError`).
+
+**Why now:** a typed call's value rides its callee's record digest, and these shapes have no record it can ride: a loop
+or pointer has no per-turn value field, only the root's calls get a deposit and a debit, and a message-bus record
+settles no compact preimage to append the value to.
+
+**What it'd take:** per-turn value fields in loop and pointer records, deposits along a nested call chain, and a
+message-bus record that carries the value.
+
+**Revisit if:** a port pays value per loop turn or through a pointer, or a message-bus contract takes value.
+
+## A raw value call to a stateful target the compiler cannot see (V-1, 2026-11-24)
+
+**Deferred, pending the user's decision:** `addr.call{value: v}(data)` to a stateful contract whose address comes from a
+parameter, a computation, `msg.sender`, a literal or an untyped stored value pays the master's lock, which never spends
+the coin. A target typed or held as a stateful contract is refused (`StatefulRawValueCallError`); an honest send is
+refused by the SDK (`RawCallCalleeRequiredError`).
+
+**What it'd take:** option (a) of the security ledger's V-1 item: a master spends a plain coin at its own lock only into
+its satoshi container. Prototype `sec-value-sweep` (`07781c2f2`): +230 redeem bytes per master, and every master lock
+and every container lock bound to it changes.
+
+**Revisit if:** the user decides on (a).
+
+## A void call whose callee run cannot settle its record (2026-11-24)
+
+**Deferred:** a void call through a one-method interface reads its callee's void record. These callee runs settle none,
+so the call fails closed at the caller: a split contract's facet; a contract behind a proxy run through its
+implementation's message-bus route; a message-bus build's void entry with native assembly the compiler cannot isolate.
+
+**What it'd take:** the facet, the implementation's route or the entry settles `digest || 01` in the callee's category,
+as a proxied direct entry's implementation does since `bfa5db050`.
+
+**Revisit if:** a port calls a split contract's or a proxied message-bus contract's void method through a one-method
+interface.
+
+## Native assembly that renames an entry's call digest (2026-11-24)
+
+**Deferred (pre-existing):** an entry takes its call digest at entry, and native assembly that reads values it did not
+push (`assembly { OP_DUP }`, a non-isolated `OP_ROLL`) renames it in the code generator's stack model, so the function
+fails to compile (`StackVariableUnavailableError: '__internal__callDigest'`). Fail closed.
+
+**What it'd take:** keep the digest out of reach of unpushed reads (the alt stack, or recompute it at settlement).
+
+**Revisit if:** a port's native assembly in a stateful entry hits the error.

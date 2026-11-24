@@ -570,8 +570,8 @@ describe('compose path beside a deploy row: a resource row may rewrite a record 
     await expect(state.provider.sendRawTransaction(state.honest.builder.build())).resolves.toMatch(TXID);
   }, 300_000);
 
-  // The hole: a deploy row claims the whole block, the unused lane included.
-  it('accepts an untouched entry rewritten under a declared resource row', () => {
-    expect(state.attack).toEqual([]);
+  // A deploy row claims what its body writes; its child's records take a new category. The lane stays pinned.
+  it('refuses an untouched entry rewritten under a declared resource row', () => {
+    expect(state.attack).not.toEqual([]);
   });
 });

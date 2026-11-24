@@ -7083,8 +7083,8 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
 }
 
 /**
- * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. `all` where its
- * effects can reach any record; for the trailing band, `band` `any` where it may consume a sorted collection's chunked
+ * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. For the trailing
+ * band, `band` `any` where it may consume a sorted collection's chunked
  * value there (a value chunk's lock depends on the entry's slot and value version), else the dynamic state it writes,
  * whose chunk locks it rewrites there, and `bandCollections`, whose entry locks it may consume there (a non-sorted
  * collection's records, or every collection it touches where it has a loop or a delete); and the sorted collections
@@ -7097,7 +7097,10 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
  * native assembly is a closed computation (NativeAssemblyKernelSafety) and an unsafe(2) row writes no state, entry,
  * container, transfer or event (SymbolTableTraversal), so neither claims anything of its own. A shape whose writes
  * the route cannot bound (routeUnboundedWriteShape) or an unknown effect is refused admission, so reaching it here
- * is an invariant violation. A lifecycle row claims all.
+ * is an invariant violation. A lifecycle row claims what its body writes, as any row: the verifier holds a split,
+ * merge or selfdestruct participant to its exact span (master, data records, then a funding or consumed-master tail,
+ * atomic.ts), a routed upgrade's contract keeps no record (UpgradeStrandsBoundStateError), and a deployment's
+ * records take the child's new category. None of them rewrites another own-category record of the block.
  */
 /** `address(this)` or `payable(this)` as the AstBuilder writes it: a cast to address over the input's own lock. */
 function isSelfAddressExpression(node: unknown): boolean {
@@ -7135,12 +7138,11 @@ function routeUnboundedWriteShape(closure: readonly FunctionDefinitionNode[], ke
 
 function messageBusRecordClaim(
   footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
-  collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, lifecycle: boolean,
-  kernel: boolean,
-): { all: boolean; band?: 'any' | string[]; bandCollections?: string[]; collections: string[] } {
+  collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, kernel: boolean,
+): { band?: 'any' | string[]; bandCollections?: string[]; collections: string[] } {
   const unbounded = footprint.unknown ? 'unresolved-or-effectful-handler' : routeUnboundedWriteShape(closure, kernel);
   if (unbounded !== undefined) throw new Error(`message-bus record claims: an admitted handler holds ${unbounded}`);
-  const reach = { all: lifecycle, anyBand: false, sweeps: false };
+  const reach = { anyBand: false, sweeps: false };
   const bandStates = new Set<string>();
   const bandCollections = new Set<string>();
   const touched = new Set<string>();
@@ -7168,7 +7170,7 @@ function messageBusRecordClaim(
   if (reach.sweeps) for (const name of touched) bandCollections.add(name);
   const band = reach.anyBand ? 'any' : bandStates.size > 0 ? [...bandStates].sort() : undefined;
   return {
-    all: reach.all, ...(band !== undefined ? { band } : {}),
+    ...(band !== undefined ? { band } : {}),
     ...(!reach.anyBand && bandCollections.size > 0 ? { bandCollections: [...bandCollections].sort() } : {}),
     collections: [...named],
   };
@@ -12737,24 +12739,16 @@ function synthesizeMessageBusRoute(
   // A counter of an earlier synthesis attempt names nothing in this route.
   for (const fn of contract.functions) fn.messageBusRecordClaimFlag = undefined;
   if (recordClaimRoute) {
-    // The only unsafe row admitted is unsafe(2), which writes nothing.
-    const claimAllModifiers = new Set([
-      FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.SPLIT,
-      FunctionModifier.MERGE,
-    ]);
     for (const fn of eligible) {
       const closure = [...collectNamedFunctionClosure(fn, signatureClosureByName)]
         .flatMap((name) => signatureClosureByName.get(name) ?? []);
       const claim = messageBusRecordClaim(eligibleFootprint(fn), closure, collectionByName, dynamicState,
-        kernelLifecycleHandlers.has(fn) || kernelDeploymentHandlers.has(fn)
-          || fn.modifiers.some((modifier) => claimAllModifiers.has(modifier)),
         compilerOptions.messageBusKernel === true);
-      if (!claim.all && claim.band === undefined && claim.bandCollections === undefined
-        && claim.collections.length === 0) continue;
+      if (claim.band === undefined && claim.bandCollections === undefined && claim.collections.length === 0) continue;
       // The handler's own lanes are stamped on this claim once the route's physical entry slots are assigned.
       const flag = `__message_bus_claim_${routeRecordClaims.length}`;
       fn.messageBusRecordClaimFlag = flag;
-      routeRecordClaims.push(claim.all ? { flag, all: true } : {
+      routeRecordClaims.push({
         flag,
         ...(claim.band === 'any' ? { trailing: true as const } : {}),
         ...(Array.isArray(claim.band) ? { bandStates: claim.band } : {}),

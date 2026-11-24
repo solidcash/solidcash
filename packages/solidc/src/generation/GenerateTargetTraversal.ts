@@ -63230,8 +63230,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * is the route's own (data band, sidecar, route-owned entry), or one a row that ran claims by the row counter its
    * selector branch increments: a handler-managed lane of a collection its handler writes (its own lanes, stamped
    * as `lanes`, or every lane of the collection where none were), or the trailing band. A lane no such row claims
-   * stays pinned, as a read brings it back at its own index. Each offset belongs to one group, so the masks add.
-   * A row that may rewrite any of them claims the whole compile-time block. Once the verifier ran
+   * stays pinned, as a read brings it back at its own index. Each offset belongs to one group, so the masks add. No
+   * row claims the whole block. Once the verifier ran
    * (`__internal__activeVerifierIndex` >= 0) the claims are cut to the physical block its binding digest proves
    * (routePhysicalSize); they are not widened to it, as the verifier holds a record no row touched only to a
    * resource row the composer writes. A local-caller route runs its verifier only for a lifecycle row, so
@@ -63296,17 +63296,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     addWhereRan(claims.flatMap((claim) => (claim.trailing === true || (claim.bandStates !== undefined
       && !this.routeBandStatesHaveLocks(this.routeBandStates(node, claim.bandStates))) ? [claim.flag] : [])),
     bandMask);
-    const allFlags = claims.flatMap((claim) => (claim.all === true ? [claim.flag] : []));
-    allFlags.forEach((flag, index) => {
-      this.emitPickTrackedFromBottom(flag, loc);
-      if (index > 0) this.emit(Op.OP_BOOLOR, loc);
-    });
-    if (allFlags.length > 0) {
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.emit(encodeInt((1n << BigInt(blockSize)) - 2n), loc);
-      this.emit(Op.OP_ENDIF, loc);
-    }
     if (local) return;
     // On chain an index >= 0 ran the binder (routeVerifierSkipsByIndex), whose digest proves the size (>= 1). The
     // verifier holds a record no row touched only to the composer's resource row, so the claims stay those of the

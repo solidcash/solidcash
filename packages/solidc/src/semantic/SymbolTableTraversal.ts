@@ -16569,14 +16569,12 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * Whether a caller takes the arguments its calls leave to their callees as witnesses (leftCallArgumentPositions):
-   * a direct compile, where void calls read records too. A framed body, a message-bus compile, a kernel direct
-   * participant and the deployer program bind such calls otherwise or take no such witness.
+   * every direct entry, a message-bus build's (its bound compile included) and a kernel direct participant's, since a
+   * spender may spend it whatever route the build also has. A framed body binds its calls by their frames
+   * (callSiteCheckScript), and the deployer program takes no such witness.
    */
   private takesLeftCallArguments(): boolean {
-    const busMode = (this.compilerOptions as CompilerOptions
-    & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
-    return (busMode === 'disabled' || busMode === 'auto') && this.compilerOptions.composition !== 'framed'
-      && this.compilerOptions.messageBusDirectParticipant !== true
+    return this.compilerOptions.composition !== 'framed'
       && (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram === undefined;
   }
 

@@ -112,10 +112,15 @@ interface Spend { tx: any; sourceOutputs: any[] }
 
 const verifier = createTxVerifier({ vmVersion: 'BCH_2026_05', standard: true, skipFeePolicy: true });
 
+/** The compile options of the caller and of the callee. */
+interface Convention { name: string; caller: object; callee: object }
+const DIRECT: Convention = { name: 'direct', caller: {}, callee: {} };
+
 const compiled = new Map<string, any>();
-const artifactsOf = (shape: Shape): any => {
-  if (!compiled.has(shape.name)) compiled.set(shape.name, compileStringMulti(shape.source));
-  return compiled.get(shape.name);
+const artifactsOf = (shape: Shape, options: object = {}): any => {
+  const key = `${shape.name}:${JSON.stringify(options)}`;
+  if (!compiled.has(key)) compiled.set(key, compileStringMulti(shape.source, options));
+  return compiled.get(key);
 };
 
 const ofCategory = (output: any, category: string): boolean => output?.token !== undefined
@@ -137,9 +142,9 @@ const SELECTOR = /^__internal__externalCallSelector\d*$/;
 /** An F1 edge carrier (`OP_1 OP_NOP`): a named call's own output, committing to the call it makes. */
 const isEdge = (output: any): boolean => binToHex(output.lockingBytecode) === '5161';
 
-async function deploy(shape: Shape, caller = 'Caller'): Promise<Deployed> {
+async function deploy(shape: Shape, caller = 'Caller', convention = DIRECT): Promise<Deployed> {
   const provider = createTestProvider();
-  const arts = artifactsOf(shape);
+  const arts = { ...artifactsOf(shape, convention.caller), Callee: artifactsOf(shape, convention.callee).Callee };
   const calleeBase = new Contract(arts.Callee, [], { provider });
   const { categoryId: calleeCat } = await setupStatefulUtxos(
     provider, calleeBase, arts.Callee.stateLayout!, shape.calleeState, { saltContract: true },
@@ -272,5 +277,56 @@ describe('the method a direct call names, against a callee running another of th
         expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
       }, 300_000);
     });
+  }
+});
+
+/**
+ * The same calls in compiles other than the direct convention. A message-bus build keeps each function's direct entry
+ * beside its route, and an ordinary call spends that entry; a direct-only participant of a kernel composition is an
+ * ordinary direct caller of an ordinary callee.
+ */
+const CONVENTIONS: Convention[] = [
+  { name: 'message-bus', caller: { messageBus: true }, callee: { messageBus: true } },
+  { name: 'direct participant', caller: { messageBusDirectParticipant: true }, callee: {} },
+];
+
+describe('the method an args-left call names, in other conventions (VM)', () => {
+  for (const convention of CONVENTIONS) {
+    for (const shape of SHAPES) {
+      // OPEN: a message-bus build's callee pins no void record, and its caller reads none, so a void call through a
+      // single-function interface binds no method there, named or not. These rows settle; drop `.fails` once a void
+      // record binds them.
+      const voidRecordless = convention.name === 'message-bus' && shape.name === 'void' ? it.fails : it;
+      describe(`${convention.name}, ${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
+        it(`settles the honest ${shape.a}() through a single-function interface, and ${shape.b}()`, async () => {
+          const d = await deploy(shape, 'Caller', convention);
+          // Where the call reads a record, the argument it leaves is a witness; a recordless void call takes none.
+          expect(hidden(d, 'Caller', 'oneA', LEFT_ARGUMENT))
+            .toEqual(voidRecordless === it ? ['__internal__callArgument0_0'] : []);
+          const a = await spend(d, 'oneA', shape.a);
+          const b = await spend(d, 'oneB', shape.b);
+          expectOnlyTheMethodDiffers(d, shape, a, b);
+          expect(runVm(a)).toEqual({ success: true });
+          expect(runVm(b)).toEqual({ success: true });
+        }, 300_000);
+
+        // The caller digests the argument it leaves from its witness, so B's record does not match A's call.
+        voidRecordless(`refuses ${shape.a}() co-spent with ${shape.b} at the caller (single-function)`, async () => {
+          const d = await deploy(shape, 'Caller', convention);
+          const a = await spend(d, 'oneA', shape.a);
+          expectRefusedAt(runVm(splice(a, await spend(d, 'oneB', shape.b), d.callerCat)), master(a, d.callerCat));
+        }, 300_000);
+
+        if (convention.name !== 'message-bus') return;
+        // A named call through a single-function interface, in the same build.
+        voidRecordless(`refuses ${shape.a}(v) co-spent with ${shape.b} at the caller (single-function, named)`, async () => {
+          const d = await deploy(shape, 'Named', convention);
+          const a = await spend(d, 'oneA', shape.a, true);
+          const b = await spend(d, 'oneB', shape.b, true);
+          expectOnlyTheMethodDiffers(d, shape, a, b);
+          expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
+        }, 300_000);
+      });
+    }
   }
 });

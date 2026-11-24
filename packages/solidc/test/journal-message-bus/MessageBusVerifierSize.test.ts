@@ -46,11 +46,14 @@ describe('atomic verifier bytecode specialization', () => {
       // already), and +3 B composed for O8's check placed first in the route's pushed arm, which had none (e7fe44e3a).
       // +7 B direct for the reader its void record names (the witness, and its append in the genesis header); the
       // bus build's `set` takes no reader, so composed is unchanged (S2).
+      // +51 B composed with the args-left line, whose record-less runs count their category's carriers, the route's
+      // among them (cc8201e57). Then +31 B: the route, void and outside the event census, refuses those carriers in
+      // its own output pass, a copy of the one `set` shares, in place of the count's second walk over the outputs.
       direct: 923,
-      composed: 1966,
-      frameworkTax: 1043,
+      composed: 2048,
+      frameworkTax: 1125,
     });
-    expect(composed).toBeLessThanOrEqual(1985);
+    expect(composed).toBeLessThanOrEqual(2067);
     expect(composed - direct).toBeLessThanOrEqual(1360);
     expect(sidecar).toBeLessThanOrEqual(10_000);
   });

@@ -2449,6 +2449,11 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     full branch, and split, merge and tiered `unsafe` runs; a delegate's own category and a proxy whose delegate did
     not run (`emitOwnCarrierCount`); a message-bus route, to its result carrier when it returns
     (`emitRouteCarrierCount`, in place of its output scan's edge refusal). Both rows are now refused at the vault.
+    The route's count walked every output again, which put an honest AtomicMessageBusCompose NFT flow's callee past
+    its operation-cost density (6,701,643 units, limit 6,701,600). A void route outside the event census now refuses
+    every carrier in its output pass, where its edge refusal was (`emitRefuseScannedCarrier`, `sec-route-lanes`):
+    that input is 6,604,694 units under 6,696,800. A returning or census route keeps the count, as a route-only copy
+    of the output pass its entries share costs that pass again (131 B on the pooled callee, past 10,000 B).
     `unsafe(0)` keeps no covenant, by design. The vault: 1,624 -> 1,598 B (its count reuses the record count's
     subroutine).
 

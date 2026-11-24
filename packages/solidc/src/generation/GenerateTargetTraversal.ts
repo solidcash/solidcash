@@ -12883,11 +12883,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const takesEventCensus = node.name !== '__construct' && isStatefulContract && !this.framedRequiresValidator
         && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent);
+      // A route settles no record and pins no edge, so it leaves no carrier of its category but a returning route's
+      // result carrier at its return index. A void route outside the event census refuses every one in its output
+      // pass, where its edge refusal was, so a pad costs one short test, not a second walk. Any other route counts
+      // them (emitRouteCarrierCount) and keeps the output pass its contract's entries share, whose route-only copy
+      // costs that pass again in bytes.
+      const routeCarriers = this.isCompilerMessageBusRoute(node) && isStatefulContract && !this.framedMaster;
+      const scanRefusesCarriers = routeCarriers && !takesEventCensus && node.returnTypes.length === 0
+        && (scansSatoshi || scansMutable || scansMints);
       this.emitSlotScans(scansSatoshi, scansForeign ? admitAnchor : undefined, scansMutable, scansMints,
-        { location: node.body.location, positionHint: PositionHint.END }, mintBound);
+        { location: node.body.location, positionHint: PositionHint.END }, mintBound, scanRefusesCarriers);
       if (this.framedMaster && this.currentContractHoldsTokens) this.emitFramedForeignTokenKeep(node);
       if (takesEventCensus) this.emitOwnCategoryImmutableNftOutputPin(node);
-      if (this.isCompilerMessageBusRoute(node) && isStatefulContract && !this.framedMaster) {
+      if (routeCarriers && !scanRefusesCarriers) {
         this.emitRouteCarrierCount(node, { location: node.body.location, positionHint: PositionHint.END });
       }
       // Value preservation: satoshi and fungible token amounts
@@ -62363,14 +62371,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitSlotScans(
     sat: boolean, admitAnchor: boolean | undefined, mutable: boolean, mint: boolean, loc: SingleLocationData,
-    mintBound?: GraphEffectFrame,
+    mintBound?: GraphEffectFrame, refusesCarriers = false,
   ): void {
     const inputs = sat || admitAnchor !== undefined || mint;
     const outputs = sat || mutable || mint;
     const residue = inputs && outputs ? slotScanResidue(sat, admitAnchor !== undefined, mint) : [];
     if (inputs) this.emitInputSlotScan(sat, admitAnchor, mint, outputs, loc);
     const bound = mintBound === undefined ? undefined : this.emitRouteMintBoundItems(mintBound, loc);
-    if (outputs) this.emitOutputSlotScan(sat, mutable, mint, residue, loc, bound);
+    if (outputs) this.emitOutputSlotScan(sat, mutable, mint, residue, loc, bound, refusesCarriers);
     else if (bound !== undefined) this.emitRouteMintBoundScan(bound, loc);
     // Without an output pass, the bound's own pass leaves its operands.
     if (bound !== undefined && !outputs) this.emitKeepScanItems(ROUTE_MINT_LO, [], loc);
@@ -64347,7 +64355,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitOutputSlotScan(
     sat: boolean, mutable: boolean, mint: boolean, residue: readonly string[], loc: SingleLocationData,
-    bound?: RouteMintBound,
+    bound?: RouteMintBound, refusesCarriers = false,
   ): void {
     const signatures = mutable
       ? this.collectionDefinitions.map((collection) => this.vmapCollectionSignature(collection.name))
@@ -64358,10 +64366,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const boundKey = bound === undefined ? '' : `:mintBound:${bound.slots}:${bound.span}`;
     if ((!mutable || this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) < 0)
       && this.invokeSharedEntryCheck(
-        `outputScans:${sat}:${signatures?.join(',') ?? '-'}:${mint}:${residue.join(',')}${boundKey}`,
+        `outputScans:${sat}:${signatures?.join(',') ?? '-'}:${mint}:${residue.join(',')}${boundKey}:${refusesCarriers}`,
         (t, l) => {
           for (const name of [...residue, ...boundNames]) t.pushToStack(name);
-          t.emitOutputSlotScanBody(sat, signatures, mint, l, bound);
+          t.emitOutputSlotScanBody(sat, signatures, mint, l, bound, refusesCarriers);
         },
         loc,
       )) {
@@ -64372,18 +64380,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return;
     }
-    this.emitOutputSlotScanBody(sat, signatures, mint, loc, bound);
+    this.emitOutputSlotScanBody(sat, signatures, mint, loc, bound, refusesCarriers);
   }
 
   /**
    * The outputs at the container lock are summed, and with `mint` those holding the master's token category may not
    * outnumber such inputs. With `signatures` (each collection's address signature, undefined for none), every
    * own-category mutable output must sit at a mutable input's lock or at a lock this contract is allowed to mint (a
-   * collection, its data record, or a dynamic chunk). The categories and container lock come from the input pass.
+   * collection, its data record, or a dynamic chunk). With `refusesCarriers` no output is a carrier, record or edge,
+   * of the master's category. The categories and container lock come from the input pass.
    */
   private emitOutputSlotScanBody(
     sat: boolean, signatures: readonly (string | undefined)[] | undefined, mint: boolean, loc: SingleLocationData,
-    bound?: RouteMintBound,
+    bound?: RouteMintBound, refusesCarriers = false,
   ): void {
     const base = '(__mutable_base)';
     const fromInputs = this.getStackIndex(SCAN_CATEGORY, true) >= 0;
@@ -64415,8 +64424,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
     this.emit(Op.OP_BEGIN, loc);
-    // A mint bound stops at every output with a token: its category is any its containers mint.
-    this.emitSkipToScannedSlot(true, sat, signatures !== undefined, mint, loc, bound !== undefined);
+    // A mint bound stops at every output with a token: its category is any its containers mint. A carrier is a token.
+    this.emitSkipToScannedSlot(true, sat, signatures !== undefined, mint, loc, bound !== undefined || refusesCarriers);
     if (sat) this.emitAddScannedValue(true, SCAN_OUT_SUM, loc);
     if (mint) this.emitCountScannedMint(true, SCAN_OUT_MINTS, loc);
     if (signatures !== undefined) {
@@ -64430,6 +64439,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     }
     if (bound !== undefined) this.emitRouteMintBoundCheck(bound, loc);
+    if (refusesCarriers) this.emitRefuseScannedCarrier(fromInputs ? SCAN_CATEGORY : base, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOT, loc);
     this.emit(Op.OP_UNTIL, loc);
@@ -64450,6 +64460,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A mint bound's operands sit above the input pass's residue, and below the base a pass without one builds.
     const bottom = !fromInputs ? (bound !== undefined ? ROUTE_MINT_LO : base) : mint ? SCAN_MINT_CATEGORY : SCAN_CATEGORY;
     this.emitKeepScanItems(bottom, sat ? [SCAN_IN_SUM, SCAN_OUT_SUM] : [], loc);
+  }
+
+  /** `[.., i]` stays: output i is no carrier, record or edge (emitIsCallCarrierLock), of the tracked 32-byte `category`. */
+  private emitRefuseScannedCarrier(category: string, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emitIsCallCarrierLock(loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLAND, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_VERIFY, loc);
   }
 
   /** `[base]` -> `[base, locks]`: each lock this contract may mint a record at, 35 bytes apiece. */

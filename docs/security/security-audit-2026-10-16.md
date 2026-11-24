@@ -2161,7 +2161,8 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     honest send is refused by A8, a hand-built one burns the caller's value. A callee
     compiled with the bus on settles no compact record and digests no value, so a value call to it fails closed.
     Nested value calls (A to B to C), a deposit below dust and a loop's value `new` beside a value call (the loop's
-    container check does not count the call's value) are not handled.
+    container check does not count the call's value) are not handled. Worked 2026-11-24: see "Value residuals
+    (2026-11-24)".
 - **Routes without a verifier** (HIGH; `db7d6956a`, `f7c265628`, `1be7b3797`; the "Open" line of "Fix pass
   2026-10-22", VM-confirmed there). On a bound non-graph route run without its verifier (a standalone batch, a
   local-caller route), the C3 pin skipped whole claim groups: the trailing band once a row that may use it ran, and
@@ -2301,3 +2302,42 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   so a handler that takes no parameters and writes dynamic state ran without the base check: by DYN-1's mechanism, a
   spender passing a base below -1 could skip its chunk verification. The branch now runs the same statements as the
   others (found through the KernelMultiDynamicShrink regression above; not separately VM-tested on the old code).
+
+## Value residuals (2026-11-24)
+
+Branch `sec-value-holes` from master `5c0013c47`. Each item was run once on master before its fix and once after.
+
+- **V-3** (FIXED, `0bdcd7c1d`; MEDIUM: accounting, not theft). A deployer `new C{value: v}()` with no transfer of its
+  own skipped the creator's positional container check, whose guard counted pending transfers only. The scan bound
+  still limited what leaves the container, but nothing required its coin: a spend could leave the coin unspent and pay
+  the child's v from other funds while the creator counted v paid out of its container. VM-confirmed on master: the
+  new row of `DeployerCreatingCallValue.e2e.test.ts` (the wallet's coin in the container's input, the wallet in its
+  output) verified. The guard now counts every value that leaves with no transfer output (a deployer value, a
+  record-riding call's value), so a nonzero one requires the coin at its slot, as a nonzero transfer does.
+- **V-4, V-5** (refused by name, `a8ae5d31e`). The SDK refuses before building (`CallValueUnpayableError`):
+  - a nonzero value to an entry whose record digests none, not payable and reading no msg.value, or compiled with the
+    message bus (V-5). On master it failed closed at preflight with nothing naming why. A bus-compiled callee's value
+    call stays unbuildable: its record settles no compact preimage to append the value to (liveness, left);
+  - a value under the dust threshold of the callee's container lock. On master a 100-satoshi deposit settled on the
+    mock, an output no node relays;
+  - a callee whose own entry sends a record-riding value on (A to B to C, V-4). Only the root's calls get a deposit
+    and a debit, so B's read of C's record fails: closed, by reading.
+- **V-2** (no leak, by reading; no change). In a direct compile every child `new` is a deployer `new` (B8.0 gathers
+  each child), whose value both container checks count beside a call's value (`DEPLOYER_VALUE_SENT`,
+  `CALL_VALUE_SENT`). The check that counts only a loop's `counter * V` (`emitLoopValueContainerConservation`) runs
+  for a non-deployer `new` alone, and leaving a value out of a lower bound on what the container keeps only makes it
+  stricter. No SDK path builds a deploy beside a value call (`deployFrom` takes no external calls), so no VM row.
+- **V-1** (OPEN, needs a decision). A raw value call (`addr.call{value:}(data)`, an opaque payload, a low-level call
+  lowered from a payload naming its method) pays its target's lock. A stateful master's lock never spends that coin,
+  so a hand-built spend burns the caller's value; an honest send is refused (A8, `RawCallCalleeRequiredError`).
+  - (b) paying the callee's container and (c) refusing the call both see a stateful target only when it is co-spent.
+    A spend that leaves the target out pays its master lock anyway, and nothing in a lock tells a stateful master from
+    a stateless P2SH32 contract or a P2PKH, which a raw value call must still be able to pay. Neither closes it.
+  - (a) is the one that does: a master spends a plain coin at its own lock only into its satoshi container (the
+    output at the coin's index at the container's lock, at least its value, in a transaction that spends no
+    container coin, so no entry's bound can take it back). Estimated from its operations, not built: deriving the
+    97-byte container covenant in-script (about 50 bytes, about 5 where the contract already derives it) plus the
+    checks, 60 to 100 bytes on every stateful contract, and every stateful master lock changes. Contracts already
+    deployed would not gain it.
+  - The burn needs a contract whose raw value call targets a stateful contract: no honest send of it builds, and a
+    spender who picks the target could pay themselves instead. Left for the user's decision on (a).

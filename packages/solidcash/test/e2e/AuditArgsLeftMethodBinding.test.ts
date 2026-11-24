@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin,
+  binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions, encodeDataPush, encodeTransaction,
+  hexToBin,
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
+import { encodePushdataValue } from '@solidcash/utils';
+import { encodeFunctionArgument } from '../../src/Argument.js';
 import { compileStringMulti } from '../direct-compile.js';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
@@ -227,6 +230,21 @@ async function stateLoopSpend(d: Deployed, entry: string, iface: string, method:
   return { tx: call.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(call.inputs) };
 }
 
+/** `run` with the caller's witness list `list` carrying one element past its calls: the list's bytes twice. */
+function withExtraListElement(run: Spend, callerCat: string, list: Uint8Array): Spend {
+  const at = master(run, callerCat);
+  const instructions = decodeAuthenticationInstructions(run.tx.inputs[at].unlockingBytecode) as any[];
+  const pushes = instructions.flatMap((instruction, index) => (instruction.data !== undefined
+    && binToHex(instruction.data) === binToHex(list) ? [index] : []));
+  expect(pushes).toHaveLength(1);
+  const longer = decodeAuthenticationInstructions(encodeDataPush(Uint8Array.of(...list, ...list)))[0];
+  const unlockingBytecode = encodeAuthenticationInstructions(instructions.map((instruction, index) => (
+    index === pushes[0] ? longer : instruction)));
+  const inputs = run.tx.inputs.map((input: any, index: number) => (index === at ? { ...input, unlockingBytecode }
+    : input));
+  return { tx: { ...run.tx, inputs }, sourceOutputs: run.sourceOutputs };
+}
+
 /** `b` with the caller's unlocking and own outputs from `a`: the caller runs a's entry, the callee b's method. */
 function splice(a: Spend, b: Spend, callerCat: string): Spend {
   const inputs = b.tx.inputs.map((input: any, index: number) => (ofCategory(b.sourceOutputs[index], callerCat)
@@ -431,4 +449,24 @@ describe('the method an args-left call names, on each element of a state array o
       }, 300_000);
     });
   }
+});
+
+describe('a witness list of the arguments a loop leaves, carrying one element past its calls (VM)', () => {
+  // A list is spent to its end: a byte past the last call's element binds nothing, so a third party could add one to
+  // change the transaction's id. The honest list holds the one call's argument 3, as the SDK frames it.
+  const shape = SHAPES[0]!;
+  const list = encodePushdataValue(encodeFunctionArgument(3n, 'int') as Uint8Array, 'bytes');
+  it('refuses it over a parameter array, at the caller', async () => {
+    const d = await deploy(shape, 'Looper');
+    const a = await loopSpend(d, 'oneA', shape.ifaceA, shape.a);
+    expect(runVm(a)).toEqual({ success: true });
+    expectRefusedAt(runVm(withExtraListElement(a, d.callerCat, list)), master(a, d.callerCat));
+  }, 300_000);
+
+  it('refuses it over a state array, at the caller', async () => {
+    const d = await deployStateLooper(shape);
+    const a = await stateLoopSpend(d, 'oneA', shape.ifaceA, shape.a);
+    expect(runVm(a)).toEqual({ success: true });
+    expectRefusedAt(runVm(withExtraListElement(a, d.callerCat, list)), master(a, d.callerCat));
+  }, 300_000);
 });

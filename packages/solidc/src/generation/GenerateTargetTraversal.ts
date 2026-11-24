@@ -12207,6 +12207,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, { location: node.body.location, positionHint: PositionHint.END });
       this.keccakSlotAltAnchored = false;
     }
+    if (!this.isDefineSubTraversal && node.isEntryPoint) {
+      this.emitLeftCallArgumentListsSpent({ location: node.body.location, positionHint: PositionHint.END });
+    }
     this.emitRepeatedSortedUpsertLoopCensuses(node);
     // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle
     // fields packed after semantic Instantiation). Expand deployDataNft layout slots so vmap tails and
@@ -57623,6 +57626,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       left += 1;
     }
     return left > 0;
+  }
+
+  /**
+   * `[..]` -> `[..]`: once the body has run, each witness list of the arguments a loop's calls leave to their callees
+   * must be spent to its end (emitTurnLeftCallArguments). A byte past the last call's element binds nothing, so a third
+   * party could add one to change the transaction's id.
+   */
+  private emitLeftCallArgumentListsSpent(loc: SingleLocationData): void {
+    for (const slot of this.externalCallSlots) {
+      const declared = this.callRecordDeclaredTypes(slot);
+      for (let position = 0; position < declared.length; position += 1) {
+        const at = this.getStackIndex(callArgumentListName(slot.slotIndex, position), true);
+        if (at < 0) continue;
+        this.emitRollAt(at, loc);
+        this.emit(Op.OP_0, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        this.removeFromStack(at);
+      }
+    }
   }
 
   /** Drops the elements emitTurnLeftCallArguments left, from beneath what the digest left on top. */

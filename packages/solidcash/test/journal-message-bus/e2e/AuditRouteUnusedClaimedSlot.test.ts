@@ -21,6 +21,14 @@
  *
  * - A row with a loop or a delete claims, in the trailing band, only its collections' entry locks: beside a `drop`
  *   batch, an entry of `other`, which `drop` does not touch, rewritten at an unused trailing slot is refused.
+ * - A row that writes no record claims none: beside a kernel-safe native assembly row or an unsafe(2) row, a `side`
+ *   entry rewritten at the block's pad is refused (both once claimed the whole block). A handler whose free function
+ *   holds assembly that is not kernel-safe is no longer admitted (it was, and claimed the whole block); it runs as
+ *   a direct call.
+ * - A row touching a sorted collection with a chunkable value admits, in the trailing band, only the value-chunk locks
+ *   its run pinned or spent: beside a long `notes` write over a long note, a `side` entry rewritten at an unused
+ *   trailing slot is refused (it once claimed the whole band), and the honest write, which spends the old note's
+ *   chunks, settles.
  *
  * Each attack row asserts the route's refusal; the entry covenant alone accepts every one of these spends.
  */
@@ -77,6 +85,40 @@ const DROP = `contract DropBook() {
   function put(int key, int value) public { this.side[key] = value; require(true); }
   function putOther(int key, int value) public { this.other[key] = value; require(true); }
   function drop(int key) public { delete this.side[key]; require(true); }
+}`;
+
+const QUIET = `contract QuietBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function probe(int x) public { assembly { OP_1 OP_VERIFY } require(x >= 0); }
+  function idle(int x) unsafe(2) { require(x >= 0); }
+}`;
+
+// A free function's body runs in the row; its assembly borrows a value it did not push.
+const STIR = `function stir() { assembly { OP_DUP OP_DROP } }
+contract StirBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function churn(int x) public { stir(); require(x >= 0); }
+}`;
+
+// A sorted mapping with a chunkable value beside the victim's mapping.
+const NOTES = `contract NoteBook() {
+  mapping(int => bytes) public notes;
+  mapping(int => int) public side;
+  function write(int key, bytes value) public { this.notes[key] = value; require(true); }
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+}`;
+
+// A loop writer, which projects no fixed lane of `side`, beside a writer that does.
+const LOOP = `contract LoopBook() {
+  mapping(int => int) public side;
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function fill(int value) public {
+    for (int i = 0; i < 2; i += 1) { this.side[i] = value; }
+    require(true);
+  }
+  function triple(int a, int b, int c) public { require(this.side[a] + this.side[b] + this.side[c] >= 0); }
 }`;
 
 const KERNEL = {
@@ -555,5 +597,208 @@ describe('bound route without its verifier: a trailing slot beside a delete, whi
   // The delete claims, in the band, only side's entry lock; other's lock is not one, so the pin holds the entry.
   it('refuses an other entry rewritten at an unused trailing slot beside a drop batch', () => {
     expect(state.route).not.toBe(true);
+  });
+});
+
+
+describe('bound route without its verifier: a block slot beside a row that writes no record', () => {
+  let state: {
+    bus: StatefulContract;
+    honest: { probe: ReturnType<typeof failures>; idle: ReturnType<typeof failures> };
+    covenant: Verdict;
+    route: { probe: Verdict; idle: Verdict };
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(QUIET, { ...KERNEL, messageBusHandlers: ['put', 'probe', 'idle'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'probe', 'idle']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const probe = spendOf(await bus.batch([{ function: 'probe', args: [1n] }]).build());
+    const idle = spendOf(await bus.batch([{ function: 'idle', args: [1n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, probe);
+    // The victim rewritten at the highest pad of the batch's compile-time block.
+    const attack = (honest: Spend): { at: number; master: number; spend: Spend } => {
+      const master = masterOf(honest, victim);
+      const at = padIndex(honest, master + 1, master + layout.blockSize);
+      expect(at, 'the batch leaves a pad in its block').toBeDefined();
+      return { at: at!, master, spend: placed(honest, victim, master, at!, rewritten(victim)) };
+    };
+    const onProbe = attack(probe);
+    const onIdle = attack(idle);
+    state = {
+      bus,
+      honest: { probe: failures(vm, probe), idle: failures(vm, idle) },
+      covenant: verdict(vm, onProbe.spend, onProbe.at),
+      route: { probe: verdict(vm, onProbe.spend, onProbe.master), idle: verdict(vm, onIdle.spend, onIdle.master) },
+    };
+    console.log('block slot beside a row that writes no record', {
+      blockSize: layout.blockSize, offsets: { probe: onProbe.at - onProbe.master, idle: onIdle.at - onIdle.master },
+      covenant: state.covenant, route: state.route,
+    });
+  }, 300_000);
+
+  it('settles honest probe and idle batches, and the entry covenant accepts the victim spend', async () => {
+    expect(state.honest.probe, 'honest probe batch').toEqual([]);
+    expect(state.honest.idle, 'honest idle batch').toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+    await expect(state.bus.batch([{ function: 'probe', args: [2n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+    await expect(state.bus.batch([{ function: 'idle', args: [2n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+  }, 300_000);
+
+  // Kernel-safe native assembly is a closed computation (NativeAssemblyKernelSafety): the row claims nothing.
+  it('refuses a side entry rewritten in the block beside a native assembly row', () => {
+    expect(state.route.probe).not.toBe(true);
+  });
+
+  // unsafe(2) writes no state, entry, container, transfer or event (SymbolTableTraversal): the row claims nothing.
+  it('refuses a side entry rewritten in the block beside an unsafe(2) row', () => {
+    expect(state.route.idle).not.toBe(true);
+  });
+});
+
+
+describe('a handler whose free function holds opaque assembly', () => {
+  // Its writes are unbounded, so it is not admitted by name; its row would have claimed the whole block.
+  it('is refused admission and runs as a direct call', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(STIR, { ...KERNEL, messageBusHandlers: ['put', 'churn'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put']));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'churn'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_OPAQUE_EFFECT' });
+    const { bus } = await connect(provider, artifact, {});
+    await expect(bus.call.churn(1n).send()).resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+  }, 300_000);
+});
+
+
+describe('bound route without its verifier: a trailing slot beside a chunkable mapping write', () => {
+  let state: { bus: StatefulContract; honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(NOTES, { ...KERNEL, messageBusHandlers: ['write', 'put'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['write', 'put']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    expect(layout.trailingBase, 'the route has a trailing band').toBeDefined();
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    await bus.call.write(3n, new Uint8Array(90).fill(0x61)).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    // A long value over a long value: the old value's chunks are spent, the new one's created.
+    const write = spendOf(await bus.batch([{ function: 'write', args: [3n, new Uint8Array(95).fill(0x62)] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, write);
+    const master = masterOf(write, victim);
+    const at = padIndex(write, master + layout.trailingBase!, master + layout.blockSize);
+    expect(at, 'the write batch leaves a trailing pad').toBeDefined();
+    const rewrite = placed(write, victim, master, at!, rewritten(victim));
+    state = {
+      bus, honest: failures(vm, write), covenant: verdict(vm, rewrite, at!), route: verdict(vm, rewrite, master),
+    };
+    console.log('trailing band beside a chunkable mapping write', {
+      offset: at! - master, covenant: state.covenant, route: state.route,
+    });
+  }, 300_000);
+
+  it('settles an honest long write over a long value, and the entry covenant accepts the victim spend', async () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+    await expect(state.bus.batch([{ function: 'write', args: [3n, new Uint8Array(70).fill(0x63)] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(TXID) });
+  }, 300_000);
+
+  // The band admits only the value-chunk locks the run itself pinned or spent; a side entry's lock is not one.
+  it('refuses a side entry rewritten at an unused trailing slot beside a write batch', () => {
+    expect(state.route).not.toBe(true);
+  });
+});
+
+describe('bound route without its verifier: a writer lane its run leaves to a pad', () => {
+  let state: {
+    honest: ReturnType<typeof failures>; covenant: Verdict; route: Verdict; lanes: number[]; offset: number;
+  };
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(PAIR, { ...KERNEL, messageBusHandlers: ['put', 'putPair'] });
+    expect(eligibleOf(artifact)).toEqual(new Set(['put', 'putPair']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    const lanes = layout.slots.filter((slot) => slot.kind === 'entry').map((slot) => slot.offset);
+    expect(lanes.length, 'putPair holds two side lanes').toBeGreaterThanOrEqual(2);
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    // Both writes name side[5]: the second aliases the first lane, so the other lane is left to a pad.
+    const pair = spendOf(await bus.batch([{ function: 'putPair', args: [5n, 2n, 5n, 3n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, pair);
+    const master = masterOf(pair, victim);
+    const spare = lanes.map((offset) => master + offset).find((at) => padIndex(pair, at, at + 1) === at);
+    expect(spare, 'the aliased batch leaves a lane to a pad').toBeDefined();
+    const rewrite = placed(pair, victim, master, spare!, rewritten(victim));
+    state = {
+      honest: failures(vm, pair), covenant: verdict(vm, rewrite, spare!), route: verdict(vm, rewrite, master),
+      lanes, offset: spare! - master,
+    };
+    console.log('writer lane left to a pad', state);
+  }, 300_000);
+
+  it('settles the aliased batch, and the entry covenant accepts the victim spend', () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+  });
+
+  // The writer claims the lane its run left to a pad, but the route still holds the record there: the run that
+  // first checked this refused it in the route body, outside the C3 pin (ip 10830).
+  it('refuses a side entry rewritten at the lane the run left to a pad', () => {
+    expect(state.route).not.toBe(true);
+  });
+});
+
+
+describe('bound route without its verifier: another handler\'s lane beside a loop writer', () => {
+  let state: { eligible: Set<string>; honest?: ReturnType<typeof failures>; covenant?: Verdict; route?: Verdict };
+  // fill's loop writes side at the first two lanes; triple alone reads the others.
+
+  beforeAll(async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(LOOP, { ...KERNEL, messageBusHandlers: ['put', 'fill', 'triple'] });
+    state = { eligible: eligibleOf(artifact) };
+    expect(state.eligible).toEqual(new Set(['put', 'fill', 'triple']));
+    const layout = artifact.messageBus!.route.blockLayout!;
+    const lanes = layout.slots.filter((slot) => slot.kind === 'entry').map((slot) => slot.offset);
+    const { bus, categoryId } = await connect(provider, artifact, {});
+    await bus.call.put(5n, 7n).send();
+    await bus.call.put(9n, 1n).send();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const fill = spendOf(await bus.batch([{ function: 'fill', args: [4n] }]).build());
+    const victim = await victimOf(provider, artifact, bus, categoryId, fill);
+    const master = masterOf(fill, victim);
+    const lane = lanes.map((offset) => master + offset).find((at) => padIndex(fill, at, at + 1) === at);
+    expect(lane, 'the fill batch leaves a fixed side lane to a pad').toBeDefined();
+    const rewrite = placed(fill, victim, master, lane!, rewritten(victim));
+    state = {
+      ...state, honest: failures(vm, fill), covenant: verdict(vm, rewrite, lane!), route: verdict(vm, rewrite, master),
+    };
+    console.log('another handler\'s lane beside a loop writer', {
+      lanes, offset: lane! - master, honest: state.honest, covenant: state.covenant, route: state.route,
+    });
+  }, 300_000);
+
+  it('settles the honest fill batch, and the entry covenant accepts the victim spend', () => {
+    expect(state.honest).toEqual([]);
+    expect(state.covenant, 'the entry write flag accepts the rewrite').toBe(true);
+  });
+
+  // The hole: a writer that projects no fixed lane claims every lane of its collection, triple's included.
+  it('accepts a side entry rewritten at a lane only triple uses, beside a fill batch', () => {
+    expect(state.route).toBe(true);
   });
 });

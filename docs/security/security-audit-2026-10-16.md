@@ -2238,22 +2238,45 @@ read line by line, merged into one landing tree, and its tests and their neighbo
   - R3 (step D, `88fc180e9`): a low-level `call` or `staticcall` to another address claims nothing of its own, as a
     typed call (step B): its callee runs as its own row in its own block, a call back is another row with its own
     claims, and a value it carries leaves the tokenless satoshi container, which the pin never parks.
-  - Residual (any lock in the band): a row that reads or writes a sorted collection with a chunkable value (bytes,
-    string, an array or a struct with one), or writes dynamic state where some state the route writes keeps no chunk
-    lock of its own (not `isDynamic`). A value chunk's lock is built from the entry's slot and its value version's
-    root (`valueChunkSignature(collection, slot, root)`), so no compile-time list names it; admitting chunks by lock
-    would take the run's own list of consumed chunk locks. Such a row leaves every own-category record in the band
-    unpinned when it runs.
-  - Residual (lanes, R2): a writer's row claims all of its own lanes, alternatives and alias priors included, even
-    where a run writes one; a written collection it projects no lane of keeps every lane of it. Narrowing that needs
-    the lanes a run writes, recorded at run time.
-  - Residual (whole block, the rest of R3): a row still claims its whole block where it is a lifecycle row (a kernel
-    lifecycle or deployment handler, or a `deploy`, `upgrade`, `selfdestruct`, `split`, `merge` or `unsafe`
-    modifier), has an unknown effect (a call through a function pointer), inline assembly, a `delegatecall` (a
-    library call lowered to one included), or a low-level call to `address(this)` (lowered to an internal call in the
-    same row). In this repository: UniswapV2.scash (createPair deploys) and marketplace.scash in the SDK fixtures;
-    upgrade_mapping.scash, upgrade_counter_data_nft.scash, selfdestruct_counter.scash, proxy_delegatecall.scash and
-    asm_simple.scash in the compiler's valid-contract-files.
+  - R-A (fixed in the commit after `a127fc2b4`, hole VM-confirmed at `f7a108792`): a row touching a sorted collection
+    with a chunkable value, or writing a state with no chunk lock of its own, claimed the whole trailing band; beside
+    a long note written over a long note, a `side` entry rewritten at an unused trailing slot settled. The route now
+    admits a band input only where its lock is in the run's value-chunk lock list, which is cleared at entry and
+    filled only by write sites that ran: the new value's chunk locks and, now on routes too, the old value's (an
+    update in either upsert shape, a delete). The route's output scan already admits a spent chunk's lock as a
+    mutable input's lock, so listing it admits no other output. A packed state is one data record, the route's own,
+    and a token container holds no own-category record, so neither needs a band claim. No row claims the band as a
+    whole. Test: NoteBook in `AuditRouteUnusedClaimedSlot.test.ts` (rewrite refused, the honest write settles).
+  - Residual (lanes, R2, R-B): a writer's row claims all of its own lanes, alternatives and alias priors included,
+    even where a run writes one; a written collection it projects no lane of keeps every lane of it. VM-checked at
+    `a2065ef8c`: an aliased putPair(5, 2, 5, 3) leaves its second lane to a pad, and a side entry rewritten there is
+    refused in the route body outside the C3 pin, so that shape is held. By reading, a conditional write's unused
+    lane round-trips under its conditional write flag (markConditionalSortedWriteFlag). A writer that projects no
+    lane is a hole, VM-confirmed at `dcbaea853`: LoopBook's `fill` (a bounded loop writer) claims every `side` lane,
+    and beside an honest fill batch a side entry rewritten at a lane only `triple` uses settled. The loop's entries
+    are a runtime stream whose lanes the run picks (cursor and permutation; the route keeps a per-collection
+    runtime input count), so an exact claim needs the run's record of the lanes its stream consumed. Not built. The
+    fallback, refusing a loop-only writer of a collection that another handler reaches at a fixed lane, is not
+    applied either: 37 kernel bus test files have loop writes and need triage before its test changes can be listed.
+  - R-C, stage 1 (`a57d01f69`, holes VM-confirmed at `88bfbcd87` and `a83db74a4`): a kernel-safe native assembly
+    row and an unsafe(2) row each claimed the whole block; beside a standalone batch of either, a `side` entry
+    rewritten at the block's pad settled. Kernel-safe native assembly is a closed computation and unsafe(2) writes
+    no record, so neither claims anything of its own now. The admission walks read the contract's own functions only,
+    so a handler whose free function held assembly that is not kernel-safe was admitted and claimed the whole block
+    (VM-confirmed the same way). The shapes whose writes a route cannot bound (such assembly, a delegatecall in any
+    spelling, a low-level call to `address(this)` still present at synthesis) are now refused by name over the
+    closure with free functions; the handler compiles direct. An unknown effect was already refused. Test:
+    `AuditRouteUnusedClaimedSlot.test.ts` (QuietBook, StirBook). No other bus test changes: no bus test source has a
+    free function with assembly or a delegatecall, every delegatecall in a bus test has an identifier receiver
+    (already refused), and none calls `address(this)` at a low level.
+  - R-C, stage 2 (`48a9c5e4b`, hole VM-confirmed at `25db4a41c`): a lifecycle row (a kernel lifecycle or deployment
+    handler, or a `deploy`, `upgrade`, `selfdestruct`, `split` or `merge` modifier) claimed its whole block. Beside a
+    compose's Factory.create row (a child deployment), an untouched `side` entry rewritten at the unused lane under
+    a declared resource row settled. A lifecycle row now claims what its body writes, and no row claims the whole
+    block: the verifier holds a split, merge or selfdestruct participant to its exact span (master, data records, a
+    funding or consumed-master tail), a routed upgrade's contract keeps no record (UpgradeStrandsBoundStateError),
+    and a child's records take its new category. Those four had no record in their span to rewrite, so no attack
+    on them could be built. Test: the deploy describe of `AuditComposeUntouchedRecordRow.test.ts`.
   - Bytes: bound non-graph census-path routes only; a read-only handler's flag goes (about 10-15 B), a dynamic-state
     writer adds the band lock check (about 60-90 B). Direct entries, graph and proxy routes, framed builds: unchanged.
 - **Inputless mint at a handler-managed collection** (HIGH; `dffcec4ac`, made exact in `6d6a6913f`; found 2026-11-23

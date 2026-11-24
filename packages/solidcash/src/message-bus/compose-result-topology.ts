@@ -1,6 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  ATOMIC_MESSAGE_BUS_MAX_ROWS, decodePushdataValue, getDefaultStateValue, scriptToBytecode,
+  ATOMIC_MESSAGE_BUS_MAX_ROWS, callConsumesResult, decodePushdataValue, getDefaultStateValue, scriptToBytecode,
   type ArgSource, type Artifact, type ExternalCallAbi, type ExternalCallExpression, type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
@@ -427,7 +427,7 @@ async function rebuildCallTopology(
             // reachability must not reinterpret an independently prepared loop or its occurrence domain.
             // Later sibling guards may still consume this unchanged producer by source iteration. Preserve its
             // compiler-qualified source-to-reached map even though the producer rows need no refresh.
-            if (sourceTemplate.hasReturnValues && sourceTemplate.callsiteId !== undefined
+            if (callConsumesResult(sourceTemplate) && sourceTemplate.callsiteId !== undefined
               && sourceTemplate.sourceLogicalIndex === undefined && outerDomainKey !== undefined
               && existing.every((child) => child.call.topologyOuterDomainKey === outerDomainKey
                 && Number.isSafeInteger(child.call.topologyOuterIteration)
@@ -686,7 +686,7 @@ async function rebuildCallTopology(
               return rawPayload && resolved
                 ? decodeCanonicalRawInvocation(childArtifact, resolved[0]).args : resolved;
             };
-            if (template.hasReturnValues && template.callsiteId !== undefined
+            if (callConsumesResult(template) && template.callsiteId !== undefined
               && template.sourceLogicalIndex === undefined
               && outerDomainKey !== undefined && outerIndex !== undefined) {
               if (reachedCurrent.has(outerIndex)) {
@@ -767,7 +767,7 @@ async function rebuildCallTopology(
               // unrecognised predecessor provides no proof that the isolated pre-transaction view is current.
               return !priorFn || Boolean(priorFn.externalCalls?.length);
             });
-            if (previous === undefined && template.hasReturnValues && onlyOutput !== undefined
+            if (previous === undefined && callConsumesResult(template) && onlyOutput !== undefined
               && template.occurrence !== 'loop' && !template.iterationDomain
               && !template.nestedIterationDomains?.length
               && !priorWrite && !priorNestedEffect
@@ -791,7 +791,7 @@ async function rebuildCallTopology(
             // A newly discovered producer may feed a mandatory later edge before any aggregate VM pass exists.
             // Seed each compiler-qualified reached occurrence with the isolated observation when available,
             // otherwise a typed empty value. Neither is a prepared return commitment.
-            if (previous === undefined && template.hasReturnValues
+            if (previous === undefined && callConsumesResult(template)
               && template.returnTypes?.length === 1 && template.callsiteId !== undefined
               && (template.occurrence === 'loop'
                 ? outerDomainKey !== undefined && outerIndex !== undefined

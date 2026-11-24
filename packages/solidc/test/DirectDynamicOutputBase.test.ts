@@ -35,7 +35,9 @@ describe('ordinary direct dynamic output coordinates', () => {
     const artifact = compileString(SOURCE, OPTIONS);
     const settle = artifact.abi.find((fn) => fn.name === 'settle');
     expect(settle?.dynamicWrites).toContain('rows');
-    expect(settle?.externalCalls?.map((call) => call.hasReturnValues === true)).toEqual([true, false]);
+    // `note` is void: it reads its callee's void record (hasReturnValues) and consumes no result (voidCallRecord).
+    expect(settle?.externalCalls?.map((call) => [call.hasReturnValues === true, call.voidCallRecord === true]))
+      .toEqual([[true, false], [true, true]]);
     expect(settle?.inputs.filter((input) => input.name === WITNESS)).toEqual([
       { name: WITNESS, type: 'bigint' },
     ]);

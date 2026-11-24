@@ -4286,6 +4286,7 @@ function buildFunctionAbiMetadata(
           ...(!ec.callMode && { needsSelectorVerification: !!ec.needsSelectorVerification }),
           requiredDataNftIndices: ec.requiredDataNftIndices,
           ...(ec.hasReturnValues && { hasReturnValues: true }),
+          ...(ec.voidCallRecord && { voidCallRecord: true }),
           ...(ec.returnTypes && ec.returnTypes.length > 0 && {
             returnTypes: ec.returnTypes.map((t) => t.toString()),
             ...(!ec.opaqueReturn && { resultEncoding: externalResultEncoding(ec.returnTypes, compilerOptions) }),

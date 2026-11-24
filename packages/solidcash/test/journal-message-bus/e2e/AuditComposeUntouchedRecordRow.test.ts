@@ -17,13 +17,16 @@
  * skipped its whole verifier-proven block and the attack settled (VM-confirmed at 97d38ed48); it now keeps the claims
  * of its rows, cut to that block, and the route refuses it. Both describes also mint a node with no input beside the
  * honest row, which the route's mint bound refuses. The third puts the victim in a proxy's block, the root caller's,
- * on the delegate route its implementation runs for the proxy's records.
+ * on the delegate route its implementation runs for the proxy's records. The fourth does so under the proxy-forward
+ * envelope transport (`messageBusProxyForwardEnvelope`), whose envelope rides in two carriers, the root proxy master's
+ * forwarded payload and its executor's route frame: the rebinding rewrites both alike.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions, encodeDataPush,
   encodeLockingBytecodeP2sh32, hash256, hexToBin,
 } from '@bitauth/libauth';
+import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { compileString, compileStringMulti } from '@solidcash/solidc';
 import {
   buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, scriptToBytecode, sha256,
@@ -85,6 +88,8 @@ type Provider = ReturnType<typeof createMessageBusCapstoneTestProvider>;
 type Manifest = ReturnType<typeof decodeAtomicMessageEnvelope>;
 
 const ENVELOPE_MAGIC = '4c334331';
+// SCB1, then PUSHDATA2: the head of a proxy-forward payload (withProxyForwardMessageEnvelope).
+const FORWARD_PAYLOAD_HEAD = '534342314d';
 const VERIFIER_MAGIC = '4c335631';
 const TXID = /^[0-9a-f]{64}$/;
 
@@ -100,6 +105,12 @@ function concatBytes(...parts: readonly Uint8Array[]): Uint8Array {
   return result;
 }
 
+/** The proxy-forward payload around `envelope`: SCB1, then the envelope as its executor pushes it. */
+const forwardPayload = (envelope: Uint8Array): Uint8Array => concatBytes(
+  hexToBin(FORWARD_PAYLOAD_HEAD), uint16(envelope.length), envelope,
+);
+
+/** Each failing input, with the instructions up to the one it failed at, in the body that ran it. */
 function failures(builder: TransactionBuilder): Array<{ inputIndex: number; error: string }> {
   const transaction = builder.buildLibauthTransaction();
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
@@ -107,7 +118,12 @@ function failures(builder: TransactionBuilder): Array<{ inputIndex: number; erro
   return transaction.inputs.flatMap((_input, inputIndex) => {
     const state = vm.evaluate({ inputIndex, sourceOutputs, transaction });
     const result = vm.stateSuccess(state);
-    return result === true ? [] : [{ inputIndex, error: `${result} (ip ${state.ip})` }];
+    if (result === true) return [];
+    // The VM moves ip past the instruction it fails at.
+    const ran = state.instructions.slice(Math.max(0, state.ip - 6), state.ip).map((instruction) => (
+      !('data' in instruction) || instruction.data.length === 0 ? Op[instruction.opcode]
+        : instruction.data.length <= 4 ? binToHex(instruction.data) : `<${instruction.data.length} bytes>`));
+    return [{ inputIndex, error: `${result} (ip ${state.ip}) after ${ran.join(' ')}` }];
   });
 }
 
@@ -122,17 +138,26 @@ async function connect(
   };
 }
 
-/** The encoded envelope the transaction carries and the inputs whose unlocking pushes it verbatim. */
+/**
+ * The encoded envelope the transaction carries and the inputs whose unlocking pushes it: verbatim, or inside a
+ * proxy-forward payload, the root proxy master's copy.
+ */
 function carriedEnvelope(builder: TransactionBuilder): { envelope: Uint8Array; carriers: number[] } {
   let envelope: Uint8Array | undefined;
   const carriers: number[] = [];
   builder.buildLibauthTransaction().inputs.forEach((input, index) => {
     for (const instruction of decodeAuthenticationInstructions(input.unlockingBytecode)) {
-      if (!('data' in instruction) || !binToHex(instruction.data).startsWith(ENVELOPE_MAGIC)) continue;
-      if (envelope !== undefined && binToHex(envelope) !== binToHex(instruction.data)) {
+      if (!('data' in instruction)) continue;
+      const pushed = binToHex(instruction.data);
+      const forwarded = pushed.startsWith(FORWARD_PAYLOAD_HEAD) && pushed.slice(14).startsWith(ENVELOPE_MAGIC)
+        && pushed === binToHex(forwardPayload(instruction.data.slice(7)));
+      const carried = pushed.startsWith(ENVELOPE_MAGIC) ? instruction.data
+        : forwarded ? instruction.data.slice(7) : undefined;
+      if (carried === undefined) continue;
+      if (envelope !== undefined && binToHex(envelope) !== binToHex(carried)) {
         throw new Error('the compose carries two different envelopes');
       }
-      envelope = instruction.data;
+      envelope = carried;
       carriers.push(index);
     }
   });
@@ -145,6 +170,10 @@ function rebindEnvelope(builder: TransactionBuilder, changed: Manifest): void {
   const { envelope, carriers } = carriedEnvelope(builder);
   const oldHex = binToHex(envelope);
   const changedEnvelope = encodeAtomicMessageEnvelope(changed);
+  // Each carried push and its rebound one: the envelope itself, and a proxy-forward payload around it.
+  const rebound = new Map([
+    [oldHex, changedEnvelope], [binToHex(forwardPayload(envelope)), forwardPayload(changedEnvelope)],
+  ]);
   for (const index of carriers) {
     const unlocker = builder.inputs[index].unlocker;
     builder.inputs[index] = {
@@ -154,8 +183,8 @@ function rebindEnvelope(builder: TransactionBuilder, changed: Manifest): void {
         generateLockingBytecode: () => unlocker.generateLockingBytecode(),
         generateUnlockingBytecode: (options) => encodeAuthenticationInstructions(
           decodeAuthenticationInstructions(unlocker.generateUnlockingBytecode(options)).map((instruction) => (
-            'data' in instruction && binToHex(instruction.data) === oldHex
-              ? { ...instruction, data: changedEnvelope } : instruction)),
+            'data' in instruction && rebound.has(binToHex(instruction.data))
+              ? { ...instruction, data: rebound.get(binToHex(instruction.data))! } : instruction)),
         ),
       } as typeof unlocker,
     };
@@ -317,6 +346,23 @@ async function untouchedRecord(
 }
 
 /**
+ * `builder` with a second node of the victim's collection, no input spent for it, in place of the change output, whose
+ * satoshis it carries: inputs and outputs stay one to one, as the verifier requires, and the value balances.
+ */
+function mintInPlaceOfChange(
+  builder: TransactionBuilder, changeLock: Uint8Array, record: Pick<UntouchedRecord, 'victim' | 'lock' | 'forged'>,
+): TransactionBuilder {
+  const lockOf = (to: string | Uint8Array): string => binToHex(typeof to === 'string' ? addressToLockScript(to) : to);
+  const change = builder.outputs.findIndex((output) => lockOf(output.to) === binToHex(changeLock));
+  expect(change, 'the compose pays change').toBeGreaterThanOrEqual(0);
+  builder.outputs[change] = {
+    to: record.lock, amount: builder.outputs[change]!.amount,
+    token: { ...record.victim.token!, nft: { capability: 'mutable', commitment: record.forged } },
+  };
+  return builder;
+}
+
+/**
  * The honest compose, the control and the attack, the bus and the driver compiled as graph routes or as bound leaf
  * routes: `side[9]` at a pad of the bus block no row uses, declared under its own resource row, unchanged or with its
  * value one bit off.
@@ -340,7 +386,8 @@ async function composeScenario(graph: boolean): Promise<ComposeScenario> {
   // `put(5, 9)` through `poke`, or with `key` through `pokeAt`.
   const compose = async (key?: bigint, value = 4n): Promise<TransactionBuilder> => {
     const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
-    changeLock = funder.unlocker.generateLockingBytecode();
+    const changeAddress = funder.unlocker.generateLockingBytecode();
+    changeLock = changeAddress;
     return messageBus.compose({
       preparedCalls: key === undefined ? [
         { contract: driver, functionName: 'poke', args: [] },
@@ -350,23 +397,15 @@ async function composeScenario(graph: boolean): Promise<ComposeScenario> {
         { contract: bus, functionName: 'put', args: [key, value] },
       ],
       funder,
-      changeAddress: changeLock,
+      changeAddress,
     }).build();
   };
   const {
     honest, honestFailures, control, attack, lane, victim, lock, forged, masterOf,
   } = await untouchedRecord(provider, () => compose(), busArtifact, bus.inner, categoryId, 'side');
 
-  // Beside the honest row, a second side[9] node with no input spent for it, in place of the change output, whose
-  // satoshis it carries: inputs and outputs stay one to one, as the verifier requires, and the value balances.
-  const minted = await compose();
-  const lockOf = (to: string | Uint8Array): string => binToHex(typeof to === 'string' ? addressToLockScript(to) : to);
-  const change = minted.outputs.findIndex((output) => lockOf(output.to) === binToHex(changeLock!));
-  expect(change, 'the compose pays change').toBeGreaterThanOrEqual(0);
-  minted.outputs[change] = {
-    to: lock, amount: minted.outputs[change]!.amount,
-    token: { ...victim.token!, nft: { capability: 'mutable', commitment: forged } },
-  };
+  // Beside the honest row, a second side[9] node with no input spent for it, in place of the change output.
+  const minted = mintInPlaceOfChange(await compose(), changeLock!, { victim, lock, forged });
   const mint = failures(minted);
   // An honest bus row that inserts 11, after 9.
   const insert = failures(await compose(11n));
@@ -424,7 +463,8 @@ async function proxyScenario(): Promise<Omit<ComposeScenario, 'insert'>> {
   let changeLock: Uint8Array | undefined;
   const compose = async (): Promise<TransactionBuilder> => {
     const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
-    changeLock = funder.unlocker.generateLockingBytecode();
+    const changeAddress = funder.unlocker.generateLockingBytecode();
+    changeLock = changeAddress;
     return messageBus.compose({
       preparedCalls: [
         {
@@ -434,7 +474,7 @@ async function proxyScenario(): Promise<Omit<ComposeScenario, 'insert'>> {
         { contract: bus, functionName: 'put', args: [5n, 9n], callsiteId: callsite!.callsiteId },
       ],
       funder,
-      changeAddress: changeLock,
+      changeAddress,
     }).build();
   };
   const {
@@ -444,16 +484,90 @@ async function proxyScenario(): Promise<Omit<ComposeScenario, 'insert'>> {
     'side',
   );
   // A second side[9] node of the proxy's, in place of the change output, as on the bus.
-  const minted = await compose();
-  const lockOf = (to: string | Uint8Array): string => binToHex(typeof to === 'string' ? addressToLockScript(to) : to);
-  const change = minted.outputs.findIndex((output) => lockOf(output.to) === binToHex(changeLock!));
-  expect(change, 'the compose pays change').toBeGreaterThanOrEqual(0);
-  minted.outputs[change] = {
-    to: lock, amount: minted.outputs[change]!.amount,
-    token: { ...victim.token!, nft: { capability: 'mutable', commitment: forged } },
-  };
-  const mint = failures(minted);
+  const mint = failures(mintInPlaceOfChange(await compose(), changeLock!, { victim, lock, forged }));
   console.log('compose untouched proxy record', { lane, control, attack, mint });
+  return { provider, honest: { builder: honest, failures: honestFailures }, control, attack, mint, lane };
+}
+
+const FORWARD_BANK = `contract LaneBank() {
+  int counter;
+  event Ping(int value);
+  function initialize() public { this.counter = 0; }
+  function ping(int value) public { emit Ping(value); this.counter = this.counter + 1; require(true); }
+}`;
+
+const FORWARD_COORDINATOR = `interface ILaneBank { function ping(int value) external; }
+contract LaneCoordinator() {
+  mapping(int => int) side;
+  function seed(int key, int value) public { this.side[key] = this.side[key] + value; require(true); }
+  function poke(address bank, int value) public { ILaneBank(bank).ping(value); require(true); }
+}`;
+
+/**
+ * The proxy describe's compose under the proxy-forward envelope transport, which every routed participant shares, so
+ * the callee is a proxy too: a deployProxy LaneCoordinator, the root caller, calls `ping(7)` on a deployProxy
+ * LaneBank (the shape KernelProxyToProxyEventCompose settles). The coordinator's own `side[9]`, which the compose does
+ * not spend, sits at a pad of the proxy's block under its own resource row.
+ */
+async function forwardScenario(): Promise<Omit<ComposeScenario, 'insert'>> {
+  const provider = createMessageBusCapstoneTestProvider();
+  const signer = new Signer(new Uint8Array(32).fill(0x48), provider);
+  for (let index = 0; index < 60; index += 1) {
+    await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+  }
+  const forward = { ...KERNEL, messageBusProxyForwardEnvelope: true } as const;
+  const bankArtifact = compileString(FORWARD_BANK, forward);
+  const implementationArtifact = compileString(FORWARD_COORDINATOR, forward);
+  for (const artifact of [bankArtifact, implementationArtifact]) {
+    expect(artifact.delegateArtifact?.messageBus?.verifierProgram?.envelopeTransport).toBe('proxy-forward');
+  }
+  const delegate = implementationArtifact.delegateArtifact!;
+  expect(delegate.messageBus?.handlers.find((handler) => handler.name === 'poke')).toMatchObject({ eligible: true });
+  const bank = await upgrades.deployProxy(getContractFactory(bankArtifact, signer), []);
+  const deployed = await upgrades.deployProxy(
+    getContractFactory(implementationArtifact, signer), {}, { initializer: false },
+  );
+  const dispatch = deployed as unknown as { seed(key: bigint, value: bigint): { send(): Promise<unknown> } };
+  await dispatch.seed(5n, 7n).send();
+  await dispatch.seed(9n, 1n).send();
+  deployed.implementation._registerResolvedExternal('ILaneBank', bank.proxy);
+  const callsite = delegate.abi.find((entry) => entry.name === 'poke')?.externalCalls?.[0];
+  expect(callsite).toMatchObject({ functionName: 'ping', interfaceName: 'ILaneBank' });
+  let changeLock: Uint8Array | undefined;
+  const compose = async (): Promise<TransactionBuilder> => {
+    const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
+    const changeAddress = funder.unlocker.generateLockingBytecode();
+    changeLock = changeAddress;
+    return messageBus.compose({
+      preparedCalls: [
+        {
+          contract: deployed.proxy, functionName: 'poke', args: [bank.proxy.inner.lockingBytecode, 7n],
+          executionArtifact: deployed.implementation.inner.artifact, executor: deployed.implementation,
+        },
+        {
+          contract: bank.proxy, functionName: 'ping', args: [7n], callsiteId: callsite!.callsiteId,
+          executionArtifact: bank.implementation.inner.artifact, executor: bank.implementation,
+        },
+      ],
+      funder,
+      changeAddress,
+    }).build();
+  };
+  const {
+    honest, honestFailures, control, attack, lane, victim, lock, forged,
+  } = await untouchedRecord(
+    provider, compose, deployed.implementation.inner.artifact, deployed.proxy.inner, deployed.proxy.categoryId,
+    'side',
+  );
+  // The two carriers: the root proxy master's payload and its executor's route frame. No verifier carries it.
+  const executor = honest.inputs.findIndex((input) => (input.unlocker as Partial<ContractUnlocker>).contract?.address
+    === deployed.implementation.inner.address);
+  expect(executor, 'the root executor, past its proxy master').toBeGreaterThan(0);
+  expect(carriedEnvelope(honest).carriers, 'the forward envelope carriers').toEqual([0, executor]);
+  const mint = failures(mintInPlaceOfChange(await compose(), changeLock!, { victim, lock, forged }));
+  console.log('compose untouched proxy record, forward envelope', { executor, lane, control, attack, mint });
   return { provider, honest: { builder: honest, failures: honestFailures }, control, attack, mint, lane };
 }
 
@@ -528,6 +642,26 @@ describe('compose path on a proxy\'s block: a resource row may rewrite a record 
   });
 });
 
+describe('compose path on a proxy\'s block, forward envelope: a resource row may rewrite an untouched record', () => {
+  let state: Omit<ComposeScenario, 'insert'>;
+  // Two proxies, each with its executor and verifier, in every one of the four composes.
+  beforeAll(async () => { state = await forwardScenario(); }, 600_000);
+
+  it('settles the honest compose, and the control that declares an untouched entry unchanged', async () => {
+    expect(state.honest.failures, 'honest compose').toEqual([]);
+    expect(state.control, 'control: the entry recreated unchanged under its row, both carriers rebound').toEqual([]);
+    await expect(state.provider.sendRawTransaction(state.honest.builder.build())).resolves.toMatch(TXID);
+  }, 300_000);
+
+  // The transport moves only the envelope: the delegate route keeps the claims of its rows on the proxy's block.
+  it('refuses an untouched entry rewritten under a declared resource row, the envelope rebound in both carriers', () => {
+    expect(state.attack).not.toEqual([]);
+  });
+
+  it('refuses a node of the proxy\'s minted with no input beside the honest row', () => {
+    expect(state.mint).not.toEqual([]);
+  });
+});
 
 /** A Driver row calling the factory's deploy row, and the untouched `side` entry rewritten in the factory's block. */
 async function deployScenario(): Promise<Omit<ComposeScenario, 'insert' | 'mint'>> {

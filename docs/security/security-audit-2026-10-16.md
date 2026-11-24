@@ -2357,9 +2357,17 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     Fixed in `065341ecf`: a delegate route takes claims like any bound route. A compiler-owned delegate route bases
     every slot of its layout at the authenticated proxy master, the base its pin measures from, so the masks line up;
     it keeps the inline pass and, with claims, the mint bound. The proxy describe refuses the rewrite and a mint in
-    place of the change output (both at the executor input). Not built: the `messageBusProxyForwardEnvelope`
-    transport, whose envelope rides in two carriers, the executor's route frame and the proxy master's copy
-    (compose-assemble.ts); its route takes the same claims.
+    place of the change output (both at the executor input).
+  - Proxy routes, proxy-forward envelope (`messageBusProxyForwardEnvelope`; built and run 2026-11-24, `76e7d3c03`):
+    refused, no code change. Its envelope rides in two carriers, the root proxy master's forwarded payload and its
+    executor's route frame (compose-assemble.ts), and every routed participant shares the transport, so the callee is
+    a proxy too: a deployProxy LaneCoordinator, the root caller, calls a deployProxy LaneBank. The forward describe
+    rebinds both carriers alike, and every verifier commitment. Run once (mocknet): the honest compose and the control
+    (the coordinator's untouched entry declared unchanged) settle on every input; the rewrite under its declared row
+    and a mint in place of the change output are refused at the coordinator's executor input. Route synthesis gives a
+    delegate route claims whatever its envelope carrier (`recordClaimRoute`, compiler.ts:12743), so the lane no row
+    claims stays under the route's same-index pin (GenerateTargetTraversal.ts:63043, the commitment check of
+    emitSameIndexPin at 63848-63851), and the mint under its mint bound (emitRouteCollectionMintBounds, 62822-62823).
   - Zero-parameter rows (`4625e4a7a`): the route's zero-parameter selector branch set neither the row's claim
     counter nor the DYN-1 writer flag, which only the parameterised branch set, so such a row claimed nothing.
     KernelMultiDynamicShrink's graph compose of `shrink()` was refused at the Store master: its old chunks, inside

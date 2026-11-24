@@ -2200,9 +2200,13 @@ read line by line, merged into one landing tree, and its tests and their neighbo
     even where a run writes one; a written collection it projects no lane of keeps every lane of it. VM-checked at
     `a2065ef8c`: an aliased putPair(5, 2, 5, 3) leaves its second lane to a pad, and a side entry rewritten there is
     refused in the route body outside the C3 pin, so that shape is held. By reading, a conditional write's unused
-    lane round-trips under its conditional write flag (markConditionalSortedWriteFlag). The open candidate is a
-    writer that projects no lane (a loop writer): it claims every lane of the collection, other handlers' lanes
-    included, which nothing else checks when those handlers did not run. Not confirmed; not fixed.
+    lane round-trips under its conditional write flag (markConditionalSortedWriteFlag). A writer that projects no
+    lane is a hole, VM-confirmed at `dcbaea853`: LoopBook's `fill` (a bounded loop writer) claims every `side` lane,
+    and beside an honest fill batch a side entry rewritten at a lane only `triple` uses settled. The loop's entries
+    are a runtime stream whose lanes the run picks (cursor and permutation; the route keeps a per-collection
+    runtime input count), so an exact claim needs the run's record of the lanes its stream consumed. Not built. The
+    fallback, refusing a loop-only writer of a collection that another handler reaches at a fixed lane, is not
+    applied either: 37 kernel bus test files have loop writes and need triage before its test changes can be listed.
   - R-C, stage 1 (`a57d01f69`, holes VM-confirmed at `88bfbcd87` and `a83db74a4`): a kernel-safe native assembly
     row and an unsafe(2) row each claimed the whole block; beside a standalone batch of either, a `side` entry
     rewritten at the block's pad settled. Kernel-safe native assembly is a closed computation and unsafe(2) writes

@@ -184,6 +184,37 @@ contract Parent() {
       .toThrow(/master lock/);
   });
 
+  // A raw call's {value:} pays its target's lock: a stateful contract's is the master lock, which never spends the
+  // coin. Where the compiler sees the target is one, it refuses the call and names the typed call to use.
+  const rawValueTo = (members: string): string => `
+interface ICounter { public int counter; function increment(); }
+contract Child { int x; constructor() { x = 1; } function poke() { x = x + 1; } }
+contract Parent(ICounter counter) {
+    int n;
+    ${members}
+}
+`;
+  it.each([
+    ['a contract-typed parameter', 'Child',
+      'function pay(Child c, bytes data) { (bool ok, bytes r) = address(c).call{value: 5000}(data); require(ok); '
+      + 'n = n + 1; }'],
+    ['a child its new made', 'Child',
+      'function make(bytes data) { Child c = new Child(); (bool ok, bytes r) = address(c).call{value: 5000}(data); '
+      + 'require(ok); n = n + 1; }'],
+    ['an interface that declares state', 'ICounter',
+      'function pay(bytes data) { (bool ok, bytes r) = address(counter).call{value: 5000}(data); require(ok); '
+      + 'n = n + 1; }'],
+  ])('refuses a raw value call to %s, naming the typed call', (_shape, name, members) => {
+    expect(() => compileString(rawValueTo(members), { allowUnsafeOperations: true })).toThrow(new RegExp(
+      `raw call with \\{value:\\} to '${name}' pays its address.*with a typed call, \`${name}\\(target\\)\\.f\\{value:`,
+    ));
+  });
+
+  it('compiles a raw value call to a plain address, whose contract it cannot see', () => {
+    expect(() => compileString(rawValueTo('function pay(address to, bytes data) { (bool ok, bytes r) = '
+      + 'to.call{value: 5000}(data); require(ok); n = n + 1; }'), { allowUnsafeOperations: true })).not.toThrow();
+  });
+
 
   it('a creating call seeds the child\'s single token container and the child spends it', async () => {
     const mock = new MockNetworkProvider({ profile: 'production' });

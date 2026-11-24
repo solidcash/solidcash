@@ -1444,6 +1444,18 @@ export class StatefulAddressPaymentError extends SolidCashError {
   }
 }
 
+/**
+ * A raw call's `{value:}` to a contract the compiler sees is stateful: it pays the master lock, which never spends the
+ * coin. A typed call pays the callee's satoshi container, and the callee's record binds what it received.
+ */
+export class StatefulRawValueCallError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `a raw call with {value:} to '${contractName}' pays its address, the master lock of a stateful `
+      + `contract, which never spends the coin. Send value to it with a typed call, \`${contractName}(target).f{value: `
+      + 'v}(...)`, which pays its satoshi container.');
+  }
+}
+
 /** A payment to a contract-typed address the compiler cannot classify; the satoshis may be unspendable. */
 export class StatefulAddressPaymentWarning {
   readonly message: string;

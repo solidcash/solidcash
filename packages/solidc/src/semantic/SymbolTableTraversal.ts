@@ -270,6 +270,7 @@ import { reachableContractFunctions } from './PruneUnreachableMsgDataMethods.js'
 import { emitCompilerWarning } from '../warnings.js';
 import {
   DeployerUnsupportedError, ReservedNameError, StatefulAddressPaymentError, StatefulAddressPaymentWarning,
+  StatefulRawValueCallError,
   DeploySaltError, DeployValueBelowReserveError, DeployValueWithoutContainerError, DeployedChildCallError,
   ComputedCallTargetWarning, type ComputedCallTargetKind, LoopLocalRepeatedCallsError,
 } from '../Errors.js';
@@ -12387,6 +12388,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // applied to the serialized expression tree after the final slot layout is known.
       const provisionalSlotIndex = slots.length;
       node.callInfo.externalCallSlotIndex = provisionalSlotIndex;
+      this.refuseRawValueCallToStatefulContract(node);
       const ternaryTarget = node.addressExpression instanceof TernaryOpNode
         ? node.addressExpression : undefined;
       const ternaryNames = ternaryTarget?.condition instanceof IdentifierNode
@@ -16772,6 +16774,95 @@ export default class SymbolTableTraversal extends AstTraversal {
         + 'compilation; if it is a stateful contract the satoshis land on its master lock and can never be spent. '
         + 'Call one of its payable functions instead.').message);
     }
+  }
+
+  /**
+   * A raw call's `{value:}` pays its target's lock. Where the compiler sees the target is a stateful contract, typed
+   * or held as one (a parameter, a state variable, a child its `new` made, an interface that declares state), that
+   * lock is the master's, which never spends the coin. A plain `address` (a parameter, a computation, msg.sender, a
+   * literal) is not seen.
+   */
+  private refuseRawValueCallToStatefulContract(node: ExternalFunctionCallNode): void {
+    if (node.interfaceName !== '__raw__' || !hasEffectiveCallValue(node.callOptions?.value)) return;
+    if (this.compilerOptions.composition === 'framed' || this.compilerOptions.messageBus === true) return;
+    const name = this.statefulTargetName(node.addressExpression);
+    if (name !== undefined) throw new StatefulRawValueCallError(node, name);
+  }
+
+  /**
+   * The stateful contract or state-declaring interface an expression is typed or made as, through its casts and the
+   * locals the compiler synthesizes for a call's target, which reach this pass with no definition link.
+   */
+  private statefulTargetName(expression: ExpressionNode, seen = new Set<string>()): string | undefined {
+    let current: ExpressionNode = expression;
+    while (current instanceof CastNode) {
+      const named = this.statefulTypeName(current.type);
+      if (named !== undefined) return named;
+      current = current.expression;
+    }
+    if (current instanceof InstantiationNode && current.referencedContract) {
+      return this.statefulDeclarationName(current.referencedContract.name);
+    }
+    if (current instanceof FunctionCallNode
+      && (this.contractMap.has(current.identifier.name) || this.interfaceMap.has(current.identifier.name))) {
+      return this.statefulDeclarationName(current.identifier.name);
+    }
+    if (current instanceof IdentifierNode && current.definition === undefined && !seen.has(current.name)) {
+      // This pass can run before the body's names are bound: find the name's declaration.
+      const name = current.name;
+      seen.add(name);
+      const local = this.findLocalDefinition(this.currentFunction?.body, name);
+      if (local !== undefined) {
+        return this.statefulTypeName(local.type)
+          ?? (local.expression === undefined ? undefined : this.statefulTargetName(local.expression, seen));
+      }
+      const declared = [...(this.currentFunction?.parameters ?? []), ...(this.currentContract?.parameters ?? []),
+        ...(this.currentContract?.stateVariables ?? [])].find((candidate) => candidate.name === name);
+      return this.statefulTypeName(declared?.type);
+    }
+    const definition = current instanceof IdentifierNode ? current.definition?.definition : undefined;
+    const typed = this.statefulTypeName(current.type ?? (definition as { type?: Type } | undefined)?.type);
+    // A local holding a cast of one, such as the one a lowering makes for `address(c).call(..)`, keeps its source.
+    if (typed === undefined && definition instanceof VariableDefinitionNode && definition.expression !== undefined
+      && !seen.has(definition.name)) {
+      seen.add(definition.name);
+      return this.statefulTargetName(definition.expression, seen);
+    }
+    return typed;
+  }
+
+  /** The declaration of local `name` in `node`. */
+  private findLocalDefinition(
+    node: Node | undefined, name: string, seen: Set<Node> = new Set(),
+  ): VariableDefinitionNode | undefined {
+    if (!node || seen.has(node)) return undefined;
+    seen.add(node);
+    if (node instanceof VariableDefinitionNode && node.name === name) return node;
+    for (const [key, value] of Object.entries(node)) {
+      if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+      for (const item of Array.isArray(value) ? value : [value]) {
+        if (!(item instanceof Node)) continue;
+        const found = this.findLocalDefinition(item, name, seen);
+        if (found !== undefined) return found;
+      }
+    }
+    return undefined;
+  }
+
+  private statefulTypeName(type: Type | undefined): string | undefined {
+    return type instanceof AddressType && type.interfaceName !== undefined
+      ? this.statefulDeclarationName(type.interfaceName) : undefined;
+  }
+
+  /** A declared contract with state (or that deploys a stateful child), or an interface that declares state. */
+  private statefulDeclarationName(name: string): string | undefined {
+    const declaration = this.contractMap.get(name);
+    if (declaration !== undefined) {
+      return declaration.stateVariables.length > 0 || declaration.collections.length > 0
+        || this.surveyContractStatefulness(declaration).deploysStatefulChild ? name : undefined;
+    }
+    const iface = this.interfaceMap.get(name);
+    return iface !== undefined && (iface.stateVariables.length > 0 || iface.collections.length > 0) ? name : undefined;
   }
 
   /**

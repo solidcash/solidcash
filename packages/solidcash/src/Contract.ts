@@ -303,6 +303,29 @@ function parsedFunctionBody(body: string): Uint8Array {
   return parsed;
 }
 
+/** What a run no caller reads takes for each witness its caller would name: no record, no reader, no genesis call. */
+const STANDALONE_WITNESSES: ReadonlyMap<string, () => FunctionArgument> = new Map([
+  ['__internal__returnOutputIdx', (): FunctionArgument => -1n],
+  [CALL_RECORD_READER_INPUT, (): FunctionArgument => CALL_RECORD_NO_READER],
+  ['__internal__genesisCall', (): FunctionArgument => new Uint8Array()],
+]);
+
+/**
+ * A physical frame naming every input but the standalone witnesses (a delegate entry's proxy master, say), completed
+ * with their standalone values at their ABI positions. Any other frame is returned as given.
+ */
+function completeStandaloneFrame(
+  abiFunction: AbiFunction, args: FunctionArgument[], visibleCount: number,
+): FunctionArgument[] {
+  const named = abiFunction.inputs.filter((input) => !STANDALONE_WITNESSES.has(input.name)).length;
+  if (args.length === abiFunction.inputs.length || args.length === visibleCount || args.length !== named) return args;
+  let next = 0;
+  return abiFunction.inputs.map((input) => {
+    const standalone = STANDALONE_WITNESSES.get(input.name);
+    return standalone === undefined ? args[next++] : standalone();
+  });
+}
+
 function parsedArtifactScript(artifact: Artifact): ReturnType<typeof asmToScript> {
   const key = artifact as object;
   let script = parsedArtifactScripts.get(key);
@@ -739,11 +762,13 @@ export class Contract<
   }
 
   private createUnlocker(abiFunction: AbiFunction, selector?: Uint8Array): ContractFunctionUnlocker {
-    return (...args: FunctionArgument[]) => {
+    return (...supplied: FunctionArgument[]) => {
       // __internal__ params (e.g. the blockhash co-spend index) are SDK-filled. Stateless callers pass only
       // the visible args and the unlocker fills the internals; the stateful orchestrator passes the full
-      // list already filled. Accept either shape.
+      // list already filled; a hand-built physical frame may leave out the standalone witnesses, which take
+      // their standalone values. Accept each shape.
       const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
+      const args = completeStandaloneFrame(abiFunction, supplied, visibleInputs.length);
       if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length) {
         throw new Error(`Incorrect number of arguments passed to function ${abiFunction.name}. Expected ${visibleInputs.length} arguments (${visibleInputs.map((input) => input.type)}) but got ${args.length}`);
       }

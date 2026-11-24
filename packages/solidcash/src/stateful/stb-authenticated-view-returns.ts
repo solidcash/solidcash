@@ -57,6 +57,24 @@ export interface AuthenticatedViewReturnHost {
     carriers: ReadonlySet<ExternalCallUtxoGroup>,
   ): void;  /** The digest of the call a direct return record answers; none for a routed one. */
   callRecordDigest?(identity: string): Uint8Array | undefined;
+  /** Whether the return this identity names is a direct call record, which its callee pins and counts once. */
+  isCallRecord?(identity: string): boolean;
+}
+
+/** A return witness this group's carrier names: a caller's read, or a nested proxy implementation's own record. */
+const RETURN_WITNESS = /^__internal__(?:externalReturnOutputIdx\d*|returnOutputIdx)$/;
+
+/** Turns every carrier of `commitment` but the one at `keep` into a token-free pad of its value. */
+function vacateRecordCopies(outputs: Output[], keep: number, categoryId: string, commitment: string): boolean {
+  let vacated = false;
+  for (const [index, output] of outputs.entries()) {
+    if (index === keep || !isViewReturnTailOutput(output)
+      || output.token?.category.toLowerCase() !== categoryId.toLowerCase()
+      || String(output.token.nft?.commitment ?? '').toLowerCase() !== commitment.toLowerCase()) continue;
+    outputs[index] = { to: Uint8Array.of(0x51), amount: output.amount };
+    vacated = true;
+  }
+  return vacated;
 }
 
 export function ensureAuthenticatedViewReturns(
@@ -192,13 +210,19 @@ export function ensureAuthenticatedViewReturns(
         if (!carrier.returnWitnessGroups || !carrier.refreshInternalArgs) continue;
         const updates: Record<string, bigint> = {};
         for (const [name, owner] of Object.entries(carrier.returnWitnessGroups)) {
-          if (owner !== groupIdx || !/^__internal__externalReturnOutputIdx\d*$/.test(name)) continue;
+          if (owner !== groupIdx || !RETURN_WITNESS.test(name)) continue;
           if (carrier.internalArgs?.[name] === BigInt(returnHost)) continue;
           updates[name] = BigInt(returnHost);
         }
         if (Object.keys(updates).length === 0) continue;
         carrier.refreshInternalArgs(updates, { shiftPredOut: false });
         changedCarriers.add(carrier);
+        changed = true;
+      }
+      // A direct call's callee pins and counts its record once: a copy an earlier placement left elsewhere goes.
+      if (host.isCallRecord?.(pending.identity)
+        && vacateRecordCopies(builder.outputs, returnHost, pending.categoryId, pending.commitment)) {
+        host.builtReturnEventOutputIndices.set(pending.identity, returnHost);
         changed = true;
       }
       continue;
@@ -220,13 +244,16 @@ export function ensureAuthenticatedViewReturns(
     host.builtReturnEventOutputIndices.set(pending.identity, returnHost);
     host.builtReturnEventOutputIndices.set(`${pending.identity}:0`, returnHost);
     if (group) group.returnOutputIndex = returnHost;
+    if (host.isCallRecord?.(pending.identity)) {
+      vacateRecordCopies(builder.outputs, returnHost, pending.categoryId, pending.commitment);
+    }
     // Force unlockers that name this group to read the stamped returnHost — reconcile
     // alone can keep a stale returnOutputIdx from an earlier filler slot.
     for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
       if (!carrier.returnWitnessGroups || !carrier.refreshInternalArgs) continue;
       const updates: Record<string, bigint> = {};
       for (const [name, owner] of Object.entries(carrier.returnWitnessGroups)) {
-        if (owner !== groupIdx || !/^__internal__externalReturnOutputIdx\d*$/.test(name)) continue;
+        if (owner !== groupIdx || !RETURN_WITNESS.test(name)) continue;
         if (carrier.internalArgs?.[name] === BigInt(returnHost)) continue;
         updates[name] = BigInt(returnHost);
       }

@@ -129,7 +129,8 @@ describe('genesisCalls is on by default', () => {
  * Each code's SHA-256 as the compiler gave it before the default changed, at this tree: with the option unset, and with
  * `genesisCalls: false`. Before, an unset option compiled no genesis call but flagged a record-sound contract, and
  * `false` flagged one with a returning entry. Taken again once call records named their reader, which every contract
- * here with a record-publishing entry digests (the `unsafe` one has none, and is unchanged).
+ * here with a record-publishing entry digests (the `unsafe` one has none, and is unchanged), and the `delegate` one
+ * again once a delegate's void entry pinned the record of its proxy's call.
  */
 const BEFORE = {
   unsafe: {
@@ -146,8 +147,8 @@ const BEFORE = {
   delegate: {
     source: `${P} contract C { int s; function a() { s = s + 1; } function d() delegate { s = s + 2; } }`,
     options: { allowUnsafeOperations: true },
-    unset: '3300420741c9f5ec16e17990750289c3e925d212335967aed385994c1d1e8713',
-    off: '3300420741c9f5ec16e17990750289c3e925d212335967aed385994c1d1e8713',
+    unset: '03afd2a903ec6f5ecad237672dcbc90a3cd5278bf7d62ceee1dd1d6c6ea010fb',
+    off: '03afd2a903ec6f5ecad237672dcbc90a3cd5278bf7d62ceee1dd1d6c6ea010fb',
   },
   stateless: {
     source: `${P} contract C(bytes20 pkh) { function get(int a) public pure returns (int) { return a + 1; } `

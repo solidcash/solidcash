@@ -1767,6 +1767,8 @@ export class StatefulTransactionBuilder {
         this._syncRefreshedCarrierMasters(builder, carriers);
       },
       callRecordDigest: (identity: string) => this.callRecordDigestFor(identity),
+      isCallRecord: (identity: string) => this.callRecordDigestFor(identity) !== undefined
+        || this.voidEntryRecord(identity) !== undefined,
     };
   }
 
@@ -5727,7 +5729,10 @@ export class StatefulTransactionBuilder {
   private groupCallRecordReader(group: ExternalCallUtxoGroup): number {
     const physical = group.callBatchUnit?.physical === undefined ? group
       : this.externalCallUtxoGroups[group.callBatchUnit.physical] ?? group;
-    const category = physical.mintingInputWitnessCategories?.[CALL_RECORD_READER_INPUT];
+    // A proxied callee's call runs in its implementation, which takes the reader witness; the forward takes none.
+    const runner = physical.delegateCallGroupIndex === undefined ? physical
+      : this.lowLevelCallUtxoGroups[physical.delegateCallGroupIndex] ?? physical;
+    const category = runner.mintingInputWitnessCategories?.[CALL_RECORD_READER_INPUT];
     return category === undefined ? Number(CALL_RECORD_NO_READER) : this.findMintingInputIndex(category);
   }
 

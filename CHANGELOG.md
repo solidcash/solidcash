@@ -180,6 +180,10 @@
   compile task no longer prints a file's warnings twice (#14, @PugarHuda).
 - The WalletConnect object of an overloaded function carries that overload's function body; it carried the first
   overload's (found reviewing #1).
+- A contract behind a proxy can be called by a void call through a one-method interface: its implementation now pins
+  the record of the call its proxy forwarded, which binds the method and arguments it ran. Before, the implementation
+  pinned none and the honest call failed closed. Implementations behind a proxy compile to new bytes (a delegate's
+  void entries take the record witness and its reader); the proxy itself is unchanged.
 
 ### Added
 

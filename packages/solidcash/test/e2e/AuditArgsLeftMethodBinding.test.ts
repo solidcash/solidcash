@@ -37,6 +37,9 @@ interface Shape {
   callerState: Record<string, bigint>;
   // A returning call keeps its selector check through a multi-function interface; a void one reads its record instead.
   keepsSelector: boolean;
+  // The single-function interfaces naming A and B.
+  ifaceA: string;
+  ifaceB: string;
 }
 
 const SHAPES: Shape[] = [{
@@ -62,12 +65,19 @@ contract Named() {
   int calls;
   function oneA(address a, int v) { IDeposit(a).deposit(v); this.calls = this.calls + 1; }
   function oneB(address a, int v) { IWithdraw(a).withdraw(v); this.calls = this.calls + 1; }
+}
+contract Looper() {
+  int calls;
+  function oneA(address[] ts) { for (uint i = 0; i < ts.length; i++) { IDeposit(ts[i]).deposit(); } this.calls = 1; }
+  function oneB(address[] ts) { for (uint i = 0; i < ts.length; i++) { IWithdraw(ts[i]).withdraw(); } this.calls = 1; }
 }`,
   a: 'deposit',
   b: 'withdraw',
   calleeState: { balance: 10n },
   callerState: { calls: 0n },
   keepsSelector: false,
+  ifaceA: 'IDeposit',
+  ifaceB: 'IWithdraw',
 }, {
   name: 'returning',
   // B returns what A returns, without adding v to the counter.
@@ -91,12 +101,19 @@ contract Named() {
   int last;
   function oneA(address a, int v) { int r = ITake(a).take(v); this.last = r; }
   function oneB(address a, int v) { int r = IPeek(a).peek(v); this.last = r; }
+}
+contract Looper() {
+  int last;
+  function oneA(address[] ts) { for (uint i = 0; i < ts.length; i++) { int r = ITake(ts[i]).take(); this.last = r; } }
+  function oneB(address[] ts) { for (uint i = 0; i < ts.length; i++) { int r = IPeek(ts[i]).peek(); this.last = r; } }
 }`,
   a: 'take',
   b: 'peek',
   calleeState: { counter: 5n },
   callerState: { last: 0n },
   keepsSelector: true,
+  ifaceA: 'ITake',
+  ifaceB: 'IPeek',
 }];
 
 interface Deployed {
@@ -167,6 +184,16 @@ async function deploy(shape: Shape, caller = 'Caller', convention = DIRECT): Pro
 async function spend(d: Deployed, entry: string, method: string, named = false): Promise<Spend> {
   const args = named ? [d.calleeAddr, 3n] : [d.calleeAddr];
   const call = await d.caller[entry](...args).withExternalCall(d.callee, method, [3n]).build();
+  return { tx: call.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(call.inputs) };
+}
+
+/**
+ * The honest spend of a looper's `entry` over one target, the callee, which runs `method(3)` as its one turn: the
+ * looper lists the callee for the loop's interface and names the turn's arguments, which the call leaves to it.
+ */
+async function loopSpend(d: Deployed, entry: string, iface: string, method: string): Promise<Spend> {
+  d.caller.registerExternalArray(iface, [d.callee], [method]);
+  const call = await d.caller[entry]([d.calleeAddr]).withExternalCall(d.callee, method, [3n]).build();
   return { tx: call.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(call.inputs) };
 }
 
@@ -323,5 +350,30 @@ describe('the method an args-left call names, in other conventions (VM)', () => 
         }, 300_000);
       });
     }
+  }
+});
+
+describe('the method an args-left call names, made once per turn of a loop over targets (VM)', () => {
+  for (const shape of SHAPES) {
+    describe(`${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
+      it(`settles the honest loop of ${shape.a}() through a single-function interface, and of ${shape.b}()`, async () => {
+        const d = await deploy(shape, 'Looper');
+        // The argument each turn's call leaves is an element of a witness list the SDK fills from the turn's callee.
+        expect(hidden(d, 'Looper', 'oneA', /^__internal__callArgumentList\d+_\d+$/))
+          .toEqual(['__internal__callArgumentList0_0']);
+        const a = await loopSpend(d, 'oneA', shape.ifaceA, shape.a);
+        const b = await loopSpend(d, 'oneB', shape.ifaceB, shape.b);
+        expectOnlyTheMethodDiffers(d, shape, a, b);
+        expect(runVm(a)).toEqual({ success: true });
+        expect(runVm(b)).toEqual({ success: true });
+      }, 300_000);
+
+      it(`refuses a turn's callee running ${shape.b} for the ${shape.a}() the loop names, at the caller`, async () => {
+        const d = await deploy(shape, 'Looper');
+        const a = await loopSpend(d, 'oneA', shape.ifaceA, shape.a);
+        const b = await loopSpend(d, 'oneB', shape.ifaceB, shape.b);
+        expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
+      }, 300_000);
+    });
   }
 });

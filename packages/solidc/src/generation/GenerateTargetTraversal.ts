@@ -356,7 +356,7 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
-  externalResultEncoding, externalResultMayNeedPreimage, callArgumentWitnessName,
+  externalResultEncoding, externalResultMayNeedPreimage, callArgumentListName, callArgumentWitnessName,
   CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES, namesCallRecordArguments,
   isEvmAbiWordType, usesEvmResultWords,
 } from '../semantic/ExternalResultEncoding.js';
@@ -33530,9 +33530,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || this.isCompilerMessageBusRoute()
       || this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
         && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) return undefined;
-    // A call whose record digests its arguments (emitCallerCallRecordDigest) is bound there.
+    // A call whose record digests its arguments (emitCallerCallRecordDigest) is bound there, a loop's call from the
+    // witness lists of those it leaves.
     if (slot.hasReturnValues && slot.callRecordSelector !== undefined
-      && this.leftCallArgumentWitnesses(node, slot, this.callRecordDeclaredTypes(slot)) !== undefined) return undefined;
+      && (this.leftCallArgumentWitnesses(node, slot, this.callRecordDeclaredTypes(slot)) !== undefined
+        || this.takesLeftCallArgumentLists(node, slot))) return undefined;
     // A function value passes as its address and selector, two pushes (SplitExternalCallFnPtrArgs).
     const types: (Type | undefined)[] = method.parameterTypes.flatMap((type) => (type instanceof FunctionType
       && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type])).slice(0, node.parameters.length)
@@ -56676,7 +56678,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // BELOW the values. The getReserves half of the Router02 fee-on-transfer swap; the void path below drops it.
       if (slot.hasReturnValues && slot.returnTypes && slot.returnTypes.length > 0) {
         // This iteration's callee runs this iteration's call, so its record answers this iteration's arguments.
+        const turn = this.emitTurnLeftCallArguments(node, slot, loc);
         const verifiesDigest = this.emitCallerCallRecordDigest(node, slot, loc);
+        this.dropTurnLeftCallArguments(turn, loc);
         // Multiple returning slots (e.g. getReserves + balanceOf in one loop) get INDEXED return-output-idx params;
         // a single one keeps the bare name (matches the non-loop returning read).
         const loopReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
@@ -56716,7 +56720,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A void call that names its arguments reads this iteration's callee's void record, `digest || 01`, at the
       // return base plus i, as a returning one reads its record: the run answers this caller, the method and these
       // arguments, so two callers cannot both take it.
-      if (slot.voidCallRecord === true && this.emitCallerCallRecordDigest(node, slot, loc)) {
+      const turn = slot.voidCallRecord === true ? this.emitTurnLeftCallArguments(node, slot, loc) : [];
+      const digested = slot.voidCallRecord === true && this.emitCallerCallRecordDigest(node, slot, loc);
+      this.dropTurnLeftCallArguments(turn, loc);
+      if (digested) {
         const loopReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
         const loopRetParam = loopReturningCount === 1
           ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
@@ -57558,6 +57565,51 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       left.set(position, witness);
     }
     return left;
+  }
+
+  /**
+   * `[..]` -> `[.., element..]`: this turn's element of each witness list of the arguments a loop's call leaves to its
+   * callee (callArgumentListName), tracked under the argument's witness name, which emitCallerCallRecordDigest digests;
+   * each list keeps the elements after it for the next call.
+   */
+  private emitTurnLeftCallArguments(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+  ): string[] {
+    const names: string[] = [];
+    const declared = this.callRecordDeclaredTypes(slot);
+    for (let position = node.parameters.length; position < declared.length; position += 1) {
+      const list = callArgumentListName(slot.slotIndex, position);
+      if (declared[position] === PrimitiveType.SIG || this.getStackIndex(list, true) < 0) continue;
+      this.emitPickAt(this.getStackIndex(list), loc);         // [.., list]
+      this.emitPushdataDecode(new BytesType(), loc);          // [.., element, rest]
+      this.emitReplace(this.getStackIndex(list) + 2, node);   // the list keeps the rest: [.., element]
+      const name = callArgumentWitnessName(slot.slotIndex, position);
+      this.pushToStack(name);
+      names.push(name);
+    }
+    return names;
+  }
+
+  /** Whether `node`, a loop's call leaving arguments to its callee, takes a witness list of each it leaves. */
+  private takesLeftCallArgumentLists(node: ExternalFunctionCallNode, slot: ExternalCallSlot): boolean {
+    const declared = this.callRecordDeclaredTypes(slot);
+    let left = 0;
+    for (let position = node.parameters.length; position < declared.length; position += 1) {
+      if (declared[position] === PrimitiveType.SIG) continue;
+      if (this.getStackIndex(callArgumentListName(slot.slotIndex, position), true) < 0) return false;
+      left += 1;
+    }
+    return left > 0;
+  }
+
+  /** Drops the elements emitTurnLeftCallArguments left, from beneath what the digest left on top. */
+  private dropTurnLeftCallArguments(names: readonly string[], loc: SingleLocationData): void {
+    for (const name of names) {
+      const at = this.getStackIndex(name);
+      this.emitRollAt(at, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(at);
+    }
   }
 
   /** The counter on the stack whose value is a counted call's ordinal, if it has one. */

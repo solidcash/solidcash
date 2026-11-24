@@ -45,7 +45,7 @@ function idOf(label: string): string {
 
 /** Three contracts, so each stays under the input-script limit. */
 const SOURCE = [
-  'pragma solidcash ^0.51.0;',
+  'pragma solidcash ^0.52.0;',
   'contract Tally {',
   '  address public implementation;',
   '  mapping(address => uint) bonus;',

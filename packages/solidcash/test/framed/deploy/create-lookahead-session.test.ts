@@ -35,7 +35,7 @@ import { getCreateAddress } from '../../../../testing/src/ethers-shim.js';
  */
 
 const VALIDATOR_PROGRAM = buildValidatorProgram();
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Child {'
   + '   int public total;'
   + '   constructor(int seed) { this.total = seed + 1; }'

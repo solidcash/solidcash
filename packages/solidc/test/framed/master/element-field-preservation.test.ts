@@ -11,7 +11,7 @@ import { compileStringMulti } from '../../../src/compiler.js';
  * state instead of being forced to state a record the execution may skip.
  */
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Ledger {'
   + '   struct Job { int state; int timestamp; int amount; }'
   + '   Job[] jobs;'

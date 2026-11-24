@@ -43,7 +43,7 @@ const occurrences = (haystack: string, needle: string): number => {
 };
 
 describe('a deployed child\'s function ids stay out of the factory', () => {
-  const artifacts = compileStringMulti(`pragma solidcash ^0.51.0;\n${CHILD}\n${FACTORY}`, { __legacyDeployFold: true } as never) as Record<string, any>;
+  const artifacts = compileStringMulti(`pragma solidcash ^0.52.0;\n${CHILD}\n${FACTORY}`, { __legacyDeployFold: true } as never) as Record<string, any>;
   const factory = artifacts.Factory;
   const child = artifacts.Child;
 

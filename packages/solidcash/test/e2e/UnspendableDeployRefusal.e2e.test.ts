@@ -69,7 +69,7 @@ const TOKEN_PAYOUT = `contract TokenPayout {
 }`;
 
 /** A contract with a deployer (DeployerCreation.e2e.test.ts). It takes no contract arguments. */
-const C = 'pragma solidcash ^0.51.0; contract C { int n; constructor() { n = 1; } function read() { require(n == 1); } }';
+const C = 'pragma solidcash ^0.52.0; contract C { int n; constructor() { n = 1; } function read() { require(n == 1); } }';
 
 const FACTORY = `
   contract MultiChild() {

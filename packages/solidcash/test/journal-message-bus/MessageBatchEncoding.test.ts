@@ -86,7 +86,7 @@ contract RepeatedReadCollectionEncoding {
   mapping(string => string) public labels;
 }`;
 
-const SHARED_LITERAL_COLLECTION_SOURCE = `pragma solidcash ^0.51.0;
+const SHARED_LITERAL_COLLECTION_SOURCE = `pragma solidcash ^0.52.0;
 contract SharedLiteralCollectionEncoding() {
   mapping(int => int) source;
   mapping(int => int) target;

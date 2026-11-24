@@ -24,7 +24,7 @@ type VmOutput = VmTransaction['outputs'][number];
 type VmInput = VmTransaction['inputs'][number];
 type SourceOutputs = NonNullable<VmProgram['sourceOutputs']>;
 
-const P = 'pragma solidcash ^0.51.0;';
+const P = 'pragma solidcash ^0.52.0;';
 const EMPTY = new Uint8Array(0);
 const TOKENLESS = Uint8Array.from([0x51]);
 const OUTBASE = 5;

@@ -11,7 +11,7 @@ import { createVirtualMachineBch2026ForProvider } from '../../src/network/create
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const OWNER_SOURCE = `pragma solidcash ^0.51.0;
+const OWNER_SOURCE = `pragma solidcash ^0.52.0;
 contract RoutedOwner() {
   bigint counter;
   function forward(bytes input, address implementation) external {
@@ -20,7 +20,7 @@ contract RoutedOwner() {
   }
 }`;
 
-const IMPLEMENTATION_SOURCE = `pragma solidcash ^0.51.0;
+const IMPLEMENTATION_SOURCE = `pragma solidcash ^0.52.0;
 contract RoutedImplementation() {
   bigint counter;
   function increment() public {

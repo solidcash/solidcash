@@ -14,7 +14,7 @@ import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from './fixture/vars.js';
 import { fundShippedFacets } from './framed/shapes/harness.js';
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Own {'
   + '   address public owner;'
   + '   constructor() { this.owner = msg.sender; }'

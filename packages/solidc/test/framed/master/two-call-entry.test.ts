@@ -63,7 +63,7 @@ const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
  * interface. Both address literals are compile-time values, so each call's target and selector are fixed where
  * the source writes the call.
  */
-const CALLER_SOURCE = 'pragma solidcash ^0.51.0;'
+const CALLER_SOURCE = 'pragma solidcash ^0.52.0;'
   + ' interface ICallee { function ping(); function pong(); }'
   + ' contract Caller {'
   + '   function callIt() {'

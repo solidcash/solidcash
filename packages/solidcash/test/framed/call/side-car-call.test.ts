@@ -59,7 +59,7 @@ let guard: Artifact;
 
 beforeAll(() => {
   signer = signerOfDigest();
-  guard = compileStringMulti('pragma solidcash ^0.51.0;'
+  guard = compileStringMulti('pragma solidcash ^0.52.0;'
     + ' error InvalidSignature();'
     + ' error InvalidSignatureLength(int length);'
     + ' contract Guard {'

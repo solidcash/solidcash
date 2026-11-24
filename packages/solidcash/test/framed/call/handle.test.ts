@@ -26,7 +26,7 @@ const PHRASE = 'test test test test test test test test test test test junk';
 const UNFUNDED_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 // Two entries, so the master dispatches by selector; `add` writes and `current` only reads.
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Tally {'
   + '   int public total;'
   + '   function add(int by) { this.total = this.total + by; require(this.total >= 0); }'

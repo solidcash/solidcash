@@ -55,7 +55,7 @@ const LOG_ID = 7n;
 /** The members' keys, distinct and spread over the slot space. */
 const MEMBERS = Array.from({ length: TRANSACTIONS }, (_unused, index) => BigInt(100 + index * 37));
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Journal {'
   + '   address public implementation;'
   + '   int public logged;'

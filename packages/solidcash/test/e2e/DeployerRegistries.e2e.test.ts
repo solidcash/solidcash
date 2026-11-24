@@ -68,7 +68,7 @@ const POOL_CONSTRUCTOR_TAIL = `
 
 /** BchPool's shape: a payable deposit into the single satoshi container, a withdrawal that pays from it. */
 const BCH = `
-pragma solidcash ^0.51.0;
+pragma solidcash ^0.52.0;
 pragma satoshicontainer single;
 pragma tokencontainer single;
 contract NotePool(uint8 exponent, bytes verifierLock, bytes workerLock) {
@@ -113,7 +113,7 @@ contract BchRegistry {
 
 /** TokenPool's shape: deposits and withdrawals of `asset` through the single token container. */
 const TOKEN = `
-pragma solidcash ^0.51.0;
+pragma solidcash ^0.52.0;
 pragma satoshicontainer single;
 pragma tokencontainer single;
 contract TokenNotePool(uint8 exponent, bytes32 asset, bytes verifierLock, bytes workerLock) {

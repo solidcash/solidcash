@@ -11,7 +11,7 @@ means minting, re-minting and burning those UTXOs. SolidCash exposes this throug
 A stateful contract can mint a child contract with `new`:
 
 ```solidity
-pragma solidcash ^0.51.0;
+pragma solidcash ^0.52.0;
 
 contract Child(pubkey owner) {
     int counter;

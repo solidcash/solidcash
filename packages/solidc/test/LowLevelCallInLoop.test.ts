@@ -6,7 +6,7 @@ import { compileString } from './direct-compile.js';
 // over a parameter array of targets it used to crash codegen ("reading 'elementType'"). A loop of one turn compiles.
 const OPTIONS = { evmCompat: true, primaryContractName: 'R' } as const;
 
-const withCaller = (body: string): string => `pragma solidcash ^0.51.0;
+const withCaller = (body: string): string => `pragma solidcash ^0.52.0;
   interface IT { function set(int h, int c) external; }
   contract T { int height; int clock; int calls;
     function set(int h, int c) external { height = h; clock = c; calls = calls + 1; } }

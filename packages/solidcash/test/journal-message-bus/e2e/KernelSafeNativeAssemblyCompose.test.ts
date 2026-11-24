@@ -8,7 +8,7 @@ import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
-const SOURCE = `pragma solidcash ^0.51.0;
+const SOURCE = `pragma solidcash ^0.52.0;
 contract NativeAssemblyAccumulator() {
   int total;
 

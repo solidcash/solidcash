@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from './direct-compile.js';
 
-const P = 'pragma solidcash ^0.51.0;';
+const P = 'pragma solidcash ^0.52.0;';
 
 describe('B5.6: new C{args: (...)}', () => {
   it('parses one contract argument', () => {

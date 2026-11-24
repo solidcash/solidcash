@@ -181,14 +181,14 @@ describe('ecrecover conformance: ethers.js == the EVM precompile == solidc, on t
   const projections = [
     {
       name: 'ecrecoverEvm',
-      source: 'pragma solidcash ^0.51.0; contract G { bytes20 who; int n; '
+      source: 'pragma solidcash ^0.52.0; contract G { bytes20 who; int n; '
         + 'function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) { '
         + 'who = ecrecoverEvm(h, v, r, s); n = n + 1; return true; } }',
       options: { ...COMPILE, primaryContractName: 'G' },
     },
     {
       name: 'bare ecrecover in evm mode',
-      source: 'pragma solidcash ^0.51.0; contract G { bytes20 who; int n; '
+      source: 'pragma solidcash ^0.52.0; contract G { bytes20 who; int n; '
         + 'function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) { '
         + 'who = ecrecover(h, v, r, s); n = n + 1; return true; } }',
       options: { ...COMPILE, primaryContractName: 'G', ecrecover: 'evm' },

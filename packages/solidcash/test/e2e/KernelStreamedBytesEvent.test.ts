@@ -17,7 +17,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * covenant and its continuation covenant, exactly like the dynamic-array case.
  */
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
-const SOURCE = `pragma solidcash ^0.51.0;
+const SOURCE = `pragma solidcash ^0.52.0;
 contract StreamedBytesEvents() {
   int count;
   event Blob(bytes data);

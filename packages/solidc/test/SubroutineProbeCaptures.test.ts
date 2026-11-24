@@ -7,7 +7,7 @@ import { compileString, type CompileStringOptions } from '../src/index.js';
 // extraction. Each pair below differs only in that read, so the read must cost its own bytes and no more.
 
 // `scaled` stays an invoked body: it touches no state, so no helper inliner takes it.
-const internalReader = (factor: string): string => `pragma solidcash ^0.51.0;
+const internalReader = (factor: string): string => `pragma solidcash ^0.52.0;
 contract Ledger(int rate) {
   int total;
   int count;
@@ -17,7 +17,7 @@ contract Ledger(int rate) {
 }`;
 
 // A message-bus build runs `add` as a handler clone, an invoked body that captures what `add` reads.
-const handlerReader = (factor: string): string => `pragma solidcash ^0.51.0;
+const handlerReader = (factor: string): string => `pragma solidcash ^0.52.0;
 contract Meter(int rate) {
   int total;
   int count;

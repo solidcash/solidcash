@@ -49,7 +49,7 @@ describe("split: 'off' on a multi compile", () => {
 
   it('leaves the caller\'s options object as it was', () => {
     const options = { split: 'off' as const };
-    compileString('pragma solidcash ^0.51.0; contract S { function f(int x) { require(x == 1); } }', options);
+    compileString('pragma solidcash ^0.52.0; contract S { function f(int x) { require(x == 1); } }', options);
     expect(options.split).toBe('off');
   });
 });

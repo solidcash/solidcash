@@ -11,7 +11,7 @@ import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const P = 'pragma solidcash ^0.51.0;';
+const P = 'pragma solidcash ^0.52.0;';
 const SOURCE = `${P} contract Pay { int paid;
   function pay() public payable returns (int) { paid = paid + msg.value; return paid; } }`;
 

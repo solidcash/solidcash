@@ -6,7 +6,7 @@ import { compileString } from '../../../src/compiler.js';
  * they do not create a contract. The framed convention refuses a contract creation without a salt, and that refusal
  * must not catch a built-in class, or a framed contract cannot pay a P2PKH output.
  */
-const PAY = (lock: string): string => `pragma solidcash ^0.51.0;
+const PAY = (lock: string): string => `pragma solidcash ^0.52.0;
 contract Pays(pubkey owner, bytes20 to) {
   int public n;
   function pay(sig s) public {

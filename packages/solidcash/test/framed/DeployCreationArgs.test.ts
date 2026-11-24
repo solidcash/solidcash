@@ -13,7 +13,7 @@ import { StatefulContract } from '../../src/stateful/StatefulContract.js';
  *   contract TornadoTokenPool(int denomination, bytes32 category)
  *   this.tokens[category].transfer(...)
  */
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract C(int x, bytes32 y) {'
   + '   int z;'
   + '   constructor() { }'
@@ -48,7 +48,7 @@ describe('framed deploy with contract creation arguments', () => {
   });
 
   it('splits creation arguments from constructor-block arguments through the factory', async () => {
-    const source = 'pragma solidcash ^0.51.0;'
+    const source = 'pragma solidcash ^0.52.0;'
       + ' contract D(int x, bytes32 y) { int z; constructor(int z_) { z = z_; }'
       + '   function get() view returns (int) { return x; }'
       + '   function getZ() view returns (int) { return this.z; } }';

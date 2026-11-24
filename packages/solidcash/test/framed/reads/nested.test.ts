@@ -52,7 +52,7 @@ const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS_A = validatorAddress(CATEGORY_A, VALIDATOR_PROGRAM);
 const ADDRESS_B = validatorAddress(CATEGORY_B, VALIDATOR_PROGRAM);
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' interface IB { function value() view returns (int); }'
   + ' contract B { int public v; function value() view returns (int) { return this.v; } }'
   + ' contract A {'

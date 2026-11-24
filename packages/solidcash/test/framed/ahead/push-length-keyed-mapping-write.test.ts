@@ -59,7 +59,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * The class this belongs to is the fixture's `publishJobPost`, which appends to its job array, reads the index it
  * produced, and writes its allowlist mapping from inside `_updateJobWhitelist`.
  */
-const SHAPE = (mappingWrite: string, initialize = 'require(true);'): string => 'pragma solidcash ^0.51.0;'
+const SHAPE = (mappingWrite: string, initialize = 'require(true);'): string => 'pragma solidcash ^0.52.0;'
   + ' contract Impl {'
   + '   struct Post { string title; uint amount; address who; string note; }'
   + '   address public implementation;'

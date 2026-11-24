@@ -39,7 +39,7 @@ const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const empty = new Uint8Array(0);
 
 /** A store answers ten times the index plus its base; the reader folds the turns of the store the directory names. */
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' interface IStore { function at(int i) view returns (int); }'
   + ' interface IDirectory { function store() view returns (address); }'
   + ' contract Store {'

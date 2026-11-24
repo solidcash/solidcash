@@ -33,7 +33,7 @@ const SHARED_STATE = ' address public implementation;'
   + ' uint public initialized;'
   + ' int public version;';
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ` contract Impl {${SHARED_STATE}`
   + '   function initialize(address expected) {'
   + '     require(msg.sender == expected);'

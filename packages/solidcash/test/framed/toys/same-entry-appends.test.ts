@@ -67,7 +67,7 @@ const APPENDS: readonly { readonly id: bigint; readonly item: bigint }[] = [
 
 /** The toy's source with `appends` as the Hub's unrolled calls. */
 function toySource(appends: readonly { readonly id: bigint; readonly item: bigint }[]): string {
-  return 'pragma solidcash ^0.51.0;'
+  return 'pragma solidcash ^0.52.0;'
     + ' interface ILog { function append(int id, int item); }'
     + ' contract Log {'
     + '   int[] items;'
@@ -84,7 +84,7 @@ function toySource(appends: readonly { readonly id: bigint; readonly item: bigin
 
 /** The same shape without the event, which is the source the machine cases below run. */
 function runSource(items: readonly bigint[]): string {
-  return 'pragma solidcash ^0.51.0;'
+  return 'pragma solidcash ^0.52.0;'
     + ' interface ILog { function append(int item); }'
     + ' contract Log {'
     + '   int[] items;'

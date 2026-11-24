@@ -22,7 +22,7 @@ import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const SOURCE = `pragma solidcash ^0.51.0;
+const SOURCE = `pragma solidcash ^0.52.0;
   interface IOracle { function price() external returns (int); }
   contract Oracle { int reads; function price() external returns (int) { reads = reads + 1; return 7; } }
   contract Hostile { int reads; function price() external returns (int) { reads = reads + 1; return 1000000; } }

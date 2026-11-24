@@ -4,7 +4,7 @@ import { compileString } from '../src/index.js';
 
 const SATOSHI = 'pragma satoshicontainer single;\n';
 const TOKEN = 'pragma tokencontainer single;\n';
-const contract = (body: string, pragmas = SATOSHI + TOKEN): string => `pragma solidcash ^0.51.0;
+const contract = (body: string, pragmas = SATOSHI + TOKEN): string => `pragma solidcash ^0.52.0;
 ${pragmas}contract C() {
   uint32 n;
   constructor() { this.n = 0; }
@@ -76,7 +76,7 @@ describe('pragma satoshicontainer single and pragma tokencontainer single', () =
   });
 
   it('cannot send an NFT from a token container, whose one coin stays as it is', () => {
-    const source = (pragmas: string): string =>`pragma solidcash ^0.51.0;
+    const source = (pragmas: string): string =>`pragma solidcash ^0.52.0;
 ${pragmas}contract C(bytes32 asset) {
   uint32 n;
   constructor() { this.n = 0; }
@@ -97,7 +97,7 @@ ${pragmas}contract C(bytes32 asset) {
   });
 
   it('is refused through a delegatecall, under either pragma', () => {
-    const source = (pragmas: string): string =>`pragma solidcash ^0.51.0;
+    const source = (pragmas: string): string =>`pragma solidcash ^0.52.0;
 ${pragmas}contract C() {
   event E(int v);
   uint32 n;

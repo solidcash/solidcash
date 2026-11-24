@@ -23,7 +23,7 @@ import {
  * callee's own frame reads the title its deployment holds and the value reaches the caller.
  */
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' struct Listing { string title; string[] tags; int amount; }'
   + ' interface IShelf {'
   + '   function tagsOf(string last) view returns (string[]);'

@@ -43,7 +43,7 @@ contract Notes() {
   }
 }`;
 
-const FRAMED = 'pragma solidcash ^0.51.0; contract C { int n;'
+const FRAMED = 'pragma solidcash ^0.52.0; contract C { int n;'
   + ' function touch() { this.n = this.n + 1; require(this.n > 0); } }';
 
 const TIMESTAMP = '2026-10-20T12:00:00.000Z';

@@ -25,7 +25,7 @@ import {
  * enters both. Each verdict below is the BCH-2026 machine's on the master's own input.
  */
 
-const PRAGMA = 'pragma solidcash ^0.51.0;';
+const PRAGMA = 'pragma solidcash ^0.52.0;';
 const PING = 'interface IOther { function ping(); } contract Other { function ping() { require(true); } }';
 const OTHER = '0x' + '11'.repeat(31) + 'ee';
 const CALL = `IOther(${OTHER}).ping.call();`;

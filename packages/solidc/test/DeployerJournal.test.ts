@@ -9,7 +9,7 @@ import {
   CREATE_OPERATION_BUDGET, JOURNAL_ITEM_LIMIT, JOURNAL_RECORD_HEADER, journalCostBound,
 } from '../src/semantic/RewriteConstructorJournals.js';
 
-const P = 'pragma solidcash ^0.51.0;';
+const P = 'pragma solidcash ^0.52.0;';
 const S = 'pragma solidity ^0.8.20;';
 
 const compile = (source: string, options: Record<string, unknown> = {}): { artifact: any; warnings: string[] } => {

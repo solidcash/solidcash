@@ -10,7 +10,7 @@ import { asmToScript, computeCollectionHash, scriptToBytecode } from '@solidcash
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import type { DeployerConstants } from '../src/generation/deployerConstants.js';
 
-const P = 'pragma solidcash ^0.51.0;';
+const P = 'pragma solidcash ^0.52.0;';
 const STATEFUL = `${P} contract C { int n; function bump() { n = n + 1; } }`;
 const STATEFULWithCtor = `${P} contract C { int n; constructor() { n = 1; } function bump() { n = n + 1; } }`;
 
@@ -349,12 +349,12 @@ describe('B7.5: what the constructor does', () => {
 
   it('names a single satoshi container and a single token container keyed by a contract parameter', () => {
     // A8: the pragma and a function that uses the container; the pragma alone keeps nothing.
-    const satoshi = compile(`pragma solidcash ^0.51.0; pragma satoshicontainer single;
+    const satoshi = compile(`pragma solidcash ^0.52.0; pragma satoshicontainer single;
       contract C() { int n; constructor() { n = 1; } function pay(address r) { payable(r).transfer(1200); n = n + 1; } }`,
     { deployer: true });
     expect(satoshi.artifact.deployer!.satoshiContainer).toBe('required');
 
-    const token = compile(`pragma solidcash ^0.51.0; pragma tokencontainer single;
+    const token = compile(`pragma solidcash ^0.52.0; pragma tokencontainer single;
       contract C(bytes32 asset) { int n; constructor() { n = 1; }
         function take(address to, int amount) { this.tokens[asset].transfer(to, amount); } }`,
     { deployer: true });
@@ -362,7 +362,7 @@ describe('B7.5: what the constructor does', () => {
   });
 
   it('a constructor reads a single token container\'s tokenAmount as its start', () => {
-    const source = `pragma solidcash ^0.51.0; pragma tokencontainer single;
+    const source = `pragma solidcash ^0.52.0; pragma tokencontainer single;
       contract C(bytes32 asset) { int n; constructor() { n = int(this.tokens[asset].tokenAmount); } }`;
     const { artifact } = compile(source, { deployer: true });
     expect(artifact.deployer).toBeDefined();
@@ -370,7 +370,7 @@ describe('B7.5: what the constructor does', () => {
   });
 
   it('refuses any other token-container member in a constructor', () => {
-    const source = `pragma solidcash ^0.51.0; pragma tokencontainer single;
+    const source = `pragma solidcash ^0.52.0; pragma tokencontainer single;
       contract C(bytes32 asset) { int n; constructor() { n = int(this.tokens[asset].tokenCategory.length); } }`;
     expect(() => compile(source, { deployer: true })).toThrow(/tokenAmount/);
   });

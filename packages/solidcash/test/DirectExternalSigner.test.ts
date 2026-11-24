@@ -9,7 +9,7 @@ import type { WcTransactionObject } from '../src/walletconnect-utils.js';
 // A wallet's coin funds a direct stateful call and the wallet signs it at broadcast: the SDK holds no key. Its input
 // carries a placeholder through the build, which the final preflight must not evaluate.
 describe('a direct stateful call funded by an external wallet', () => {
-  const source = `pragma solidcash ^0.51.0;
+  const source = `pragma solidcash ^0.52.0;
 contract Counter() {
     uint32 count;
     constructor() { this.count = 0; }

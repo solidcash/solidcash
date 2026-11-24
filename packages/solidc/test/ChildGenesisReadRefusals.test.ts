@@ -12,7 +12,7 @@ const compileString = (source: string): ReturnType<typeof compileStringRaw> =>
   compileStringRaw(source, { __legacyDeployFold: true } as never);
 
 /** `child`, then a creator whose `make` runs `body` before its own write. */
-const creator = (child: string, body: string): string => `pragma solidcash ^0.51.0;
+const creator = (child: string, body: string): string => `pragma solidcash ^0.52.0;
 ${child}
 contract Maker {
   int made;

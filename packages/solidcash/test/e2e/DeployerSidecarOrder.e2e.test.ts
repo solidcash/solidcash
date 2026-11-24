@@ -18,7 +18,7 @@ import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const P = 'pragma solidcash ^0.51.0;';
+const P = 'pragma solidcash ^0.52.0;';
 const SOURCE = `${P} contract C(bytes32 hh, int v, bytes32 r, bytes32 s, pubkey expected) { bytes32 h; int n;
   constructor(bytes b) { h = keccak256(b); require(ecrecoverPubKey(hh, v, r, s) == expected); n = 1; } }`;
 

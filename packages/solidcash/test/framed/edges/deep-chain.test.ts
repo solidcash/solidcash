@@ -34,7 +34,7 @@ const labels = {
 const category = (label: string): Uint8Array => seededCategory(label);
 const address = (label: string): Uint8Array => validatorAddress(category(label), REAL_VALIDATOR_PROGRAM);
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' interface IB { function mid(); }'
   + ' interface IC { function end(); }'
   + ' interface ID { function leaf(); }'

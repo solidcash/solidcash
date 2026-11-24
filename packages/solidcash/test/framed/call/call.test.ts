@@ -32,7 +32,7 @@ const CALLER_TXID = '44'.repeat(32);
 
 // Two entries: the master dispatches by selector, so a user's frame leads with the entry's own selector.
 // `bump` writes the record and returns the value it wrote, so the frame settles both its write and its `retval`.
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Counter {'
   + '   int public counter;'
   + '   function bump(int by) returns (int) {'

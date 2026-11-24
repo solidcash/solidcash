@@ -28,7 +28,7 @@ const LEDGER_PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 const OUTER_IMPL_CATEGORY = '33'.repeat(31) + 'cc';
 const OUTER_PROXY_CATEGORY = '44'.repeat(31) + 'bb';
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' interface ILedger { function check(address who, int expected); }'
   + ' contract Ledger {'
   + '   address public implementation;'

@@ -1,6 +1,6 @@
 {
   "name": "testing-suite",
-  "version": "0.51.1",
+  "version": "0.52.0",
   "description": "Example project to develop and test SolidCash contracts",
   "main": "index.js",
   "type": "module",
@@ -18,9 +18,9 @@
   },
   "dependencies": {
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#ff49a75a5a2c5a60419206636808b37e3354f528",
-    "@solidcash/testing": "^0.51.1",
-    "@solidcash/solidc": "^0.51.1",
-    "@solidcash/solidcash": "^0.51.1"
+    "@solidcash/testing": "^0.52.0",
+    "@solidcash/solidc": "^0.52.0",
+    "@solidcash/solidcash": "^0.52.0"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

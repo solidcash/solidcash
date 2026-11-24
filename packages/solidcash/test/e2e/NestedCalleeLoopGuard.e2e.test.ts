@@ -15,7 +15,7 @@ import type { Utxo } from '../../src/interfaces.js';
 import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const SOURCE = `pragma solidcash ^0.51.0;
+const SOURCE = `pragma solidcash ^0.52.0;
   interface IT { function set(int h, int c) external; }
   interface ID { function crowdedLoop(IT t) external; }
   contract T { int height; int clock; int calls;

@@ -29,7 +29,7 @@ import {
 
 const AMOUNT = 10_000n;
 
-const SOURCE = 'pragma solidcash ^0.51.0;'
+const SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Vault {'
   + '   int public received;'
   + '   receive() external payable { this.received = this.received + msg.value; }'
@@ -37,7 +37,7 @@ const SOURCE = 'pragma solidcash ^0.51.0;'
   + '   function touch(int by) { this.received = this.received + by; }'
   + ' }';
 
-const PLAIN_SOURCE = 'pragma solidcash ^0.51.0;'
+const PLAIN_SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Plain {'
   + '   int public count;'
   + '   function touch(int by) { this.count = this.count + by; }'
@@ -121,7 +121,7 @@ describe('a call to a payable entry carrying value', () => {
   });
 });
 
-const WALLET_SOURCE = 'pragma solidcash ^0.51.0;'
+const WALLET_SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Wallet {'
   + '   int public paid;'
   + '   receive() external payable { require(true); }'
@@ -193,7 +193,7 @@ describe('an entry that sends, paid from the contract\'s containers', () => {
   });
 });
 
-const READING_SOURCE = 'pragma solidcash ^0.51.0;'
+const READING_SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Capped {'
   + '   int public cap;'
   + '   receive() external payable { require(true); }'
@@ -266,7 +266,7 @@ describe('an entry that sends what its state allows', () => {
   });
 });
 
-const PAYMENTS_SOURCE = 'pragma solidcash ^0.51.0;'
+const PAYMENTS_SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Payer {'
   + '   int public paid;'
   + '   receive() external payable { require(true); }'
@@ -349,7 +349,7 @@ describe('an entry that pays a contract through its receive()', () => {
   });
 });
 
-const TILL_SOURCE = 'pragma solidcash ^0.51.0;'
+const TILL_SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Till {'
   + '   int public emptied;'
   + '   receive() external payable { require(true); }'
@@ -381,7 +381,7 @@ describe('an entry that reads its own balance', () => {
   });
 });
 
-const FALLBACK_SOURCE = 'pragma solidcash ^0.51.0;'
+const FALLBACK_SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Tip {'
   + '   int public tipped;'
   + '   function reset() { this.tipped = 0; }'
@@ -441,7 +441,7 @@ describe('a value send to a contract whose fallback() takes it', () => {
   });
 });
 
-const BRANCH_SOURCE = 'pragma solidcash ^0.51.0;'
+const BRANCH_SOURCE = 'pragma solidcash ^0.52.0;'
   + ' contract Till {'
   + '   int public calls;'
   + '   receive() external payable { require(true); }'

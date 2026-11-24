@@ -115,7 +115,7 @@ contract Driver(address payer) {
         maximumInputBytes: 10_000_000, maximumStackItemBytes: 10_000_000, maximumTransactionBytes: 100_000_000,
       },
     });
-    const vault = compileStringMulti(`pragma solidcash ^0.51.0;
+    const vault = compileStringMulti(`pragma solidcash ^0.52.0;
 contract Vault {
   int public count;
   function touch(int by) { this.count = this.count + by; require(true); }
@@ -147,7 +147,7 @@ contract Vault {
         maximumInputBytes: 10_000_000, maximumStackItemBytes: 10_000_000, maximumTransactionBytes: 100_000_000,
       },
     });
-    const vault = compileStringMulti(`pragma solidcash ^0.51.0;
+    const vault = compileStringMulti(`pragma solidcash ^0.52.0;
 contract Vault {
   int public count;
   function touch(int by) { this.count = this.count + by; require(true); }

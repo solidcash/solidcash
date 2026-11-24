@@ -1,4 +1,4 @@
-pragma solidcash ^0.51.0;
+pragma solidcash ^0.52.0;
 
 contract MultiDimensionalArray() {
     // 2D array operations: local variable, access, assign, literal

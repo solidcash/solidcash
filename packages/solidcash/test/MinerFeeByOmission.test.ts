@@ -15,7 +15,7 @@ import { alicePriv } from './fixture/vars.js';
 
 const PAY = 100_000n;
 const FEE = 30_000n;
-const SOURCE = `pragma solidcash ^0.51.0;
+const SOURCE = `pragma solidcash ^0.52.0;
 contract Tip() {
   int constant PAY = 100000;
   int constant FEE = 30000;
@@ -165,7 +165,7 @@ describe('.withValue on a payable entry that spends no container', () => {
 });
 
 describe('a connected signer on a provider that cannot mint a funder', () => {
-  const SOURCE_WITH_STATE_ONLY_CALL = `pragma solidcash ^0.51.0;
+  const SOURCE_WITH_STATE_ONLY_CALL = `pragma solidcash ^0.52.0;
 contract Counter() {
   uint32 n;
   constructor() { this.n = 0; }

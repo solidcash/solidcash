@@ -6035,6 +6035,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // {value: X} call option on low-level call statement
     if (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value)) {
+      if (node.callMode === 'call') this.refuseRawValueTarget(node, node.targetExpression);
       node.valueTransferIndex = transferInfos.length;
       transferInfos.push({ transferIndex: node.valueTransferIndex });
       // Don't return - child expressions may contain transfers too
@@ -6050,12 +6051,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // Returning low-level expression: `(bool ok, bytes data) = target.call{value: amount}(payload)`.
     if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+      if (node.methodName === 'call') this.refuseRawValueTarget(node, node.object as ExpressionNode);
       node.valueTransferIndex = transferInfos.length;
       transferInfos.push({ transferIndex: node.valueTransferIndex });
     }
     // The same expression once it is a low-level call node, as the body's visit leaves it in a direct build: its
     // payment needs a transfer slot as well, or it would drop.
     if (node instanceof LowLevelCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+      if (node.callMode === 'call') this.refuseRawValueTarget(node, node.targetExpression);
       node.valueTransferIndex = transferInfos.length;
       transferInfos.push({ transferIndex: node.valueTransferIndex });
     }
@@ -16784,8 +16787,13 @@ export default class SymbolTableTraversal extends AstTraversal {
    */
   private refuseRawValueCallToStatefulContract(node: ExternalFunctionCallNode): void {
     if (node.interfaceName !== '__raw__' || !hasEffectiveCallValue(node.callOptions?.value)) return;
+    this.refuseRawValueTarget(node, node.addressExpression);
+  }
+
+  /** `node` pays `target` a raw call's value: refused where the target is seen to be a stateful contract. */
+  private refuseRawValueTarget(node: Node, target: ExpressionNode): void {
     if (this.compilerOptions.composition === 'framed' || this.compilerOptions.messageBus === true) return;
-    const name = this.statefulTargetName(node.addressExpression);
+    const name = this.statefulTargetName(target);
     if (name !== undefined) throw new StatefulRawValueCallError(node, name);
   }
 

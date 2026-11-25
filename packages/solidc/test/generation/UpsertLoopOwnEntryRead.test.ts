@@ -39,14 +39,6 @@ const conventions = {
 const opOf = (artifact: ReturnType<typeof compileString>): string | undefined => artifact.abi
   .find((entry) => entry.name === 'put')?.sortedUpsertLoopInfo?.find((info) => info.collection === 'bal')?.op;
 
-/** Why framed composition refuses `put`, or undefined when it serves the entry. */
-const framedRefusal = (source: string): string | undefined => Object.values(compileStringMulti(source, {
-  ...quiet, composition: 'framed',
-})).find((artifact) => artifact.abi.some((entry) => entry.name === 'put'))
-  ?.composition?.refusedEntries?.find((entry) => entry.functionName.endsWith('.put()'))?.reason;
-
-const LOOPED_EVENT_REFUSAL = /an event emitted in a loop whose counter or bound is not a recurrence/;
-
 describe('a sorted-mapping loop write folds only its own entry', () => {
   it.each([
     ['another entry of the mapping', 'this.bal[ks[i]] = this.bal[7] + 1;'],
@@ -54,23 +46,12 @@ describe('a sorted-mapping loop write folds only its own entry', () => {
     ['the same key of another mapping', 'this.bal[ks[i]] = this.other[ks[i]] + 1;'],
     ['another key of the array', 'this.bal[ks[i]] = this.bal[ks[0]] + 1;'],
     ['another entry beside a per-turn value', 'this.bal[ks[i]] = this.bal[7] + vs[i];'],
+    ['another entry, with an event per turn', 'this.bal[ks[i]] = this.bal[7] + 1; emit Seen(ks[i], i);'],
+    ['another mapping, with an event per turn', 'this.bal[ks[i]] = this.other[ks[i]] + 1; emit Seen(ks[i], i);'],
   ])('stores the value of a write that reads %s', (_label, body) => {
     for (const [name, compile] of Object.entries(conventions)) {
       expect([name, opOf(compile(book(body)))]).toStrictEqual([name, 'set']);
     }
-  });
-
-  // A loop that emits once per turn was served by the removed journal transport. The direct
-  // conventions still publish the fold; framed composition refuses the entry because the loop's counter
-  // and bound are not a recurrence its own facts fix, so a builder cannot count the event outputs.
-  it.each([
-    ['another entry, with an event per turn', 'this.bal[ks[i]] = this.bal[7] + 1; emit Seen(ks[i], i);'],
-    ['another mapping, with an event per turn', 'this.bal[ks[i]] = this.other[ks[i]] + 1; emit Seen(ks[i], i);'],
-  ])('stores the value of a write that reads %s', (_label, body) => {
-    for (const name of ['auto', 'direct'] as const) {
-      expect([name, opOf(conventions[name](book(body)))]).toStrictEqual([name, 'set']);
-    }
-    expect(framedRefusal(book(body))).toMatch(LOOPED_EVENT_REFUSAL);
   });
 
   it.each([
@@ -80,20 +61,12 @@ describe('a sorted-mapping loop write folds only its own entry', () => {
     ['-', 'this.bal[ks[i]] = this.bal[ks[i]] - vs[i];'],
     ['+', 'int v = vs[i]; this.bal[ks[i]] += v;'],
     ['+', 'int k = ks[i]; this.bal[k] = this.bal[ks[i]] + 1;'],
+    ['+', 'this.bal[ks[i]] += vs[i]; emit Seen(ks[i], i);'],
+    ['-', 'this.bal[ks[i]] -= vs[i]; emit Seen(ks[i], i);'],
   ])('folds `%s` into the entry for `%s`', (op, body) => {
     for (const [name, compile] of Object.entries(conventions)) {
       expect([name, opOf(compile(book(body)))]).toStrictEqual([name, op]);
     }
-  });
-
-  it.each([
-    ['+', 'this.bal[ks[i]] += vs[i]; emit Seen(ks[i], i);'],
-    ['-', 'this.bal[ks[i]] -= vs[i]; emit Seen(ks[i], i);'],
-  ])('folds `%s` into the entry for `%s`', (op, body) => {
-    for (const name of ['auto', 'direct'] as const) {
-      expect([name, opOf(conventions[name](book(body)))]).toStrictEqual([name, op]);
-    }
-    expect(framedRefusal(book(body))).toMatch(LOOPED_EVENT_REFUSAL);
   });
 
   it('folds a using-for add or sub only into the entry it is called on', () => {
@@ -111,32 +84,21 @@ describe('a sorted-mapping loop write folds only its own entry', () => {
     }
   });
 
-  it('folds a counter loop\'s write only into the entry it reads, on the compiler-described layout too', () => {
+  it('folds a counter loop\'s write only into the entry it reads', () => {
     const counter = (body: string): string => `contract C() { mapping(int => int) slots; mapping(int => int) other;
       event Hit(int v);
       function put(int n, int amount) public { for (int i = 0; i < n; i = i + 1) { ${body} } require(true); }
       function control() public { require(true); } }`;
-    const stateful = { forceStateful: true };
     for (const [body, expected] of [
       ['slots[i] = slots[i] + amount;', '+'], ['slots[i] = slots[i] - amount;', '-'], ['slots[i] += amount;', '+'],
-      ['slots[i] = slots[7] + amount;', 'set'],
+      ['slots[i] = slots[i] + amount; emit Hit(i);', '+'],
+      ['slots[i] = slots[7] + amount;', 'set'], ['slots[i] = slots[7] + amount; emit Hit(i);', 'set'],
       ['slots[i] = other[i] + amount;', 'set'],
     ] as const) {
-      for (const [name, options] of [['stateful', stateful], ['auto', {}], ['direct', {}]] as const) {
+      for (const [name, options] of [['auto', {}], ['direct', {}]] as const) {
         const loop = compileString(counter(body), { ...quiet, ...options }).abi.find((entry) => entry.name === 'put')
           ?.sortedUpsertLoopInfo?.find((info) => info.collection === 'slots');
         expect([name, body, loop?.op]).toStrictEqual([name, body, expected]);
-      }
-    }
-    // The journal transport lowered a counter-loop write that emits once per turn. Direct codegen fails
-    // closed on this shape: it has no fold metadata to publish, so it refuses rather than guessing a transition.
-    for (const body of [
-      'slots[i] = slots[i] + amount; emit Hit(i);',
-      'slots[i] = slots[7] + amount; emit Hit(i);',
-    ] as const) {
-      for (const options of [stateful, {}, {}]) {
-        expect(() => compileString(counter(body), { ...quiet, ...options }))
-          .toThrow(/does not match a supported insert or update loop shape/);
       }
     }
   }, 300_000);

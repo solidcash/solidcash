@@ -118,6 +118,10 @@ interface CapacityReading {
 // count. The root's input is 77 B (kernel) / 76 B (legacy) larger, 47 / 46 B of them the args-left line's and 30 B
 // its void route's own output pass, which refuses carriers in place of the count's second walk; net it is 2,759 /
 // 2,757 units dearer. The transaction is 104 B (kernel) and 103 B (legacy) larger; the worst input and its ratio hold.
+// Again for the corrected OP_DEFINE charge (libauth ff49a75a, the repository's pin since af630cc60; BCHN v29.1.0 charges
+// a defined body as pushed bytes): each input that defines functions is about 0.6% dearer (kernel root 442,480 ->
+// 445,196; legacy worst 2,373,923 -> 2,378,593, its ratio 0.3281 -> 0.3288). Bytes are unchanged. A checkout whose
+// node_modules still holds the older libauth build reads the older costs.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
@@ -125,7 +129,7 @@ const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>>
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      442_480, 406_130, 695, 957_089, 817_981, 27_321,
+      445_196, 408_383, 695, 962_422, 822_727, 27_321,
     ],
     inputMaximumOperationCosts: [
       2_573_600, 2_027_200, 34_400, 7_234_400, 7_234_400, 112_800,
@@ -134,10 +138,10 @@ const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>>
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
     transactionBytes: 25_000, callManifestBytes: 294,
-    worstOperationCost: 2_373_923, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.32814372995687274,
+    worstOperationCost: 2_378_593, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.3287892568837775,
     inputOperationCosts: [
-      435_003, 428_885, 695, 2_373_923, 1_864_134, 27_321,
+      437_652, 431_718, 695, 2_378_593, 1_868_421, 27_321,
     ],
     inputMaximumOperationCosts: [
       2_504_000, 2_488_800, 34_400, 7_234_400, 7_234_400, 112_800,

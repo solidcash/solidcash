@@ -272,6 +272,8 @@ export interface ExternalCallUtxoGroup {
   edgeDelegateGroupIndex?: number;
   /** F1: this low-level group answers call `i` of the entry, whose `__internal__lowLevelCallEdgeOutputIdx<i>` it fills. */
   edgeLowLevelCallIndex?: number;
+  /** The turn of a per-turn low-level call this group's run answers (low-level-call-turns.ts). */
+  lowLevelCallTurn?: number;
   /**
    * The entry's low-level call `i` whose callee, run as a direct group (a compat call's), makes this call, itself or
    * through a contract it calls: this group answers a call of that callee's, no typed callsite of the entry.

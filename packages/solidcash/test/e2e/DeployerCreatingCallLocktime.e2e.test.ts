@@ -133,9 +133,10 @@ describe('A5, A14 item 7: the locktime of a creating call', () => {
 
   it('sets item 7\'s locktime when only the constructor constrains it: the median time past minus 1', async () => {
     const { provider, captured, make } = await factoryFor('timestamp', false);
+    // Item 7 takes the median time past the creation is built at; its prep and the creation then each mine a block.
+    const mtp = await provider.getMedianTimePast();
     const result = await make();
     const creation = captured[captured.length - 1]!;
-    const mtp = await provider.getMedianTimePast();
     expect(creation.transaction.locktime).toBe(mtp - 1);
     expect(((await result.child.getState()) as { born?: bigint }).born).toBe(BigInt(mtp - 1));
     expect(vm.verify(creation as never)).toBe(true);

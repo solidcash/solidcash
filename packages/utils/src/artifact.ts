@@ -753,6 +753,13 @@ export interface AbiFunction {
     /** Exact compiler-proven ceiling (one for a branch, literal trip count for a fixed loop). */
     maximumOccurrences?: number;
     /**
+     * A `call` a loop may make more than once: each turn binds its own callee run, read from the turn's element of
+     * `lowLevelCallTurnInputsInput(i)` (none for an empty literal payload); a caller that keeps state also reads
+     * each turn's callee record at `lowLevelCallTurnRecordBaseInput(i)` plus the turn. `.withCall()` lists one callee
+     * per turn, in turn order.
+     */
+    perTurn?: true;
+    /**
      * Runtime predicate guarding this callsite, serialized from its enclosing source branches in the same
      * `ExternalCallExpression` vocabulary an external call's `condition` uses. A `conditional` row whose
      * predicate the compiler could not name publishes none: absence reads as unknown reachability, never as
@@ -773,6 +780,12 @@ export interface AbiFunction {
      */
     targetSource?: ArgSource;
     dataSource?: ArgSource;
+    /**
+     * A `perTurn` call's `{value:}` that is not statically zero: what a turn pays, as `dataSource` serializes an
+     * argument (`{ kind: 'expression' }` when unknown). The loop binds one paying turn per transaction, so a builder
+     * refuses a listing two of whose turns may pay.
+     */
+    valueSource?: ArgSource;
     /**
      * The function can write the call's target before the call: the callee the call runs on is not the one the
      * caller's state and arguments name before the run, which `targetSource` reads. A builder does not resolve the
@@ -1809,6 +1822,19 @@ export function callConsumesResult(call: Pick<ExternalCallAbi, 'hasReturnValues'
 
 /** The reader a record names when no contract reads it. Its two bytes, `01 80`, are no input index's. */
 export const CALL_RECORD_NO_READER = -1n;
+
+/**
+ * The entry witness of a low-level call a loop may make more than once (`perTurn`): the input index of each turn's
+ * callee, pushdata-framed numbers in turn order, strictly increasing, consumed to its end.
+ */
+export function lowLevelCallTurnInputsInput(callIndex: number): string {
+  return `__internal__lowLevelCallInputs${callIndex}`;
+}
+
+/** The output of the first turn's callee record of a per-turn low-level call; turn k reads base + k. */
+export function lowLevelCallTurnRecordBaseInput(callIndex: number): string {
+  return `__internal__lowLevelCallRecordBase${callIndex}`;
+}
 
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =

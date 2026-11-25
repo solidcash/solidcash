@@ -757,7 +757,8 @@ export default class TypeCheckTraversal extends AstTraversal {
    * and its base's type.
    */
   private typeLowLevelCallTargetFields(target: ExpressionNode): ExpressionNode {
-    if (target instanceof FieldAccessNode) return this.visit(target) as ExpressionNode;
+    // An array element (`targets[i]`) is read where the call runs as well: code generation reads its array's type.
+    if (target instanceof FieldAccessNode || target instanceof ArrayAccessNode) return this.visit(target) as ExpressionNode;
     if (target instanceof CastNode) target.expression = this.typeLowLevelCallTargetFields(target.expression);
     return target;
   }

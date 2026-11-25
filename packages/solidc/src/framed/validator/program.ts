@@ -25,6 +25,7 @@ import {
 import {
   PUSHDATA1_OPCODE,
   PUSHDATA2_OPCODE,
+  PUSHDATA4_OPCODE,
   splitFirstPushScript,
   takeFixedWidthField,
   takeLengthPrefixedField,
@@ -1262,8 +1263,9 @@ function emitArgumentDigest(e: Emitter): void {
  * The function takes `[bytes, total]`, where `bytes` is a prefix of those pushes and `total` the length of all of
  * them, and leaves `[section, found]`: the bytes before the last push and 1, or an empty item and 0 when a push
  * reaches past `bytes` before the last one begins. A push is last when it ends exactly at `total`. Every push the
- * scan steps over is one the machine pushed: a direct push, `PUSHDATA1` or `PUSHDATA2`, or one of the opcodes that
- * push a number alone.
+ * scan steps over is one the machine pushed: a direct push, `PUSHDATA1`, `PUSHDATA2` or `PUSHDATA4`, or one of the
+ * opcodes that push a number alone. A redeem script longer than 65,535 bytes, which a lifted stack item limit
+ * admits, is pushed with `PUSHDATA4`.
  */
 function emitDefineArgumentScan(e: Emitter): void {
   const O = Opcodes;
@@ -1280,21 +1282,24 @@ function emitDefineArgumentScan(e: Emitter): void {
       }, () => {
         s.count(1, 'one').op(2, ['opByte', 'cur'], O.OP_SPLIT);
         s.roll('opByte').emit(1, ['op'], (em) => em.unsignedByteOnTop());
-        // `t`, the push's whole length: `OP_0` and a direct push are their opcode and that many bytes, `PUSHDATA1` and
-        // `PUSHDATA2` their length bytes too, and the opcodes that push a number alone one byte. A length whose bytes
-        // are past the end reads as one no push can have, so the scan stops there.
+        // `t`, the push's whole length: `OP_0` and a direct push are their opcode and that many bytes, `PUSHDATA1`,
+        // `PUSHDATA2` and `PUSHDATA4` their length bytes too, and the opcodes that push a number alone one byte. A
+        // length whose bytes are past the end of `bytes` stops the scan there.
         s.pick('op', 'o').count(PUSHDATA1_OPCODE, 'pd1').op(2, ['isShort'], O.OP_LESSTHAN).branch(() => {
           s.op(1, ['t'], O.OP_1ADD);
         }, () => {
-          s.pick('op', 'o').count(PUSHDATA2_OPCODE + 1, 'past').op(2, ['isLong'], O.OP_LESSTHAN).branch(() => {
-            // `PUSHDATA1` is 0x4c and `PUSHDATA2` 0x4d: one or two length bytes, `op - 0x4b` of them.
+          s.pick('op', 'o').count(PUSHDATA4_OPCODE + 1, 'past').op(2, ['isLong'], O.OP_LESSTHAN).branch(() => {
+            // `PUSHDATA1` 0x4c, `PUSHDATA2` 0x4d and `PUSHDATA4` 0x4e: 1, 2 and 4 length bytes, `op - 0x4b` and one
+            // more for `PUSHDATA4`.
             s.push(encodeInt(BigInt(PUSHDATA1_OPCODE - 1)), 'base').op(2, ['width'], O.OP_SUB);
+            s.pick('width', 'w').count(3, 'three').op(2, ['wide'], O.OP_NUMEQUAL).op(2, ['width'], O.OP_ADD);
             s.pick('cur', 'c').op(1, ['size'], O.OP_SIZE, O.OP_NIP).pick('width', 'w').op(2, ['readable'], O.OP_GREATERTHANOREQUAL);
             s.branch(() => {
               s.pick('cur', 'c').pick('width', 'w').op(2, ['length'], O.OP_SPLIT, O.OP_DROP).emit(1, ['length'], (em) => em.unsignedByteOnTop());
               s.op(2, ['t'], O.OP_ADD, O.OP_1ADD);
             }, () => {
-              s.remove('width').push(encodeInt(0x10000n), 't');
+              // `total + 1`, so the push neither ends at `total` nor fits in `cur`; a constant could match a real length.
+              s.remove('width').pick('total', 'all').op(1, ['t'], O.OP_1ADD);
             });
           }, () => {
             s.remove('op').count(1, 't');

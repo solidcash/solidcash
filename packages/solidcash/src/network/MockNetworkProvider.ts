@@ -523,7 +523,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     try {
       const { category, transactions } = buildOraclePoolGenesis({
         funding, funder: owner, ownerKey: owner, infoCoins: MOCK_ORACLE_POOL_INFO_COINS, ringDepth: POOL_MAX_DEPTH,
-        // The second before the tip, as every refresh publishes it: a send here mines at the tip's own time.
+        // The second before the tip, as every refresh publishes it.
         slotReplicas: 1, tip: simulatorPoolFields(this.blockHeight, this.getBlockTime() - 1), ring,
       });
       for (const transaction of transactions) this.publishOraclePoolTransaction(transaction.hex);
@@ -740,12 +740,16 @@ export default class MockNetworkProvider implements NetworkProvider {
     return this.indexer.getTip()?.timestamp ?? MOCK_DEFAULT_BLOCK_TIME;
   }
 
+  /** The time `setNextBlockTimestamp` set, which the block the next send mines takes. */
+  private pendingBlockTimestamp?: number;
+
   /**
    * hardhat-network-helpers `time.setNextBlockTimestamp`: set the NEXT block's timestamp WITHOUT mining (the
    * mem-cash node holds it pending; the next mined/auto-mined block consumes it). The current tip is unchanged.
    */
   setNextBlockTimestamp(timestamp: number | bigint): void {
     this.indexer.setNextBlockTimestamp(Number(timestamp));
+    this.pendingBlockTimestamp = Number(timestamp);
   }
 
   /** Advance the current chain-tip timestamp by `seconds` immediately (effective for reads now). Returns new ts. */
@@ -925,11 +929,13 @@ export default class MockNetworkProvider implements NetworkProvider {
     // from the mempool to the confirmed UTXO set and clears mempool spend
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
     const mineStartedAt = debugTiming ? Date.now() : 0;
-    // A transaction executes against the chain's current tip time, so the block it is auto-mined
-    // into must carry that same timestamp. `mine()` with no argument advances the clock by one second, which
-    // makes `block.timestamp` inside the covenant one second behind the block the receipt reports (the
-    // Hardhat automine model executes at the block's own timestamp).
-    this.indexer.mine(this.getBlockTime());
+    // As Hardhat's automine: each transaction gets its own block, at the time `setNextBlockTimestamp` set or one
+    // second after the tip, so the next transaction reads a later `block.timestamp` (the pool publishes the second
+    // before the tip, below). The time is explicit, since mem-cash's own default floors it at its genesis time plus
+    // the height, far past the mock's start.
+    const blockTime = this.pendingBlockTimestamp ?? this.getBlockTime() + 1;
+    this.pendingBlockTimestamp = undefined;
+    this.indexer.mine(blockTime);
     // The mock chain starts at a synthetic height, so its eleven-header median-time-past would sit far behind the
     // mined block. Keep the window on the tip's timestamp, as the mock's chain always did: nLocktime finality (the
     // node's time basis) is then measured against the block the next send will extend.
@@ -1054,6 +1060,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
+    this.pendingBlockTimestamp = undefined;
     // The wipe took the pools and the owner's coin with it; a fresh chain mints its pool on first use.
     this.clearOraclePool();
     this.keptOraclePools.clear();

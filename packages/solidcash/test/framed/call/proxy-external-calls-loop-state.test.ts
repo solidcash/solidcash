@@ -232,9 +232,9 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
     const facade = loadArtifact(FACADE);
     const data = loadArtifact(DATA);
     const token = loadArtifact(TOKEN);
-    // The entry's ten published sites reach the two contracts; two of them are gated on an earlier call's result,
-    // which this pass does not hold, so it plans the eight the caller's own facts fix: five of the data manager and
-    // three of the token. Each contract's pool holds five masters, enough for the reaches this pass can state.
+    // The entry's ten published sites reach the two contracts. A pass ends before a guard over a result it does not
+    // hold (77f4275f6): site 4, forceApprove's retried `approve`, reads callsite 3's result, so this pass states sites
+    // 0-3, two reaches of each contract, and the hop plans the rest once it has settled them.
     const dataDeployment = await seedDeployment(network, data, DATA_CATEGORY, undefined, 5);
     await seedDeployment(network, token, TOKEN_CATEGORY, undefined, 5);
 
@@ -256,14 +256,17 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
       validatorProgram: VALIDATOR_PROGRAM,
     });
 
-    // Eight reaches, one master each; every reach names a master of its own, so no master serves two reaches.
-    expect(plan.calls).toHaveLength(8);
-    expect(plan.callees).toHaveLength(8);
+    expect(plan.blocked?.where).toBe('the call to "IERC20.approve"');
+    expect(plan.blocked?.producers).toStrictEqual([3]);
+    // Four reaches, one master each; every reach names a master of its own, so no master serves two reaches.
+    expect(plan.calls).toHaveLength(4);
+    expect(plan.callees).toHaveLength(4);
     const perContract = new Map<string, number>();
     for (const callee of plan.callees) {
       perContract.set(callee.contract, (perContract.get(callee.contract) ?? 0) + 1);
     }
-    expect([...perContract.values()].sort((left, right) => left - right)).toStrictEqual([3, 5]);
+    expect(perContract.get(data.contractName)).toBe(2);
+    expect(perContract.get(token.contractName)).toBe(2);
     expect(new Set(plan.calls.map((call) => call.callee)).size).toBe(plan.calls.length);
   });
 
@@ -302,18 +305,18 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
       validatorProgram: VALIDATOR_PROGRAM,
     });
 
-    // Eight reaches: the five into the proxied callee place a fallback and a delegate frame each, and the three the
-    // caller's own facts fix into the direct callee place one master each. The two sites gated on an earlier call's
-    // result are not stated in a pass that does not hold it.
-    expect(plan.calls).toHaveLength(8);
+    // The pass stops before site 4 as above. Four reaches: the two into the proxied callee place a fallback and a
+    // delegate frame each, and the two into the direct callee one master each.
+    expect(plan.blocked?.producers).toStrictEqual([3]);
+    expect(plan.calls).toHaveLength(4);
     const perContract = new Map<string, number>();
     for (const callee of plan.callees) {
       perContract.set(callee.contract, (perContract.get(callee.contract) ?? 0) + 1);
     }
-    expect(perContract.get(dataProxy.contractName)).toBe(5);
-    expect(perContract.get(data.contractName)).toBe(5);
-    expect(perContract.get(token.contractName)).toBe(3);
-    expect(plan.callees).toHaveLength(13);
+    expect(perContract.get(dataProxy.contractName)).toBe(2);
+    expect(perContract.get(data.contractName)).toBe(2);
+    expect(perContract.get(token.contractName)).toBe(2);
+    expect(plan.callees).toHaveLength(6);
     // Every reach names a master of its own, and no two reaches share one.
     expect(new Set(plan.calls.map((call) => call.callee)).size).toBe(plan.calls.length);
   });
@@ -323,7 +326,7 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
     const facade = loadArtifact(FACADE);
     const data = loadArtifact(DATA);
     const token = loadArtifact(TOKEN);
-    // The data manager holds one master, so only one of the five sites that reach it can be served.
+    // The data manager holds one master, so its second reach, site 1's `meceTags`, is refused.
     const dataDeployment = await seedDeployment(network, data, DATA_CATEGORY);
     await seedDeployment(network, token, TOKEN_CATEGORY, undefined, 5);
 
@@ -344,7 +347,7 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
       senderAddress: new Uint8Array(25).fill(0x22),
       validatorProgram: VALIDATOR_PROGRAM,
     })).rejects.toThrow(
-      /which this hop already places; its category \w+ holds 1 master\(s\), so it cannot be entered 2 time\(s\)/,
+      /"MarketplaceDataV1\.meceTags" reaches .*holds 1 master\(s\) it may take, so it cannot be entered 2 time\(s\)/,
     );
   });
 });

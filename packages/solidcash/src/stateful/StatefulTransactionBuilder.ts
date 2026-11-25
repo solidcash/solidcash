@@ -34,6 +34,7 @@ import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlo
 import {
   CALL_RECORD_DIGEST_BYTES, callRecordCommitment, callRecordDigest, callRecordHashesResult, parseCallRecord,
 } from './call-record.js';
+import { lowLevelCallTurnReadsRecords } from './low-level-call-turns.js';
 import { isCallBatchMember } from './direct-call-batch.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
@@ -1819,6 +1820,7 @@ export class StatefulTransactionBuilder {
         this._syncRefreshedCarrierMasters(builder, carriers);
       },
       callRecordDigest: (identity: string) => this.callRecordDigestFor(identity),
+      lowLevelTurnRecord: (group) => this.lowLevelTurnRecord(group),
     };
   }
 
@@ -2361,6 +2363,9 @@ export class StatefulTransactionBuilder {
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       addReturnOutput,
       callRecordDigest: (identity) => this.callRecordDigestFor(identity),
+      bandRecordRunners: new Set(this.lowLevelCallUtxoGroups
+        .filter((group) => group.lowLevelCallTurn !== undefined)
+        .map((group) => `${group.masterUtxo.txid.toLowerCase()}:${group.masterUtxo.vout}`)),
     };
   }
 
@@ -2376,7 +2381,26 @@ export class StatefulTransactionBuilder {
       externalCallDerivedRecords: this.externalCallDerivedRecords,
       childDeploymentOutputs: this.childDeploymentOutputs,
       builderOptions: this.builderOptions,
+      turnRecord: (group) => this.lowLevelTurnRecord(group),
     };
+  }
+
+  /**
+   * The record the turn a per-turn low-level call's group answers reads, when this builder's call reads its turns'
+   * records: the void entry's `digest || 01`, its reader this builder's master input.
+   */
+  private lowLevelTurnRecord(group: ExternalCallUtxoGroup): string | undefined {
+    const row = group.edgeLowLevelCallIndex;
+    const unlocker = this.masterUtxo.unlocker;
+    if (group.lowLevelCallTurn === undefined || row === undefined || !isContractUnlocker(unlocker)
+      || !lowLevelCallTurnReadsRecords(unlocker.abiFunction, row)) return undefined;
+    const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
+    const entry = artifact?.abi.find((candidate) => candidate.name === group.functionName);
+    if (artifact === undefined || entry === undefined) return undefined;
+    const digest = callRecordDigest(entry, group.functionArgs, {
+      structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
+    }, 0, this.findMintingInputIndex(this.categoryId));
+    return digest === undefined ? undefined : binToHex(callRecordCommitment(new Uint8Array(), digest));
   }
 
   private _measureAndFundCovenantFeeHost(): MeasureAndFundCovenantFeeHost {

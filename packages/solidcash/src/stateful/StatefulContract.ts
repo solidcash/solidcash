@@ -369,6 +369,7 @@ import {
   publishPreparedDelegateOwnerFrame,
 } from './sc-materialize-create-builder-low-level-stateful-call.js';
 export { publishPreparedDelegateOwnerFrame };
+import { planLowLevelCallTurns } from './low-level-call-turns.js';
 import { runCreateBuilderDerivePass as runCreateBuilderDerivePassImpl } from './sc-run-create-builder-derive-pass.js';
 import { settlesSortedTargetsByActivity } from './conditional-sorted-activity.js';
 import {
@@ -11588,10 +11589,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (input !== undefined && pool !== undefined && isPoolInfoInput(input, pool)) nestedBlockOraclePools.add(pool);
     }
     if (lowLevelCalls && lowLevelCalls.length > 0) {
-      const resolvedCalls = overrides?.calls ?? [];
+      // Each row's listed callees, a per-turn row's one per turn: each runs as a group of its own.
+      const turnCalls = planLowLevelCallTurns(
+        lowLevelCalls, overrides?.calls, abiFunction, `${this.inner.artifact.contractName}.${functionName}`,
+      );
 
-      for (let i = 0; i < lowLevelCalls.length; i++) {
-        const callInfo = resolvedCalls[i];
+      for (const { row: i, turn, callInfo } of turnCalls) {
         if (!callInfo) {
           // Low-level calls require explicit .withCall() - skip if not provided
           // (the builder will be rebuilt when .withCall() is used)
@@ -11640,6 +11643,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             },
           );
           preparedAtomicNodes = materializedLlc.preparedAtomicNodes;
+          if (turn !== undefined) lowLevelCallUtxoGroups[lowLevelCallUtxoGroups.length - 1]!.lowLevelCallTurn = turn;
           // llc-stateful-materialize-complete (size-guarded; nested compose follows for delegatecall)
           if (lowLevelCalls[i].callMode === 'delegatecall') {
             const delegateGroupIndex = materializedLlc.delegateGroupIndex!;

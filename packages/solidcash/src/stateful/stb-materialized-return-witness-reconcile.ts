@@ -14,6 +14,7 @@ import {
   type MaterializedReturnExpectation,
 } from './scid-minting-return-layout.js';
 import { isViewReturnTailOutput } from './value-chunk-band-helpers.js';
+import { isLowLevelTurnRecord } from './stb-materialize-low-level-call-outputs.js';
 import {
   groupOwnsInBlockReturnEvent,
   logicalReturnGroupIndex,
@@ -40,6 +41,8 @@ export interface MaterializedReturnWitnessReconcileHost {
   ): void;
   /** The digest of the call a direct return record answers; none for a routed one. */
   callRecordDigest?(identity: string): Uint8Array | undefined;
+  /** The record a per-turn low-level call's turn reads from a low-level group's run (low-level-call-turns.ts). */
+  lowLevelTurnRecord?(group: ExternalCallUtxoGroup): string | undefined;
 }
 
 /** Rebind return-index arguments after every output owner has materialized. */
@@ -161,6 +164,23 @@ export function reconcileMaterializedReturnWitnesses(
     if (Object.keys(updates).length === 0) continue;
     carrier.refreshInternalArgs(updates, { shiftPredOut: false });
     changedCarriers.add(carrier);
+    changed = true;
+  }
+  // A per-turn low-level call's turn reads the record its callee's run pins where the band placed it, naming this
+  // build's reader: point the callee's record witness at it and keep its digest current.
+  for (const group of host.lowLevelCallUtxoGroups) {
+    if (group.lowLevelCallTurn === undefined || !group.refreshInternalArgs) continue;
+    const at = builder.outputs.findIndex((output) => isLowLevelTurnRecord(output, group));
+    const output = builder.outputs[at];
+    if (output?.token?.nft === undefined) continue;
+    const record = host.lowLevelTurnRecord?.(group);
+    if (record !== undefined && output.token.nft.commitment !== record) {
+      builder.outputs[at] = { ...output, token: { ...output.token, nft: { ...output.token.nft, commitment: record } } };
+      changed = true;
+    }
+    if (group.internalArgs?.[CALLEE_RECORD_WITNESS] === BigInt(at)) continue;
+    group.refreshInternalArgs({ [CALLEE_RECORD_WITNESS]: BigInt(at) }, { shiftPredOut: false });
+    changedCarriers.add(group);
     changed = true;
   }
   // A long return's NFT contains only SHA256(raw). Every caller that decodes it carries raw as a hidden

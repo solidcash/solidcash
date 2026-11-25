@@ -17,6 +17,7 @@ import {
 import { ExternalExpressionUnresolvedConditionError } from './result-evaluation-path.js';
 import { callGuardText } from './call-guard-text.js';
 import { connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex } from './deployment-registry.js';
+import { listedSingleLowLevelCalls } from './low-level-call-turns.js';
 import { externalCallIterationIndices } from './external-call-iteration-domain.js';
 
 /** Structural ExternalCallInfo to avoid importing StatefulContract through lifecycle types. */
@@ -297,9 +298,12 @@ export async function refuseListedLowLevelCallsTheGuardSkips(
   const rows = abiFunction?.lowLevelCalls ?? [];
   if (abiFunction === undefined || rows.length === 0 || (listedCalls?.length ?? 0) === 0
     || isBusCompiledEntry(artifact, abiFunction.selector)) return;
+  // A per-turn row's covenant spends its list of callees to the end, one per turn the run makes, so a listed callee
+  // of a turn the run skips fails that list: such a row is left to its covenant.
+  const byRow = listedSingleLowLevelCalls(rows, listedCalls, `${artifact.contractName}.${abiFunction.name}`);
   const guarded = rows.flatMap((row, index) => {
-    const listed = listedCalls?.[index];
-    if (listed?.type !== 'stateful' || row.callMode === 'delegatecall'
+    const listed = byRow[index];
+    if (listed?.type !== 'stateful' || row.callMode === 'delegatecall' || row.perTurn === true
       || (row.occurrence !== 'conditional' && row.occurrence !== 'loop')) return [];
     const calleeArtifact = listed.contract?.inner?.artifact;
     const readsSender = calleeArtifact?.abi.find((candidate) => candidate.name === listed.functionName)

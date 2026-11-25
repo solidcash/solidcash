@@ -1023,8 +1023,11 @@ target.staticcall(payload);                           // low-level read-only; de
   runtime selector, or to `msg.sender` (`CALL_VALUE_UNBOUND`, at compile time). The SDK refuses one to a function
   that takes no value, one below the dust threshold of the callee's container, and one whose callee sends the value
   on (`CallValueUnpayableError`).
-- A low-level call a loop may make more than once (run-time turns, or an array of targets) is refused
-  (`LOW_LEVEL_CALL_IN_LOOP`): one callee run would answer every turn.
+- A low-level `call` a loop may make more than once (run-time turns, or an array of targets) binds each turn to a
+  callee run of its own: list one callee per turn with `.withCall()`, in turn order. A contract with state also reads
+  the record each turn's callee run settles. A `{value:}` on it pays from one turn per transaction: the SDK refuses,
+  before building, a listing two of whose turns pay (`LowLevelCallTurnsError`). Outside an entry point, or in a
+  function that delegatecalls, it is refused (`LOW_LEVEL_CALL_IN_LOOP`).
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when
   no contract calls it. It is derived from the transaction's inputs, not a call frame: authorize with `checkSig`.
 
@@ -1298,7 +1301,8 @@ ethers v5 namespaces and `BigNumber`, `/ethers6` the v6 utilities, `/vitest-pres
 Vitest config aliases `hardhat`, `ethers`, `chai`, `@nomicfoundation/hardhat-network-helpers`,
 `@nomicfoundation/hardhat-chai-matchers` and `@openzeppelin/hardhat-upgrades` to the BCH runtime, so ported tests
 keep their imports. `loadFixture` needs a named function; `time.increase(s)` mines a block and moves
-`block.timestamp`; `setBalance` only adds a UTXO; `impersonateAccount` throws by design.
+`block.timestamp`; each transaction mines its own block a second after the last, as Hardhat's automine does;
+`setBalance` only adds a UTXO; `impersonateAccount` throws by design.
 
 ```ts
 import { expect } from 'chai';  // the BCH chai shim under the SolidHat preset

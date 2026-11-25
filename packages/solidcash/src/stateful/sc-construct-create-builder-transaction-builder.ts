@@ -31,6 +31,10 @@ import {
 } from './StatefulTransactionBuilder.js';
 import type { ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 import { isFillerLockingBytecode } from './filler.js';
+import {
+  lowLevelCallTurnInputsWitness, lowLevelCallTurnWitnessPositions, planLowLevelCallTurns,
+} from './low-level-call-turns.js';
+import { isLowLevelTurnRecord } from './stb-materialize-low-level-call-outputs.js';
 
 export type ConstructCreateBuilderTransactionBuilderHost = {
   readonly categoryId: string;
@@ -433,26 +437,54 @@ export function constructCreateBuilderTransactionBuilder(
     : (materialized?: TransactionBuilder): void => {
       if (!abiFunction) return;
       const coSpends = new Map<number, Pick<Utxo, 'txid' | 'vout'>>();
+      // A per-turn row's callees, each a run of its own, in turn order.
+      const turnCoSpends = new Map<number, Pick<Utxo, 'txid' | 'vout'>[]>();
       for (const group of [...lowLevelCallUtxoGroups, ...externalCallUtxoGroups]) {
         const callIndex = group.edgeLowLevelCallIndex;
-        if (group.callMode === 'delegatecall' || callIndex === undefined || coSpends.has(callIndex)) continue;
-        coSpends.set(callIndex, group.masterUtxo);
+        if (group.callMode === 'delegatecall' || callIndex === undefined) continue;
+        if (group.lowLevelCallTurn !== undefined) {
+          const turns = turnCoSpends.get(callIndex) ?? [];
+          turns[group.lowLevelCallTurn] = group.masterUtxo;
+          turnCoSpends.set(callIndex, turns);
+        } else if (!coSpends.has(callIndex)) coSpends.set(callIndex, group.masterUtxo);
       }
-      for (const [callIndex, call] of suppliedLowLevelCalls.entries()) {
-        if (coSpends.has(callIndex) || lowLevelCallRows[callIndex]?.callMode === 'delegatecall') continue;
-        if (call?.type === 'raw' && call.utxo !== undefined) coSpends.set(callIndex, call.utxo);
+      const listed = suppliedLowLevelCalls.filter((call) => call !== undefined) as readonly { type: string }[];
+      for (const { row, turn, callInfo } of planLowLevelCallTurns(lowLevelCallRows, listed, abiFunction)) {
+        const call = callInfo as { type?: string; utxo?: Pick<Utxo, 'txid' | 'vout'> };
+        if (lowLevelCallRows[row]?.callMode === 'delegatecall' || call.type !== 'raw' || call.utxo === undefined) continue;
+        if (turn !== undefined) {
+          const turns = turnCoSpends.get(row) ?? [];
+          turns[turn] = call.utxo;
+          turnCoSpends.set(row, turns);
+        } else if (!coSpends.has(row)) coSpends.set(row, call.utxo);
       }
+      const inputIndexOf = (target: Pick<Utxo, 'txid' | 'vout'>): number => (materialized
+        ? materialized.inputs.findIndex((candidate) => candidate.txid.toLowerCase() === target.txid.toLowerCase()
+          && candidate.vout === target.vout)
+        : builder.findInputIndexByOutpoint(target));
       for (const [position, input] of abiFunction.inputs.entries()) {
         if (position >= finalArgs.length) break;
         const witness = /^__internal__callInputIndex(\d*)$/.exec(input.name);
         if (witness === null) continue;
         const target = coSpends.get(witness[1] === '' ? 0 : Number(witness[1]));
         if (target === undefined) continue;
-        const localIndex = materialized
-          ? materialized.inputs.findIndex((candidate) => candidate.txid.toLowerCase() === target.txid.toLowerCase()
-            && candidate.vout === target.vout)
-          : builder.findInputIndexByOutpoint(target);
+        const localIndex = inputIndexOf(target);
         if (localIndex >= 0) finalArgs[position] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+      }
+      // A per-turn row names each turn's callee in its list, and the first turn's record where it reads records.
+      for (const [row, turns] of turnCoSpends) {
+        const { inputs, recordBase } = lowLevelCallTurnWitnessPositions(abiFunction, row);
+        const indices = [...turns].map((turn) => (turn === undefined ? -1 : inputIndexOf(turn)));
+        if (inputs >= 0 && inputs < finalArgs.length && indices.every((index) => index >= 0)) {
+          finalArgs[inputs] = lowLevelCallTurnInputsWitness(
+            indices.map((index) => index + (overrides?.blockBase ?? 0)),
+          );
+        }
+        const first = lowLevelCallUtxoGroups.find((group) => group.edgeLowLevelCallIndex === row
+          && group.lowLevelCallTurn === 0);
+        const record = first === undefined || materialized === undefined ? -1
+          : materialized.outputs.findIndex((output) => isLowLevelTurnRecord(output, first));
+        if (recordBase >= 0 && recordBase < finalArgs.length && record >= 0) finalArgs[recordBase] = BigInt(record);
       }
     };
   // The compiled covenant reads a callee's return event at `__internal__externalReturnOutputIdxN`, so that witness

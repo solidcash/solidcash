@@ -683,16 +683,18 @@ is a single byte; and `difficulty` stays the real PoW difficulty rather than ali
   through its update path; `rotate` already rotates the baton's owner with every coin's.
 - `MockNetworkProvider` mints its pool on the first `oraclePoolCategory` read, by the two genesis transactions: two
   block-info coins at the tip height and the second before the tip time, a depth-256 ring with one slot per block
-  and the baton, owned by `oraclePoolOwnerKey` and paid from a fixed coin the mock gives that key's P2PKH. (Here a
-  send mines at the tip's own time, so a pool minted at the tip time held that second until the clock moved twice:
-  every refresh publishes the second before the tip and never rewinds, `5d504eae0`.) A second fixed coin, which
-  every fresh chain gives that P2PKH, pays for the pools minted through the mock, which it keeps with its own. After
-  each send, `mine`, `mineUpTo`, `evm_mine`, `hardhat_mine` and `evm_increaseTime`, a `PoolKeeper` moves every live
-  block-info coin to the tip height and the tip time less one second, and writes the slot of each block mined
-  since, up to the depth. Its transactions wait in the mempool for the next block. Block `n` hashes to the SHA-256
-  of `n` as 4 little-endian bytes. A snapshot keeps whether the pool exists and which pools are kept, and `reset`
-  forgets them. A VM target older than BCH 2026 has no pool, and a failed refresh is kept in
-  `oraclePoolRefreshError`.
+  and the baton, owned by `oraclePoolOwnerKey` and paid from a fixed coin the mock gives that key's P2PKH.
+  (Every refresh publishes the second before the tip and never rewinds, so a pool minted at the tip time would read
+  that second until a refresh caught up with it, `5d504eae0`.) A second fixed coin, which every fresh chain gives
+  that P2PKH, pays for the pools minted through the mock, which it keeps with its own. A send mines its block a
+  second after the tip, or at the time `setNextBlockTimestamp` set, as Hardhat's automine does, so the next
+  transaction reads a later `block.timestamp`; through 0.52.0 it mined at the tip's own time, and consecutive
+  transactions read one second. After each send, `mine`, `mineUpTo`, `evm_mine`, `hardhat_mine` and
+  `evm_increaseTime`, a `PoolKeeper` moves every live block-info coin to the tip height and the tip time less one
+  second, and writes the slot of each block mined since, up to the depth. Its transactions wait in the mempool for
+  the next block. Block `n` hashes to the SHA-256 of `n` as 4 little-endian bytes. A snapshot keeps whether the
+  pool exists and which pools are kept, and `reset` forgets them. A VM target older than BCH 2026 has no pool, and
+  a failed refresh is kept in `oraclePoolRefreshError`.
 - `RegtestNetworkProvider` mints a pool of the same shape on its first request (`createOraclePool`, owned by a fixed
   key) and refreshes it the same way after each mine and after `increaseTime`. A snapshot confirms the keeper's
   pending transactions first, and a restore rewinds the slot height. Not run.

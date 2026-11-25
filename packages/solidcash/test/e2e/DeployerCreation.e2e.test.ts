@@ -708,12 +708,13 @@ describe('a top-level deployment through Deploy<C>', () => {
     );
     const fundingUtxo: Utxo = { txid: '67'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    // A14 item 7 takes the median time past the creation is built at; its prep and the creation then each mine a block.
+    const mtp = await provider.getMedianTimePast();
     const result = await StatefulContract.deploy(artifact, [], {
       provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
       changeAddress: change.address, senderLockingBytecode: authorLock,
       oraclePool: 'bc'.repeat(32),
     });
-    const mtp = await provider.getMedianTimePast();
     expect(((await result.contract.getState()) as { t?: bigint }).t).toBe(BigInt(mtp - 1));
   });
 

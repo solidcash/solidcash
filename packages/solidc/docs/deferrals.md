@@ -3432,6 +3432,25 @@ digest and the reader, as typed loop calls do (`56ef7cfa7`, `d4a668146`), and th
 
 **Revisit if:** a port needs a batched low-level call (Kashi `cook`, a timelock's `executeBatch`).
 
+**Resolved 2026-11-25** (`842e3d3d2`): such a call in an entry point is `perTurn` and binds each turn to a callee run
+of its own. The turn's callee input is the next element of `__internal__lowLevelCallInputs<i>`, above the last turn's,
+and the list is spent to its end. A caller that keeps state reads the record each turn's run settles at
+`__internal__lowLevelCallRecordBase<i>` plus the turn, a carrier of that callee's category, by the payload's digest for
+a visible payload, and pins an opaque payload's run reader to its input. `.withCall()` lists one callee per turn. The
+three Kashi files compile again. Still refused by name: such a call outside an entry point, beside a delegatecall, or in
+a message-bus direct participant. Residuals: a `{value:}` pays from one turn per transaction; the SDK refuses a turn
+that is a returning callee, a raw coin (where records are read) or a second run of one contract (`LowLevelCallTurnsError`).
+
+**Stateful turns settle 2026-11-25** (`55f2cf8d5`): the build no longer drifts. The return-event pass held each turn's
+record witness open as a return slot and padded up to it before the band, so every build moved the band and its records
+6 outputs further (record base 42 by the send, unfunded pads, the fee funder copied whole). It skips the turns' callee
+runs, so the records follow the band, at the lowest base past the continuations, funded with the fee. The stateful rows
+VM-run: the honest send settles; one run for two turns, a record of another payload and one naming another reader are
+refused at the caller. A row whose `{value:}` is not statically zero publishes `valueSource`, and the SDK refuses before
+building a listing two of whose turns may pay (an amount every turn pays, two nonzero elements of a loop-indexed array
+argument, or a value it cannot evaluate). Open: a value-only send loop (`to.call{value: v}("")`) lists no turns, so a
+second paying turn of it still fails at the VM; a turn's value read any other way is refused rather than evaluated.
+
 ## Value calls nothing binds (2026-11-24)
 
 **Deferred:** a typed `{value:}` call in a loop, through a function pointer or a runtime selector, or to `msg.sender`
@@ -3483,6 +3502,16 @@ fails to compile (`StackVariableUnavailableError: '__internal__callDigest'`). Fa
 **Revisit if:** a port's native assembly in a stateful entry hits the error.
 
 ## The EACC marketplace on the framed convention (2026-11-24)
+
+**RESOLVED 2026-11-25 (`50e7bbc01`) for `validator/1`, by reading; the ladder run is the lander's.** Both lanes were
+refused by the call-tree facet's argument digest. Its scan for a callee's redeem push read `OP_PUSHDATA4` as a one-byte
+push, and the marketplace's masters (90,741 and 76,976 bytes, which the lane's lifted stack item limit admits) are
+pushed with it, so the scan ran into the program and the digest mismatched. The scan came in with `77f4275f6`
+(2026-10-29); `e3d85e0b4` still used `dropLastPushScript`, which reads it, and passed the `initialize` hop. The dumps'
+other refusals were not faults. The head's census close and the census facet's split of a 4-byte item are the
+checkpoint placeholder of the unfilled draft the dump evaluates. The master's refusals are candidate plans the call
+path tried earlier; the final verdicts name `validator/1` alone. The `allowedWorkers_` site-9 message is not in the
+dumps: if the ladder still shows it, it is an entry of its own.
 
 **Deferred (pre-existing):** both marketplace ladder lanes fail, identically on v0.51.1, on the session-start master
 (`af630cc60`), on master `5c0013c47` and on the 0.52.0 candidate. The proxied lane fails all 66 rows at

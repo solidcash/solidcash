@@ -2,6 +2,15 @@
 title: Migration Notes
 ---
 
+## v0.52.0 to v0.52.1
+
+- Move all six packages to 0.52.1 together; `pragma solidcash ^0.52.0` stays.
+- On the framed convention, recompile and deploy a new category: the validator facet that walks a callee's call data is
+  three bytes longer, so every framed address changes. Direct-convention contracts compile to the same bytes.
+- Tests on `MockNetworkProvider` now see time advance by a second with each transaction, as on Hardhat. A test that read
+  `block.timestamp` or the median time past after several sends and pinned the old value reads a later one now; read it
+  before the sends, or pin the advanced value.
+
 ## v0.51 to v0.52
 
 - Change `pragma solidcash ^0.51.0` to `pragma solidcash ^0.52.0`, and move all six packages to 0.52.0 together. A

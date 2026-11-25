@@ -121,7 +121,7 @@ export async function buildStatefulFunctionCall(
         || prior.collectionHash !== write.collectionHash || prior.categoryId !== write.categoryId
         || prior.keySlot !== write.keySlot)) {
         throw new Error(
-          `Kernel chunkable-value resource '${identity}' has conflicting unauthenticated producer geometry.`,
+          `Chunkable-value resource '${identity}' has conflicting unauthenticated producer geometry.`,
         );
       }
       if (prior === undefined) writesByResource.set(identity, write);
@@ -138,7 +138,7 @@ export async function buildStatefulFunctionCall(
       if (!Number.isSafeInteger(write.outputBase) || !Number.isSafeInteger(write.outputCount)
         || write.outputCount < 0 || write.outputBase + write.outputCount > Number.MAX_SAFE_INTEGER) {
         throw new Error(
-          `Kernel chunkable-value resource '${resourceIdentity}' has invalid continuation geometry.`,
+          `Chunkable-value resource '${resourceIdentity}' has invalid continuation geometry.`,
         );
       }
       for (let chunkIndex = 0; chunkIndex < write.outputCount; chunkIndex += 1) {

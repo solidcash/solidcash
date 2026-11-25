@@ -1367,7 +1367,7 @@ export function usesLegacyJobEventCompatibility(
  * Apply the historical JobEvent timestamp wire adapter to a nested legacy-layout call.
  *
  * This compatibility behavior is selected by the callee artifact convention and the exact legacy ABI type,
- * never by a function name or a positional argument assumption. Kernel artifacts must preserve user arguments:
+ * never by a function name or a positional argument assumption. Compiler-described artifacts must preserve user arguments:
  * their state transition is derived by executing the compiler-authenticated handler body.
  */
 export function adaptLegacyNestedJobEventArguments(
@@ -3913,7 +3913,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * Each iteration captures commitments up to the first mismatch; convergence
    * typically occurs within 3-5 iterations. Default: 20.
    * Increase only if your contract has many interdependent state variables.
-   * Kernel artifacts instead use their compiler-published maximumSemanticDerivationPasses ceiling.
+   * Compiler-described artifacts instead use their compiler-published maximumSemanticDerivationPasses ceiling.
    */
   maxDerivationIterations: number = 20;
 
@@ -9059,7 +9059,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // old key/value commitment format and cannot encode a 32-byte hashed slot as an int/address key.
           const batchAccess = entryAccessForSlot(slotIndex);
           if (!batchAccess) throw new Error(`vmap batch slot has no entry access ${slotIndex}`);
-          // An aggregate kernel route owns physical entry slots, but its union access intentionally omits the
+          // An aggregate compiler-generated route owns physical entry slots, but its union access intentionally omits the
           // source handler's value expression. A promoted writer batch still uses the writer's source-local lane
           // ordinals, so recover that exact access (and its row arguments) before declaring the value unknown.
           // This keeps literal/argument-computable values exact while preserving trace completion for genuinely
@@ -11483,7 +11483,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (routeKeyWitness) {
           const value = entryArgs[finalArgs.length];
           if (value === undefined) {
-            throw new Error(`Kernel route key witness '${pending.name}' was not materialized.`);
+            throw new Error(`Compiler-generated route key witness '${pending.name}' was not materialized.`);
           }
           finalArgs.push(value);
         } else {

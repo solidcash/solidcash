@@ -245,7 +245,7 @@ export interface RuntimeLoopEventAbi {
    * event covenant, the rest at its continuation covenant. The record count is learned from the trace.
    */
   chunked?: true;
-  /** A kernel route handler's top-level emits, settled on its runtime effect stream instead of event windows. */
+  /** A compiler-generated route handler's top-level emits, settled on its runtime effect stream instead of event windows. */
   stream?: true;
 }
 
@@ -393,7 +393,7 @@ export interface FunctionBlockLayout {
 /**
  * Compiler-authored geometry for one typed stateful child-creation site reached by a route handler.
  *
- * This is published even while the kernel admission gate remains closed, so transaction assemblers can grow
+ * This is published even while the admission gate remains closed, so transaction assemblers can grow
  * against an exact, application-neutral topology rather than rediscovering `new C(...)` from contract names.
  * One genesis input supplies the category; the corresponding output run is the child master followed by its
  * mutable data NFTs.
@@ -832,7 +832,7 @@ export interface AbiFunction {
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
   /**
    * Optional compiler-owned replay programs for locally constructed key vectors. These become actionable only
-   * when the corresponding kernel route authenticates the replayed key/rank relation; consumers must ignore
+   * when the corresponding compiler-generated route authenticates the replayed key/rank relation; consumers must ignore
    * an artifact carrying a descriptor without that route capability.
    */
   constructedKeyVectors?: readonly ConstructedKeyVectorV1Abi[];
@@ -1332,7 +1332,7 @@ export interface ExternalCallExpression {
   callsiteId?: number;
   /**
    * Pre-collapse source callsite of the producer. Distinct from `callsiteId` for collapsed batch rows;
-   * equals `callsiteId` for ordinary (non-batched) edges. Kernel artifacts publish this whenever the
+   * equals `callsiteId` for ordinary (non-batched) edges. Compiler-described artifacts publish this whenever the
    * expression names a producer that participated in repeated-owner collapse.
    */
   sourceCallsiteId?: number;
@@ -1406,7 +1406,7 @@ export type ExternalResultConsumerAbi = {
  *
  * This is deliberately data-only ABI metadata: consumers must evaluate it with the narrow v1 replay
  * interpreter, never by executing source text or inspecting local variable names. Omission is not a weaker
- * descriptor; it means the compiler did not prove a replay program and kernel admission must remain closed.
+ * descriptor; it means the compiler did not prove a replay program and compiler admission must remain closed.
  */
 export interface ConstructedKeyVectorV1Abi {
   version: 1;
@@ -1579,7 +1579,7 @@ export interface ExternalCallAbi {
    */
   occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
   /**
-   * Authenticated caller subject for this outgoing edge. Kernel artifacts publish this for every callsite;
+   * Authenticated caller subject for this outgoing edge. Compiler-described artifacts publish this for every callsite;
    * absence is legacy and may fall back to owner@0 only outside a compiler-described layout.
    */
   callerIdentity?: CallsiteCallerIdentityAbi;
@@ -2395,7 +2395,7 @@ export interface FunctionSplitLoader {
 /**
  * A framed per-entry split. Tooling branches on `format`; this is not a size-split bundle.
  *
- * `logical` is the monolithic framed artifact of the same source, with no executed kernel route.
+ * `logical` is the monolithic framed artifact of the same source, with no executed compiler-generated route.
  * `internalCuts` is empty unless a measured caller was over the whole-spend cap and a helper was cut.
  */
 export interface FunctionSplitBundle {

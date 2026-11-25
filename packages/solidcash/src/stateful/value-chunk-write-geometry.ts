@@ -51,12 +51,12 @@ export function resolveValueChunkWriteGeometry(
     if (part === null) continue;
     const index = Number(part[1]);
     if (!Number.isSafeInteger(chunk.offset) || chunk.offset < 0 || !Number.isSafeInteger(index)) {
-      throw new Error('Kernel value-chunk observation has invalid geometry.');
+      throw new Error('Value-chunk observation has invalid geometry.');
     }
     const parts = byResource.get(chunk.resourceIdentity) ?? new Map<number, number>();
     const prior = parts.get(index);
     if (prior !== undefined && prior !== chunk.offset) {
-      throw new Error(`Kernel value-chunk resource '${chunk.resourceIdentity}' has conflicting output pins.`);
+      throw new Error(`Value-chunk resource '${chunk.resourceIdentity}' has conflicting output pins.`);
     }
     parts.set(index, chunk.offset);
     byResource.set(chunk.resourceIdentity, parts);
@@ -66,7 +66,7 @@ export function resolveValueChunkWriteGeometry(
     if (base === undefined) continue;
     const count = parts.size;
     if ([...parts].some(([index, offset]) => index >= count || offset !== base + index)) {
-      throw new Error(`Kernel value-chunk resource '${identity}' has a non-contiguous output band.`);
+      throw new Error(`Value-chunk resource '${identity}' has a non-contiguous output band.`);
     }
     geometry.set(identity, { base, count });
   }
@@ -94,7 +94,7 @@ export function resolveValueChunkWriteGeometry(
       // A progressive VM probe can expose only chunk:0 of a wider local value. A contiguous prefix is
       // not proof that the resource ends there; keep the compiler-published width authoritative.
       if (write.outputCount > resolved.count) {
-        throw new Error(`Kernel value-chunk resource '${identity}' has an incomplete observed output band.`);
+        throw new Error(`Value-chunk resource '${identity}' has an incomplete observed output band.`);
       }
       if (write.outputCount === 0) return write;
     }

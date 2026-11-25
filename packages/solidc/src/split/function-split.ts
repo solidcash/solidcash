@@ -2,7 +2,7 @@
  * Per-entry framed split (`split: 'func'`).
  *
  * Size split stays on its own packer. This path compiles one framed master per ABI entry, salts the redeem
- * script with that entry's selector, and does not emit a delegate facet or a kernel route wrapper.
+ * script with that entry's selector, and does not emit a delegate facet or a compiler-generated route wrapper.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';

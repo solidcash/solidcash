@@ -19,7 +19,7 @@ import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corp
  * invariant (handlers and artifact strictly shrink) and the delivered bytecode reduction, measured in BYTES via
  * `asmToBytecode` (the artifact's `.bytecode` is an ASM string, so its `.length` is characters, not bytes).
  *
- * Measured on this tree (kernel route): refund handler 2065 -> 1957 (-108 bytes), release handler 1304 -> 1189
+ * Measured on this tree (compiler-generated route): refund handler 2065 -> 1957 (-108 bytes), release handler 1304 -> 1189
  * (-115 bytes), total artifact 74811 -> 74573 bytes (-238 bytes). The July deferral note recorded -339 bytes for
  * the refund handler alone on the pre-block-layout-v2 baseline (5683-byte handler); block-layout-v2 and later
  * codegen shrank the handlers, so the same elisions now total 238 bytes. Structural correctness

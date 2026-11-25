@@ -3029,7 +3029,7 @@ export default class LowerTailRecursion extends AstTraversal {
     const unnamedResults = node.returnTypes.length > 0 && node.returnNames.length === 0;
     if (!node.body || (!voidFunction && !namedResults && !unnamedResults)) return node;
     const frame = this.counter;
-    // Kernel admission runs before NamedReturnTransformation. Give unnamed results private locals so base-case
+    // Compiler admission runs before NamedReturnTransformation. Give unnamed results private locals so base-case
     // returns and the final loop tuple have the same ordinary control-flow representation as named results,
     // without changing the source ABI's intentionally empty output names.
     const returnNames = unnamedResults
@@ -3074,10 +3074,10 @@ export default class LowerTailRecursion extends AstTraversal {
     }
     const affineEvent = selfCalls === 1 ? this.affineEventRecursion(node) : undefined;
     // A varying entry cannot use the invariant-entry cache, and the ordinary repeat loop publishes no key stream.
-    // Leave every shape outside the exact rank proof above recursive so kernel admission fails closed.
+    // Leave every shape outside the exact rank proof above recursive so compiler admission fails closed.
     if (this.hasVaryingRecursiveMappingWrite(node) || this.hasVaryingRecursiveMappingRead(node)) {
       // A write-only shape has no mapping read, so copying only the read detector left it unmarked. The generic
-      // tail loop still has no per-frame key witness, and kernel admission refuses either side on this marker.
+      // tail loop still has no per-frame key witness, and compiler admission refuses either side on this marker.
       node.unloweredVaryingRecursiveMappingRead = true;
       return node;
     }

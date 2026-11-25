@@ -1,10 +1,10 @@
-# Kernel diagnostic switches
+# Compiler diagnostic switches
 
 `SOLIDC_*` switches are investigation tools, not a second release configuration. Find a switch and its exact
 effect at its source (`rg 'SOLIDC_<NAME>' packages/{solidc,solidcash,utils}/src`). Keep a useful probe when it
 exposes a reusable compiler, witness, or VM boundary; remove probes whose observation no longer has a clear
 consumer. A retained probe must be opt-in, bounded to a named test/input or instruction window where practical,
-and must not silently change normal codegen or settlement. Do not turn an application-name probe into kernel
+and must not silently change normal codegen or settlement. Do not turn an application-name probe into general
 admission logic. Delete probes tied only to a literal function name, output index, or address prefix after the
 investigation; those are observations, not durable diagnostic interfaces.
 
@@ -12,7 +12,7 @@ investigation; those are observations, not durable diagnostic interfaces.
 | --- | --- | --- |
 | Trace/report | `SOLIDC_DEBUG_TRACE`, `SOLIDC_DEBUG_FAILURE_POINT`, `SOLIDC_DEBUG_DERIVE_FAIL`, `SOLIDC_DEBUG_COMPUTE_BASE` without markers, `SOLIDC_DEBUG_COMPOSE_TIMING`, `SOLIDC_DEBUG_EVENT_TRACE_TIMING`, `SOLIDC_DEBUG_HARNESS_TIMING` | Diagnose one named test; capture only the relevant window. Confirm bytecode identity before calling a new trace-only probe neutral. |
 | Instrumented output | `SOLIDC_DEBUG_COMPUTE_BASE_MARKERS`, `SOLIDC_DEBUG_BOTTOM_PICK_SITE`, `SOLIDC_ROW_ASSERT`, `SOLIDC_FRAME_ANCHOR` | Changes emitted script or stack shape; useful for localization, never a production-size or semantics measurement. |
-| Experimental behavior | `SOLIDC_DEBUG_NO_OUTLINE`, `SOLIDC_NO_OPTIMISE`, `SOLIDC_RETURN_OUTPUT_IDX_DISABLE`, `SOLIDC_DISABLE_JOBEVENT_DETACH` | Bisect behavior only. These may change bytecode, witnesses, or SDK settlement. The JobEvent switch is a legacy compatibility probe, not a general kernel feature. |
+| Experimental behavior | `SOLIDC_DEBUG_NO_OUTLINE`, `SOLIDC_NO_OPTIMISE`, `SOLIDC_RETURN_OUTPUT_IDX_DISABLE`, `SOLIDC_DISABLE_JOBEVENT_DETACH` | Bisect behavior only. These may change bytecode, witnesses, or SDK settlement. The JobEvent switch is a legacy compatibility probe, not a general compiler feature. |
 | Timing/cache | `SOLIDC_PROFILE`, `SOLIDC_DEBUG_OUTLINE_TIMING`, `SOLIDC_COMPILE_CACHE*` | Useful locally, but changes the measurement environment. |
 
 The list is illustrative, not a claim that every `SOLIDC_DEBUG_*` switch is observational. Record the exact
@@ -48,8 +48,8 @@ change emitted bytecode.
 
 `SOLIDC_DEBUG_VALUE_CHUNKS=1` includes `value-chunk-base-plan` records for external computed writes: the
 selected band, fallback coordinate, requested width, and a bounded occupancy window around that coordinate.
-It also emits `kernel-value-chunk-resource-lanes` immediately before the kernel rejects an ambiguous scalar
-continuation coordinate; that record lists the compiler-authenticated collection/key lanes and witness groups.
+It also reports the compiler-authenticated collection/key lanes and witness groups when an ambiguous scalar
+continuation coordinate is refused.
 Use it with one title to distinguish a missing value, an output-suffix collision, and a route that genuinely
 requires multiple resource coordinates. The switch only logs and does not relax the refusal.
 It also reports `transported-value-producer-mismatch` when a transported continuation claim disagrees with its

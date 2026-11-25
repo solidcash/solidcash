@@ -276,7 +276,7 @@ import {
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentCollectionDefinitions,
-  // Finalized typed effect IR: kernel admission analyzes recipes under requireFinalizedTypes
+  // Finalized typed effect IR: compiler admission analyzes recipes under requireFinalizedTypes
   // (the default in analyzeChildDeploymentRecipes).
   childDeploymentGenesisEntries, childDeploymentGenesisState, childDeploymentStructDefinitions,
   childDeploymentValueRecipe, hasExactRecipeHelperIdentity,
@@ -3296,7 +3296,7 @@ function containsReturn(statement: Node): boolean {
 }
 
 /**
- * Whether a kernel route can settle every emit of `fn` on its runtime effect stream: each one sits in `fn`'s own
+ * Whether a compiler-generated route can settle every emit of `fn` on its runtime effect stream: each one sits in `fn`'s own
  * body outside branches, loops and try blocks with no return before the last, no helper emits, and no counter loop
  * already orders a stream of its own. Each emit then always pushes its records, so a builder plans one per site.
  */
@@ -3470,7 +3470,7 @@ interface FoldedChildInitializationProof {
 }
 
 /**
- * Prove the deliberately small finite post-new initialization form before kernel route synthesis:
+ * Prove the deliberately small finite post-new initialization form before compiler-generated route synthesis:
  *
  *     Child local = new Child(args);
  *     local.method(args);
@@ -4366,7 +4366,7 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
 }
 
 /**
- * Prove the direct array-push shape which the kernel route's typed collection journal can compose across rows.
+ * Prove the direct array-push shape which the compiler-generated route's typed collection journal can compose across rows.
  * The proof is intentionally about source flow and value shape, not a contract or member name. Each selected
  * row executes its ordinary post-mutation element expression inside one OP_INVOKE; LowerCollectionJournalHelpers
  * threads the pending whole array through those invokes and emits one final sorted-entry write. Consequently no

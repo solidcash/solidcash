@@ -222,7 +222,7 @@ export function registeredValueAddressLockingBytecode(
   };
   const artifact = contract.implementation?.inner?.artifact ?? contract.inner?.artifact;
   const authenticatesPublicSelf = false;
-  // New kernel routes prove their public SCID on-chain. Persisting the physical execution address instead
+  // New compiler-generated routes prove their public SCID on-chain. Persisting the physical execution address instead
   // would make an otherwise identical CREATE reference depend on whether its deployment was already known.
   if (authenticatesPublicSelf) return addressToLockScript(deployment.address);
   return deployment.lockingBytecode ? hexToBin(deployment.lockingBytecode) : undefined;

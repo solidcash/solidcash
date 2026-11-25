@@ -3920,7 +3920,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     deployNode: InstantiationNode, callee: FunctionDefinitionNode, parentArgs: ExpressionNode[],
   ): boolean {
     const statements = (callee.body as BlockNode | undefined)?.statements ?? [];
-    // Deploy folding does not execute child-side guards. Kernel admission may therefore retain only the
+    // Deploy folding does not execute child-side guards. Compiler admission may therefore retain only the
     // syntactic final-require placeholder required by an externally visible void function, never a predicate
     // whose failure would change whether the source call succeeds.
     if (statements.some((statement) => statement instanceof RequireNode

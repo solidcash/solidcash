@@ -418,7 +418,7 @@ Do not re-run the full ladders to answer this question; items 1-3 each fit one t
 ## 6. The instrument (added 2026-10-10)
 
 §5 asked for loop-iteration counts as the direct test of H1. They now exist:
-`SOLIDC_DEBUG_FRAMED_COUNTS=1` (documented in `docs/kernel-diagnostics.md`) counts the plain path's attempts, the
+`SOLIDC_DEBUG_FRAMED_COUNTS=1` (documented in `docs/compiler-diagnostics.md`) counts the plain path's attempts, the
 hosts it builds, its whole-composition and scoped derivations, the hop's per-frame attempts, and each declaration
 read split by which answer took it. The totals are logged as one `framed-composer-counts {...}` line every 128
 plain-path attempts, from inside the run - a test runner drops what a worker writes while it tears down, so an

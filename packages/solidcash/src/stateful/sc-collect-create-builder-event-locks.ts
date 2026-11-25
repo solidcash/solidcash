@@ -55,7 +55,7 @@ export function collectCreateBuilderEventLocks(
   // its event NFT lands in the PROXY's block (proxyMaster+offset). __forward itself has no emits, so also collect
   // the delegate impl's emits + event definitions here - the block layout is extended below to reserve the slot.
   const emitInfos = [...(abiFunction?.emits ?? [])];
-  // A kernel route publishes no emits of its own: its HANDLERS are the emitters, and the route reserves one event
+  // A compiler-generated route publishes no emits of its own: its HANDLERS are the emitters, and the route reserves one event
   // band per row (`rowIndex * width + emitIndex`). Without them the frame materializes no event output at all -
   // and a probed handler's own event check can never pass, so its return value can never be derived.
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

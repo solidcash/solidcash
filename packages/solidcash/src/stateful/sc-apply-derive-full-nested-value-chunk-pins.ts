@@ -262,7 +262,7 @@ export function applyDeriveFullNestedValueChunkPin(
   const valueChunkResourceIdentity = valueChunkResourceSelection.status === 'exact'
     ? valueChunkResourceSelection.identity : undefined;
   // Old descriptor-free routes reconstructed their computed array value from a historical ABI shape.
-  // Keep that adapter outside kernel routes. A kernel candidate must come from the VM trace or from the
+  // Keep that adapter outside compiler-generated routes. A compiler-described candidate must come from the VM trace or from the
   // exact producer/resource pair staged while evaluating `storedElementSource`; a function name, argument
   // position, or same-typed value is not producer authority.
   const legacyValueCandidates: Uint8Array[] = [];

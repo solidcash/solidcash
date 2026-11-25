@@ -437,7 +437,7 @@ export interface KernelJournalStreamExecutionCoordinate {
 }
 
 /**
- * One exact locally-constructed-vector data-flow edge discovered before kernel admission.
+ * One exact locally-constructed-vector data-flow edge discovered before compiler admission.
  *
  * This is deliberately not an ABI and must never influence route selection.  In particular, it lets later
  * carrier work distinguish one allocation feeding one producer write and one mapping-key consumer from a
@@ -546,7 +546,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
   /** Route-wide read-only chunk runs preserved before streamed effects; an empty list is authoritative. */
   /** Authenticated participant-master offset used by route handler code generation. */
-  /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
+  /** Compiler-generated route whose selected upgrade rows may replace the participant master locking bytecode. */
   /**
    * Route synthesis pushed this clone's owner operand as the call's LAST argument, so at body entry it is the top
    * item (depth 0) and can be captured without depending on any frame-model position.
@@ -773,8 +773,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeCounterLoopCardinalityParams?: Map<string, { input: string; output: string }>;
 
   /** A locally constructed key array has a loop-carried resize/read schedule the bounded replay pass cannot
-   * represent. Kernel admission refuses only this handler rather than letting later route synthesis fail. */
-  /** Pre-admission saw the narrow local-vector shape; final kernel admission still requires emitted provenance. */
+   * represent. Compiler admission refuses only this handler rather than letting later route synthesis fail. */
+  /** Pre-admission saw the narrow local-vector shape; final compiler admission still requires emitted provenance. */
   /**
    * Normalized compiler-owned vector proof programs ready for artifact publication. Raw AST provenance is never
    * serialized here: an unsupported expression leaves this absent and preserves the KERNEL_LAYOUT fence.
@@ -872,7 +872,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   kernelJournalContextUnsafeCall?: boolean;
   /** A source entry reaches an internal effect helper which closes over a contract constructor parameter.
    * External-call lowering appends a physical settlement frame to that helper, but the constructor-captured
-   * value has no source-row slot from which that frame can be rebuilt. Kernel admission records this before
+   * value has no source-row slot from which that frame can be rebuilt. Compiler admission records this before
    * graph lowering so the handler remains a deterministic KERNEL_LAYOUT refusal rather than reaching type/codegen
    * with a source-arity helper call. */
   kernelConstructorCapturedHelperGraphEffect?: boolean;
@@ -902,7 +902,7 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   /** Compiler-owned route batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
 
-  /** Kernel route: this handler's emits settle as records on its runtime effect stream, not in event windows. */
+  /** Compiler-generated route: this handler's emits settle as records on its runtime effect stream, not in event windows. */
   /** A stream emit can pass one commitment, so every record of the stream is chunked (head, then continuations). */
   /** Stable index of this eligible handler in the route's eligible dispatch set, the ordinal witness names use.
    * Published on the handler so the SDK never re-derives the filtered-list ordering. */
@@ -917,7 +917,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
 
   /** This handler owns one direct push into a chunkable sorted mapping-array entry (unconditional and/or
-   * bool-param activated with empty else). Kernel route lowering threads the typed pending array through every
+   * bool-param activated with empty else). Compiler-generated route lowering threads the typed pending array through every
    * selected OP_INVOKE row and flushes it exactly once, so repeated same-key rows compose without intermediate
    * continuation outputs. */
   runtimeLoopPooledChunkableArrayPush?: true;

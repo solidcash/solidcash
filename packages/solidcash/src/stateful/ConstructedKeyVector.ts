@@ -11,7 +11,7 @@ export interface ConstructedKeyVectorReplay {
 
 /**
  * The replay program is safe to evaluate off-chain, but it is not by itself authority to omit or substitute
- * journal witnesses. A kernel route must publish a covenant-checked binding from the replay's rank/key relation
+ * journal witnesses. A compiler-generated route must publish a covenant-checked binding from the replay's rank/key relation
  * to its compact access stream before the SDK can use this metadata for transaction planning.
  *
  * Keep this check separate from `replayConstructedKeyVectorV1`: callers may use replay for diagnostics and test

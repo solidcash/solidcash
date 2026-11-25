@@ -246,7 +246,7 @@ function entrySelector(artifact: Artifact, functionName: string | undefined): st
     || `${artifact.contractName}.${entry.name}()` === functionName)?.selector;
 }
 
-/** True under `FRAMED_REFUSAL_DUMP=1` (docs/kernel-diagnostics.md). */
+/** True under `FRAMED_REFUSAL_DUMP=1` (docs/compiler-diagnostics.md). */
 function refusalDumpOn(): boolean {
   return (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.FRAMED_REFUSAL_DUMP === '1';
 }

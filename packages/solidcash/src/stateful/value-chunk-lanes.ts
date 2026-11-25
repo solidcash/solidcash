@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: kernel value-chunk resource lane / entry-collection helpers
+ * phase-boundary extract: value-chunk resource lane / entry-collection helpers
  * (phase-boundary extract from StatefulContract.ts).
  */
 
@@ -21,7 +21,7 @@ export function resolveValueChunkResourceLanes(
 ): string[] {
   if (runs.some((run) => run.slot?.length !== 32)) {
     throw new Error(
-      'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
+      'Chunkable-value output placement requires one exact compiler-published resource lane.',
     );
   }
   const lanes: string[] = [];
@@ -34,7 +34,7 @@ export function resolveValueChunkResourceLanes(
   }
   if (lanes.length === 0) {
     throw new Error(
-      'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
+      'Chunkable-value output placement requires one exact compiler-published resource lane.',
     );
   }
   return lanes;
@@ -47,7 +47,7 @@ export function resolveValueChunkResourceLane(
   const lanes = resolveValueChunkResourceLanes(runs);
   if (lanes.length !== 1) {
     throw new Error(
-      'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
+      'Chunkable-value output placement requires one exact compiler-published resource lane.',
     );
   }
   return lanes[0]!;
@@ -56,10 +56,10 @@ export function resolveValueChunkResourceLane(
 /**
  * Resolve the one collection whose entry covenant owns a chunkable-value write.
  *
- * Kernel routes must publish an unambiguous resource identity. A category alone
+ * Compiler-generated routes must publish an unambiguous resource identity. A category alone
  * is insufficient: two mappings on the same contract category have different
  * entry covenants. Descriptor-free legacy artifacts may retain their historical
- * fallback, but it is never reachable from a kernel route.
+ * fallback, but it is never reachable from a compiler-generated route.
  */
 export function resolveChunkableEntryCollection(parts: {
   writes: readonly ValueChunkWriteDescriptor[];

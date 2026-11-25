@@ -46,7 +46,7 @@ Paths in this section exist only on the branch unless master has them too.
 - **Bounded caches** for imported parses and legacy usage plans (`SOLIDC_IMPORTED_PARSE_CACHE_MAX_ENTRIES`,
   `SOLIDC_MULTI_ARTIFACT_CACHE_MAX_ENTRIES`), emptied by `clearCompileCache()`;
   `packages/solidc/test/CompilerRetouch.test.ts` (new) covers them.
-- **`SOLIDC_EXTRACT_FRAME=1`**, an experimental codegen switch the branch documents in `docs/kernel-diagnostics.md`.
+- **`SOLIDC_EXTRACT_FRAME=1`**, an experimental codegen switch the branch documents in `docs/compiler-diagnostics.md`.
 - **Parity tooling:** `scripts/metadata-parity-marketplace.mjs` and `scripts/body-parity-marketplace.mjs` (new), and
   edits to the profile and perf scripts, `scripts/verify-id.mjs` and the `scripts/gate.sh` pin.
 
@@ -60,14 +60,14 @@ rounds: bypassing the probe's count produced a 5.38 MB script, and counting the 
 master merged into the branch, so the diff is the branch's whole net change; applied to that commit it rebuilds the
 branch tree exactly (checked with `git apply --cached` on a scratch index). By area: compiler 7 files
 (`GenerateTargetTraversal.ts` 1,272 changed lines, `compiler.ts` 158), utils 7, SDK 10, scripts 10, the four
-testing-suite artifacts, `docs/kernel-diagnostics.md` and the record above.
+testing-suite artifacts, `docs/compiler-diagnostics.md` and the record above.
 
 ## State against master (2026-11-13)
 
 - Nothing from the branch is on master: no commit, no equivalent patch (`git cherry`), none of its new names. Master
   still runs `codegen:probe`.
 - Master is 603 commits past the base. A test merge (`git merge-tree`) conflicts in 13 files: `compiler.ts`,
-  `GenerateTargetTraversal.ts`, `docs/kernel-diagnostics.md`, `scripts/gate.sh`, `message-bus/preflight.ts`,
+  `GenerateTargetTraversal.ts`, `docs/compiler-diagnostics.md`, `scripts/gate.sh`, `message-bus/preflight.ts`,
   `stateful/external-return-encoding.ts`, three tests (`Erc20GuideSnippets`, `direct-path-identity`,
   `SdkBrowserBundle`) and the four testing-suite artifacts, which master has since deleted.
 - The parity evidence is against `2c5d82625`, identity `30c4f5a157f93e83`. Master's identity is now

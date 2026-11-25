@@ -84,7 +84,7 @@ describe('a sorted-mapping loop write folds only its own entry', () => {
     }
   });
 
-  it('folds a counter loop\'s write only into the entry it reads, on the kernel convention too', () => {
+  it('folds a counter loop\'s write only into the entry it reads, on the compiler-described layout too', () => {
     const counter = (body: string): string => `contract C() { mapping(int => int) slots; mapping(int => int) other;
       event Hit(int v);
       function put(int n, int amount) public { for (int i = 0; i < n; i = i + 1) { ${body} } require(true); }

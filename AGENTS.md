@@ -45,7 +45,7 @@ small, directly affected set of tests. Run full suites only at major milestones 
 integration, or release, not for ordinary edits or handoffs; they can consume an hour of CPU time. Run the
 one-shot `yarn build` before handoff.
 
-Kernel/compiler diagnostic switches are documented in `docs/kernel-diagnostics.md`. Use them on a focused
+Kernel/compiler diagnostic switches are documented in `docs/compiler-diagnostics.md`. Use them on a focused
 test, and distinguish trace-only output from switches that alter bytecode, witnesses, optimisation, or timing.
 Authoritative cold measurements must use the clean-env gate or scoreboard; never infer production behavior
 from an instrumented run.
@@ -67,7 +67,7 @@ authored JavaScript and ambient declarations. Run `yarn check:source-tree` befor
 can still be tracked, and authored exceptions must not be deleted as build artifacts. If the guard finds a
 tracked generated file, inspect it and untrack that exact path; never bulk-delete `src/` or its declarations.
 Do not force-add emitted sidecars or silence the guard. Keep diagnostic switches opt-in and documented in
-`docs/kernel-diagnostics.md`; a switch that alters bytecode or SDK settlement is an experiment, not a
+`docs/compiler-diagnostics.md`; a switch that alters bytecode or SDK settlement is an experiment, not a
 production measurement. Remove one-off probes keyed to a contract/function name, literal output index, or
 address prefix once the investigation ends; retained probes must describe a reusable type, effect, flow, or VM
 boundary. Kernel/compiler/SDK behavior must likewise be selected by type, effect, flow, ABI schema, or authenticated

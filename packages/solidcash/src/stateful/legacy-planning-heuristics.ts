@@ -1,5 +1,5 @@
 /**
- * Legacy planning heuristics isolated from the kernel builder path.
+ * Legacy planning heuristics isolated from the direct builder path.
  *
  * Artifacts with typed value-chunk /
  * state-transition descriptors) must never take these branches. Older plans without descriptors

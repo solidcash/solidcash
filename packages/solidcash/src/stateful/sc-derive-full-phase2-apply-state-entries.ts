@@ -153,7 +153,7 @@ export function deriveFullPhase2ApplyStateAndEntries(
         // An inactive INSERT has no rewritten predecessor either. The batch probe may have seeded that
         // trailing predecessor solely to reach the conditional flush; once the flush proves absent, remove
         // the seed so it cannot mint a phantom collection entry.
-        // This fixed conditional lane owns only its own speculative insert. A kernel route may also
+        // This fixed conditional lane owns only its own speculative insert. A compiler-generated route may also
         // publish source-row runtime segments for the same collection; those commitments belong to the
         // shared row journal and must survive an inactive/zero-trip sibling lane.
         // A PINNED family is compiler-authenticated geometry, not a speculative seed: the rewritten

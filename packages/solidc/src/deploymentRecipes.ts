@@ -50,7 +50,7 @@ const allowsPreFinalIntrinsicTypes = (options: FinalizedTypedEffectIrOptions): b
   options.requireFinalizedTypes !== true;
 
 /**
- * finalized typed effect IR: analysis-scoped typed-effect policy. Kernel admission defaults to requiring finalized types
+ * finalized typed effect IR: analysis-scoped typed-effect policy. Compiler admission defaults to requiring finalized types
  * (no pre-final intrinsic invention). Nested recipe walks read this rather than threading options
  * through every recursive helper.
  */
@@ -275,7 +275,7 @@ export const childDeploymentCollectionDefinitions = (
     ...(collection.type.bound !== undefined && { bound: collection.type.bound }),
   }),
   ...(collection.immutable && { immutable: true }),
-  // Every collection, array or mapping, uses the verified sorted-entry backend. Kernel admission digests a child
+  // Every collection, array or mapping, uses the verified sorted-entry backend. Compiler admission digests a child
   // before the normalization pass stamps `.sorted`, so the mandatory property is canonical, not read.
   sorted: true,
   ...(collection.enumerable && { enumerable: true }),

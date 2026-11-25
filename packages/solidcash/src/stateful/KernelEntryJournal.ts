@@ -1419,7 +1419,7 @@ export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntry
 }
 
 /**
- * Validate the record vector accepted by the transport-only kernel route.
+ * Validate the record vector accepted by the transport-only compiler-generated route.
  *
  * Dirty records describe an in-progress state transition. They are valid only after compiler-generated route
  * execution has authenticated and transformed a clean carrier; accepting one from the caller would bypass that

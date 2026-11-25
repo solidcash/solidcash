@@ -247,7 +247,7 @@ export function isCompilerDescribedMintingBandWriter(
     return abiFunction.writesState === true
       && writtenEntries.length >= (requireWideWriter ? 2 : 1);
   }
-  // Kernel artifacts publish the resource authority used by layout planning. Missing entry effects in that
+  // Compiler-described artifacts publish the resource authority used by layout planning. Missing entry effects in that
   // convention mean "not described", never permission to recover legacy geometry from an ABI name.
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
   return requireWideWriter

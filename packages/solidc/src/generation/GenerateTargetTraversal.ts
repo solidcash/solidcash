@@ -9761,7 +9761,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // point independently, and compiling an import graph repeats the matrix for every emitted contract. Corpus
       // measurements show that density ranking, the 512-group cap, body reordering, and the intermediate/legacy
       // windows are strictly dominated by savings-ranked 12 or 10. Legacy route bodies stay at the
-      // trace-stable window of 12 (EntryWriteBehavior oscillated at 7/10/11). Kernel routes retry at 10 only when
+      // trace-stable window of 12 (EntryWriteBehavior oscillated at 7/10/11). Compiler-generated routes retry at 10 only when
       // the best result is near the consensus size boundary, where the shorter shared journal-verifier spans can
       // change deployability. Ordinary contracts try window 8 as well and keep whichever attempt saves more
       // bytes. Speed-hinted large-contract compiles measured window 8 as strictly dominating 12/10/9/7, so they
@@ -15885,7 +15885,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Whether this route may fold the dense final-journal output cursor into the ordinary trailing-output cursor.
    *
    * The final cursor is meaningful only as one transaction-wide physical settlement delta.  It must not be
-   * inferred from the kernel convention, from journal records, or from an SDK-side planner: all of those are
+   * inferred from the compiler-described layout, from journal records, or from an SDK-side planner: all of those are
    * preparatory state while later clean consumers still materialize eagerly.  Keep the emitted route on the
    * established per-row accounting path until the versioned artifact capability is published with its complete
    * SDK materialization protocol.
@@ -24575,7 +24575,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // `selfdestruct(addr)`: the implied selfdestruct modifier collapses all state UTXOs (no recreation); here we
   // pin the freed balance to addr.
   // Standalone: (1) tx.outputs[0].lockingBytecode == addr, (2) exactly one output, (3) fee floor < 2000.
-  // Kernel route: multi-participant + verifier + fee tails make the whole-tx pin impossible. Pin the
+  // Compiler-generated route: multi-participant + verifier + fee tails make the whole-tx pin impossible. Pin the
   // active master slot instead (OP_INPUTINDEX): token-free reclaim at that index with conserved sats and the
   // stated recipient. Mode-3 verifier census still authenticates category retirement.
   visitSelfdestructStatement(node: SelfdestructStatementNode): Node {
@@ -53154,7 +53154,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const covered = new Set(this.pendingEmits.map((pendingEmit) => pendingEmit.emitIndex));
     if (frame.sites > 8 && covered.size === 0) {
-      // A kernel route can reserve hundreds of event windows while invoking an emitting handler at only a
+      // A compiler-generated route can reserve hundreds of event windows while invoking an emitting handler at only a
       // handful of rows. Walk the reached-site bitmap and bind each unowned window with one copy of the proof,
       // rather than embedding one proof (and an increasingly large 1<<site literal) per reserved output.
       // A route with its own pending emits retains the per-ordinal path below so those exact slots stay covered.
@@ -53253,7 +53253,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const width = frame.deployWidth!;
     const base = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0);
     if (frame.sites > 8) {
-      // Kernel routes can reserve one deploy window for every possible row. An unrolled check embeds the same
+      // Compiler-generated routes can reserve one deploy window for every possible row. An unrolled check embeds the same
       // output proof hundreds of times (and a growing 1<<site literal at every site). Walk the bitmap and
       // reserved windows together instead. The two temporaries are untracked and both are dropped on exit.
       this.emitPickFrameValue(GRAPH_DEPLOY_SITE, locationData); // [mask]

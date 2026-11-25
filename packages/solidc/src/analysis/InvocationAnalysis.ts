@@ -323,7 +323,7 @@ export function analyseFunctionFootprint(
         else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode'
           || isPreSemanticAddressValueTransfer(node)) {
           // Solidity `to.transfer(1)` / `to.send(1)` parse as `to.transfer` / `to.send` FunctionCalls until
-          // SymbolTableTraversal rewrites them. Without this, the kernel route never clones the handler as a
+          // SymbolTableTraversal rewrites them. Without this, the compiler-generated route never clones the handler as a
           // satoshi-transfer effect and later inlines the rewrite with no transfer slots.
           directEffects.add('value');
         } else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {

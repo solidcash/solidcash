@@ -4644,7 +4644,7 @@ export default class AstBuilder
 
     // Retain the exact progression for syntactically canonical `for` loops. External-call metadata can then
     // describe arguments which depend on the live iteration value without folding `i` back to its initializer.
-    // Semantic replay later decides whether a non-literal step is stable enough for kernel admission.
+    // Semantic replay later decides whether a non-literal step is stable enough for compiler admission.
     if (initNode instanceof VariableDefinitionNode
       && initNode.expression instanceof IntLiteralNode
       && updateNode instanceof AssignNode

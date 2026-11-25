@@ -49,7 +49,7 @@ export type ChunkableValueWriteGroup = {
 
 /**
  * Old route plans identified the chunkable writer by application ABI names because their artifacts did
- * not publish resource descriptors. Keep that migration path out of the kernel convention: once an artifact
+ * not publish resource descriptors. Keep that migration path out of the compiler-described layout: once an artifact
  * declares no descriptors, missing descriptors mean "not described", never permission to guess from names.
  */
 export function permitsLegacyNamedValueChunkFallback(

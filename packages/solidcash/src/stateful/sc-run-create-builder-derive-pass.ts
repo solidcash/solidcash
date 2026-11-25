@@ -173,7 +173,7 @@ export async function runCreateBuilderDerivePass(
   && (entryAccesses?.length ?? 0) === 0
   && (entryAbiFunction?.entryLoopWrites?.length ?? 0) === 0
   && (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
-  // A kernel route owns no mapping metadata itself: selected row metadata materializes directly as physical
+  // A compiler-generated route owns no mapping metadata itself: selected row metadata materializes directly as physical
   // loop-entry variables above. Those variables are the authoritative derivation plan even when every wrapper
   // metadata list is empty; skipping here would publish link-only placeholder commitments for computed values.
   && loopEntryVars.length === 0
@@ -288,7 +288,7 @@ export async function runCreateBuilderDerivePass(
       ? [Number(candidate)] : []));
     if (publishedGraphBases.size > 1) {
       throw new Error(
-        'Kernel chunkable-value output placement published conflicting continuation coordinates.',
+        'Chunkable-value output placement published conflicting continuation coordinates.',
       );
     }
     const graphPublishedValueChunkOutputBase = publishedGraphBases.size === 1

@@ -151,7 +151,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   // An array-value READ `m[k0..][i]...` (mapping value is an array): reads parse as a nested ArrayAccess
   // chain, or as `MappingAccess[i]` after a `this.m[k]` prefix. Hoist the whole-value read into a temp and
   // index it locally -> `T[] t = m[k0..]; ... t[i] ...`. Default `mappingArrayValueMinIndices` is 2 so the
-  // late pass keeps its historical 2D-only hoist; kernel admission uses 1 so `m[k][i]` journals as `m[k]`.
+  // late pass keeps its historical 2D-only hoist; compiler admission uses 1 so `m[k][i]` journals as `m[k]`.
   visitArrayAccess(node: ArrayAccessNode): Node {
     const { base, keys: accessKeys } = this.flattenAccess(node);
     const mappingName = this.mappingArrayValueBaseName(base);
@@ -642,7 +642,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   // `m[k0..k_{kc-1}][i][j..] = v` where m is a mapping (kc keys) whose value is an array: the parser makes
   // one MappingAssignNode with all indices. A 1-index scalar-array write (`m[k][i]=v`) already has a native
   // sorted-RMW path after ST separates arrayIndex; a struct-element write needs the whole-entry RMW before
-  // kernel admission so the journal sees `m[k]`. A 2+-index write always desugars:
+  // compiler admission so the journal sees `m[k]`. A 2+-index write always desugars:
   // `T[][] t = m[k]; t[i][j] = v; m[k] = t;`.
   private tryDesugarMappingArrayValue(node: MappingAssignNode): StatementNode[] | undefined {
     if (node.arrayPush || node.arrayPop) return undefined;

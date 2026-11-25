@@ -13,15 +13,12 @@ export {
   enforceSolidcEnvPolicy,
   isSolidcStrictUnknownEnvEnabled,
   listRegisteredSolidcEnv,
-  resolveSolidcFeatureFlags,
   solidcEnvFlagEnabled,
   solidcEnvValue,
-  solidcFeatureIdentityBits,
   unknownSolidcEnvKeys,
   PRODUCTION_SOLIDC_ENV_HOT_SET,
   type SolidcEnvClass,
   type SolidcEnvEntry,
-  type SolidcFeatureFlags,
 } from './solidc-env-registry.js';
 export {
   type ArtifactMap, type FunctionSplitBundle, type SplitArtifactBundle, type SplitManifest,

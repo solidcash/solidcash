@@ -64,17 +64,6 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDCASH_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDC_NO_OPTIMISE', class: 'instrumented' },
-  // Explicit features — identity-bearing when enabled
-  {
-    name: 'SOLIDC_OWNER_ALT_ANCHOR',
-    class: 'feature',
-    identityKey: 'ownerAltAnchor',
-  },
-  {
-    name: 'SOLIDC_HANDLER_BAND_MODEL',
-    class: 'feature',
-    identityKey: 'handlerBandModel',
-  },
   // production SOLIDC env hot-set production cache / binder identity knobs
   {
     name: 'SOLIDC_COMPILE_CACHE',
@@ -99,42 +88,6 @@ export function classifySolidcEnv(name: string): SolidcEnvClass {
 
 export function solidcEnvEntry(name: string): SolidcEnvEntry | undefined {
   return BY_NAME.get(name);
-}
-
-export type SolidcFeatureFlags = {
-  ownerAltAnchor: boolean;
-  handlerBandModel: boolean;
-};
-
-/**
- * Resolve production-semantics feature flags.
- * When `releaseMode` is true, instrumented and unknown vars are ignored; only explicit features apply.
- */
-export function resolveSolidcFeatureFlags(
-  env: Record<string, string | undefined> | undefined,
-  options?: { releaseMode?: boolean; allowInstrumented?: boolean },
-): SolidcFeatureFlags {
-  const releaseMode = options?.releaseMode !== false;
-  const allowInstrumented = options?.allowInstrumented === true;
-  const read = (name: string): boolean => env?.[name] === '1';
-
-  // Instrumented switches never affect release/default compilation.
-  if (releaseMode && !allowInstrumented) {
-    /* intentionally ignore SOLIDC_DEBUG_NO_OUTLINE / SOLIDCASH_NO_OUTLINE */
-  }
-
-  return {
-    ownerAltAnchor: read('SOLIDC_OWNER_ALT_ANCHOR'),
-    handlerBandModel: read('SOLIDC_HANDLER_BAND_MODEL'),
-  };
-}
-
-/** Feature bits that must be folded into artifact/cache identity when enabled. */
-export function solidcFeatureIdentityBits(flags: SolidcFeatureFlags): Record<string, boolean> {
-  const bits: Record<string, boolean> = {};
-  if (flags.ownerAltAnchor) bits.ownerAltAnchor = true;
-  if (flags.handlerBandModel) bits.handlerBandModel = true;
-  return bits;
 }
 
 /**

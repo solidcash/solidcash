@@ -2784,6 +2784,10 @@ at the proxy master's lock, `atExecutorLock: 0`), alongside both routed cases.
 
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 
+**Status 2026-11-25:** by 0.52 the refusal below fired only for the kernel's in-place append upgrade route: a direct
+upgrade migrates its data NFTs and containers. The bus removal took that route, and `UpgradeStrandsBoundStateError`
+with it.
+
 **What:** CRYPTO-4 (d6821a812) binds every data NFT, mapping entry, value chunk and satoshi or token container to
 the executing master's exact 35-byte lock, so no second minting baton of the category can rewrite them. A native
 in-place `upgrade` entry moves the master to the replacement bytecode's lock, so every record bound to the old lock

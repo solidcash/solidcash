@@ -25,6 +25,9 @@
 - The trace switches `SOLIDC_DEBUG_ROUTE`, `SOLIDC_DEBUG_ROUTE_CONCISE`, `SOLIDC_DEBUG_ROUTE_ENTRY_PLAN`,
   `SOLIDC_DEBUG_ROUTE_FULL_OPS` and `SOLIDC_DEBUG_ROUTE_VERBOSE` are renamed `SOLIDC_DEBUG_TRACE*`; the switches that
   traced the bus and its preflight are gone (docs/compiler-diagnostics.md lists the live ones).
+- The bus's feature switches `SOLIDC_OWNER_ALT_ANCHOR` and `SOLIDC_HANDLER_BAND_MODEL`, the `ownerAltAnchor` and
+  `handlerBandModel` options and the `@solidcash/solidc` exports `resolveSolidcFeatureFlags`,
+  `solidcFeatureIdentityBits` and `SolidcFeatureFlags` are removed; a strict-env run now refuses the two switches.
 
 ## 0.52.1
 

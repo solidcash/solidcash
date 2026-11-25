@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
 import {
@@ -8,10 +7,8 @@ import {
   isSolidcStrictUnknownEnvEnabled,
   listRegisteredSolidcEnv,
   PRODUCTION_SOLIDC_ENV_HOT_SET,
-  resolveSolidcFeatureFlags,
   solidcEnvFlagEnabled,
   solidcEnvValue,
-  solidcFeatureIdentityBits,
   unknownSolidcEnvKeys,
 } from '../src/solidc-env-registry.js';
 import { readFileSync } from 'node:fs';
@@ -31,13 +28,13 @@ describe('solidc env registry', () => {
   it('classifies observation / instrumented / feature / unknown', () => {
     expect(classifySolidcEnv('SOLIDC_PROFILE')).toBe('observation');
     expect(classifySolidcEnv('SOLIDC_DEBUG_NO_OUTLINE')).toBe('instrumented');
-    expect(classifySolidcEnv('SOLIDC_OWNER_ALT_ANCHOR')).toBe('feature');
+    expect(classifySolidcEnv('SOLIDC_COMPILE_CACHE')).toBe('feature');
     expect(classifySolidcEnv('SOLIDC_TOTALLY_UNKNOWN_FLAG')).toBe('unknown');
   });
 
   it('lists unknown SOLIDC_* keys deterministically', () => {
     expect(unknownSolidcEnvKeys({
-      SOLIDC_OWNER_ALT_ANCHOR: '1',
+      SOLIDC_COMPILE_CACHE: '1',
       SOLIDC_ZZZ_UNKNOWN: '1',
       SOLIDC_AAA_UNKNOWN: '1',
       PATH: '/bin',
@@ -65,46 +62,6 @@ describe('solidc env registry', () => {
         else env[key] = before[key]!;
       }
     }
-  });
-
-  it('explicit feature flags fold into identity bits', () => {
-    const flags = resolveSolidcFeatureFlags({
-      SOLIDC_OWNER_ALT_ANCHOR: '1',
-      SOLIDC_HANDLER_BAND_MODEL: '1',
-    });
-    expect(flags).toEqual({ ownerAltAnchor: true, handlerBandModel: true });
-    expect(solidcFeatureIdentityBits(flags)).toEqual({
-      ownerAltAnchor: true,
-      handlerBandModel: true,
-    });
-    // Identity string differs when features enabled vs default.
-    const defaultId = createHash('sha256')
-      .update(JSON.stringify(solidcFeatureIdentityBits({
-        ownerAltAnchor: false,
-        handlerBandModel: false,
-      })))
-      .digest('hex');
-    const featureId = createHash('sha256')
-      .update(JSON.stringify(solidcFeatureIdentityBits(flags)))
-      .digest('hex');
-    expect(featureId).not.toBe(defaultId);
-  });
-
-  it('explicit CompilerOptions.ownerAltAnchor is identity-bearing vs default', () => {
-    const baseline = compileString(SOURCE, {
-      forceStateful: true,
-      suppressWarnings: true,
-    });
-    const featured = compileString(SOURCE, {
-      forceStateful: true,
-      suppressWarnings: true,
-      ownerAltAnchor: true,
-    });
-    // Feature may or may not change bytecode for this tiny contract; cache identity must record it.
-    // At minimum, compiling with the flag must succeed and produce a valid artifact.
-    expect(featured.contractName).toBe(baseline.contractName);
-    expect(typeof featured.bytecode).toBe('string');
-    expect(featured.bytecode.length).toBeGreaterThan(0);
   });
 
   describe('production SOLIDC hot-set', () => {
@@ -181,12 +138,12 @@ describe('solidc env registry', () => {
   describe('strict unknown SOLIDC CI reject', () => {
     it('assertNoUnknownSolidcEnvKeys refuses unknown keys and allows registered-only env', () => {
       expect(() => assertNoUnknownSolidcEnvKeys({
-        SOLIDC_OWNER_ALT_ANCHOR: '1',
+        SOLIDC_COMPILE_CACHE: '1',
         SOLIDC_TOTALLY_UNKNOWN_FLAG: '1',
       })).toThrow(/unknown SOLIDC_\* keys refused in strict mode: SOLIDC_TOTALLY_UNKNOWN_FLAG/);
 
       expect(() => assertNoUnknownSolidcEnvKeys({
-        SOLIDC_OWNER_ALT_ANCHOR: '1',
+        SOLIDC_COMPILE_CACHE: '1',
         SOLIDC_STRICT_UNKNOWN_ENV: '1',
         PATH: '/bin',
       })).not.toThrow();

@@ -94,15 +94,6 @@ export function publishCreateBuilderNestedComposeGroup(
       ...sharedPrimary.internalArgs,
       ...childValueWitnessArgs,
     };
-    if (sharedPrimary.directCall) {
-      sharedPrimary.directCall = {
-        ...sharedPrimary.directCall,
-        internalArgs: {
-          ...sharedPrimary.directCall.internalArgs,
-          ...childValueWitnessArgs,
-        },
-      };
-    }
   }
   for (const [name, value] of Object.entries({
     ...sharedDelegate?.internalArgs,
@@ -118,15 +109,6 @@ export function publishCreateBuilderNestedComposeGroup(
   if (delegateCallGroupIndex !== undefined && childHasInternalArgs) {
     const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
     delegate.internalArgs = { ...delegate.internalArgs, ...childCompilerInternalArgs };
-    const delegateRoute = delegate.directCall;
-    if (delegateRoute) {
-      const previous = (delegateRoute as { internalArgs?: Record<string, FunctionArgument> })
-        .internalArgs;
-      delegate.directCall = {
-        ...delegateRoute,
-        internalArgs: { ...previous, ...childCompilerInternalArgs },
-      };
-    }
   }
   externalCallUtxoGroups.push({
     categoryId: callee.categoryId,

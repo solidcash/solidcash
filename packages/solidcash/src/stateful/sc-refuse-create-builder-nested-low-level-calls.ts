@@ -34,12 +34,12 @@ function emptyLiteralPayload(source: ArgSource | undefined): boolean {
  * discovery follows a function's typed and `__raw__` calls only, so that callee is never co-spent, and the caller's
  * covenant finds no callee at the input its witness names. A call this run provably does not make (a branch whose
  * condition reads false) is not refused, nor is a loop's or an older artifact's, whose reach is not published; a
- * delegatecall is a proxy's and a route route places its own callees.
+ * delegatecall is a proxy's.
  */
 export async function refuseCreateBuilderNestedLowLevelCalls(groups: readonly ExternalCallUtxoGroup[]): Promise<void> {
   for (const group of groups) {
     const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-    if (group.directCall !== undefined || artifact === undefined) continue;
+    if (artifact === undefined) continue;
     let fn: AbiFunction | undefined;
     try {
       fn = resolveStatefulAbiFunction(artifact, group.functionName, group.functionArgs);

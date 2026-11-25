@@ -111,8 +111,7 @@ export function reassertDelegateLoopEntries(
   const delegateLoopVars = delegateLoopEntryVars(host);
   if (delegateLoopVars.length === 0) return;
   const delegateFunction = (group: ExternalCallUtxoGroup): AbiFunction | undefined => (
-    group.directCall?.abiFunction
-    ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+    (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName)
   );
   const activeDelegate = host.activeDelegateGroupIndex === undefined

@@ -11,7 +11,6 @@ import {
   computeEventNameHash,
 } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { StateValueType } from '../types/state-inference.js';
 import { generateLibauthSourceOutputs, scriptToLockingBytecode } from '../utils.js';
 import { isCompilerDescribedRouteEventCommitment } from './compiler-described-route-event.js';
 import { calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -34,7 +33,6 @@ import {
   extractExpectedOutputCommitmentFromTrace,
   extractPendingReturnCommitment,
 } from './trace-commitment-helpers.js';
-import { commitmentsToState } from './trace-verified-value-helpers.js';
 import { selectExternalEventProbeInput } from './value-chunk-base-writer-select.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 
@@ -261,9 +259,9 @@ export function deriveFullPhase1ReturnAndEvents(
       );
       // A shared ordinary readonly input executes only one selected zero-argument frame. Every active
       // identical alias is bound to that same result by the caller covenant; retain its distinct output channel.
-      if (group.readonlyReturnSelector !== undefined && !group.directCall) {
+      if (group.readonlyReturnSelector !== undefined) {
         for (const [aliasIndex, alias] of externalCallUtxoGroups.entries()) {
-          if (alias.sharedGroupIndex !== groupIdx || alias.directCall
+          if (alias.sharedGroupIndex !== groupIdx
             || alias.readonlyReturnSelector !== group.readonlyReturnSelector
             || alias.callerIdentity?.categoryId !== group.callerIdentity?.categoryId
             || alias.callerIdentity?.lockingBytecode !== group.callerIdentity?.lockingBytecode) continue;
@@ -294,9 +292,7 @@ export function deriveFullPhase1ReturnAndEvents(
       ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
     const bArt = delegateEventGroup?.externalContract.inner?.artifact
       ?? group.externalContract.inner?.artifact ?? group.externalContract.artifact;
-    const bAbiFunc = delegateEventGroup?.directCall?.abiFunction
-      ?? group.directCall?.abiFunction
-      ?? bArt?.abi?.find((f: any) => f.name === (delegateEventGroup?.functionName ?? group.functionName));
+    const bAbiFunc = bArt?.abi?.find((f: any) => f.name === (delegateEventGroup?.functionName ?? group.functionName));
     const bEmits: Array<{ eventSignature: string; emitIndex: number } | undefined> =
       bAbiFunc?.emits ?? [];
 
@@ -513,126 +509,6 @@ export function deriveFullPhase1ReturnAndEvents(
           }
         }
       }
-    }
-  }
-
-  // A route can verify conditional events before its deferred collection-entry settlement.
-  // The pre-event entry pass above then legitimately reveals only an event commitment. Once reached
-  // events are installed, converge the entry band again so the route can advance to its return output.
-  if (group.directCall && group.blockLayout && group.blockInputs
-    && group.eventOutputs?.some((output) => output !== undefined)) {
-    const learnedEntries = new Set<number>();
-    const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
-    for (let pass = 0; pass <= entrySlotCount; pass++) {
-      const entryProbe = stb.build();
-      const entryTrace = evaluateProbeTrace(host.inner.provider, {
-        inputIndex: bMasterIdx,
-        sourceOutputs: generateLibauthSourceOutputs(entryProbe.inputs),
-        transaction: entryProbe.buildLibauthTransaction(),
-      });
-      const revealed = extractCommitmentMapFromTrace(entryTrace, {
-        min: bOutputBase,
-        max: bOutputBase + group.blockInputs.length,
-      }, true);
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
-        const transferFromInvokeWindows = entryTrace.flatMap((state, traceIndex) => {
-          if (state.instructions[state.ip]?.opcode !== Op.OP_INVOKE
-            || binToHex(state.stack.at(-1) ?? new Uint8Array()) !== '0d') return [];
-          const returnIndex = entryTrace.findIndex((candidate, candidateIndex) =>
-            candidateIndex > traceIndex
-            && candidate.instructions.length === state.instructions.length
-            && candidate.ip === state.ip + 1);
-          const end = returnIndex < 0 ? Math.min(entryTrace.length, traceIndex + 8) : returnIndex + 48;
-          return [{
-            traceIndex,
-            returnIndex,
-            states: entryTrace.slice(Math.max(0, traceIndex - 4), end).map((candidate, candidateIndex) => ({
-              traceIndex: Math.max(0, traceIndex - 4) + candidateIndex,
-              ip: candidate.ip,
-              count: candidate.instructions.length,
-              op: candidate.instructions[candidate.ip]?.opcode,
-              stack: candidate.stack.slice(-32).map((item) => {
-                const hex = binToHex(item);
-                return `${item.length}:${hex.slice(0, 64)}`;
-              }),
-            })),
-          }];
-        });
-        console.error('post-event-route-entries', {
-          groupIdx,
-          pass,
-          revealed: [...revealed.entries()],
-          learned: [...learnedEntries],
-          error: entryTrace.at(-1)?.error,
-          tail: entryTrace.slice(-10).map((state) => ({
-            ip: state.ip,
-            count: state.instructions.length,
-            op: state.instructions[state.ip]?.opcode,
-            error: state.error,
-            stack: state.stack.slice(-16).map((item) => {
-              const hex = binToHex(item);
-              return `${item.length}:${hex.slice(0, 64)}`;
-            }),
-          })),
-          handlerTail: entryTrace.filter((state) => state.instructions.length >= 330
-            && state.instructions.length <= 360
-            && state.ip >= 300)
-            .slice(-100).map((state) => ({
-              ip: state.ip,
-              op: state.instructions[state.ip]?.opcode,
-              stack: state.stack.slice(-24).map((item) => {
-                const hex = binToHex(item);
-                return `${item.length}:${hex.slice(0, 64)}`;
-              }),
-            })),
-          transferFromInvokeWindows,
-          transferFromCallerTail: entryTrace.filter((state) =>
-            state.instructions.length === 5117 && state.ip >= 1700 && state.ip <= 2100)
-            .map((state) => ({
-              ip: state.ip,
-              op: state.instructions[state.ip]?.opcode,
-              stack: state.stack.slice(-40).map((item) => {
-                const hex = binToHex(item);
-                return `${item.length}:${hex.slice(0, 64)}`;
-              }),
-            })),
-        });
-      }
-      let progressed = false;
-      for (const [outputIndex, commitment] of revealed) {
-        const blockSlot = outputIndex - bOutputBase;
-        const slot = group.blockLayout.slots[blockSlot];
-        if (learnedEntries.has(blockSlot)) continue;
-        if (slot?.kind === 'dataNft' && slot.nftIndex !== undefined) {
-          // A failing progressive probe can expose an intermediate
-          // stack item at a later output index before the complete
-          // data-NFT commitment has been constructed. Only converge a
-          // data slot once it decodes against that participant's state
-          // layout; entry outputs discovered by the same probe remain
-          // useful and can unlock the complete commitment next pass.
-          let state: Record<string, StateValueType>;
-          try {
-            state = commitmentsToState(
-              [commitment], group.stateLayout, [slot.nftIndex],
-            );
-          } catch {
-            continue;
-          }
-          for (const [name, value] of Object.entries(state)) {
-            stb.setExternalCallState(group.categoryId, name, value);
-          }
-          stb.setExternalCallDerivedRecords(group.categoryId, [slot.nftIndex], [commitment]);
-          learnedEntries.add(blockSlot);
-          progressed = true;
-          continue;
-        }
-        if (slot?.kind !== 'entry') continue;
-        learnedEntries.add(blockSlot);
-        stb.setExternalCallEntryOutput(group.categoryId, blockSlot, commitment);
-        progressed = true;
-      }
-      if (!progressed) break;
     }
   }
 

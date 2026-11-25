@@ -300,9 +300,8 @@ export async function allocateCreateBuilderFunders(
       // a native signer input. Inspect every such delegate, not only the subset promoted to entryAbiFunction
       // because it happens to access a mapping.
       if (nestedDelegateProxyGroupByLowLevel.has(groupIndex)) return false;
-      const gFn = group.directCall?.abiFunction
-        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-          .find((candidate) => candidate.name === group.functionName);
+      const gFn = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === group.functionName);
       return gFn !== undefined && lowLevelRunNeedsSignerInput(gFn, group.callMode);
     });
     timing?.('sender-delegate-scan');
@@ -408,22 +407,17 @@ export async function allocateCreateBuilderFunders(
             (claim) => claim.resourceIdentity,
           ),
           valueChunkStateOwner: group.valueChunkStateOwner?.categoryId,
-          entryWrites: group.directCall?.abiFunction.entryAccesses?.filter((access) =>
-            access.operations.includes('write')).map((access) => access.collection),
         })),
         lowLevelGroups: lowLevelCallUtxoGroups.map((group) => ({
           functionName: group.functionName,
           logicalFunctionName: group.logicalFunctionName,
-          blockSize: group.blockLayout?.blockSize
-            ?? group.directCall?.abiFunction.blockLayout?.blockSize,
+          blockSize: group.blockLayout?.blockSize,
           valueChunkOutputCount: group.valueChunkOutputCount,
           valueChunkWrites: group.valueChunkWrites?.map(valueChunkWriteResourceIdentity),
           valueChunkProducerClaims: group.valueChunkProducerClaims?.map(
             (claim) => claim.resourceIdentity,
           ),
           valueChunkStateOwner: group.valueChunkStateOwner?.categoryId,
-          entryWrites: group.directCall?.abiFunction.entryAccesses?.filter((access) =>
-            access.operations.includes('write')).map((access) => access.collection),
         })),
       });
     }

@@ -133,15 +133,10 @@ export function deriveFullPhase1GroupFront(
     && input.vout === expectedMaster.vout);
   const builtStateMasterIdx = probeBuilder.inputs.findIndex((input) => input.txid === group.masterUtxo.txid
     && input.vout === group.masterUtxo.vout);
-  const bMasterIdx = group.directCall && group.delegateCallGroupIndex !== undefined
-    // Routed proxy state follows its implementation in the input band. The group's provisional master
-    // outpoint can still alias the implementation during probe convergence, so derive this coordinate
-    // from the already-final low-level implementation position.
-    ? stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex) + 1
-    : builtMasterIdx >= 0 ? builtMasterIdx
-      : group.delegateCallGroupIndex === undefined
-        ? stb.getExternalCallMasterInputIndex(groupIdx)
-        : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
+  const bMasterIdx = builtMasterIdx >= 0 ? builtMasterIdx
+    : group.delegateCallGroupIndex === undefined
+      ? stb.getExternalCallMasterInputIndex(groupIdx)
+      : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
   if (debugTargetDerivation) console.error('derive-phase1-master-index', {
     groupIdx, functionName: group.functionName, bMasterIdx, builtMasterIdx, builtStateMasterIdx,
     computedExternalMaster: stb.getExternalCallMasterInputIndex(groupIdx),

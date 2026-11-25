@@ -18,7 +18,6 @@ import {
 import {
   groupLayoutTrailingBase,
   inheritWriterBatchPlan,
-  inheritWriterBatchWitnesses,
   isWriterBatchWitnessName,
   materializedPredOutBase,
   remapInsertPredOuts,
@@ -258,18 +257,14 @@ export function applyCreateBuilderPendingInputFills(params: {
           (candidate.sharedGroupIndex ?? index) === physicalIdx
         && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
           || (candidate.plannedEntryInserts?.length ?? 0) > 0
-          || Object.entries({ ...candidate.directCall?.internalArgs, ...candidate.internalArgs })
-            .some(([name]) => isWriterBatchWitnessName(name))));
+          || Object.keys(candidate.internalArgs ?? {}).some((name) => isWriterBatchWitnessName(name))));
         for (const writer of writers) {
           if (!writerBatchPlanMatchesPhysicalCarrier(fill.tokenGroup, writer)) continue;
           inheritWriterBatchPlan(fill.tokenGroup, writer);
         }
         const hasPred = (fill.tokenGroup.batchPredecessorOutputs?.length ?? 0) > 0
-        || Object.entries({
-          ...fill.tokenGroup.internalArgs,
-          ...fill.tokenGroup.directCall?.internalArgs,
-        }).some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
-          && typeof value === 'bigint' && value >= 0n);
+        || Object.entries(fill.tokenGroup.internalArgs ?? {}).some(([name, value]) => (
+          /^__internal__vmapBatchPredOut_\d+$/.test(name) && typeof value === 'bigint' && value >= 0n));
         if (hasPred && tokenMaster >= 0) {
           fill.tokenGroup.relocatedPredOutBase = materializedPredOutBase(
             fill.tokenGroup,
@@ -281,8 +276,7 @@ export function applyCreateBuilderPendingInputFills(params: {
       // INSERT P' sits at the participant's first live trailing slot. View tails are packed after that
       // band; do not push PredOut past them (that lands on a SCID / OP_TRUE).
         const predBase = fill.tokenGroup.relocatedPredOutBase;
-        const tokenFn = fill.tokenGroup.directCall?.abiFunction
-        ?? (fill.tokenGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        const tokenFn = (fill.tokenGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((fn) => fn.name === fill.tokenGroup!.functionName
             || fn.name === fill.tokenGroup!.logicalFunctionName);
         const insertBudget = Math.max(1, fill.tokenGroup.batchPredecessorOutputs?.length ?? 0);
@@ -295,9 +289,7 @@ export function applyCreateBuilderPendingInputFills(params: {
           .filter((input: any) => /^__internal__vmapBatchPredOut_\d+$/.test(input.name))
           .flatMap((input: any) => {
             const current = writerGroup?.internalArgs?.[input.name]
-            ?? writerGroup?.directCall?.internalArgs?.[input.name]
-            ?? fill.tokenGroup?.internalArgs?.[input.name]
-            ?? fill.tokenGroup?.directCall?.internalArgs?.[input.name];
+            ?? fill.tokenGroup?.internalArgs?.[input.name];
             return typeof current === 'bigint' ? [{ name: input.name, value: current }] : [];
           });
         const remapped = remapInsertPredOuts(
@@ -311,15 +303,6 @@ export function applyCreateBuilderPendingInputFills(params: {
           ...fill.tokenGroup.internalArgs,
           ...remapped,
         };
-        if (fill.tokenGroup.directCall) {
-          fill.tokenGroup.directCall = {
-            ...fill.tokenGroup.directCall,
-            internalArgs: inheritWriterBatchWitnesses(
-              fill.tokenGroup.directCall.internalArgs,
-              remapped,
-            ),
-          };
-        }
       }
       fill.tokenGroup?.refreshInternalArgs?.(tokenUpdates);
     }

@@ -124,7 +124,7 @@ export function reassertNestedEmitEvents(
     ? eventSelection.categoryId : chunkableValueWriteCategory(host);
   // A direct delegate runs on its state owner's records, so its event (at impl + offset) carries the owner's
   // category and lock; the implementation's brand fails the delegate's event check and DX-8 conservation.
-  const delegateOwnerCategory = llcGroup?.callMode === 'delegatecall' && llcGroup.directCall === undefined
+  const delegateOwnerCategory = llcGroup?.callMode === 'delegatecall'
     && selectedCategory === llcGroup.categoryId
     ? lowLevelCallStateOwnerCategory(llcIndex, llcGroup, host.externalCallUtxoGroups, host.categoryId)
     : undefined;
@@ -179,14 +179,12 @@ export function reassertNestedEmitEvents(
         functionName: proxyGroup.functionName,
         logicalFunctionName: proxyGroup.logicalFunctionName,
         delegateCallGroupIndex: proxyGroup.delegateCallGroupIndex,
-        route: proxyGroup.directCall?.abiFunction.name,
       },
       selectedLowLevelGroup: llcIndex >= 0 ? {
         index: llcIndex,
         categoryId: host.lowLevelCallUtxoGroups[llcIndex].categoryId,
         functionName: host.lowLevelCallUtxoGroups[llcIndex].functionName,
         logicalFunctionName: host.lowLevelCallUtxoGroups[llcIndex].logicalFunctionName,
-        route: host.lowLevelCallUtxoGroups[llcIndex].directCall?.abiFunction.name,
       } : undefined,
       selectedWriterViews: [proxyGroup, llcGroup].filter((group) => group !== undefined).map((group) => ({
         categoryId: group.categoryId,
@@ -194,7 +192,6 @@ export function reassertNestedEmitEvents(
         logicalFunctionName: group.logicalFunctionName,
         delegateCallGroupIndex: group.delegateCallGroupIndex,
         sharedGroupIndex: group.sharedGroupIndex,
-        route: group.directCall?.abiFunction.name,
       })),
     });
   }
@@ -276,7 +273,6 @@ export function reassertNestedEmitEvents(
       console.error('publishJobEvent-groups', publishJobEventGroups.map((group, index) => ({
         index,
         name: group.functionName ?? group.logicalFunctionName,
-        route: group.directCall?.abiFunction?.name,
         eventOutputs: (group.eventOutputs ?? []).map((eventOutput) => ({
           sig: eventOutput?.eventSignature,
           commit: String(eventOutput?.commitment ?? '').slice(0, 24),

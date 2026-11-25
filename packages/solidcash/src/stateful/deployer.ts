@@ -657,17 +657,17 @@ async function planCalleeBlockByCall(
   // A function that reads msg.sender is built for the child as its caller.
   const senderReader = fn.inputs.some((input) => input.name === '__internal__msgSenderCategory');
   const standIn = senderReader ? await standInSender(sender) : undefined;
-  const route = { abiFunction: fn, emitReturn: true };
+  const calleeCall = { abiFunction: fn, emitReturn: true };
   const { StatefulFunctionCall } = await import('./StatefulContract.js');
   const participant = new StatefulFunctionCall(
     () => connected._createBuilder(functionName, [...call.args], {
-      ...route, signerUtxos: padCoins, ...(sidecarPool === undefined ? {} : { sharedSidecarPool: sidecarPool }),
+      ...calleeCall, signerUtxos: padCoins, ...(sidecarPool === undefined ? {} : { sharedSidecarPool: sidecarPool }),
       ...(standIn === undefined ? {} : {
         callerLockingBytecode: sender, msgSenderCategory: hexToBin(standIn.category).reverse(),
         standInCaller: standIn.caller,
       }),
     }) as never,
-    connected as never, functionName, [...call.args], route,
+    connected as never, functionName, [...call.args], calleeCall,
   );
   // Each build of the call, a call of another contract's among them, keeps the pool and the sender. The sender is
   // named before the calls are resolved: an argument msg.sender gives a call the callee makes resolves to it.

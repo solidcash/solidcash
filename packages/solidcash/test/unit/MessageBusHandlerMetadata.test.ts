@@ -18,7 +18,6 @@ describe('route push-value witnesses', () => {
     expect(resolveDelegatePushValueWitness(
       '__internal__completePushValue_2',
       undefined,
-      undefined,
       {
         inputs: [
           { name: '__internal__msgSenderAnchorIdx' },
@@ -35,16 +34,13 @@ describe('route push-value witnesses', () => {
     expect(resolveNestedRoutePushValueWitness(
       '__internal__completePushValue_3',
       { __internal__completePushValue_3: complete },
-      undefined,
     )).toEqual(complete);
     expect(resolveNestedRoutePushValueWitness(
       '__internal__leadingPushValue_3',
       undefined,
-      undefined,
     )).toEqual(new Uint8Array());
     expect(resolveNestedRoutePushValueWitness(
       '__internal__valueWitness_3',
-      undefined,
       undefined,
     )).toBeUndefined();
   });

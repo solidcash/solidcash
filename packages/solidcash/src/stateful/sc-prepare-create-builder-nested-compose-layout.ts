@@ -61,8 +61,7 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     // the shared physical block; otherwise the transaction executes the earlier method with stale args.
     && logicalSelector !== undefined
     && sharedPhysicalFunction?.selector === logicalSelector
-    && sharedPhysicalFunction.writesState === true
-    && !externalCallUtxoGroups[sharedGroupIndex].directCall;
+    && sharedPhysicalFunction.writesState === true;
   if (sharedGroupIndex >= 0
     && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1') {

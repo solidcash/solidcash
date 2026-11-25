@@ -47,7 +47,6 @@ export async function precomputeCreateBuilderNestedComposeReturns(
     delegateVisibleArgs: readonly FunctionArgument[];
     delegateVisibleInputs: readonly { name: string }[];
     childWritesState: boolean;
-    sharedDirectCallCoversCall: boolean;
     graphPlanningResults: unknown;
     publicSelfAddress: FunctionArgument;
     childFunctionName: string;

@@ -48,14 +48,6 @@ const record = (contract: Contract, collection: string): {
   unlocker: createEntryNftUnlocker(contract, 0, CATEGORY, collection),
 });
 
-const callOf = (collection: string): object => ({
-  abiFunction: {
-    name: 'put',
-    inputs: [],
-    entryAccesses: [{ slotIndex: 0, collection, keyParams: ['key'], operations: ['write'] }],
-  },
-});
-
 const groupOf = (owner: Contract, entry: object, extra: object): ExternalCallUtxoGroup => ({
   categoryId: CATEGORY,
   externalContract: { inner: owner },
@@ -72,7 +64,7 @@ describe('derive-full entry rebind', () => {
     const entry = record(proxy, 'balances');
     const proxyEntryLock = lockOf(entry.unlocker);
     const delegateGroup = {
-      externalContract: { inner: implementation }, functionName: 'put', directCall: callOf('balances'),
+      externalContract: { inner: implementation }, functionName: 'put',
     };
     const stb = {
       getLowLevelCallUtxoGroups: () => [delegateGroup],
@@ -95,8 +87,7 @@ describe('derive-full entry rebind', () => {
       rebindCategoryEntryUnlockers: () => undefined,
     } as unknown as StatefulTransactionBuilder;
 
-    expect(rebindDeriveFullExternalResourceMaster(stb, groupOf(owner, entry, { directCall: callOf('notes') }), 7))
-      .toBe(true);
+    expect(rebindDeriveFullExternalResourceMaster(stb, groupOf(owner, entry, {}), 7)).toBe(true);
 
     expect(lockOf(entry.unlocker)).toBe(balancesLock);
     expect(lockOf(entry.unlocker)).not.toBe(lockOf(createEntryNftUnlocker(owner, 7, CATEGORY, 'notes')));

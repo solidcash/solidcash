@@ -46,22 +46,11 @@ describe('argumentsForPhysicalAbiFrame', () => {
       logicalFunctionArgs: ['current-key', 'current-value'],
     })).toEqual(['current-key', 'current-value']);
   });
-
-  it('keeps direct call arguments when the physical ABI is not the logical handler', () => {
-    const call = { name: '__dispatch', inputs: [{ name: 'batch' }] };
-    expect(argumentsForPhysicalAbiFrame({
-      abiFunction: call,
-      physicalFunctionArgs: ['physical-batch'],
-      logicalFunctionName: 'record',
-      logicalFunctionArgs: ['current-key', 'current-value'],
-      directCall: { abiFunction: call, args: ['authenticated-batch'] },
-    })).toEqual(['authenticated-batch']);
-  });
 });
 
 describe('groupEventSignatures', () => {
   it('uses the declared event order', () => {
-    expect(groupEventSignatures({}, {
+    expect(groupEventSignatures({
       emits: [
         { eventSignature: 'Created(uint)', emitIndex: 0 },
         { eventSignature: 'Fallback(bool)', emitIndex: 1 },

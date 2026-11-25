@@ -151,10 +151,8 @@ function logEntryCounts(host: ConvergedFinalTransactionHost, builder: Transactio
       })),
       extras,
       inserts: host.externalCallEntryInserts?.length,
-      predOuts: Object.fromEntries(Object.entries({
-        ...group.directCall?.internalArgs,
-        ...group.internalArgs,
-      }).filter(([n]) => /vmapBatchPredOut|TrailingCount/.test(n))
+      predOuts: Object.fromEntries(Object.entries(group.internalArgs ?? {})
+        .filter(([n]) => /vmapBatchPredOut|TrailingCount/.test(n))
         .map(([n, v]) => [n, String(v)])),
     }));
   }

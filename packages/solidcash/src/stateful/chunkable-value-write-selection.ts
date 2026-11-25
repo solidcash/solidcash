@@ -22,7 +22,6 @@ import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
 import { valueChunkWriteResourceIdentity } from './value-chunk-persist.js';
 
 /** Resolve the one active chunkable dynamic-value collection written by a composed group.
- * Route rows are authoritative when present; a route-level active-write filter narrows union-shaped handlers.
  * Ambiguous metadata fails closed rather than selecting a collection by source-level name. */
 export type ChunkableValueWriteGroup = {
   categoryId?: string;
@@ -32,10 +31,6 @@ export type ChunkableValueWriteGroup = {
   blockLayout?: FunctionBlockLayout;
   logicalArtifact?: Artifact;
   externalContract?: { inner?: { artifact?: Artifact } };
-  directCall?: {
-    abiFunction?: AbiFunction;
-    rowArguments?: readonly { handler: AbiFunction }[];
-  };
   valueChunkWrites?: readonly ValueChunkWriteDescriptor[];
   valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
   valueChunkStateOwner?: { categoryId: string; lockingBytecode: string };
@@ -76,13 +71,10 @@ export function permitsLegacyDelegateEventRepair(
 }
 
 export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGroup): string[] {
-  const route = group.directCall;
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
   const direct = artifact?.abi?.find((candidate) => candidate.name === directName);
-  const activeFunctions = route?.rowArguments?.length
-    ? route.rowArguments.map((row) => row.handler)
-    : route?.abiFunction ? [route.abiFunction] : direct ? [direct] : [];
+  const activeFunctions = direct ? [direct] : [];
   const collections = group.stateLayout?.collections ?? artifact?.stateLayout?.collections ?? [];
   const matches = new Set<string>();
   for (const handler of activeFunctions) {
@@ -215,8 +207,7 @@ export const groupWritesSingleChunkableArrayCollection = groupWritesSingleChunka
 export function groupDeclaredAbiFunction(group: ChunkableValueWriteGroup): AbiFunction | undefined {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
-  return group.directCall?.abiFunction
-    ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === directName);
+  return artifact?.abi.find((candidate: AbiFunction) => candidate.name === directName);
 }
 
 /** Linear sorted batches mint in-block vmap nodes, not a single continuation band. */
@@ -265,8 +256,7 @@ export function legacyPlannedChunkableValueWriteCollection(
     .filter((artifact, index, all): artifact is Artifact => artifact !== undefined
       && all.indexOf(artifact) === index);
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const directFunction = group.directCall?.abiFunction;
-  const namedFunctions = directFunction ? [directFunction] : artifacts.flatMap((artifact) => (
+  const namedFunctions = artifacts.flatMap((artifact) => (
     (artifact.abi as readonly AbiFunction[]).filter((candidate) => candidate.name === logicalName)
   ));
   const identities = new Set(namedFunctions.map((candidate) => (
@@ -317,8 +307,7 @@ export function selectChunkableValueWriteExecution(
     if (resource === undefined) continue;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
-    const abiFunction = group.directCall?.abiFunction
-      ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
+    const abiFunction = artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
     if (abiFunction) executions.set(`${inputIndex}:${resource.resourceOwnerIdentity
       ?? resource.resourceIdentity ?? resource.collection}`, {
       inputIndex, abiFunction, ...resource,

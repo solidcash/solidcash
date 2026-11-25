@@ -179,7 +179,6 @@ export function prepareDeriveFullValueChunkWrites(
           owner: group.valueChunkStateOwner,
           functionName: group.functionName,
           callMode: group.callMode,
-          hasDirectCall: group.directCall !== undefined,
           rowCount: 0,
           claim: claim?.producer,
           transportedClaims: group.valueChunkProducerClaims?.map((candidate) => candidate.producer),

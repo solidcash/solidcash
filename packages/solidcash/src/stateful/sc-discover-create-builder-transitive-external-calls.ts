@@ -118,13 +118,6 @@ export async function resolveTransitiveExternalContract(
   return deployment?.contract as TransitiveExternalContract | undefined;
 }
 
-/** A callee that advertises a route route can execute several returning methods from one spend. */
-export type SharedMethodBatchBuilder = (
-  shared: ExternalCallUtxoGroup,
-  next: ExternalCallUtxoGroup,
-  callee: TransitiveExternalContract,
-) => Promise<NonNullable<ExternalCallUtxoGroup['directCall']> | undefined>;
-
 /**
  * For each direct nested callee with its own externalCalls, resolve C from B's
  * connect-time registry, load C's master/data NFTs, and append transitive groups.
@@ -136,19 +129,17 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
   externalCallUtxoGroups: ExternalCallUtxoGroup[],
   groupMetas: ExternalGroupMeta[],
   directGroupCount: number,
-  buildSharedMethodBatch?: SharedMethodBatchBuilder,
   firstDirectIndex = 0,
 ): Promise<void> {
   for (let directIdx = firstDirectIndex; directIdx < directGroupCount; directIdx++) {
     const directGroup = externalCallUtxoGroups[directIdx];
     const bContract = directGroup.externalContract as TransitiveExternalContract;
-    const bAbi = bContract.inner.artifact.abi;
-    const bAbiFunc = directGroup.directCall
-      ? bAbi.find((f) => f.name === directGroup.functionName)
-      : resolveStatefulAbiFunction(bContract.inner.artifact, directGroup.functionName, directGroup.functionArgs);
+    const bAbiFunc = resolveStatefulAbiFunction(
+      bContract.inner.artifact, directGroup.functionName, directGroup.functionArgs,
+    );
 
     if (!bAbiFunc?.externalCalls?.length) continue;
-    const bSelfIdentity = directGroup.directCall ? undefined : await resolveOrdinarySelfIdentity(bContract, bAbiFunc);
+    const bSelfIdentity = await resolveOrdinarySelfIdentity(bContract, bAbiFunc);
     const bSelfAddress = bSelfIdentity?.unlocker.generateLockingBytecode() ?? hexToBin(bContract.inner.lockingBytecode);
     // B's msg.sender is the caller that CALLs it, not the transaction's signer: an argument msg.sender gives C is that
     // caller's lock. A delegatecall runs B for its caller's own caller, which this group does not name.
@@ -244,8 +235,8 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       // a skip: co-spent on a guess, C would run without being called whenever the guard is false, and a C that reads
       // no msg.sender would settle it. B counts the caller edges it pins, so a call that carries one (a typed call
       // under a guard the compiler could not publish) is kept: B's own covenant refuses the edge the build laid for a
-      // call B skips. A route route binds each row it runs instead.
-      if (reach !== 'reached' && !directGroup.directCall
+      // call B skips.
+      if (reach !== 'reached'
         && (directGroup.callMode === 'delegatecall' || !callCountsCallerEdge(bEc, bAbiFunc, cContract))) {
         const callee = cContract.inner.artifact.contractName;
         const rawName = bEc.rawFunctionName ?? cContract.inner.artifact.abi.find((candidate) => bEc.rawSelector
@@ -392,26 +383,17 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         ...(bEc.callMode && { callMode: bEc.callMode }),
       };
       // The same rule a direct callsite applies: two distinct methods that both return cannot execute from one
-      // master input unless an authenticated batch route executes both rows. A callee that advertises a
-      // route route can batch them: the shared physical input runs both selectors in order, and every
-      // logical group keeps its own row's return event.
+      // master input.
       if (sharedPhysical !== undefined && (cAbiFunction.outputs?.length ?? 0) > 0
         && sharedPhysical.functionName !== cFunctionName) {
         const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === sharedPhysical.functionName);
         if ((priorAbi?.outputs?.length ?? 0) > 0) {
-          const route = sharedPhysical.directCall === undefined && buildSharedMethodBatch !== undefined
-            ? await buildSharedMethodBatch(sharedPhysical, newGroup, cContract)
-            : undefined;
-          if (route === undefined) {
-            throw new Error(
-              `Transitive external calls to ${sharedPhysical.functionName} and ${cFunctionName} share one state `
-              + 'owner but both return values, which one spend of it cannot answer: make the calls in separate '
-              + 'transactions.',
-            );
-          }
-          sharedPhysical.directCall = route;
-          newGroup.directCall = route;
+          throw new Error(
+            `Transitive external calls to ${sharedPhysical.functionName} and ${cFunctionName} share one state `
+            + 'owner but both return values, which one spend of it cannot answer: make the calls in separate '
+            + 'transactions.',
+          );
         }
       }
       externalCallUtxoGroups.push(newGroup);

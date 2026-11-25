@@ -80,7 +80,7 @@ export function relocateCreateBuilderPredOutBases(params: {
       for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
         if (group.sharedGroupIndex !== undefined) continue;
         if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
-        const tokenName = group.functionName ?? group.directCall?.abiFunction.name;
+        const tokenName = group.functionName;
         const start = nestedMasterIndices[groupIdx];
         if (start === undefined || start < 0) continue;
         let tokenWidth = 0;
@@ -147,7 +147,7 @@ export function relocateCreateBuilderPredOutBases(params: {
         (candidate.sharedGroupIndex ?? index) === groupIdx
         && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
           || (candidate.plannedEntryInserts?.length ?? 0) > 0
-          || Object.entries({ ...candidate.directCall?.internalArgs, ...candidate.internalArgs })
+          || Object.entries({ ...candidate.internalArgs })
             .some(([name]) => isWriterBatchWitnessName(name))));
       for (const writer of writers) {
         if (!writerBatchPlanMatchesPhysicalCarrier(group, writer)) continue;

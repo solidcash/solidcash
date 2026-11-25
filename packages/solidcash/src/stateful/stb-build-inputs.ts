@@ -155,11 +155,10 @@ export function orderedFrontRegionCoSpends(
 function llcBlockLayout(group: ExternalCallUtxoGroup): {
   blockSize?: number; slots?: ReadonlyArray<{ kind: string }>;
 } | undefined {
-  const abi = group.directCall?.abiFunction
-    ?? (group.externalContract.inner.artifact.abi as ReadonlyArray<{
-      name: string;
-      blockLayout?: { blockSize?: number; slots?: ReadonlyArray<{ kind: string }> };
-    }>).find((candidate) => candidate.name === group.functionName);
+  const abi = (group.externalContract.inner.artifact.abi as ReadonlyArray<{
+    name: string;
+    blockLayout?: { blockSize?: number; slots?: ReadonlyArray<{ kind: string }> };
+  }>).find((candidate) => candidate.name === group.functionName);
   return abi?.blockLayout;
 }
 
@@ -838,10 +837,9 @@ export function buildInputs(
       ? prefix.findIndex((input) => input.txid.toLowerCase() === routeDelegate.masterUtxo!.txid.toLowerCase()
         && input.vout === routeDelegate.masterUtxo!.vout)
       : -1;
-    const delegateAbiFunction = routeDelegate?.directCall?.abiFunction
-      ?? routeDelegate?.externalContract?.inner.artifact.abi.find(
-        (fn: AbiFunction) => fn.name === routeDelegate.functionName,
-      );
+    const delegateAbiFunction = routeDelegate?.externalContract?.inner.artifact.abi.find(
+      (fn: AbiFunction) => fn.name === routeDelegate.functionName,
+    );
     const delegateLayout = delegateAbiFunction?.blockLayout;
     const trailingBase = delegateLayout?.trailingBase ?? delegateLayout?.blockSize
       ?? host.blockLayout?.trailingBase ?? host.blockLayout?.blockSize;

@@ -322,10 +322,11 @@ describe('composition settlement session CompositionSettlementSession', () => {
     const host = {
       externalCallUtxoGroups: [{
         functionName: 'transferFrom',
-        directCall: { abiFunction: {
+        externalContract: { inner: { artifact: { abi: [{
+          name: 'transferFrom',
           writesState: true,
           entryAccesses: [{ operations: ['write'] }, { operations: ['write'] }],
-        } },
+        }] } } },
       }],
       builderOptions: { provider },
       allInputs: [],
@@ -397,10 +398,11 @@ describe('composition settlement session CompositionSettlementSession', () => {
     const host = {
       externalCallUtxoGroups: [{
         functionName: 'transferFrom',
-        directCall: { abiFunction: {
+        externalContract: { inner: { artifact: { abi: [{
+          name: 'transferFrom',
           writesState: true,
           entryAccesses: [{ operations: ['write'] }, { operations: ['write'] }],
-        } },
+        }] } } },
       }],
       builderOptions: { provider },
       allInputs: [],
@@ -445,10 +447,11 @@ describe('composition settlement session CompositionSettlementSession', () => {
     const host = {
       externalCallUtxoGroups: [{
         functionName: 'transferFrom',
-        directCall: { abiFunction: {
+        externalContract: { inner: { artifact: { abi: [{
+          name: 'transferFrom',
           writesState: true,
           entryAccesses: [{ operations: ['write'] }, { operations: ['write'] }],
-        } },
+        }] } } },
       }],
       builderOptions: { provider },
       allInputs: [],

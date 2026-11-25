@@ -23,16 +23,14 @@ export type MaterializeCreateBuilderReturnEmitHost = {
 /** Select the provisional result for a logical call sharing a physical return carrier. */
 export function selectPreparedAtomicReturnSeed(
   group: Pick<ExternalCallUtxoGroup,
-  'functionName' | 'logicalFunctionName' | 'directCall' | 'precomputedReturnCommitment'>,
+  'functionName' | 'logicalFunctionName' | 'precomputedReturnCommitment'>,
   functionName: string,
   eventCommitment?: Uint8Array,
 ): Uint8Array | undefined {
   // A physical carrier may have been retargeted from this read to a later write on the same master. Its event
   // identity then still has the read's group index but holds the writer's result, which can fit the same ABI word.
   const physicalMatches = group.functionName === functionName;
-  const routedMatches = (group.functionName === '__forward'
-    || group.functionName === group.directCall?.abiFunction.name)
-    && group.logicalFunctionName === functionName;
+  const routedMatches = group.functionName === '__forward' && group.logicalFunctionName === functionName;
   return physicalMatches || routedMatches
     ? eventCommitment ?? group.precomputedReturnCommitment
     : group.precomputedReturnCommitment;

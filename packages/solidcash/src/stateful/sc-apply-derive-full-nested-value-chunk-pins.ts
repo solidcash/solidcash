@@ -136,7 +136,7 @@ export function applyDeriveFullNestedValueChunkPin(
     (group) => group.delegateCallGroupIndex === llcIndex,
   );
   const groupFunctionName = (group: ExternalCallUtxoGroup): string | undefined => (
-    group.logicalFunctionName ?? group.directCall?.abiFunction.name ?? group.functionName
+    group.logicalFunctionName ?? group.functionName
   );
   const matchingGroups = attachedGroups.filter((group) => groupFunctionName(group) === llc.functionName);
   const physicalProxyGroups = attachedGroups.filter((group) => group.sharedGroupIndex === undefined);
@@ -268,15 +268,13 @@ export function applyDeriveFullNestedValueChunkPin(
   const legacyValueCandidates: Uint8Array[] = [];
   const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent'
   && permitsLegacyNamedValueChunkFallback([llc, ...(proxyGroup ? [proxyGroup] : [])]);
-  const publishName = llc.functionName ?? llc.logicalFunctionName
-  ?? llc.directCall?.abiFunction?.name;
+  const publishName = llc.functionName ?? llc.logicalFunctionName;
   // legacy JobEvent name adapter: JobEvent value-candidate discovery only via legacy adapter under the gate above.
   if (permitsLegacyValueCandidate && (
     legacyIsPublishJobEventName(publishName)
   || legacyGroupLooksLikePublishJobEvent({
     functionName: llc.functionName,
     logicalFunctionName: llc.logicalFunctionName,
-    directCall: llc.directCall,
   })
   )) {
     const args = llc.logicalFunctionArgs ?? llc.functionArgs;

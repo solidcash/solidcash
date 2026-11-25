@@ -27,15 +27,13 @@ export type ResolveCreateBuilderEffectiveLayoutResult = {
 };
 
 /**
- * After dynamic chunks: select the route delegate layout (or legacy
- * execution layout), fold projected delegate event slots into the effective
- * block layout (X56 return-event relocate), and resolve logical identity for
- * nested msg.sender observers.
+ * After dynamic chunks: select the delegate execution layout, fold projected
+ * delegate event slots into the effective block layout (X56 return-event
+ * relocate), and resolve logical identity for nested msg.sender observers.
  */
 export async function resolveCreateBuilderEffectiveLayout(
   host: ResolveCreateBuilderEffectiveLayoutHost,
   params: {
-    delegateRouteGroup: ExternalCallUtxoGroup | undefined;
     physicalAbiFunction: AbiFunction | undefined;
     abiFunction: AbiFunction | undefined;
     lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -52,30 +50,27 @@ export async function resolveCreateBuilderEffectiveLayout(
   },
 ): Promise<ResolveCreateBuilderEffectiveLayoutResult> {
   const {
-    delegateRouteGroup, physicalAbiFunction, abiFunction, lowLevelCallUtxoGroups,
+    physicalAbiFunction, abiFunction, lowLevelCallUtxoGroups,
     nestedDelegateProxyGroupByLowLevel, activeDelegateGroupIndex, externalCallUtxoGroups,
     dynamicChunkVars, delegateReturnEventOffset, delegateEventSlots, overrides,
     functionName, timingEnabled, timing,
   } = params;
 
-  const directCallDelegateLayout = delegateRouteGroup?.directCall?.abiFunction.blockLayout
-    ?? (physicalAbiFunction?.delegateForwarding || (physicalAbiFunction?.lowLevelCalls
-      ?.some((call) => call.callMode === 'delegatecall') === true
-      && physicalAbiFunction.blockLayout?.slots.some((slot: any) => slot.kind === 'lowLevelCall') === true)
-      ? undefined
-      : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel));
+  const directCallDelegateLayout = physicalAbiFunction?.delegateForwarding || (physicalAbiFunction?.lowLevelCalls
+    ?.some((call) => call.callMode === 'delegatecall') === true
+    && physicalAbiFunction.blockLayout?.slots.some((slot: any) => slot.kind === 'lowLevelCall') === true)
+    ? undefined
+    : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel);
   const dynamicDelegateGroup = activeDelegateGroupIndex === undefined
     ? lowLevelCallUtxoGroups.find((group) => {
       if (group.callMode !== 'delegatecall') return false;
-      const fn = group.directCall?.abiFunction
-        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-          .find((candidate) => candidate.name === group.functionName);
+      const fn = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === group.functionName);
       return (fn?.dynamicWrites?.length ?? 0) > 0;
     })
     : lowLevelCallUtxoGroups[activeDelegateGroupIndex];
-  const dynamicDelegateFunction = dynamicDelegateGroup?.directCall?.abiFunction
-    ?? (dynamicDelegateGroup?.externalContract.inner.artifact.abi as readonly AbiFunction[] | undefined)
-      ?.find((candidate) => candidate.name === dynamicDelegateGroup?.functionName);
+  const dynamicDelegateFunction = (dynamicDelegateGroup?.externalContract.inner.artifact.abi as
+    readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === dynamicDelegateGroup?.functionName);
   const delegateDynamicLayout = dynamicDelegateFunction?.blockLayout;
   const usesComposedDelegateDynamicTail = delegateDynamicLayout !== undefined
     && externalCallUtxoGroups.some((group) => group.sharedGroupIndex === undefined);
@@ -134,9 +129,8 @@ export async function resolveCreateBuilderEffectiveLayout(
   // A selected own-self witness or a nested msg.sender observer needs this contract's stable CREATE anchor.
   // Native contracts have no logical address and retain the authenticated minting-master input bytecode.
   const nestedUsesMsgSender = [...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].some((group) => {
-    const called = group.directCall?.abiFunction
-      ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-        .find((candidate) => candidate.name === group.functionName);
+    const called = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+      .find((candidate) => candidate.name === group.functionName);
     return called?.usesMsgSender === true;
   });
   const logicalIdentity = overrides?.logicalIdentity

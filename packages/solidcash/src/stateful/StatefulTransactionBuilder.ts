@@ -2016,8 +2016,6 @@ export class StatefulTransactionBuilder {
 
   private _finalizeBuildStampHost(): FinalizeBuildStampHost {
     return {
-      categoryId: this.categoryId,
-      rootStateContract: isContractUnlocker(this.masterUtxo.unlocker) ? this.masterUtxo.unlocker.contract : undefined,
       composedParticipant: this.composedParticipant,
       allInputs: this.allInputs,
       entryNfts: this.entryNfts,
@@ -3288,7 +3286,7 @@ export class StatefulTransactionBuilder {
   } | undefined {
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined) continue;
-      const layout = group.blockLayout ?? group.directCall?.abiFunction?.blockLayout;
+      const layout = group.blockLayout;
       if (!layout) continue;
       const base = this.getExternalCallOutputBase(groupIndex);
       const slot = layout.slots.find((candidate) => base + candidate.offset === outputIndex);
@@ -3302,7 +3300,7 @@ export class StatefulTransactionBuilder {
     const allowedByCategory = new Map<string, Set<number>>();
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined || !group.categoryId) continue;
-      const layout = group.blockLayout ?? group.directCall?.abiFunction?.blockLayout;
+      const layout = group.blockLayout;
       if (!layout) continue;
       let master = this.findMintingInputIndex(group.categoryId);
       if (master < 0) master = this.getExternalCallMasterInputIndex(groupIndex);
@@ -3313,7 +3311,6 @@ export class StatefulTransactionBuilder {
           allowed.add(master + slot.offset);
         }
       }
-      for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) allowed.add(master + offset);
       allowedByCategory.set(group.categoryId, allowed);
     }
     for (const claim of lowLevelCallImmutableEventDestinations(
@@ -5662,7 +5659,7 @@ export class StatefulTransactionBuilder {
       // A group's own logical call: a group sharing another's callee input names a call of its own, and an
       // identical readonly alias names the same call as the group it shares.
       const group = this.externalCallUtxoGroups[Number(external[1])];
-      if (!group || group.directCall) return undefined;
+      if (!group) return undefined;
       return this.groupCallRecordDigest(group, Number(external[2] ?? 0));
     }
     if (identity !== this.categoryId) return undefined;
@@ -5676,7 +5673,7 @@ export class StatefulTransactionBuilder {
     // A proxy entry forwards its call: the implementation it delegates to runs that call on this state, and its
     // record answers it.
     for (const group of this.lowLevelCallUtxoGroups) {
-      if (group.callMode !== 'delegatecall' || group.directCall) continue;
+      if (group.callMode !== 'delegatecall') continue;
       const digest = this.groupCallRecordDigest(group);
       if (digest !== undefined) return digest;
     }
@@ -5764,7 +5761,7 @@ export class StatefulTransactionBuilder {
   private voidEntryRecord(identity: string): Uint8Array | undefined {
     const external = /^external-call:(\d+)(?::(\d+))?$/.exec(identity);
     const group = external === null ? undefined : this.externalCallUtxoGroups[Number(external[1])];
-    if (!group || group.directCall || group.callBatchUnit !== undefined) return undefined;
+    if (!group || group.callBatchUnit !== undefined) return undefined;
     const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
     const functionName = group.logicalFunctionName ?? group.functionName;
     const entry = artifact?.abi.find((candidate) => candidate.name === functionName);
@@ -7312,7 +7309,7 @@ export class StatefulTransactionBuilder {
   private returnRecordGroupIndex(groupIdx: number): number {
     const group = this.externalCallUtxoGroups[groupIdx];
     const shared = group?.sharedGroupIndex === undefined ? undefined : this.externalCallUtxoGroups[group.sharedGroupIndex];
-    if (group?.readonlyReturnSelector !== undefined && !group.directCall && group.sharedGroupIndex !== groupIdx
+    if (group?.readonlyReturnSelector !== undefined && group.sharedGroupIndex !== groupIdx
       && shared?.readonlyReturnSelector === group.readonlyReturnSelector) return group.sharedGroupIndex!;
     return logicalReturnGroupIndex(this.externalCallUtxoGroups, groupIdx);
   }

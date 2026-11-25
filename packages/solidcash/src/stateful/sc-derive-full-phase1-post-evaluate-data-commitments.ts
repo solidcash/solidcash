@@ -51,10 +51,9 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
   let fullTrace = fullTraceIn;
   if (group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined) {
     const delegateGroup = stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
-    const delegateFn = delegateGroup?.directCall?.abiFunction
-      ?? delegateGroup?.externalContract.inner.artifact.abi.find(
-        (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
-      );
+    const delegateFn = delegateGroup?.externalContract.inner.artifact.abi.find(
+      (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
+    );
     const witnessInputs = delegateFn?.inputs.filter((input: { name: string }) =>
       /^__internal__valueWitness_\d+$/.test(input.name)) ?? [];
     const witnessCollection = witnessInputs.length === 1
@@ -81,7 +80,6 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
     }
     const currentWitness = witnessInputs.length === 1
       ? delegateGroup?.internalArgs?.[witnessInputs[0].name]
-        ?? delegateGroup?.directCall?.internalArgs?.[witnessInputs[0].name]
       : undefined;
     if (currentWitness instanceof Uint8Array && currentWitness.length > 60
       && isCompleteCollectionValue(currentWitness, witnessValueType, witnessLayout?.structs)) {

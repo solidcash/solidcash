@@ -24,9 +24,7 @@ import {
   getDynamicChunkAddress,
   getEntryNftLockingBytecode,
   getValueChunkAddress,
-  resolveCollectionSignature,
 } from './covenant-helpers.js';
-import { selectedRouteResourceMetadata } from './route-resource-selection.js';
 import {
   RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
   runtimeLoopEventIterationValues,
@@ -53,7 +51,6 @@ export type LoadCreateBuilderDynamicChunksResult = {
   runtimeLoopEventOutputs: any[];
   runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[];
   runtimeLoopTrailingSegments: any[];
-  delegateRouteGroup: ExternalCallUtxoGroup | undefined;
 };
 
 /** Keep compiler fixed-batch coordinates ahead of runtime-discovered trailing entries. */
@@ -285,7 +282,6 @@ export async function loadCreateBuilderDynamicChunks(
     abiFunction: AbiFunction | undefined;
     entryAbiFunction: AbiFunction | undefined;
     lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-    nestedDelegateProxyGroupByLowLevel: ReadonlyMap<number, number>;
     batchPredCommitments: Map<string, any>;
     sortedLoopCommitments: Map<string, any>;
     runtimeLoopDerivedCounts: Map<string, number>;
@@ -301,21 +297,17 @@ export async function loadCreateBuilderDynamicChunks(
 ): Promise<LoadCreateBuilderDynamicChunksResult> {
   const {
     dynamicVarInfos, valueChunkGc, onChainState, stateLayout, overrides,
-    abiFunction, entryAbiFunction, lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel,
+    abiFunction, entryAbiFunction, lowLevelCallUtxoGroups,
     batchPredCommitments, sortedLoopCommitments, runtimeLoopDerivedCounts, sortedInserts,
     args, entryArgs, eventDefs, runtimeEventNftLockingBytecodes, timing,
   } = params;
   const executionSelfAddress = params.executionSelfAddress as Uint8Array;
   const functionName = params.functionName as string;
   const tokenContainers = params.tokenContainers as any[];
-  const routeRowIndex = params.routeRowIndex as (row: any) => number;
-  const selectedRowArgument = params.selectedRowArgument as (row: any, name: string) => unknown;
   const runtimeLoopEntrySegments = params.runtimeLoopEntrySegments as any[];
   const entryAccesses = params.entryAccesses as any;
   const dynamicWrites = params.dynamicWrites as string[];
   const activeDynamicWrites = params.activeDynamicWrites as Set<string>;
-  const activeDelegateGroupIndex = params.activeDelegateGroupIndex as number | undefined;
-  const externalCallUtxoGroups = params.externalCallUtxoGroups as any[];
   const entryNftLockingBytecodes = params.entryNftLockingBytecodes as Map<string, Uint8Array>;
 
   timing?.('dynamic-chunks-start');
@@ -388,100 +380,44 @@ export async function loadCreateBuilderDynamicChunks(
 
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`): N new entry NFTs at the collection's
   // entry covenant address (N derived from the VM trace). Mirrors dynamicChunkVars (variable trailing outputs).
-  // A proxy forwarder owns the physical block but the delegated implementation route owns the collection
-  // semantics. `entryAbiFunction` is already the effective metadata source for fixed entry accesses above;
-  // include its loop writes too or a graph-handler `mapping(K => V[]).push(...)` is funded as a generic
-  // trailing placeholder rather than an entry-covenant NFT.
-  const delegateRouteGroupIndex = activeDelegateGroupIndex !== undefined
-    && lowLevelCallUtxoGroups[activeDelegateGroupIndex]?.directCall?.abiFunction
-    ? activeDelegateGroupIndex
-    : lowLevelCallUtxoGroups.findIndex(
-      (group, groupIndex) => group.callMode === 'delegatecall'
-        && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
-        && group.directCall?.abiFunction,
-    );
-  const delegateRouteGroup = delegateRouteGroupIndex >= 0
-    ? lowLevelCallUtxoGroups[delegateRouteGroupIndex] : undefined;
-  const delegateProxyGroupIndex = delegateRouteGroupIndex >= 0
-    ? nestedDelegateProxyGroupByLowLevel.get(delegateRouteGroupIndex) : undefined;
-  const delegateStateCategoryId = delegateProxyGroupIndex === undefined
-    ? host.categoryId : externalCallUtxoGroups[delegateProxyGroupIndex].categoryId;
-  // A delegate route writes its proxy's entries, which bind the proxy master's lock, not the implementation's.
-  const delegateStateContract = delegateProxyGroupIndex === undefined
-    ? host.inner : externalCallUtxoGroups[delegateProxyGroupIndex].externalContract.inner;
-  const delegateRouteAbi = delegateRouteGroup?.directCall?.abiFunction;
-  const delegateRouteRows = undefined as any[] | undefined;
-  const selectedRowsFor = (
-    _source: AbiFunction | undefined,
-  ): any[] | undefined => undefined;
-  const entryRouteRows = undefined as any[] | undefined;
-  const selectedRouteLoopMetadata = selectedRouteResourceMetadata([
-    ...(entryRouteRows ?? []),
-    ...(delegateRouteRows ?? []),
-  ]);
-  const selectedDelegateLoopMetadata = selectedRouteResourceMetadata(delegateRouteRows);
-  // The route ABI publishes the union of all dispatchable handlers, not the writes of this envelope.
-  // Registering an inactive collection here lets derivation seed a phantom NEW output, shifting every
-  // subsequent dynamic chunk. Select each source independently so a direct caller's own loops survive
-  // alongside selected delegate rows; absent row metadata retains the direct/legacy ABI behavior.
-  const entryLoopWrites = [...new Set([abiFunction, entryAbiFunction, delegateRouteAbi].flatMap((source) => {
-    const rows = selectedRowsFor(source);
-    return rows === undefined ? source?.entryLoopWrites ?? []
-      : selectedRouteResourceMetadata(rows).entryLoopWrites;
-  }))];
+  // `entryAbiFunction` is already the effective metadata source for fixed entry accesses above; include its loop
+  // writes too or a graph-handler `mapping(K => V[]).push(...)` is funded as a generic trailing placeholder
+  // rather than an entry-covenant NFT.
+  const entryLoopWrites = [...new Set([abiFunction, entryAbiFunction].flatMap((source) => (
+    source?.entryLoopWrites ?? []
+  )))];
   // Trailing vmap output indices are part of the covenant ABI. Fixed batches are assigned bases in
   // sortedBatchInfo order (first-access order), which can differ from state-layout declaration order. Preserve
   // that order here or two collections written out of declaration order receive each other's locking bytecode.
-  const trailingCollectionSources = [
+  const orderedLoopCollections = orderedTrailingEntryCollections(
+    entryAbiFunction?.sortedBatchInfo,
     batchPredCommitments.keys(),
     entryLoopWrites,
     sortedLoopCommitments.keys(),
     runtimeLoopDerivedCounts.keys(),
     sortedInserts.map((insert) => insert.collection),
-  ] as const;
-  const orderedLoopCollections = entryRouteRows !== undefined || delegateRouteRows !== undefined
-    ? orderedActiveTrailingEntryCollections(entryAbiFunction?.sortedBatchInfo, ...trailingCollectionSources)
-    : orderedTrailingEntryCollections(entryAbiFunction?.sortedBatchInfo, ...trailingCollectionSources);
-  const localStateCollections = new Set(host.inner.stateLayout?.collections?.map((collection: any) => collection.name));
+  );
   const loopEntryVars = orderedLoopCollections.map((name) => {
     const collection = stateLayout.collections?.find((candidate) => candidate.name === name);
-    const signature = selectedRouteLoopMetadata.entryLoopWriteSignatures[name]
-      ?? delegateRouteAbi?.entryLoopWriteSignatures?.[name]
-      ?? entryAbiFunction?.entryLoopWriteSignatures?.[name]
-      ?? collection?.signature;
+    const signature = entryAbiFunction?.entryLoopWriteSignatures?.[name] ?? collection?.signature;
     const delegatedLoop = lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
-      && (selectedDelegateLoopMetadata.loopCollections.includes(name)
-        || delegateRouteAbi?.sortedUpsertLoopInfo?.some((info) => info.collection === name)
-        || delegateRouteAbi?.sortedInsertLoopInfo?.some((info) => info.collection === name)
-        || (entryAbiFunction !== abiFunction
-          && (entryAbiFunction?.sortedUpsertLoopInfo?.some((info) => info.collection === name)
-            || entryAbiFunction?.sortedInsertLoopInfo?.some((info) => info.collection === name))));
+      && entryAbiFunction !== abiFunction
+      && (entryAbiFunction?.sortedUpsertLoopInfo?.some((info) => info.collection === name)
+        || entryAbiFunction?.sortedInsertLoopInfo?.some((info) => info.collection === name));
     return {
       collection: name,
       chunkable: signature?.includes('[])') === true,
-      ...(delegatedLoop && {
-        categoryId: localStateCollections.has(name) ? host.categoryId : delegateStateCategoryId,
-        delegate: true,
-      }),
+      ...(delegatedLoop && { categoryId: host.categoryId, delegate: true }),
       // Prefer the locking bytecode resolved from the effective (possibly delegate-grafted) state layout above.
       // `host.inner.artifact` is the proxy artifact and does not necessarily declare implementation collections;
       // resolving only by name against it hashes the bare name and mints NEW at a different covenant address.
       lockingBytecode: entryNftLockingBytecodes.get(name)
-      ?? (delegatedLoop && delegateRouteGroup
-        ? getEntryNftLockingBytecode(
-          delegateStateContract,
-          delegateStateCategoryId,
-          signature ?? resolveCollectionSignature(delegateRouteGroup.externalContract.inner.artifact, name),
-        )
-        : undefined)
-      ?? getEntryNftLockingBytecode(host.inner, host.categoryId, signature ?? name),
+        ?? getEntryNftLockingBytecode(host.inner, host.categoryId, signature ?? name),
     };
   });
   // Runtime loop events and their fixed peers are planned from compiler metadata, never from a contract name
   // or storage schema. A hidden permutation carries a loop segment's exact cardinality; exact-count segments
   // preserve events around it. Repeat each resolved site list without inspecting mapping keys.
-  const selectedRuntimeEventRows: any[] = (entryRouteRows?.some((row) =>
-    (row.handler.runtimeLoopEvents?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
   const runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
     /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
@@ -723,40 +659,21 @@ export async function loadCreateBuilderDynamicChunks(
       }
     }
   };
-  if (selectedRuntimeEventRows.length > 0) {
-    for (const row of selectedRuntimeEventRows) {
-      const offset = runtimeLoopEventOutputs.length;
-      const rowIndex = routeRowIndex(row);
-      if (rowIndex < 0) throw new Error('Batch runtime event row is missing from its route frame');
-      const rowArtifact = host.inner.artifact;
-      await appendRuntimeEvents(row.handler, [...row.args], rowArtifact, (name) =>
-        row.internalArgs?.[name] ?? selectedRowArgument(row, name), rowIndex);
-      const count = runtimeLoopEventOutputs.length - offset;
-      if (count > 0) {
-        runtimeLoopEventSegments.push({ rowIndex, offset, count });
-      }
-    }
-  } else {
-    const directRuntimeEventFunction = entryAbiFunction?.runtimeLoopEvents?.length
-      ? entryAbiFunction : abiFunction;
-    if (directRuntimeEventFunction?.runtimeLoopEvents?.length) {
-      const directRuntimeArgs = visibleHandlerInputs(directRuntimeEventFunction.inputs).map((input) => {
-        const index = directRuntimeEventFunction.inputs.findIndex((candidate) => candidate.name === input.name);
-        return (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
-      }) as FunctionArgument[];
-      const directRuntimeArtifact = directRuntimeEventFunction === delegateRouteAbi && delegateRouteGroup
-        ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
-      await appendRuntimeEvents(directRuntimeEventFunction, directRuntimeArgs, directRuntimeArtifact, (name) => {
-        const index = directRuntimeEventFunction.inputs.findIndex((input) => input.name === name);
-        return index < 0 ? undefined : (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
-      }, -1);
-    }
+  const directRuntimeEventFunction = entryAbiFunction?.runtimeLoopEvents?.length
+    ? entryAbiFunction : abiFunction;
+  if (directRuntimeEventFunction?.runtimeLoopEvents?.length) {
+    const directRuntimeArgs = visibleHandlerInputs(directRuntimeEventFunction.inputs).map((input) => {
+      const index = directRuntimeEventFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+      return (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
+    }) as FunctionArgument[];
+    await appendRuntimeEvents(directRuntimeEventFunction, directRuntimeArgs, host.inner.artifact, (name) => {
+      const index = directRuntimeEventFunction.inputs.findIndex((input) => input.name === name);
+      return index < 0 ? undefined : (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
+    }, -1);
   }
   // Runtime BCH transfers use the same logical counter domain as runtime events, but their recipient and
   // amount are covenant-derived later. Plan only the exact number and source-row ordering here; every output
   // starts as a harmless probe placeholder which the faithful VM trace replaces before handoff.
-  const selectedRuntimeTransferRows: any[] = (entryRouteRows?.some((row) =>
-    (row.handler.runtimeLoopTransfers?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
   const runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   const runtimeLoopTransferSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
   const appendRuntimeTransfers = (
@@ -770,45 +687,28 @@ export async function loadCreateBuilderDynamicChunks(
     state: onChainState.state, executionSelfAddress, tokenContainers,
     outputs: runtimeLoopTransferOutputs, effectOccurrences: runtimeLoopEffectOccurrences,
   });
-  if (selectedRuntimeTransferRows.length > 0) {
-    for (const row of selectedRuntimeTransferRows) {
-      const offset = runtimeLoopTransferOutputs.length;
-      const rowIndex = routeRowIndex(row);
-      if (rowIndex < 0) throw new Error('Batch runtime transfer row is missing from its route frame');
-      const rowArtifact = host.inner.artifact;
-      await appendRuntimeTransfers(row.handler, [...row.args], rowArtifact, (name) =>
-        row.internalArgs?.[name] ?? selectedRowArgument(row, name), rowIndex);
-      const count = runtimeLoopTransferOutputs.length - offset;
-      if (count > 0) {
-        runtimeLoopTransferSegments.push({ rowIndex, offset, count });
-      }
-    }
-  } else {
-    const directRuntimeTransferFunction = entryAbiFunction?.runtimeLoopTransfers?.length
-      ? entryAbiFunction : abiFunction;
-    if (directRuntimeTransferFunction?.runtimeLoopTransfers?.length) {
-      const directRuntimeArgs = visibleHandlerInputs(directRuntimeTransferFunction.inputs).map((input) => {
-        const index = directRuntimeTransferFunction.inputs.findIndex((candidate) => candidate.name === input.name);
-        return (directRuntimeTransferFunction === entryAbiFunction ? entryArgs : args)[index];
-      }) as FunctionArgument[];
-      const directRuntimeArtifact = directRuntimeTransferFunction === delegateRouteAbi && delegateRouteGroup
-        ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
-      const offset = runtimeLoopTransferOutputs.length;
-      await appendRuntimeTransfers(
-        directRuntimeTransferFunction,
-        directRuntimeArgs,
-        directRuntimeArtifact,
-        (name) => {
-          const index = directRuntimeTransferFunction.inputs.findIndex((input) => input.name === name);
-          return index < 0
-            ? undefined : (directRuntimeTransferFunction === entryAbiFunction ? entryArgs : args)[index];
-        },
-        -1,
-      );
-      const count = runtimeLoopTransferOutputs.length - offset;
-      if (count > 0) {
-        runtimeLoopTransferSegments.push({ rowIndex: -1, offset, count });
-      }
+  const directRuntimeTransferFunction = entryAbiFunction?.runtimeLoopTransfers?.length
+    ? entryAbiFunction : abiFunction;
+  if (directRuntimeTransferFunction?.runtimeLoopTransfers?.length) {
+    const directRuntimeArgs = visibleHandlerInputs(directRuntimeTransferFunction.inputs).map((input) => {
+      const index = directRuntimeTransferFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+      return (directRuntimeTransferFunction === entryAbiFunction ? entryArgs : args)[index];
+    }) as FunctionArgument[];
+    const offset = runtimeLoopTransferOutputs.length;
+    await appendRuntimeTransfers(
+      directRuntimeTransferFunction,
+      directRuntimeArgs,
+      host.inner.artifact,
+      (name) => {
+        const index = directRuntimeTransferFunction.inputs.findIndex((input) => input.name === name);
+        return index < 0
+          ? undefined : (directRuntimeTransferFunction === entryAbiFunction ? entryArgs : args)[index];
+      },
+      -1,
+    );
+    const count = runtimeLoopTransferOutputs.length - offset;
+    if (count > 0) {
+      runtimeLoopTransferSegments.push({ rowIndex: -1, offset, count });
     }
   }
   const runtimeLoopTrailingSegments: Array<
@@ -864,12 +764,6 @@ export async function loadCreateBuilderDynamicChunks(
       abiEntryLoopWrites: abiFunction?.entryLoopWrites,
       entryAbiFunction: entryAbiFunction?.name,
       effectiveEntryLoopWrites: entryAbiFunction?.entryLoopWrites,
-      delegateRouteAbi: delegateRouteAbi?.name,
-      delegateRouteEntryLoopWrites: delegateRouteAbi?.entryLoopWrites,
-      selectedRouteHandlers: [...(entryRouteRows ?? []), ...(delegateRouteRows ?? [])]
-        .map((row) => row.handler.name),
-      selectedRouteEntryLoopWrites: selectedRouteLoopMetadata.entryLoopWrites,
-      delegateStateCategoryId,
       entryAccesses: entryAccesses?.length ?? 0,
       orderedLoopCollections,
       runtimeLoopEntrySegments,
@@ -896,6 +790,5 @@ export async function loadCreateBuilderDynamicChunks(
     runtimeLoopEventOutputs,
     runtimeLoopTransferOutputs,
     runtimeLoopTrailingSegments,
-    delegateRouteGroup,
   };
 }

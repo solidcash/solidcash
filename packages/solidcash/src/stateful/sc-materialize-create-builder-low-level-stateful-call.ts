@@ -100,8 +100,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   } = params;
   let preparedAtomicNodes = params.preparedAtomicNodes;
 
-  const compilerDelegateRoute = callInfo.directCall !== undefined;
-  const bState = callInfo.contract.inner.artifact.delegateOnly || compilerDelegateRoute
+  const bState = callInfo.contract.inner.artifact.delegateOnly
     ? await host.getMasterOnlyState(callInfo.contract)
     : await host.getFullState(callInfo.contract);
   const bStateLayout = callInfo.contract.inner.stateLayout!;
@@ -114,7 +113,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   }
 
   // Include all data NFTs
-  const bRequiredNftIndices = callInfo.contract.inner.artifact.delegateOnly || compilerDelegateRoute
+  const bRequiredNftIndices = callInfo.contract.inner.artifact.delegateOnly
     ? []
     : Array.from({ length: bStateLayout.dataNftCount }, (_, idx) => idx);
   const bDataNfts: UnlockableUtxo[] = [];
@@ -137,19 +136,16 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     masterUtxo: bState.masterUtxo,
     dataNftUtxos: bDataNfts,
     requiredDataNftIndices: bRequiredNftIndices,
-    functionName: callInfo.directCall?.abiFunction.name ?? callInfo.functionName,
-    functionArgs: callInfo.directCall?.args ?? callInfo.args,
+    functionName: callInfo.functionName,
+    functionArgs: callInfo.args,
     externalContract: callInfo.contract,
-    callMode,
+    callMode: callMode as ExternalCallUtxoGroup['callMode'],
     ...(callMode !== 'delegatecall' && { edgeLowLevelCallIndex: callIndex }),
-    ...(callInfo.directCall && { directCall: callInfo.directCall }),
-    ...((callInfo.directCall?.abiFunction.blockLayout
-    ?? (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
-      .find((fn) => fn.name === callInfo.functionName)?.blockLayout)
+    ...((callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
+      .find((fn) => fn.name === callInfo.functionName)?.blockLayout
     && {
-      blockLayout: callInfo.directCall?.abiFunction.blockLayout
-        ?? (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
-          .find((fn) => fn.name === callInfo.functionName)?.blockLayout,
+      blockLayout: (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
+        .find((fn) => fn.name === callInfo.functionName)?.blockLayout,
     }),
   });
   groupProxyMasterIndices.push(callInfo.proxyMasterIndex ?? 0);
@@ -174,8 +170,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
 
   const delegateGroupIndex = lowLevelCallUtxoGroups.length - 1;
   const delegateAbi = callInfo.contract.inner.artifact.abi as readonly AbiFunction[];
-  let delegateFn = callInfo.directCall?.abiFunction
-  ?? delegateAbi.find((f) => f.name === callInfo.functionName);
+  let delegateFn = delegateAbi.find((f) => f.name === callInfo.functionName);
   let promotedDelegateOwnerFrame: ReturnType<
   typeof resolvePreparedDelegateOwnerFrame
   > | undefined;
@@ -239,8 +234,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   }
   const publishedNestedExternalCalls: ExternalCallAbi[] = [...(delegateFn?.externalCalls ?? [])];
   // Nested argSources.paramIndex is the logical Solidity function's visible parameter
-  // list (a dynamic-array argument can be third). A compiler-owned route stores [blob, ...witnesses]
-  // on the LLC, so reading callInfo.args[3] is not the tags array.
+  // list (a dynamic-array argument can be third).
   const delegateVisibleCount = (delegateFn?.inputs ?? []).filter(
     (input: any) => !input.name.startsWith('__internal__'),
   ).length;
@@ -251,7 +245,6 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       functionName === delegateFn?.name ? args : undefined,
       named,
       callInfo.args,
-      callInfo.directCall?.args,
     ];
     for (const candidate of candidates) {
       if (candidate && candidate.length === delegateVisibleCount) return candidate;
@@ -344,7 +337,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       if (rejected) continue;
     }
     if (!nested.condition) {
-      if (nested.conditionUnpublished === true && !compilerDelegateRoute) refuseUndecided(nested);
+      if (nested.conditionUnpublished === true) refuseUndecided(nested);
       // Older artifacts and control-flow shapes not yet expressible by ExternalCallExpression retain
       // the existing covenant-driven occurrence handling. Never infer inactivity from a missing guard.
       nestedExternalCalls.push(nested);

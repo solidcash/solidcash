@@ -53,10 +53,8 @@ export function deriveFullPhase1ProgressiveEntries(
   debugTargetDerivation: boolean,
 ): void {
   if (group.blockLayout && group.blockInputs) {
-    const bEntryMap = group.directCall
-      ? new Map<number, string>()
-      : extractCommitmentMapFromTrace(fullTrace,
-        { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
+    const bEntryMap = extractCommitmentMapFromTrace(fullTrace,
+      { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
     if (debugTargetDerivation && group.functionName === 'approve') {
       console.error('approve-entry-map', {
         bOutputBase,
@@ -73,8 +71,7 @@ export function deriveFullPhase1ProgressiveEntries(
     let entryTrace = fullTrace;
     let entryTransaction = transaction;
     const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
-    const requiresFreshEntryProbe = group.directCall !== undefined
-      || group.delegateEmbeddedInBlock === true || valueChunkWitness !== undefined
+    const requiresFreshEntryProbe = group.delegateEmbeddedInBlock === true || valueChunkWitness !== undefined
       || (entrySlotCount > 0 && group.requiredDataNftIndices.length > 0);
     if (requiresFreshEntryProbe) {
       const entryProbe = stb.build();
@@ -162,10 +159,9 @@ export function deriveFullPhase1ProgressiveEntries(
         ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
       const delegateImplIndex = group.delegateCallGroupIndex === undefined
         ? -1 : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
-      const delegateImplFn = delegateLlc?.directCall?.abiFunction
-        ?? delegateLlc?.externalContract?.inner.artifact.abi.find(
-          (candidate: AbiFunction) => candidate.name === delegateLlc.functionName,
-        );
+      const delegateImplFn = delegateLlc?.externalContract?.inner.artifact.abi.find(
+        (candidate: AbiFunction) => candidate.name === delegateLlc.functionName,
+      );
       for (const [outputIndex, commitment] of revealed) {
         const previous = bEntryMap.get(outputIndex);
         if (hexToBin(commitment).length < 64 || /^0+$/.test(commitment)) continue;
@@ -239,10 +235,9 @@ export function deriveFullPhase1ProgressiveEntries(
     }
     if (group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined) {
       const delegateGroup = stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
-      const delegateFn = delegateGroup?.directCall?.abiFunction
-        ?? delegateGroup?.externalContract.inner.artifact.abi.find(
-          (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
-        );
+      const delegateFn = delegateGroup?.externalContract.inner.artifact.abi.find(
+        (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
+      );
       const witnessInput = delegateFn?.inputs.find((input: { name: string }) =>
         /^__internal__valueWitness_\d+$/.test(input.name));
       const witnessSlot = Number(witnessInput?.name.match(/\d+$/)?.[0] ?? -1);
@@ -310,7 +305,6 @@ export function deriveFullPhase1ProgressiveEntries(
       }
       const currentWitness = witnessInput
         ? delegateGroup?.internalArgs?.[witnessInput.name]
-          ?? delegateGroup?.directCall?.internalArgs?.[witnessInput.name]
         : undefined;
       if (currentWitness instanceof Uint8Array && currentWitness.length > 60
         && isCompleteCollectionValue(currentWitness, witnessValueType, witnessLayout?.structs)) {
@@ -361,23 +355,20 @@ export function deriveFullPhase1ProgressiveEntries(
       // offset. A shared-proof P' also changes nextKey at the proof co-spend output; that is
       // not a trailing INSERT. Treating it as one clones the collection lock past blockSize
       // and fails the output-cardinality EQUALVERIFY (expected 2, got 3).
-      const trailingCountRaw = group.internalArgs?.__internal__vmapBatchTrailingCount
-        ?? group.directCall?.internalArgs?.__internal__vmapBatchTrailingCount;
+      const trailingCountRaw = group.internalArgs?.__internal__vmapBatchTrailingCount;
       const trailingCount = typeof trailingCountRaw === 'bigint' ? Number(trailingCountRaw)
         : typeof trailingCountRaw === 'number' ? trailingCountRaw
           : typeof trailingCountRaw === 'string' && trailingCountRaw !== ''
             ? Number(trailingCountRaw)
             : -1;
-      const abiFn = group.directCall?.abiFunction
-        ?? (group.externalContract?.inner?.artifact?.abi as {
-          name?: string; sortedBatchInfo?: Array<{ linear?: boolean }>;
-        }[] | undefined)
-          ?.find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
+      const abiFn = (group.externalContract?.inner?.artifact?.abi as {
+        name?: string; sortedBatchInfo?: Array<{ linear?: boolean }>;
+      }[] | undefined)
+        ?.find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
       const linearInBlock = (abiFn?.sortedBatchInfo?.some((batch) => batch.linear === true) ?? false)
         && trailingCount === 0;
       if (inCommit && inCommit.length >= 128 && commit.length >= 128
         && inCommit.slice(64, 128) !== commit.slice(64, 128)
-        && (!group.directCall || plannedIndex >= 0)
         && !(linearInBlock && plannedIndex < 0)) {
         const handle = plannedIndex >= 0
           ? group.plannedEntryInsertHandles![plannedIndex]

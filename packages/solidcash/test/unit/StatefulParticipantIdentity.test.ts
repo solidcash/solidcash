@@ -44,11 +44,6 @@ function group(name: string, abi: AbiFunction): ExternalCallUtxoGroup {
     functionName: name,
     functionArgs: [],
     externalContract: { inner: { artifact } },
-    directCall: {
-      abiFunction: abi,
-      selector: new Uint8Array(4),
-      args: [],
-    },
   };
 }
 
@@ -95,7 +90,7 @@ describe('compiler-owned participant identity', () => {
     let proxyRefreshes = 0;
     proxy.refreshInternalArgs = () => { proxyRefreshes += 1; };
 
-    const implementation = group('appendNotice', {
+    const implementationAbi = {
       name: 'appendNotice', selector: 'a826ee9c',
       inputs: [
         { name: 'value', type: 'bytes32' },
@@ -103,7 +98,9 @@ describe('compiler-owned participant identity', () => {
         { name: '__internal__proxyMasterIndex', type: 'int' },
       ],
       outputs: [], writesState: true,
-    } as AbiFunction);
+    } as AbiFunction;
+    const implementation = group('appendNotice', implementationAbi);
+    implementation.masterUtxo = { unlocker: { abiFunction: implementationAbi } } as never;
     let implementationBase: bigint | undefined;
     implementation.refreshInternalArgs = (updates) => {
       implementationBase = updates.__internal__valueChunkOutputBase;

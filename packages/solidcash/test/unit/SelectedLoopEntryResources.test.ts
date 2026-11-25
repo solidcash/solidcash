@@ -15,12 +15,10 @@ async function plan(
   }, {
     dynamicVarInfos: [], dynamicChunkVars: [], valueChunkGc: [], onChainState: {} as never,
     stateLayout: { variables: [], collections: [] } as never, overrides: undefined,
-    abiFunction: abi, entryAbiFunction: abi, lowLevelCallUtxoGroups: [],
-    nestedDelegateProxyGroupByLowLevel: new Map(), batchPredCommitments: new Map(),
+    abiFunction: abi, entryAbiFunction: abi, lowLevelCallUtxoGroups: [], batchPredCommitments: new Map(),
     sortedLoopCommitments: new Map(), runtimeLoopDerivedCounts: new Map(), sortedInserts: [],
     args: [], entryArgs: [], finalArgs: [], eventDefs: [], runtimeEventNftLockingBytecodes: new Map(),
-    runtimeLoopEntrySegments: [], dynamicWrites: [], activeDynamicWrites: new Set(), externalCallUtxoGroups: [],
-    routeRowIndex: () => 0, selectedRowArgument: vi.fn(),
+    runtimeLoopEntrySegments: [], dynamicWrites: [], activeDynamicWrites: new Set(),
     entryNftLockingBytecodes: new Map(['unused', 'records', 'fixed', 'runtime', 'insert', 'local'].map((name) => [
       name, Uint8Array.of(0x51),
     ])),

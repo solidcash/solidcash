@@ -211,9 +211,8 @@ export function stripSurplusEmptyCollectionEntriesForHost(
 
 /** True when the callee settles this planned insert through its sorted batch transition. */
 function settlesInsertAsBatch(group: ExternalCallUtxoGroup, slotIndex: number | undefined): boolean {
-  const abi = group.directCall?.abiFunction
-    ?? (group.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
-      ?.find((candidate) => candidate.name === group.functionName);
+  const abi = (group.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
+    ?.find((candidate) => candidate.name === group.functionName);
   return abi?.sortedBatchInfo?.some((batch) => slotIndex === undefined || batch.slotIndices.includes(slotIndex))
     ?? false;
 }
@@ -258,7 +257,7 @@ export function reassertNestedSameIndexMutables(
     const predOut = `__internal__vmapBatchPredOut_${insert.slotIndex}`;
     const proof = `__internal__vmapBatchProof_${insert.slotIndex}`;
     const slot = `__internal__vmapBatchSlot_${insert.slotIndex}`;
-    const args = { ...group.directCall?.internalArgs, ...group.internalArgs };
+    const args = { ...group.internalArgs };
     // The shared-proof follower has PredOut=-1 and therefore no relative output
     // argument, but its NEW still belongs to the compiler's fixed batch slot.
     return group.relativeOutputInternalArgs?.includes(predOut) === true

@@ -247,14 +247,14 @@ describe('legacy planning heuristics isolation (item 1)', () => {
           { name: 'records', signature: 'records:mapping(int => Record[])', chunkableValue: true },
         ],
       },
-      directCall: { abiFunction: {
+      externalContract: { inner: { artifact: { abi: [{
         name: 'publishJobEvent',
         inputs: [], outputs: [],
         entryAccesses: [
           { collection: 'notices', operations: ['write'] },
           { collection: 'records', operations: ['write'] },
         ],
-      } },
+      }] } } },
     };
     const host = {
       externalCallUtxoGroups: [group],

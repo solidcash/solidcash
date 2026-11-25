@@ -80,7 +80,6 @@ export async function submitFinalTransaction(
       logicalFunctionArgs: group.logicalFunctionArgs,
       sharedGroupIndex: group.sharedGroupIndex,
       delegateCallGroupIndex: group.delegateCallGroupIndex,
-      route: group.directCall?.abiFunction.name,
       rows: [],
     })),
     lowLevel: host.lowLevelCallUtxoGroups.map((group, index) => ({
@@ -88,7 +87,6 @@ export async function submitFinalTransaction(
       functionName: group.functionName,
       logicalFunctionName: group.logicalFunctionName,
       functionArgs: group.functionArgs,
-      route: group.directCall?.abiFunction.name,
       rows: [],
     })),
   }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));

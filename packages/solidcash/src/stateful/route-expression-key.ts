@@ -364,10 +364,6 @@ export function argumentsForPhysicalAbiFrame<T>(parts: {
   physicalFunctionArgs: readonly T[];
   logicalFunctionName?: string;
   logicalFunctionArgs?: readonly T[];
-  directCall?: {
-    abiFunction: { name: string; inputs: readonly { name: string }[] };
-    args: readonly T[];
-  };
 }): readonly T[] {
   const visibleInputCount = parts.abiFunction?.inputs.filter(
     (input) => !input.name.startsWith('__internal__'),
@@ -377,10 +373,6 @@ export function argumentsForPhysicalAbiFrame<T>(parts: {
     && parts.logicalFunctionName === parts.abiFunction.name
     && logicalArgs.length === visibleInputCount) {
     return logicalArgs;
-  }
-  if (parts.abiFunction && parts.directCall
-    && parts.directCall.abiFunction === parts.abiFunction) {
-    return parts.directCall.args;
   }
   return parts.physicalFunctionArgs;
 }

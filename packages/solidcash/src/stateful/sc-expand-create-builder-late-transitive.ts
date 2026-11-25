@@ -152,7 +152,7 @@ export async function expandCreateBuilderLateTransitive(
     // argument resolution and route witness planning.
     const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
     const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
-    const selectedSelfAbi = !parent.directCall && logicalParentArtifact === logicalParentContract.inner.artifact
+    const selectedSelfAbi = logicalParentArtifact === logicalParentContract.inner.artifact
       ? logicalParentContract._resolveCallAbi?.(logicalParentFunctionName, logicalParentArgs) : undefined;
     const ordinarySelfIdentity = await resolveOrdinarySelfIdentity(logicalParentContract, selectedSelfAbi);
     const parentCallerIdentity = Object.freeze({
@@ -359,8 +359,7 @@ export async function expandCreateBuilderLateTransitive(
       const proxyCallee = 'implementation' in registeredCallee ? registeredCallee : undefined;
       const callee = (proxyCallee?.proxy ?? registeredCallee) as any;
       // Under predicates the compiler could not write down, no frame can decide whether the parent makes this call.
-      // A route route binds the rows it runs instead.
-      if (nested.conditionUnpublished === true && nested.condition === undefined && !parent.directCall) {
+      if (nested.conditionUnpublished === true && nested.condition === undefined) {
         const executing = (proxyCallee?.implementation ?? callee) as { inner?: { artifact?: { contractName?: string } } };
         throw undecidedLateCall(nested, executing.inner?.artifact?.contractName ?? nested.interfaceName);
       }
@@ -476,22 +475,17 @@ export async function expandCreateBuilderLateTransitive(
       const physicalOwnerFn = physicalOwner === undefined ? undefined
         : (physicalOwner.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === physicalOwner.functionName);
-      const physicalRouteCoversCall = selectedFn.selector !== undefined
-        && false;
       // Late graph expansion discovers callees of already-composed callees (A -> B -> C). If C's master
       // was provisionally owned by an earlier read or conditional alternative, the state-writing edge is
       // the physical transition which must execute. Apply the same ownership rule as direct composition:
       // repeated conditional alternatives selecting one handler keep their first carrier, while a distinct
-      // writer replaces an ordinary (non-routed) carrier. A route already owns all selectors it
-      // advertises and must not be dismantled here.
+      // writer replaces an ordinary (non-routed) carrier.
       const preserveConditionalOwner = nested.occurrence === 'conditional'
         && selectedFn.writesState === true
         && physicalOwnerFn?.selector === selectedFn.selector
         && physicalOwnerFn?.writesState === true;
       const retargetPhysicalOwner = physicalOwner !== undefined
         && selectedFn.writesState === true
-        && physicalOwner.directCall === undefined
-        && !physicalRouteCoversCall
         && !preserveConditionalOwner;
       const lateInternalArgs: Record<string, FunctionArgument> = {};
       const lateRelativeOutputInternalArgs = new Set<string>();

@@ -4,7 +4,6 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { FunctionBlockLayout } from '@solidcash/utils';
-import type { Contract } from '../Contract.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -12,9 +11,6 @@ import type { EntryNftInfo } from './external-call-utxo-group.js';
 import { reconcileDynamicChunkOutputWitnesses } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
 
 export interface FinalizeBuildStampHost {
-  readonly categoryId: string;
-  /** The contract whose master spends the root state; its lock binds the root's records. */
-  readonly rootStateContract: Contract | undefined;
   readonly composedParticipant: boolean;
   readonly allInputs: readonly UnlockableUtxo[];
   readonly entryNfts: readonly EntryNftInfo[];
@@ -97,7 +93,7 @@ export function finalizeBuildStamp(
   // output coordinate only after those insertions settle. Composed locals defer this to aggregate assembly,
   // which is the first phase that knows their transaction-global output prefix.
   const refreshedDynamicCarriers = host.composedParticipant ? [] : reconcileDynamicChunkOutputWitnesses(
-    host.externalCallUtxoGroups, host.lowLevelCallUtxoGroups, host.categoryId, builder, host.rootStateContract,
+    host.externalCallUtxoGroups, host.lowLevelCallUtxoGroups, builder,
   );
   if (refreshedDynamicCarriers.length > 0) {
     host.syncRefreshedCarrierMasters(builder, refreshedDynamicCarriers);

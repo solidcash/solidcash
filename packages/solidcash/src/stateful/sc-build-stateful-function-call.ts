@@ -9,7 +9,6 @@ import { addressToLockScript } from '../utils.js';
 import { peekBuildId } from './buildSequence.js';
 import { getDataNftAddress, getEntryNftAddress } from './covenant-helpers.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
-import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { preserveTransportedValueChunkWriteGeometry } from './sc-prepare-derive-full-value-chunk-writes.js';
@@ -24,11 +23,6 @@ import {
 } from './value-chunk-write-geometry.js';
 
 export interface BuildStatefulFunctionCallHost {
-  directCall?: {
-    abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
-    emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
-    logicalIdentity?: ResolvedLogicalIdentity;
-  };
   functionName?: string;
   /** The master input's nSequence (`setSequence`); only the ordinary stateful builder carries it. */
   sequenceOverride?: number;
@@ -75,7 +69,7 @@ export async function buildStatefulFunctionCall(
       }
     }
     const built = stb.build();
-    stb.bindMaterializedValueChunkWitnesses(built, host.directCall?.blockBase ?? 0);
+    stb.bindMaterializedValueChunkWitnesses(built);
     const composedBlockBase = stb.getComposedBlockBase();
     const compilerValueChunkWrites = resolveValueChunkWriteGeometry(
       stb.getValueChunkWriteDescriptors(),

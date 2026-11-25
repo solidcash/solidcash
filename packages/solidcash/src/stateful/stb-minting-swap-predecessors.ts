@@ -64,16 +64,14 @@ ScaledPreserveEmitHost,
   setRelocationFunderUtxos(next: UnlockableUtxo[]): void;
 }
 
-/** Route slot indices are physical; a selected handler's local ordinal is only a legacy fallback. */
+/** The entry access the selected handlers publish at a slot index. */
 export function physicalEntryAccessForSlot(
-  route: Pick<AbiFunction, 'entryAccesses'> | undefined,
   handlers: readonly Pick<AbiFunction, 'entryAccesses'>[],
   slotIndex: number,
 ): EntryAccessAbi | undefined {
   const atSlot = (fn: Pick<AbiFunction, 'entryAccesses'>): EntryAccessAbi | undefined =>
     fn.entryAccesses?.find((access, denseIndex) => access !== undefined
       && (access.slotIndex ?? denseIndex) === slotIndex);
-  if (route?.entryAccesses !== undefined) return atSlot(route);
   return handlers.map(atSlot).find((access) => access !== undefined);
 }
 
@@ -104,9 +102,7 @@ export function externalEntryLockingBytecode(
   ].filter((name): name is string => name !== undefined));
   const abiFunctions = artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
     .filter((candidate) => functionNames.has(candidate.name)));
-  const entryAccess = physicalEntryAccessForSlot(
-    group.directCall?.abiFunction, abiFunctions, slot.slotIndex ?? 0,
-  );
+  const entryAccess = physicalEntryAccessForSlot(abiFunctions, slot.slotIndex ?? 0);
   const collections = [group.stateLayout, ...artifacts.map((artifact) => artifact.stateLayout)]
     .flatMap((layout) => layout?.collections ?? [])
     .filter((collection, index, all) => all.findIndex((candidate) => (
@@ -117,8 +113,7 @@ export function externalEntryLockingBytecode(
       || candidate.signature === entryAccess.collection)
     // Interface artifacts can omit implementation entry-access metadata. A state layout with exactly one
     // collection still identifies an entry slot without ambiguity; refuse to guess when several exist.
-    : group.directCall?.abiFunction?.entryAccesses === undefined && collections.length === 1
-      ? collections[0] : undefined;
+    : collections.length === 1 ? collections[0] : undefined;
   const owner = group.logicalContract?.inner ?? group.externalContract?.inner;
   return collection?.signature ? scriptToLockingBytecode(
     buildEntryNftCovenantScript(

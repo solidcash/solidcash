@@ -1,25 +1,8 @@
 /**
- * Route-resource selection helpers used by the create-builder and external-call planners.
- *
- * A direct call selects no route rows, so the published metadata is the entry's own.
+ * Coordinate helpers for an implementation block embedded after a proxy's state prefix.
  */
 
-import type { AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-
-export function selectedRouteResourceMetadata(
-  _rows: readonly { handler: AbiFunction }[] | undefined,
-): {
-    entryLoopWrites: readonly string[];
-    entryLoopWriteSignatures: Readonly<Record<string, string>>;
-    loopCollections: readonly string[];
-    dynamicReads: readonly string[];
-    dynamicWrites: readonly string[];
-  } {
-  return {
-    entryLoopWrites: [], entryLoopWriteSignatures: {}, loopCollections: [], dynamicReads: [], dynamicWrites: [],
-  };
-}
 
 /** Move route-owned dynamic inputs from executor-relative provisional slots to the owner's trailing band. */
 export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown }>(
@@ -47,18 +30,6 @@ export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown 
     anchored[shiftedSlot] = destination;
   }
   return anchored;
-}
-
-/** A route needs the physical entry ABI only when an actual wrapper entry point carries it. */
-export function directCallUsesPhysicalWrapper(
-  directCallSelector: Uint8Array | undefined,
-  physicalAbiFunction: AbiFunction | undefined,
-  effectiveAbiFunction: AbiFunction | undefined,
-): boolean {
-  return directCallSelector !== undefined
-    && physicalAbiFunction !== undefined
-    && effectiveAbiFunction !== undefined
-    && physicalAbiFunction !== effectiveAbiFunction;
 }
 
 /** Rebase route proof offsets when an implementation block is embedded after a proxy's state prefix. */

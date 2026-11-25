@@ -27,7 +27,7 @@ import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
-import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
+import { isScidIdentityCommitment, resolveLogicalIdentity } from './logical-identity.js';
 
 import { addressToLockScript, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode, tryCashAddressToLockScript } from '../utils.js';
 
@@ -35,7 +35,6 @@ import { SortedList, keyToSlotMulti, bytesToSlotValue, encodeEntryCommitment, de
 import { integerKey, type MappingKey } from './mapping-key-lookup.js';
 import { fillLeftCallArgumentWitnesses } from './call-record.js';
 import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './entry-journal-planning.js';
-import { directCallUsesPhysicalWrapper } from './route-resource-selection.js';
 import type { GraphEcrecoverCall } from './runtime-call-metadata.js';
 import { completeInternalFunctionArguments } from './internal-function-args.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
@@ -363,9 +362,6 @@ import {
   prepareDeriveFullValueChunkWrites as prepareDeriveFullValueChunkWritesImpl,
 } from './sc-prepare-derive-full-value-chunk-writes.js';
 import {
-  rebaseDeriveFullProbeDelegateWitnesses as rebaseDeriveFullProbeDelegateWitnessesImpl,
-} from './sc-rebase-derive-full-probe-delegate-witnesses.js';
-import {
   reconcileDeriveFullReturnWitnesses as reconcileDeriveFullReturnWitnessesImpl,
   rebindDeriveFullExternalResourceMaster as rebindDeriveFullExternalResourceMasterImpl,
 } from './sc-derive-full-return-witness-helpers.js';
@@ -409,7 +405,6 @@ import {
   deriveFullPhase2ApplyRuntimeLoop as deriveFullPhase2ApplyRuntimeLoopImpl,
 } from './sc-derive-full-phase2-apply-runtime-loop.js';
 import { traceRuntimeEffectStreamRuns } from './runtime-effect-stream-trace.js';
-import { deriveNestedStreamedEvents } from './nested-streamed-events.js';
 import {
   deriveFullPhase2ApplyValueChunks as deriveFullPhase2ApplyValueChunksImpl,
 } from './sc-derive-full-phase2-apply-value-chunks.js';
@@ -648,7 +643,6 @@ export async function memoizeGraphPlanningProducerResult(
 
 /** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
 export { materializeInternalFunctionArgument } from './entry-journal-planning.js';
-export { directCallUsesPhysicalWrapper } from './route-resource-selection.js';
 export type { GraphBlockhashSelection, GraphEcrecoverCall } from './runtime-call-metadata.js';
 
 /**
@@ -941,8 +935,6 @@ export type CallInfo = {
   contract: StatefulContract;
   functionName: string;
   args: FunctionArgument[];
-  /** Compiler-owned route selected for this physical callee (used by atomic delegate composition). */
-  directCall?: NonNullable<ExternalCallUtxoGroup['directCall']>;
   /** For delegatecall: the proxy's master input index in the transaction. Defaults to 0. */
   proxyMasterIndex?: number;
   /**
@@ -1411,12 +1403,10 @@ export function permitsRouteValueChunkDerivation(
   return true;
 }
 
-/** The exact ABI body carried by a physical participant. Routes outrank source-level names because
- * overloads and shared participants can execute a different body than the logical call which introduced them. */
+/** The ABI body carried by a physical participant. */
 function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
-  return group.directCall?.abiFunction
-    ?? (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
-      ?.find((candidate) => candidate.name === group.functionName);
+  return (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
+    ?.find((candidate) => candidate.name === group.functionName);
 }
 
 function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean {
@@ -1443,7 +1433,7 @@ export function computedStateWriterGroupIndex(
   }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
-    const name = groups[index]?.directCall?.abiFunction.name ?? groups[index]?.functionName;
+    const name = groups[index]?.functionName;
     return name === 'transferFrom' || name === 'transfer' || name === 'approve';
   });
 }
@@ -1488,8 +1478,7 @@ export function describeValueChunkWrites(
   stateOwnerCategoryId?: string,
 ): ValueChunkWriteDescriptor[] {
   const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-  const abiFunction = group.directCall?.abiFunction
-    ?? artifact?.abi.find((candidate) => candidate.name === group.functionName);
+  const abiFunction = artifact?.abi.find((candidate) => candidate.name === group.functionName);
   if (!abiFunction) return [];
   const layout = abiFunction.blockLayout ?? group.blockLayout;
   if (!layout) return [];
@@ -2799,7 +2788,6 @@ type PhysicalSelectorGroup = {
   sharedGroupIndex?: number;
   delegateCallGroupIndex?: number;
   functionName: string;
-  directCall?: { selector: Uint8Array };
   externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
 };
 
@@ -2850,7 +2838,6 @@ export function physicalExternalCallSelectorHex(
   const delegate = physical.delegateCallGroupIndex === undefined
     ? undefined : delegateGroups[physical.delegateCallGroupIndex];
   const selected = delegate ?? physical;
-  if (selected.directCall?.selector) return binToHex(selected.directCall.selector);
   return selected.externalContract.inner.artifact.abi
     .find((candidate) => candidate.name === selected.functionName)?.selector;
 }
@@ -5525,11 +5512,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       persistWidthAtEntry,
     } = prepareDeriveFullValueChunkWritesImpl(stb);
 
-    // Atomic participant extraction evaluates a routed delegate in a transaction-local coordinate
-    // system before embedding that participant in the final graph. Temporarily rebase proxy identity witnesses.
-    const {
-      probeDelegate, restoreProbeWitnesses,
-    } = rebaseDeriveFullProbeDelegateWitnessesImpl(stb, delegatecallInputIndex, debugTargetDerivation);
     try {
       // Wrap the entire derivation body so any error becomes AutoDerivationError.
       // This cleanly separates derivation failures from programming bugs.
@@ -5619,9 +5601,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const group = externalCallUtxoGroups[groupIdx];
           const ec = externalCalls[groupIdx];
           if (group.sharedGroupIndex !== undefined) continue;
-          // Lifted emits execute before the route's final data-NFT settlement. Fill their probe records first
-          // so Phase 1 can reach and authenticate the callee's final state commitment.
-          await deriveNestedStreamedEvents(this.inner.provider, stb, group, groupIdx);
           const phase1Front = deriveFullPhase1GroupFrontImpl(
             {
               categoryId: this.categoryId,
@@ -5654,7 +5633,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             valueChunkWitness, debugTargetDerivation,
           );
 
-          await deriveNestedStreamedEvents(this.inner.provider, stb, group, groupIdx);
           deriveFullPhase1ReturnAndEventsImpl(
             { inner: this.inner as any },
             stb, externalCallUtxoGroups, group, groupIdx, externalCalls, ec?.hasReturnValues,
@@ -6394,10 +6372,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const logicalFunctionNames = [
             executedUnlocker?.abiFunction?.name,
             ...stb.getLowLevelCallUtxoGroups().flatMap((group) => [
-              group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name,
+              group.logicalFunctionName, group.functionName,
             ]),
             ...stb.getExternalCallUtxoGroups().flatMap((group) => [
-              group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name,
+              group.logicalFunctionName, group.functionName,
             ]),
           ].filter((name): name is string => !!name);
           const activeInstructions = (lastStep as {
@@ -6537,11 +6515,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Wrap unexpected errors from the derivation try-body as AutoDerivationError
       // so that callers get a consistent error type for derivation failures.
       throw e;
-    } finally {
-      if (probeDelegate?.refreshInternalArgs && Object.keys(restoreProbeWitnesses).length > 0) {
-        probeDelegate.refreshInternalArgs(restoreProbeWitnesses, { shiftPredOut: false });
-        stb._refreshInputs();
-      }
     }
   }
 
@@ -6607,20 +6580,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /** Validate one Solidity-visible ABI frame without starting provider, state, or route work. */
-  _validateAbiFrame(
-    abiFunction: AbiFunction,
-    args: FunctionArgument[],
-    options: { implicitMsgSenderCategory?: boolean } = {},
-  ): FunctionArgument[] {
+  _validateAbiFrame(abiFunction: AbiFunction, args: FunctionArgument[]): FunctionArgument[] {
     const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
-    // A direct compiler-owned batch route may carry other physical witnesses while leaving only its caller
-    // category for the builder to derive. Keep those supplied witnesses aligned with their actual ABI slots.
-    const implicitCallerInputs = options.implicitMsgSenderCategory
-      && false
-      && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')
-      ? abiFunction.inputs.filter((input) => input.name !== '__internal__msgSenderCategory') : undefined;
-    if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length
-      && args.length !== implicitCallerInputs?.length) {
+    if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length) {
       throw new Error(
         `Incorrect number of arguments passed to function ${abiFunction.name}. `
         + `Expected ${visibleInputs.length} arguments (${visibleInputs.map((input) => input.type)}) `
@@ -6630,8 +6592,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // A caller normally supplies the compact visible frame. Contract.createUnlocker also accepts a complete
     // physical frame, so retain exact ABI indices when that form is used; internal parameters need not be a
     // suffix.
-    const frameInputs = args.length === abiFunction.inputs.length ? abiFunction.inputs
-      : args.length === implicitCallerInputs?.length ? implicitCallerInputs : visibleInputs;
+    const frameInputs = args.length === abiFunction.inputs.length ? abiFunction.inputs : visibleInputs;
     const normalized = args.map((arg, index) => {
       // Imported Solidity callers may pass a native signer address where an EVM caller supplied its
       // hexadecimal identity as bytes. Normalize that identity before validation and retain the result
@@ -6720,7 +6681,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
       returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
-      directCallSelector?: Uint8Array;
       signerUtxos?: Utxo[];
       logicalIdentity?: Awaited<ReturnType<typeof resolveLogicalIdentity>>;
       /** Absolute base when this local balanced block is concatenated after another participant. */
@@ -6742,9 +6702,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (refusal !== undefined) throw new Error(`${refusedName} is refused by the compiler: ${refusal.reason}`);
     // Stateful derivation can copy a supplied value into a larger state/row blob. Validate first so an invalid
     // bytesN reports its ABI error rather than an incidental PUSHDATA limit reached by that derived blob.
-    if (abiFunction) args = this._validateAbiFrame(abiFunction, args, {
-      implicitMsgSenderCategory: overrides?.directCallSelector !== undefined,
-    });
+    if (abiFunction) args = this._validateAbiFrame(abiFunction, args);
     const valueChunkWriteStagingSession = new ValueChunkWriteStagingSession();
     const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
@@ -6816,8 +6774,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const logicalCreateLock = storedLogicalLock !== undefined
       && binToHex(storedLogicalLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase()
       ? storedLogicalLock : undefined;
-    const authenticatesOwnSelf = usesOrdinarySelfIdentity(abiFunction)
-      && !directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction);
+    const authenticatesOwnSelf = usesOrdinarySelfIdentity(abiFunction);
     const publicSelfAddress = authenticatesOwnSelf && logicalCreateLock !== undefined
       ? logicalCreateLock : authenticatedSelfAddress;
     // The identity a CHILD callee observes as `msg.sender` (anchor witness and msg.sender-keyed entries). A plain
@@ -6918,7 +6875,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryAbiFunction,
       entryArtifact,
       entryArgs,
-      entryDirectCall,
     } = resolveCreateBuilderEntryAbiImpl(
       abiFunction,
       args,
@@ -9157,13 +9113,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
             if (completePushIndex >= 0) {
               if (entryAbiFunction === abiFunction) finalArgs[completePushIndex] = resolvedWholeValue;
-              if (entryDirectCall) {
-                const name = entryAbiFunction!.inputs[completePushIndex]!.name;
-                entryDirectCall.internalArgs = {
-                  ...entryDirectCall.internalArgs,
-                  [name]: resolvedWholeValue,
-                };
-              }
             }
             // The complete vmap node is known exactly. Batch verification authenticates the transition as a whole,
             // so generic OTC trace extraction can otherwise replace this value-bearing node with a structural
@@ -9507,38 +9456,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const loopAbiFunction = upsertFrame.abiFunction;
       const loopArgs = upsertFrame.args;
       const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
-        if (upsertFrame.routed) {
-          const input = loopAbiFunction.inputs[index];
-          if (!input?.name.startsWith('__internal__')) {
-            throw new Error(
-              `Batch runtime loop in '${loopAbiFunction.name}' requires public argument reordering; `
-              + 'split this invocation into an order already accepted by the collection topology.',
-            );
-          }
-          const mutableInternal = upsertFrame.row!.internalArgs as Record<string, FunctionArgument>;
-          mutableInternal[input.name] = value;
-          const routeIndex = entryAbiFunction!.inputs.findIndex((candidate) => candidate.name === input.name);
-          if (routeIndex < 0) {
-            throw new Error(`Batch route is missing compiler-owned loop argument '${input.name}'`);
-          }
-          const rowIndex = routeRowIndex(upsertFrame.row!);
-          if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
-          const current = entryArgs[routeIndex];
-          const routeValue = Array.isArray(current) ? [...current] : [];
-          while (routeValue.length <= rowIndex) routeValue.push([]);
-          routeValue[rowIndex] = value;
-          entryArgs[routeIndex] = routeValue;
-          if (entryDirectCall) {
-            entryDirectCall.internalArgs = {
-              ...entryDirectCall.internalArgs,
-              [input.name]: routeValue,
-            };
-          } else {
-            args[routeIndex] = routeValue;
-            finalArgs[routeIndex] = routeValue;
-          }
-          return;
-        }
         loopArgs[index] = value;
         finalArgs[index] = value;
       };
@@ -10596,27 +10513,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           continue;
         }
         const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
-          if (!upsertFrame.routed) {
-            upsertFrame.args[index] = value;
-            // A promoted delegate entry encodes its own frame from entryArgs by name; the outer forwarder's
-            // arguments must keep their own ABI shape.
-            if (entryAbiFunction === abiFunction) finalArgs[index] = value;
-            return;
-          }
-          const input = upsertFrame.abiFunction.inputs[index];
-          const mutableInternal = upsertFrame.row!.internalArgs as Record<string, FunctionArgument>;
-          mutableInternal[input.name] = value;
-          const routeIndex = entryAbiFunction!.inputs.findIndex((candidate) => candidate.name === input.name);
-          if (routeIndex < 0) throw new Error(
-            `Batch route is missing compiler-owned loop argument '${input.name}'`,
-          );
-          entryArgs[routeIndex] = value;
-          if (entryDirectCall) {
-            entryDirectCall.internalArgs = { ...entryDirectCall.internalArgs, [input.name]: value };
-          } else {
-            args[routeIndex] = value;
-            finalArgs[routeIndex] = value;
-          }
+          upsertFrame.args[index] = value;
+          // A promoted delegate entry encodes its own frame from entryArgs by name; the outer forwarder's
+          // arguments must keep their own ABI shape.
+          if (entryAbiFunction === abiFunction) finalArgs[index] = value;
         };
         replaceLoopArgument(inputIndex, BigInt(cardinality.inputs));
         replaceLoopArgument(outputIndex, BigInt(cardinality.outputs));
@@ -10873,9 +10773,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         rootOwned: !nestedDelegateProxyGroupByLowLevel.has(groupIndex),
         reader: group.externalContract.inner,
         callMode: group.callMode,
-        abiFunction: group.directCall?.abiFunction
-          ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-            .find((candidate) => candidate.name === group.functionName),
+        abiFunction: (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === group.functionName),
       })));
     const nestedBlockOraclePools = new Set<string>();
     for (const group of externalCallUtxoGroups) {
@@ -11107,22 +11006,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && physicalAbiFunction.blockLayout?.slots.some((slot) => slot.kind === 'lowLevelCall') === true;
       const authenticatedDelegateGroup = activeDelegateGroupIndex === undefined
         ? undefined : lowLevelCallUtxoGroups[activeDelegateGroupIndex];
-      const directCallDelegate = authenticatedDelegateGroup?.directCall?.abiFunction.blockLayout
-        ? authenticatedDelegateGroup
-        : lowLevelCallUtxoGroups.find(
-          (g, groupIndex) => g.callMode === 'delegatecall'
-            && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
-            && g.directCall?.abiFunction.blockLayout,
-        );
-      const directCallDelegateLayout = directCallDelegate?.directCall?.abiFunction.blockLayout
-        ?? (physicalAbiFunction?.delegateForwarding || physicalDelegateCarrierOwnsCallSlot
-          ? undefined
-          : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel));
+      const directCallDelegateLayout = physicalAbiFunction?.delegateForwarding || physicalDelegateCarrierOwnsCallSlot
+        ? undefined
+        : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel);
       timing('delegate-route-selected');
       lowLevelCallInputBase = directCallDelegateLayout
-        // A compiler-owned route executes against the proxy's state, but its entry/proof resources still occupy
-        // the complete balanced route block rooted at the proxy master. As for nested proxies, the implementation
-        // follows that physical block; placing it after only the proxy data NFTs overwrites route slot 3.
+        // The delegate executes against the proxy's state, but its resources occupy the complete balanced block
+        // rooted at the proxy master. As for nested proxies, the implementation follows that physical block.
         ? directCallDelegateLayout.blockSize
         : hasDelegatecallGroup
         // Delegate bytecode binds its proxy-master witness to the physical relation
@@ -11134,12 +11024,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && !nestedDelegateProxyGroupByLowLevel.has(groupIndex))
         .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
       const hasNestedDelegate = delegateInputCount > 0;
-      const legacyRouteDelegate = authenticatedDelegateGroup ?? directCallDelegate ?? lowLevelCallUtxoGroups.find(
+      const legacyRouteDelegate = authenticatedDelegateGroup ?? lowLevelCallUtxoGroups.find(
         (group) => group.callMode === 'delegatecall' && group.externalContract,
       );
-      const legacyRouteDelegateFn = legacyRouteDelegate?.directCall?.abiFunction
-        ?? (legacyRouteDelegate?.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
-          ?.find((candidate) => candidate.name === legacyRouteDelegate?.functionName);
+      const legacyRouteDelegateFn = (legacyRouteDelegate?.externalContract?.inner.artifact.abi as
+        readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === legacyRouteDelegate?.functionName);
       const legacyRouteTrailingBase = legacyRouteDelegateFn?.blockLayout?.trailingBase
         ?? legacyRouteDelegateFn?.blockLayout?.blockSize;
       const delegatedLoopCollections = new Set([
@@ -11226,7 +11115,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             plannedInserts: group.plannedEntryInserts,
             predecessorOutputs: group.batchPredecessorOutputs,
             internalArgs: Object.fromEntries(Object.entries({
-              ...group.directCall?.internalArgs,
               ...group.internalArgs,
             }).filter(([name]) => name.includes('vmapBatch')).map(([name, value]) => [
               name,
@@ -11443,13 +11331,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       {
         functionName,
         abiFunction,
-        physicalAbiFunction,
         finalArgs,
-        args,
         activeDelegateGroupIndex,
         delegateInputArgumentIndex,
         lowLevelCallUtxoGroups,
-        lowLevelCallInputBase,
         filteredDataNftUtxos,
         overrides,
       },
@@ -11476,7 +11361,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const rootOracleReader = selectRootOracleReader();
     const oracleDelegate = rootOracleReader?.delegateIndex === undefined
       ? undefined : lowLevelCallUtxoGroups[rootOracleReader.delegateIndex];
-    delegateBlockInfoOracle = oracleDelegate !== undefined && oracleDelegate.directCall === undefined;
+    delegateBlockInfoOracle = oracleDelegate !== undefined;
     if (rootOracleReader !== undefined) {
       const { reader } = rootOracleReader;
       const pool = reader.oraclePool;
@@ -11590,9 +11475,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // every ordinary journal handler and incorrectly moves its fixed compute slots behind the owner block.
       const ecrecoverExecutingGroup = ecrecoverAbiFunction !== abiFunction
         ? lowLevelCallUtxoGroups.find((group) => (
-          group.callMode === 'delegatecall'
-          && (group.directCall?.abiFunction === ecrecoverAbiFunction
-            || group.functionName === ecrecoverAbiFunction.name)
+          group.callMode === 'delegatecall' && group.functionName === ecrecoverAbiFunction.name
         ))
         : undefined;
       const delegatedEcrecover = ecrecoverExecutingGroup !== undefined;
@@ -11712,7 +11595,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // side-cars, with the witness naming them there as the build encodes it, so a read made before the loop
       // reaches them. The probe's master is input 0.
       const readChunks = readChunksFollowKeccakSideCars(abiFunction) && dynamicReadChunkInputs.length > 0
-        && topLevelDynamicChunkArgumentIndex >= 0 && overrides?.directCallSelector === undefined
+        && topLevelDynamicChunkArgumentIndex >= 0
         ? keccakLoopReadSuccessors(dynamicReadChunkInputs, (firstInputIndex) => {
           const witness = finalArgs[topLevelDynamicChunkArgumentIndex];
           finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(firstInputIndex, 0, false);
@@ -11751,9 +11634,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ? abiFunction : entryAbiFunction!;
       const executingGroup = keccakAbiFunction !== abiFunction
         ? lowLevelCallUtxoGroups.find((group) => (
-          group.callMode === 'delegatecall'
-          && (group.directCall?.abiFunction === keccakAbiFunction
-            || group.functionName === keccakAbiFunction.name)
+          group.callMode === 'delegatecall' && group.functionName === keccakAbiFunction.name
         ))
         : undefined;
       const delegatedKeccak = executingGroup !== undefined;
@@ -11885,14 +11766,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const delegateDynamicWrites = new Set<string>();
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
-      const gFn = g.directCall?.abiFunction ?? (g.externalContract.inner.artifact.abi as readonly {
+      const gFn = (g.externalContract.inner.artifact.abi as readonly {
         name: string;
         dynamicWrites?: readonly string[];
       }[]).find((f) => f.name === g.functionName);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_INPUTS === '1') {
         console.error('delegate-dynamic-write-source', {
           groupFunction: g.functionName,
-          routeFunction: g.directCall?.abiFunction.name,
           resolvedFunction: gFn?.name,
           writes: gFn?.dynamicWrites,
         });
@@ -11951,7 +11831,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction,
         entryAbiFunction,
         lowLevelCallUtxoGroups,
-        nestedDelegateProxyGroupByLowLevel,
         batchPredCommitments,
         sortedLoopCommitments,
         runtimeLoopDerivedCounts,
@@ -11965,14 +11844,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         executionSelfAddress,
         functionName,
         tokenContainers,
-        routeRowIndex,
-        selectedRowArgument,
         runtimeLoopEntrySegments,
         entryAccesses: abiFunction?.entryAccesses,
         dynamicWrites,
         activeDynamicWrites,
-        activeDelegateGroupIndex,
-        externalCallUtxoGroups,
         entryNftLockingBytecodes,
       },
     );
@@ -11984,7 +11859,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const runtimeLoopEventOutputs = dynamicChunks.runtimeLoopEventOutputs;
     const runtimeLoopTransferOutputs = dynamicChunks.runtimeLoopTransferOutputs;
     const runtimeLoopTrailingSegments = dynamicChunks.runtimeLoopTrailingSegments;
-    const delegateRouteGroup = dynamicChunks.delegateRouteGroup;
     // verified at proxyMaster+offset (emitMasterInputIndex=proxyMasterIndex), which is INSIDE the proxy's block -
     // so the proxy must reserve those output-only slots (funder input + event output), shifting the co-spent impl
     // UTXOs after them. __forward's own layout has none. Offsets align: proxy blockSize == impl master+dataNfts.
@@ -11995,7 +11869,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         setLogicalAddress: (address: string) => { this._logicalAddress = address; },
       },
       {
-        delegateRouteGroup,
         physicalAbiFunction,
         abiFunction,
         lowLevelCallUtxoGroups,
@@ -12043,7 +11916,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         finalArgs,
         abiFunction,
         entryAbiFunction,
-        physicalAbiFunction,
         functionName,
         effectiveBlockLayout,
         entryAccesses,
@@ -13163,11 +13035,8 @@ export class StatefulFunctionCall {
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
   private consumesLogicalNonce = true;
-  private directCall?: {
-    abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
-    emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
-    logicalIdentity?: ResolvedLogicalIdentity;
-  };
+  /** A call whose ABI function its creator fixes and whose return it emits: a creation's callee run (deployer). */
+  private directCall?: { abiFunction: AbiFunction; emitReturn?: boolean };
 
   private splitFundingConfig?: {
     utxos: Utxo[];
@@ -13190,11 +13059,7 @@ export class StatefulFunctionCall {
     parentContract?: StatefulContract,
     functionName?: string,
     functionArgs?: any[],
-    directCall?: {
-      abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
-      emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
-      logicalIdentity?: ResolvedLogicalIdentity;
-    },
+    directCall?: { abiFunction: AbiFunction; emitReturn?: boolean },
     private readonly functionSelector?: string,
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
@@ -13213,7 +13078,7 @@ export class StatefulFunctionCall {
     }
   }
 
-  /** Exact source ABI selected when this call was prepared (the route, when present, is physical). */
+  /** Exact source ABI selected when this call was prepared. */
   private _selectedAbiFunction(): AbiFunction | undefined {
     if (!this.parentContract || this.functionName === undefined) return undefined;
     if (this.functionSelector !== undefined) {
@@ -13452,26 +13317,6 @@ export class StatefulFunctionCall {
     return this;
   }
 
-  /** @internal Attach a compiler-owned delegate route while retaining the public proxy's physical state owner. */
-  _withDirectCallDelegatecall(
-    contract: StatefulContract,
-    directCall: NonNullable<ExternalCallUtxoGroup['directCall']>,
-  ): this {
-    this.callInfos.push({
-      type: 'stateful',
-      contract,
-      functionName: directCall.abiFunction.name,
-      args: directCall.args as FunctionArgument[],
-      directCall,
-      // The implementation frame this CallInfo later materializes executes for THIS call object's contract, so
-      // that contract's identity is the frame's caller - the authority its `msg.sender`-keyed mappings must hash.
-      ...(this.parentContract !== undefined && {
-        callerLockingBytecode: hexToBin(this.parentContract.inner.lockingBytecode),
-      }),
-    });
-    return this;
-  }
-
   /**
    * Convenience method for delegatecall: stores the implementation contract, function name,
    * and args as a low-level call. The proxy's fallback will receive the calldata automatically.
@@ -13689,7 +13534,6 @@ export class StatefulFunctionCall {
 
   async build(): Promise<TransactionBuilder> {
     const builder = await buildStatefulFunctionCallImpl({
-      directCall: this.directCall,
       functionName: this.functionName,
       sequenceOverride: this.sequenceOverride,
       parentContract: this.parentContract,
@@ -13981,7 +13825,7 @@ export class StatefulFunctionCall {
   }
 
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
-    // A route call is not the ordinary call path.
+    // A creation's callee run is not the ordinary call path.
     if (this.directCall === undefined && this.parentContract) {
       refuseOrdinarySelfdestructCall(this.parentContract.inner.artifact, this._selectedAbiFunction());
     }

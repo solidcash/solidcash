@@ -1,4 +1,4 @@
-import { type Type, PrimitiveType, AddressBytesType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type ConstructedKeyVectorV1Abi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import { type Type, PrimitiveType, AddressBytesType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 import type { AbiFunction, ExternalCallOrdinalAbi } from '@solidcash/utils';
 import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
@@ -457,54 +457,6 @@ export interface KernelJournalStreamPlan {
   readonly version: 1;
   readonly edges: readonly KernelJournalStreamPlanEdge[];
 }
-
-/**
- * Immutable, compiler-private proof that source control/data flow contains one exact read-to-set carrier family.
- * Collection and parameter ordinals deliberately replace source spellings. The concrete class is frozen and is
- * therefore shared (rather than structurally recopied) by `cloneNode`, keeping one authority across route clones.
- */
-export class KernelReadCarrierDiscoveryPlan {
-  readonly version = 1 as const;
-
-  constructor(
-    readonly digest: string,
-    readonly sourceCollectionOrdinal: number,
-    readonly destinationCollectionOrdinals: readonly number[],
-    readonly valueType: string,
-    readonly keyArity: number,
-    readonly executionCoordinate: readonly number[],
-    /** Canonical JSON using parameter/counter roles, never identifiers. */
-    readonly loopShape: string,
-    /** Canonical JSON for the complete mapping-key tuple. */
-    readonly keyShape: string,
-  ) {
-    Object.freeze(destinationCollectionOrdinals);
-    Object.freeze(executionCoordinate);
-    Object.freeze(this);
-  }
-}
-
-/** Late, completed-ABI confirmation of a source-owned carrier discovery. Never serialized or used as capability. */
-export class KernelReadCarrierAuthorization {
-  readonly version = 1 as const;
-
-  constructor(
-    readonly digest: string,
-    readonly discoveryDigest: string,
-    readonly selectorHex: string,
-    /** One digest per journal stream, ordered by its authenticated access-stream index. */
-    readonly streamDescriptorDigests: readonly string[],
-    readonly completedDescriptorDigest: string,
-  ) {
-    Object.freeze(streamDescriptorDigests);
-    Object.freeze(this);
-  }
-}
-
-/** Compiler-owned meaning of a parameter introduced while lowering a read-carrier loop. */
-export type KernelReadCarrierSyntheticParameterRole =
-  | 'counter-permutation'
-  | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
   /** A framed entry's top-level state writes, as its frame's own facts state them (`framedStateWrites`). */
@@ -1480,7 +1432,7 @@ export class BranchNode extends StatementNode {
   preserveConditionalEntryWrites?: boolean;
 
   /** Replayable source guard for a compiler-owned dirty-bit flush whose condition is otherwise opaque to the ABI. */
-  kernelEntryActivation?: ExternalCallExpression;
+  entryActivation?: ExternalCallExpression;
 
   /** IfConvertConditionalEntryOp kept this branch's one direct entry write; its access publishes the guarded value. */
   keepsGuardedEntryWrite?: boolean;
@@ -1840,7 +1792,7 @@ export class MappingAssignNode extends StatementNode implements Named {
   /** Function-local program point shared with external-call effects. */
   sourceEffectOrdinal?: number;
   /** Exact argument-only value of a cached final write on its replayable dirty arm. */
-  kernelValueSource?: { expression: string; parameters: string[] };
+  valueSource?: { expression: string; parameters: string[] };
   // A counter-loop general RMW (`m[i] = f(m[i], ...)`) replaces the same-entry read in `expression` with this
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.

@@ -9,13 +9,13 @@ export interface ExecutionContextEffectPlan {
   [key: string]: unknown;
 }
 
-export interface KernelExecutionContext {
+export interface JournalExecutionContext {
   activationEnv: Readonly<Record<string, unknown>>;
   [key: string]: unknown;
 }
 
 export interface ExecutionContextLifecycle {
-  getByJournalKey(key: string): KernelExecutionContext | undefined;
+  getByJournalKey(key: string): JournalExecutionContext | undefined;
   currentNestedScope(): number;
   getPhase(): string;
   pushNestedScope(): number;

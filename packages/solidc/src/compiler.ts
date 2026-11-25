@@ -2219,8 +2219,8 @@ function artifactCacheEnabled(
   if (internal.__attemptFailureBox || internal.__strictNoInternalRecovery) return false;
   // TODO(remove SOLIDC_COMPILE_CACHE): the compile task now passes `__artifactCache` by default, so this
   // variable is only a legacy switch plus the test harness's way in (`packages/solidcash/vitest.setup.ts` sets
-  // it, `DelegateInference` and `CompileCacheDisk` toggle it, `KernelGraphResultDependency` disables it with
-  // `'0'`). Migrate those to `__artifactCache` and a `--no-cache` task flag, then delete the boolean read here.
+  // it, and `DelegateInference` and `CompileCacheDisk` toggle it). Migrate those to `__artifactCache` and a
+  // `--no-cache` task flag, then delete the boolean read here.
   // `SOLIDC_COMPILE_CACHE_DIR`/`_MAX_ENTRIES`/`_BUILD_ID` are separate knobs and stay.
   const want = solidcEnvFlagEnabled('SOLIDC_COMPILE_CACHE') || options.__artifactCache === true;
   return want
@@ -5756,7 +5756,6 @@ function compileResolvedAst(
   mark('semantic');
   const singlePassVerifierProgram: undefined = undefined;
   const singlePassVerifierSource: undefined = undefined;
-  const verifierEnvelopeTransport: undefined = undefined;
   // B7.5/B7.4: classify the constructor, publish the facts, then require the two arms of A4.2.
   if (isDeployerProgram) {
     inspectDeployerConstructor(ast, mergedCompilerOptions as InternalCompilerOptions);

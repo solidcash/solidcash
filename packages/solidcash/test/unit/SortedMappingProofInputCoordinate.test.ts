@@ -113,11 +113,11 @@ describe('sorted mapping proof-input coordinate', () => {
     expect(calleeMasterIndex).toBeGreaterThan(proofInputIndex);
   });
 
-  // UPDATE of an already-present key + external call under the kernel compile profile used by the e2e settle.
-  // Plain `.send()` must keep the entry immediately after the caller's block (see KernelDirectSendExternalEntryOrder).
+  // UPDATE of an already-present key + external call under the stateful compile profile used by the e2e settle.
+  // Plain `.send()` must keep the entry immediately after the caller's block.
   it('verifies plain send for an existing-key mapping update with an external call', async () => {
     const provider = createTestProvider();
-    const kernel = {
+    const stateful = {
       forceStateful: true,
       suppressWarnings: true,
     } as const;
@@ -125,7 +125,7 @@ describe('sorted mapping proof-input coordinate', () => {
 contract Callee() {
   int count;
   function bump() public { this.count = this.count + 1; require(true); }
-}`, { ...kernel, evmCompat: false});
+}`, { ...stateful, evmCompat: false});
     const hostArtifact = compileString(`pragma solidcash >=0.8.0;
 interface ICallee { function bump() external; }
 contract Host() {
@@ -142,7 +142,7 @@ contract Host() {
     this.result = amount;
     require(true);
   }
-}`, { ...kernel, evmCompat: false });
+}`, { ...stateful, evmCompat: false });
     const calleeInner = new Contract(calleeArtifact, [], { provider });
     const hostInner = new Contract(hostArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(

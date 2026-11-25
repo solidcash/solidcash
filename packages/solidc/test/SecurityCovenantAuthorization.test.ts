@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
 const P = 'pragma solidcash ^0.52.0;';
-// Direct (non-kernel) compiles exercise the source-level covenant-authorization rules; the kernel lane manages
+// Direct compiles exercise the source-level covenant-authorization rules; the journal lane manages
 // lifecycle authority through its own signature policy and is covered separately.
 const direct = {} as const;
 // An upgradable contract keeps no record (CRYPTO-4 binds each to the master lock an upgrade leaves), so its upgrade

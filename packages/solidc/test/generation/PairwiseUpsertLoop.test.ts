@@ -4,7 +4,7 @@ import { compileString, compileStringMulti } from '../../src/compiler.js';
 // The SDK rewrites a sorted-mapping loop call's arrays - reordering a gap's new keys, merging a repeated key, netting
 // the sender's own credit out - to reach the order the covenant folds. That keeps the call's meaning only when each turn
 // is fixed by its own (key, value) pair, which the compiler publishes as `pairwise`, and `senderDebit` where each turn
-// first debits msg.sender by what it credits. Both are SDK guidance, which the kernel's stream digest skips.
+// first debits msg.sender by what it credits. Both are SDK guidance, which the journal's stream digest skips.
 const book = (body: string): string => `contract Book() { int seen; int last; mapping(int => int) bal;
   event Seen(int k, int v);
   function seed(int a, int v) { this.bal[a] = v; }

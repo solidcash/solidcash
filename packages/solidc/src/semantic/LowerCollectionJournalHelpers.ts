@@ -1178,7 +1178,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const cache = this.activeMultiCaches.get(target.fn);
     if (!cache) {
       throwJournalDiagnostic(
-        'KERNEL_INTERNAL_DEFECT',
+        'JOURNAL_INTERNAL_DEFECT',
         `Missing function-scoped collection journal for '${target.fn.name}'`,
         { gate: 'journal-function-scope-missing', handler: target.fn.name },
       );
@@ -1186,7 +1186,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const callLocals = cache!.calls.get(call);
     if (!callLocals) {
       throwJournalDiagnostic(
-        'KERNEL_INTERNAL_DEFECT',
+        'JOURNAL_INTERNAL_DEFECT',
         `Missing call-scoped collection journal for '${target.fn.name}'`,
         { gate: 'journal-call-scope-missing', handler: target.fn.name },
       );
@@ -1196,7 +1196,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const dynamicCache = this.activeDynamicCaches.get(entry.state);
       if (!dynamicCache) {
         throwJournalDiagnostic(
-          'KERNEL_INTERNAL_DEFECT',
+          'JOURNAL_INTERNAL_DEFECT',
           `Missing dynamic-state journal for '${target.fn.name}:${entry.state}'`,
           { gate: 'journal-dynamic-cache-missing', handler: target.fn.name, state: entry.state },
         );

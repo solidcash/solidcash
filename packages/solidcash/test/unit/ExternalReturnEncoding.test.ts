@@ -73,7 +73,7 @@ describe('encodeExternalReturnValue', () => {
     expect(encoded[31]).toBe(2);
   });
 
-  it('encodes Solidity ABI string returns so the kernel can take32 the offset word', () => {
+  it('encodes Solidity ABI string returns so the journal can take32 the offset word', () => {
     const encoded = encodeExternalReturnValue('DIGITAL_VIDEO', 'string', structs, true);
     expect(encoded.length).toBe(96);
     expect(encoded[31]).toBe(32);

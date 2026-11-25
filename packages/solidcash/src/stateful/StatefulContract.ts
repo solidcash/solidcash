@@ -102,8 +102,6 @@ import {
   scheduleJournalEntryJournalOccurrences,
   planJournalEntryJournalPhysicalSettlement,
   resolveJournalEntryJournalDirtyFinalBodies,
-  planJournalEntryJournalSettlementAuthority,
-  planJournalEntryJournalSettlementOutputs,
   validateJournalEntryJournalSettlementGroups,
   
   
@@ -373,6 +371,15 @@ import {
 import {
   projectCreateBuilderDelegateSlots as projectCreateBuilderDelegateSlotsImpl,
 } from './sc-project-create-builder-delegate-slots.js';
+import {
+  completeCreateBuilderNestedUnlockers as completeCreateBuilderNestedUnlockersImpl,
+} from './sc-complete-create-builder-nested-unlockers.js';
+import {
+  orchestrateCreateBuilderNestedComposeCallsite as orchestrateCreateBuilderNestedComposeCallsiteImpl,
+} from './sc-orchestrate-create-builder-nested-compose-callsite.js';
+import {
+  fixCreateBuilderDelegateUnlockers as fixCreateBuilderDelegateUnlockersImpl,
+} from './sc-fix-create-builder-delegate-unlockers.js';
 import {
   loadCreateBuilderTokenContainers as loadCreateBuilderTokenContainersImpl,
 } from './sc-load-create-builder-token-containers.js';
@@ -2965,7 +2972,7 @@ const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),sch
 
 /**
  * One direct call-frame planning row: the handler ABI, its visible arguments and the callsite identity.
- * Retained name: it describes a direct call, not a message-bus batch row.
+ * Retained name: it describes one direct call frame.
  */
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
@@ -9541,7 +9548,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][];
     };
     const runtimeJournalPendingScalar = new Map<string, RuntimeJournalPendingScalar>();
-    let hasPendingExistingScalarSettlement = false;
     const runtimeLoopEntrySegments: Array<{
       rowIndex: number; collection: string; offset: number; count: number;
     }> = [];
@@ -10758,9 +10764,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
           commitmentProducers.push(commitmentProducer(i, 'target'));
-          if (journalSettledScalar && !deferRuntimeJournalMaterialization) {
-            hasPendingExistingScalarSettlement = true;
-          }
           if (info.op === 'read') {
             priorReadProof = {
               uid: uidOf(entry.utxo), slot: entry.slot, nextKey: entry.nextKey,
@@ -10965,7 +10968,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    const kernelStreamsByCollection = new Map<string, typeof runtimeJournalJournalStreams>();
+    const journalStreamsByCollection = new Map<string, typeof runtimeJournalJournalStreams>();
     const settlementIdentityStreamCount = runtimeJournalJournalStreams.filter(
       (stream) => stream.settlementIdentity !== undefined,
     ).length;
@@ -10991,9 +10994,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     })));
     for (const stream of runtimeJournalJournalStreams) {
       const collectionIdentity = binToHex(stream.collectionHash);
-      const collectionStreams = kernelStreamsByCollection.get(collectionIdentity) ?? [];
+      const collectionStreams = journalStreamsByCollection.get(collectionIdentity) ?? [];
       collectionStreams.push(stream);
-      kernelStreamsByCollection.set(collectionIdentity, collectionStreams);
+      journalStreamsByCollection.set(collectionIdentity, collectionStreams);
     }
     type PlannedJournalCollection = {
       records: Uint8Array[];
@@ -11003,8 +11006,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const plannedJournalStreamAccesses = new Map<
     (typeof runtimeJournalJournalStreams)[number], ReturnType<typeof decodeJournalEntryJournalAccesses>
     >();
-    let hasPendingScalarDependency = false;
-    for (const [collectionIdentity, collectionStreams] of kernelStreamsByCollection) {
+    for (const [collectionIdentity, collectionStreams] of journalStreamsByCollection) {
       // The topology transition must see operations in language execution order. Multiple write sites in one
       // counter loop publish separate compact streams, so flattening whole streams would incorrectly execute
       // A0,A1,B0,B1 instead of A0,B0,A1,B1 and can assign an invalid predecessor topology.
@@ -11044,7 +11046,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ));
         if (carrierProducers.length > 0) {
           access.pending = true;
-          hasPendingScalarDependency = true;
           for (const producer of carrierProducers) {
             producer.access.pending = true;
           }
@@ -11065,51 +11066,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     assertJournalJournalRecordBudget(
       [...plannedJournalCollections.values()].map((plan) => plan.records.length),
     );
-    // A singleton runtime-computed scalar has no later physical iteration from which trace convergence can
-    // replace its provisional typed-default entry output. Route that one-access stream through the authenticated
-    // carrier phase so the value computed by the row is published. Multi-access streams already expose their
-    // runtime values through the ordinary deferred transition, while literal/argument-derived values retain the
-    // smaller direct path. This is a value-provenance/cardinality rule, independent of loop syntax or names.
-    const singletonRuntimeExpressionSettlement = [...runtimeExpressionLoopCollections].some((collection) => (
-      runtimeJournalJournalStreams
-        .filter((stream) => stream.collection === collection)
-        .reduce((count, stream) => count + stream.writes.length, 0) === 1
-    ));
-    const kernelRouteSettlement = false;
-    // The dense fixed-width pending-scalar carrier is only safe when every mutating stream is a fixed-width
-    // scalar. Mixed int+bytes execution groups are compiled onto the per-row path (no scalar journal dirtying),
-    // so keep dependency-discovered pending flags and settle like the bytes-only path.
-    const allMutatingStreamsAreFixedScalars = runtimeJournalJournalStreams.every((stream) => {
-      if (!stream.writes.some((write) => write.operation !== 'read')) return true;
-      const collection = stateLayout.collections?.find((candidate) => candidate.name === stream.collection
-        || candidate.signature === stream.collection);
-      return !!collection && collection.chunkableValue !== true
-        && /^(?:bool|u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType);
-    });
-    const pendingScalarSettlementActive = !deferRuntimeJournalMaterialization && kernelRouteSettlement
-      && allMutatingStreamsAreFixedScalars
-      && (hasPendingScalarDependency || hasPendingExistingScalarSettlement
-        || singletonRuntimeExpressionSettlement);
-    if (pendingScalarSettlementActive) {
-      // The current final flush intentionally settles one dense all-dirty carrier vector. Once an existing-value
-      // settlement or a true cross-row dependency activates that protocol, every supported mutating access in the
-      // transaction must take the carrier path; reject reads/removals below rather than mixing carrier phases.
-      for (const accesses of plannedJournalStreamAccesses.values()) {
-        for (const access of accesses) if (access.mutates) access.pending = true;
-      }
-    }
-    if (pendingScalarSettlementActive) {
-      const unsupported = [...plannedJournalStreamAccesses.values()].flat().some((access) => (
-        !access.presentAfter || !access.mutates
-        || (access.presentBefore && access.predecessorRecordOrdinal !== undefined)
-      ));
-      if (unsupported) {
-        throw new Error(
-          'Pending scalar settlement supports only fixed-width scalar updates and insertions; reads, removals, '
-          + 'deletions, dynamic values, and unrelated predecessor rewrites remain separate transactions.',
-        );
-      }
-    }
 
     // Materialize record carriers in source execution order. Streams in one compiler-published execution group
     // are operations from the same row loop, so iteration N of each stream executes before iteration N+1. The
@@ -11180,8 +11136,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const physicalSettlementPlan = deferRuntimeJournalMaterialization && settlementOccurrences.length > 0
       ? planJournalEntryJournalPhysicalSettlement(settlementOccurrences) : undefined;
-    const stableSettlementPlan = physicalSettlementPlan?.settlement ?? (settlementOccurrences.length > 0
-      ? planJournalEntryJournalSettlementAuthority(settlementOccurrences) : undefined);
 
     if (physicalSettlementPlan) {
       // Replace only accesses returned by the authenticated global planner. Mapping by object identity keeps the
@@ -11359,85 +11313,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && candidate.accessStreamIndex === output.finalOwner.accessStreamIndex);
         if (!stream) throw new Error('Journal settlement output cardinality has no stream.');
         addPhysicalCardinality(stream.collection, 0, 1);
-      }
-    }
-    if (pendingScalarSettlementActive) {
-      // Current artifacts distinguish mutation authority from the final disposition of every record. Resolve the
-      // physical present-record subsequence here; the trailing segment planner below emits that live band in global
-      // first-touch order. Legacy artifacts retain only the exact-slot fallback and its existing physical order.
-      const physicalLocations = new Map<number, { collection: string; offset: number }>();
-      for (let recordOrdinal = 0; recordOrdinal < kernelJournalRecords.length; recordOrdinal += 1) {
-        const disposition = stableSettlementPlan?.recordDispositions.get(recordOrdinal);
-        if (stableSettlementPlan && !disposition) {
-          throw new Error(
-            `Entry journal settlement identity has no disposition for record ${recordOrdinal}.`,
-          );
-        }
-        const physicalReference = disposition?.reference;
-        const authorityStream = physicalReference
-          ? runtimeJournalJournalStreams.find((stream) => stream.frameIndex === physicalReference.frameIndex
-            && stream.accessStreamIndex === physicalReference.accessStreamIndex)
-          : recordOriginStreams.get(recordOrdinal);
-        if (!authorityStream) {
-          throw new Error(`Entry journal settlement record ${recordOrdinal} has no containing access stream.`);
-        }
-        // Deletion/absence has authenticated settlement authority but intentionally no entry NFT output. Current
-        // compiler admission keeps it out of pending scalar flushes; retaining the distinction here prevents this
-        // SDK planner from silently turning a future tombstone protocol into a recreated node.
-        if (physicalReference?.settlementDisposition === 'absence') continue;
-        let commitments = sortedLoopCommitments.get(authorityStream.collection) ?? [];
-        const record = decodeJournalEntryJournalRecord(kernelJournalRecords[recordOrdinal]!);
-        let matchingCommitmentIndices = commitments.flatMap((commitment, index) => (
-          binsAreEqual(decodeEntryCommitment(hexToBin(commitment)).slot, record.slot) ? [index] : []
-        ));
-        if (matchingCommitmentIndices.length === 0 && disposition?.basis !== 'mutation-settlement') {
-          // A clean present read is still a materialized carrier in the compiler's final flush. Recreate its exact
-          // authenticated body; unlike a mutation settlement, no speculative value derivation is involved.
-          commitments = [...commitments, binToHex(encodeEntryCommitment(record.slot, record.nextKey, record.value))];
-          sortedLoopCommitments.set(authorityStream.collection, commitments);
-          matchingCommitmentIndices = [commitments.length - 1];
-        }
-        if (matchingCommitmentIndices.length !== 1) {
-          throw new Error(
-            `Pending scalar output for '${authorityStream.collection}' requires exactly one commitment for `
-            + `journal record ${recordOrdinal}; found ${matchingCommitmentIndices.length}.`,
-          );
-        }
-        if (physicalReference) {
-          physicalLocations.set(recordOrdinal, {
-            collection: authorityStream.collection,
-            offset: matchingCommitmentIndices[0]!,
-          });
-        }
-      }
-      if (stableSettlementPlan) {
-        const resolveSettlementOutput = (authority: KernelEntryJournalSettlementReference): {
-          collection: string; offset: number;
-        } => {
-          const location = physicalLocations.get(authority.recordOrdinal);
-          if (!location) {
-            throw new Error(
-              `Entry journal settlement record ${authority.recordOrdinal} has no physical output location.`,
-            );
-          }
-          return location;
-        };
-        const pendingSettlementOutputs = planJournalEntryJournalSettlementOutputs(
-          stableSettlementPlan, resolveSettlementOutput,
-        );
-        kernelJournalSettlementEntrySegments = kernelEntryJournalSettlementOutputSegments(
-          pendingSettlementOutputs,
-        );
-        const plannedOutputCount = kernelJournalSettlementEntrySegments
-          .reduce((count, segment) => count + segment.count, 0);
-        const availableOutputCount = [...sortedLoopCommitments.values()]
-          .reduce((count, commitments) => count + commitments.length, 0);
-        if (plannedOutputCount !== availableOutputCount) {
-          throw new Error(
-            `Entry journal settlement identity covers ${plannedOutputCount} physical outputs; `
-            + `${availableOutputCount} runtime mapping outputs were planned.`,
-          );
-        }
       }
     }
     for (const stream of runtimeJournalJournalStreams) {
@@ -11784,6 +11659,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const nestedAddressUtxos = lowLevelNestedCaches.nestedAddressUtxos;
     const nestedIdentity = lowLevelNestedCaches.nestedIdentity;
     const resolveNestedIdentityAnchorBands = lowLevelNestedCaches.resolveNestedIdentityAnchorBands;
+    const ensureNestedIdentityAnchorBand = lowLevelNestedCaches.ensureNestedIdentityAnchorBand;
     const directNestedIdentityWitness = lowLevelNestedCaches.directNestedIdentityWitness;
     const nestedFullState = lowLevelNestedCaches.nestedFullState;
     const nestedMasterState = lowLevelNestedCaches.nestedMasterState;
@@ -11898,6 +11774,90 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const graphPlanningResults = materializedLlc.graphPlanningResults;
             let nestedIndices = materializedLlc.nestedIndices;
             const nestedByCallsite = materializedLlc.nestedByCallsite;
+            for (const nested of nestedExternalCalls) {
+              const orchestrated = await orchestrateCreateBuilderNestedComposeCallsiteImpl(
+                {
+                  categoryId: this.categoryId,
+                  inner: this.inner,
+                  sharedBlockOraclePools: nestedBlockOraclePools,
+                  signer: this._signer,
+                  logicalNonceSigner: this._logicalNonceSigner,
+                  externalRegistry: this._externalRegistry,
+                  resolveExternalArgs: (...a: any[]) => (this as any)._resolveExternalArgs(...a),
+                  resolveExternalExpressionReturns: (...a: any[]) => (
+                    this as any
+                  )._resolveExternalExpressionReturns(...a),
+                  encodeStoredElementSource: (...a: any[]) => (this as any)._encodeStoredElementSource(...a),
+                  encodeStoredValueSource: (...a: any[]) => (this as any)._encodeStoredValueSource(...a),
+                  nestedIdentity,
+                  nestedFullState,
+                  nestedMasterState,
+                  nestedAddressUtxos,
+                  markSharedFunder: (utxo: UnlockableUtxo) => markSharedFunder(utxo),
+                  shiftSharedFunder: () => sharedFunderPool?.shift(),
+                  nextNestedFunderIndex: () => nestedFunderIndex++,
+                  describeValueChunkWrites,
+                  preparedChildProducerPath,
+                  selectProxyForwardInput,
+                  resolvePreparedProducerEntry,
+                  externalReturnsForCallsites,
+                  externalCallReachedOccurrenceIndices: (...a: any[]) => (
+                    externalCallReachedOccurrenceIndices as any
+                  )(...a),
+                  planExternalCallOccurrences: (...a: any[]) => (
+                    this as any
+                  )._planExternalCallOccurrences(...a),
+                  concatBytes: (...a: any[]) => (StatefulContract as any)._concatBytes(...a),
+                },
+                {
+                  nested,
+                  delegateGroupIndex,
+                  delegateFn,
+                  nestedExternalCalls,
+                  publishedNestedExternalCalls,
+                  delegateVisibleArgs,
+                  delegateVisibleInputs,
+                  delegateSelfAddress,
+                  delegateCallerIdentity,
+                  graphPlanningResults,
+                  callInfo,
+                  // The delegate's calls read the owner's state and the clock its implementation reads.
+                  onChainState: { ...onChainState, state: materializedLlc.delegateState },
+                  preparedAtomicNodes,
+                  rootProducerPath,
+                  nestedIndices,
+                  nestedByCallsite,
+                  externalCallUtxoGroups,
+                  lowLevelCallUtxoGroups,
+                  groupProxyMasterIndices,
+                  nestedDelegateProxyGroupByLowLevel,
+                  timingEnabled,
+                  functionName,
+                  allGroupEcSlots,
+                  allGroupParentIndices,
+                  routeValueChunkProducerEpochByPhysicalGroup,
+                  preparedAtomicNodeByExternalGroup,
+                  latestPreparedAtomicNodeByPhysicalGroup,
+                  nestedSortedListCache,
+                  valueChunkWriteStagingSession,
+                  sharedFunderPool,
+                  nestedFunderIndex,
+                  publicSelfAddress,
+                  nestedProxyReadCache,
+                  memoizeGraphPlanningProducerResult,
+                  routeValueChunkProducerAliases: undefined,
+                  routeValueChunkProducerPhysicalGroup: undefined,
+                  routeValueChunkProducerEpoch: undefined,
+                  latestRouteValueChunkProducerBinding: undefined,
+                  refreshChunkableRouteWitnesses: undefined,
+                },
+              );
+              if (orchestrated.skipped) continue;
+              allGroupEcSlots = orchestrated.allGroupEcSlots;
+              allGroupParentIndices = orchestrated.allGroupParentIndices;
+              nestedIndices = orchestrated.nestedIndices;
+              // nestedByCallsite mutated in place via Map reference
+            }
 
             // nested-compose-callsite-orch-complete (size-guarded end marker)
 
@@ -12109,6 +12069,41 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
 
+      await completeCreateBuilderNestedUnlockersImpl(
+        {
+          categoryId: this.categoryId,
+          timing: (label: string) => timing(label),
+          ensureNestedIdentityAnchorBand,
+          resolveNestedIdentityAnchorBands,
+          nestedFullState: (contract: any) => nestedFullState(contract),
+          selectProxyForwardInput: (...a: any[]) => (selectProxyForwardInput as any)(...a),
+          directNestedIdentityWitness: (...a: any[]) =>
+            (directNestedIdentityWitness as any)(...a),
+        },
+        {
+          externalCallUtxoGroups,
+          lowLevelCallUtxoGroups,
+          returningExternalGroups,
+          physicalReturnIndexForGroup,
+          nestedMasterIndices,
+          nestedOutputBases,
+          relocatedPredOutBase,
+          allGroupParentIndices,
+          allGroupEcSlots,
+          delegateExternalGroupIndices,
+          delegateExternalGroupByCallsite,
+          lateTransitiveGroupIndices,
+          pendingDelegateInputFills,
+          pendingAnchorFills,
+          pendingExternalCallInputFills,
+          entryAbiFunction,
+          identityAnchors,
+          publicSelfAddress,
+          authenticatedSelfAddress,
+          physicalSelfAddress: executionSelfAddress,
+          logicalCreateLock,
+        },
+      );
       {
         const projected = projectCreateBuilderDelegateSlotsImpl({
           lowLevelCallUtxoGroups,
@@ -12130,6 +12125,51 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         returnMaterializationOutputIndex =
           projected.returnMaterializationOutputIndex as typeof returnMaterializationOutputIndex;
       }
+      await fixCreateBuilderDelegateUnlockersImpl(
+        {
+          categoryId: this.categoryId,
+          selfContract: this,
+          timing: (label: string) => timing(label),
+          resolveNestedIdentityAnchorBands,
+          nestedFullState: (contract: any) => nestedFullState(contract),
+          selectProxyForwardInput: (...a: any[]) => (selectProxyForwardInput as any)(...a),
+          directNestedIdentityWitness: (...a: any[]) => (directNestedIdentityWitness as any)(...a),
+        },
+        {
+          lowLevelCallUtxoGroups,
+          externalCallUtxoGroups,
+          nestedDelegateProxyGroupByLowLevel,
+          lowLevelCallInputBase,
+          delegateExternalGroupIndices,
+          delegateExternalGroupByCallsite,
+          allGroupEcSlots,
+          allGroupParentIndices,
+          physicalReturnIndexForGroup,
+          nestedMasterIndices,
+          nestedOutputBases,
+          relocatedPredOutBase,
+          pendingDelegateInputFills,
+          pendingAnchorFills,
+          pendingExternalCallInputFills,
+          entryAbiFunction,
+          timingEnabled,
+          publicSelfAddress,
+          authenticatedSelfAddress,
+          directCallDelegateLayout,
+          returnEmitOutputIndex,
+          groupProxyMasterIndices,
+          overrides,
+          entryBatchWitnesses,
+          entryValueWitnesses,
+          pendingDynamicChunkInputFills,
+          pendingTokenCallInputFills,
+          identityAnchors,
+          entryArgs,
+          entryArtifact,
+          physicalSelfAddress: executionSelfAddress,
+          logicalCreateLock,
+        },
+      );
 
 
     }

@@ -258,7 +258,7 @@ const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),sch
 
 /**
  * One direct call-frame planning row: the handler ABI, its visible arguments and the callsite identity.
- * Retained name: it describes a direct call, not a message-bus batch row.
+ * Retained name: it describes one direct call frame.
  */
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
@@ -500,8 +500,7 @@ export function canShareIdempotentCounterLoopSettlement(params: {
 /**
  * Direct call-frame planning rows.
  *
- * A "route row" here is one direct call's handler ABI, visible arguments and callsite identity. It is not a
- * message-bus batch row: the bus row model was removed with the bus itself.
+ * A "route row" here is one direct call's handler ABI, visible arguments and callsite identity.
  */
 /**
  * Select the direct call frame that owns an expression-keyed entry slot.

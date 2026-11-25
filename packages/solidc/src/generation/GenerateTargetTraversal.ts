@@ -135,8 +135,8 @@ import {
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
 
-type KernelReadCarrierFamilyScope = { selectorHex: string; completedDescriptorDigest: string; streamDescriptorDigests: string[] };
-type KernelJournalDispositionHandlerScope = Record<string, any>;
+type JournalReadCarrierFamilyScope = { selectorHex: string; completedDescriptorDigest: string; streamDescriptorDigests: string[] };
+type JournalDispositionHandlerScope = Record<string, any>;
 const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
 const KERNEL_ENTRY_JOURNAL_MAX_RECORDS = 99;
 const deriveJournalJournalDispositionHandlerScope = (..._args: any[]): undefined => undefined;
@@ -3404,8 +3404,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private keccakSlotAltAnchored: boolean = false;
   /** A define body compiled only for its diagnostics: nothing invokes it, so its code never reaches the script. */
   private isUnemittedDefine: boolean = false;
-  /** Sorted collections owned by the enclosing route rather than the current helper. */
-  private routePhysicalSortedBatchCollections: Set<string> = new Set();
   // True when the current function has a `return` nested inside a loop (the raw-return stack cleanup can't
   // handle that, so its internal-call subroutine keeps the event-blob return path - see visitReturn).
   private functionHasReturnInLoop: boolean = false;
@@ -6490,7 +6488,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.contractFunctionKeys = new Set(node.functions
       .filter((fn) => fn.functionId !== undefined)
       .map((fn) => `${fn.functionId}:${fn.name}`));
-    this.routePhysicalSortedBatchCollections = new Set<string>();
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     // A framed master's program is the head first. A single entry point continues with its inlined body, which
     // reads the frame from the slots registered here; several continue with the selector dispatcher, whose bodies
@@ -6985,57 +6982,57 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Journal selection helpers are kept distinct from the general array access machinery: their fixed wire
     // frames are authenticated here, while generic source arrays retain their ordinary decoding semantics.
-    const KERNEL_SELECT = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID;
+    const JOURNAL_SELECT = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID;
     const emitJournalSelect = (t: GenerateTargetTraversalWithLocation): void => {
       t.emitJournalJournalRecordSelectInline(loc);
     };
-    if (this.capturedSubroutineIsProfitable(KERNEL_SELECT, count(KERNEL_SELECT), emitJournalSelect)) {
+    if (this.capturedSubroutineIsProfitable(JOURNAL_SELECT, count(JOURNAL_SELECT), emitJournalSelect)) {
       spans.push({
-        id: KERNEL_SELECT,
-        span: this.defineCapturedSubroutine(KERNEL_SELECT, emitJournalSelect, loc),
+        id: JOURNAL_SELECT,
+        span: this.defineCapturedSubroutine(JOURNAL_SELECT, emitJournalSelect, loc),
       });
     }
-    const KERNEL_ORDINAL = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID;
+    const JOURNAL_ORDINAL = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID;
     const emitJournalOrdinal = (t: GenerateTargetTraversalWithLocation): void => {
       t.emitJournalJournalOrdinalAdvanceInline(loc);
     };
-    if (this.capturedSubroutineIsProfitable(KERNEL_ORDINAL, count(KERNEL_ORDINAL), emitJournalOrdinal)) {
+    if (this.capturedSubroutineIsProfitable(JOURNAL_ORDINAL, count(JOURNAL_ORDINAL), emitJournalOrdinal)) {
       spans.push({
-        id: KERNEL_ORDINAL,
-        span: this.defineCapturedSubroutine(KERNEL_ORDINAL, emitJournalOrdinal, loc),
+        id: JOURNAL_ORDINAL,
+        span: this.defineCapturedSubroutine(JOURNAL_ORDINAL, emitJournalOrdinal, loc),
       });
     }
-    const KERNEL_TARGET = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
+    const JOURNAL_TARGET = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
     const emitJournalTarget = (t: GenerateTargetTraversalWithLocation): void => {
       t.emitJournalJournalTargetSlotHelperInline(loc, false);
     };
-    if (this.capturedSubroutineIsProfitable(KERNEL_TARGET, count(KERNEL_TARGET), emitJournalTarget)) {
+    if (this.capturedSubroutineIsProfitable(JOURNAL_TARGET, count(JOURNAL_TARGET), emitJournalTarget)) {
       spans.push({
-        id: KERNEL_TARGET,
-        span: this.defineCapturedSubroutine(KERNEL_TARGET, emitJournalTarget, loc),
+        id: JOURNAL_TARGET,
+        span: this.defineCapturedSubroutine(JOURNAL_TARGET, emitJournalTarget, loc),
       });
     }
-    const KERNEL_CARRIER_TARGET = GenerateTargetTraversalWithLocation
+    const JOURNAL_CARRIER_TARGET = GenerateTargetTraversalWithLocation
       .KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID;
     const emitJournalCarrierTarget = (t: GenerateTargetTraversalWithLocation): void => {
       t.emitJournalJournalTargetSlotHelperInline(loc, true);
     };
     if (this.capturedSubroutineIsProfitable(
-      KERNEL_CARRIER_TARGET, count(KERNEL_CARRIER_TARGET), emitJournalCarrierTarget,
+      JOURNAL_CARRIER_TARGET, count(JOURNAL_CARRIER_TARGET), emitJournalCarrierTarget,
     )) {
       spans.push({
-        id: KERNEL_CARRIER_TARGET,
-        span: this.defineCapturedSubroutine(KERNEL_CARRIER_TARGET, emitJournalCarrierTarget, loc),
+        id: JOURNAL_CARRIER_TARGET,
+        span: this.defineCapturedSubroutine(JOURNAL_CARRIER_TARGET, emitJournalCarrierTarget, loc),
       });
     }
-    const KERNEL_CURSOR = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID;
+    const JOURNAL_CURSOR = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID;
     const emitJournalCursor = (t: GenerateTargetTraversalWithLocation): void => {
       t.emitJournalJournalCursorHelperInline(loc);
     };
-    if (this.capturedSubroutineIsProfitable(KERNEL_CURSOR, count(KERNEL_CURSOR), emitJournalCursor)) {
+    if (this.capturedSubroutineIsProfitable(JOURNAL_CURSOR, count(JOURNAL_CURSOR), emitJournalCursor)) {
       spans.push({
-        id: KERNEL_CURSOR,
-        span: this.defineCapturedSubroutine(KERNEL_CURSOR, emitJournalCursor, loc),
+        id: JOURNAL_CURSOR,
+        span: this.defineCapturedSubroutine(JOURNAL_CURSOR, emitJournalCursor, loc),
       });
     }
     // Complete field extraction composes the structural prefix helper with the target-field decoder. Define it
@@ -9144,12 +9141,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
     subTraversal.contractParameters = this.contractParameters;
     subTraversal.contractFunctionKeys = this.contractFunctionKeys;
-    // Only compiler-generated handlers whose local entry ordinals were rewritten into the hidden route's
-    // physical slots inherit the route batch topology. Propagating this contract-wide makes unrelated public
-    // functions treat ordinary scalar collection writes as batch-owned merely because the contract also exposes
-    // a route route.
-    subTraversal.routePhysicalSortedBatchCollections = (0) > 0
-      ? this.routePhysicalSortedBatchCollections : new Set();
     subTraversal.outlinedDynamicReadBasisByFunctionId = this.outlinedDynamicReadBasisByFunctionId;
     subTraversal.outlinedDynamicReadThreadedFunctionIds = this.outlinedDynamicReadThreadedFunctionIds;
     subTraversal.outlinedDynamicReadBasis = func.functionId === undefined
@@ -9490,10 +9481,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
       subTraversal.contractParameters = this.contractParameters;
       subTraversal.contractFunctionKeys = this.contractFunctionKeys;
-      // This is the independently callable ABI entry-point body, even when the same source function is also
-      // eligible for graph dispatch. Its scalar state transition must not inherit the hidden route's batch
-      // topology; the compiler-generated OP_DEFINE handler is compiled through emitFunctionDefine above.
-      subTraversal.routePhysicalSortedBatchCollections = new Set();
       // Entry-point bodies are emitted on an independent traversal, but they invoke the same OP_DEFINE helpers
       // as compiler-generated routes. Preserve the contract-wide hidden compute-context ABI: if any reaching
       // path requires a helper to receive its physical side-car block base, every call site must supply that
@@ -9914,8 +9901,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Keep it enabled for speed-hinted large contracts even after a productive first pass: the first pass turns
     // repeated entry/handler scaffolding into invocation-delimited fragments, and a 39-handler corpus measurement
     // recovered another 4,608 bytes in 61ms (127,429 -> 122,821) from precisely those tails.
-    const kernelOutline = false && false;
-    if ((largeBodyOutline || kernelOutline)
+    if (largeBodyOutline
       && result !== undefined && result.functions.length > 0) {
       const leftoverStart = Date.now();
       // First-pass outlining walks from -12 into three-byte pushes. Unused two-byte slots (typically
@@ -33658,22 +33644,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitStagedOwnerRead(node, slotIndex, loc);
       return node;
     }
-    const routeBatch = false
-      && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex)) ?? false)
-      && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${slotIndex}`), true) >= 0;
-    if (routeBatch) {
-      // A routed ABI is the union of all handlers, so a cache read synthesized for an inactive handler has no
-      // physical entry input. The SDK publishes a negative proof sentinel for those lanes. Test that sentinel
-      // before adding the active input index: otherwise -1 aliases the input immediately before the participant
-      // and an inactive read can interpret an unrelated NFT as its sorted-map proof. Offset zero is not an
-      // inactivity marker here; runtime aliases can use it while redirecting to an authenticated prior below.
-      this.emitPickVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
-      this.emit(Op.OP_0, loc);
-      this.emit(Op.OP_LESSTHAN, loc);
-      this.emit(Op.OP_IF, loc);
-      this.emitDefaultValue(loc, valueType);
-      this.emit(Op.OP_ELSE, loc);
-    }
     // Outlined delegate handlers can install a local slot table while retaining the source assignment's slot
     // ordinal. The assignment's resolved collection, not a same-numbered caller slot, owns this covenant address.
     const collectionHash = computeCollectionHash(`${collection.name}:${collection.type.toString()}`);
@@ -33740,8 +33710,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     }
     const sharedProofPrior = this.entrySlots[slotIndex]?.sharedProofPriorSlot;
-    if (sharedProofPrior !== undefined && !this.readsRecordsFromFrame && !routeBatch
-      && !false) {
+    if (sharedProofPrior !== undefined && !this.readsRecordsFromFrame) {
       this.emitSharedProofRedirect(collection.name, sharedProofPrior, loc);
     }
     if (this.activityAliasWrite(slotIndex)) {
@@ -33764,9 +33733,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       // A direct scalar integer read shares one proof. A delegate, a proxy-state block or a route runs OP_INVOKE in
       // its own frame, where an entry index authenticated in the caller's must not be reinterpreted.
-      if ((valueType instanceof IntType || valueType === PrimitiveType.BIGINT) && !routeBatch
+      if ((valueType instanceof IntType || valueType === PrimitiveType.BIGINT)
         && runtimeAliasPriors.length === 0 && !this.currentFunctionIsDelegate && !this.usesProxyStateBlockBase()
-        && !false && this.directConvention) {
+        && this.directConvention) {
         this.emitSortedIntReadProof(loc);
         this.pushToStack('(value)');
         if (composeWrites.length > 0) this.emitComposeReadFold(composeWrites, loc);
@@ -33794,8 +33763,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedAbsentArm(loc);                              // verifies slot < H(k) < nextKey -> []
     this.emitDefaultValue(loc, valueType);                      // absent -> default
     this.emit(Op.OP_ENDIF, loc);
-
-    if (routeBatch) this.emit(Op.OP_ENDIF, loc);
 
     this.pushToStack('(value)');
     if (composeWrites.length > 0) this.emitComposeReadFold(composeWrites, loc);
@@ -34893,7 +34860,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.entrySlots[slotIndex].inLoop
       && !this.sortedInsertLoopActive && !this.sortedUpsertLoopActive
       && !(this.currentFunction.sortedBatchInfo?.some((batch) => batch.collection === collection.name) ?? false)
-      && !this.routePhysicalSortedBatchCollections.has(collection.name)
       && otherCountsAreStatic;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ENTRY_OUTPUT === '1') {

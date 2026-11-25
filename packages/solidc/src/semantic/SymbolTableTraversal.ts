@@ -7610,9 +7610,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         && !this.readsWrittenLocal(node.arrayIndex) && !this.readsWrittenLocal(node.expression)
         ? `arrset(${this.canonicalizeExpression(node.arrayIndex)},${this.canonicalizeExpression(node.expression)})`
         : undefined;
-      const cachedGuardValue = node.kernelValueSource?.parameters.every((name) =>
+      const cachedGuardValue = node.valueSource?.parameters.every((name) =>
         this.currentFunction?.parameters.some((parameter) => parameter.name === name))
-        ? node.kernelValueSource.expression : undefined;
+        ? node.valueSource.expression : undefined;
       const unguardedValueSource: string | undefined = arrayElementSource
         ?? (!wholeValueWrite || rmw ? undefined
           : this.mappingLoopLastCounter(node)

@@ -89,14 +89,14 @@ describe('a sorted-mapping loop write folds only its own entry', () => {
       event Hit(int v);
       function put(int n, int amount) public { for (int i = 0; i < n; i = i + 1) { ${body} } require(true); }
       function control() public { require(true); } }`;
-    const kernel = { forceStateful: true};
+    const stateful = { forceStateful: true };
     for (const [body, expected] of [
       ['slots[i] = slots[i] + amount;', '+'], ['slots[i] = slots[i] - amount;', '-'], ['slots[i] += amount;', '+'],
       ['slots[i] = slots[i] + amount; emit Hit(i);', '+'],
       ['slots[i] = slots[7] + amount;', 'set'], ['slots[i] = slots[7] + amount; emit Hit(i);', 'set'],
       ['slots[i] = other[i] + amount;', 'set'],
     ] as const) {
-      for (const [name, options] of [['kernel', kernel], ['auto', {}], ['direct', {}]] as const) {
+      for (const [name, options] of [['stateful', stateful], ['auto', {}], ['direct', {}]] as const) {
         const loop = compileString(counter(body), { ...quiet, ...options }).abi.find((entry) => entry.name === 'put')
           ?.sortedUpsertLoopInfo?.find((info) => info.collection === 'slots');
         expect([name, body, loop?.op]).toStrictEqual([name, body, expected]);

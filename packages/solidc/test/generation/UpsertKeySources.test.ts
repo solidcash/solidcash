@@ -60,7 +60,7 @@ describe('generic upsert fixed-key recovery', () => {
     }));
   });
 
-  it('does not inject kernel permutation parameters into a legacy internal helper', () => {
+  it('does not inject journal permutation parameters into a legacy internal helper', () => {
     const artifact = compileString(`contract Registry() {
       mapping(address => bool) flags;
       function update(address[] members) internal {

@@ -192,8 +192,6 @@ export async function fixCreateBuilderDelegateUnlockers(
       groupLocalIdx,
       functionName: group.functionName,
       route: group.directCall?.abiFunction.name,
-      routeRows: undefined,
-      routeBlobBytes: undefined,
       routeArgs: group.directCall?.args.length,
     });
     const delegateProxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);

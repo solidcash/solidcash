@@ -50,7 +50,7 @@ describe('constructed key vector v1 replay', () => {
     expect(() => replayConstructedKeyVectorV1(descriptor, [], [3n])).toThrow('consumer index is out of range');
   });
 
-  it('does not treat an offline replay descriptor as kernel journal authority', () => {
+  it('does not treat an offline replay descriptor as journal authority', () => {
     expect(() => assertConstructedKeyVectorRouteBinding([descriptor], undefined))
       .toThrow('require an authenticated constructed-key-vector-replay route binding');
     expect(() => assertConstructedKeyVectorRouteBinding([descriptor], {

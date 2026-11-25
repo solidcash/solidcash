@@ -1851,7 +1851,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     const flush = new MappingAssignNode(mapping, keyNodes, rhs); // m[k1][k2] = local
     flush.fromModifier = fromModifier;
     flush.location = loc;
-    flush.kernelValueSource = guardPlan?.valueSource;
+    flush.valueSource = guardPlan?.valueSource;
     if (settled) return flush;
     const flushBlock = new BlockNode([flush]);
     flushBlock.location = loc;
@@ -1862,7 +1862,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // The not-dirty arm is a physical no-op. If-converting it to a preserve write would still consume and recreate
     // chunk-backed resources, defeating the dirty bit and forcing outputs for paths which never changed the entry.
     branch.preserveConditionalEntryWrites = true;
-    branch.kernelEntryActivation = guardPlan?.activation;
+    branch.entryActivation = guardPlan?.activation;
     return branch;
   }
 

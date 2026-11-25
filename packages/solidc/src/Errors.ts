@@ -111,11 +111,7 @@ export type SolidcDiagnosticCode =
   // Frozen JOURNAL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'JOURNAL_LAYOUT'
   | 'JOURNAL_UNBOUNDED_KEY'
-  | 'KERNEL_TX_SIGNATURE'
-  | 'KERNEL_OPAQUE_EFFECT'
-  | 'KERNEL_FOREIGN_DELEGATE'
-  | 'KERNEL_LIFECYCLE'
-  | 'KERNEL_INTERNAL_DEFECT';
+  | 'JOURNAL_INTERNAL_DEFECT';
 
 /** Machine-stable compiler refusal with source-owned context. */
 export class SolidcDiagnosticError extends Error {

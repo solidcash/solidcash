@@ -30,7 +30,7 @@ contract Owned() {
 }`;
 
 describe('ContractFactory.deploy binds the signer as the msg.sender funder', () => {
-  it('fills the direct constructor sender-anchor witness in kernel mode', async () => {
+  it('fills the direct constructor sender-anchor witness under forceStateful', async () => {
     const provider = createTestProvider();
     const signer = HDSigner.fromPhrase(
       'test test test test test test test test test test test junk',

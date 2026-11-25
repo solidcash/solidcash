@@ -230,8 +230,6 @@ export {
   type KernelEntryJournalExecutionStream, type KernelEntryJournalScheduledOccurrence,
 } from './KernelEntryJournal.js';
 export {
-} from './KernelLifecycleTopology.js';
-export {
   planDelegateForwarding, resolveDelegateExecution, resolveDelegatePromotion,
   type DelegateExecutionTarget, type DelegateForwardingFrame, type DelegateForwardingMetadata,
   type DelegatePromotionInput,

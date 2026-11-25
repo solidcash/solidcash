@@ -234,10 +234,8 @@ import {
   AbiEncodeCallUndefinedInterfaceError,
   AbiEncodeCallUndefinedFunctionError,
   AbiEncodeCallArgCountError,
-  GraphHandlerShapeError,
   NonPayableCallValueError,
   SolidcDiagnosticError,
-  UpgradeStrandsBoundStateError,
   ChildGenesisFoldError,
   MinerFeeStatementError,
   SingleContainersError,
@@ -423,7 +421,7 @@ class SourceEffectOrderTraversal extends AstTraversal {
   }
 }
 
-/** Capture source program points before graph-route synthesis can rearrange physical settlement code. */
+/** Capture source program points before later lowering can rearrange physical settlement code. */
 export function assignFunctionSourceEffectOrdinals(node: FunctionDefinitionNode): void {
   let unsupportedFlow = false;
   walkInvocationAst(node.body, (candidate) => {
@@ -470,14 +468,6 @@ function isOwnAddressExpression(expression: ExpressionNode): boolean {
     && current.expression.operator === NullaryOperator.INPUT_INDEX;
 }
 
-/**
- * `keccak256(type(C).creationCode)` (or `runtimeCode`) hashes a blob the compiler already holds, so code
- * generation folds it to a constant and never reads a side-car. Counting it would reserve a `keccakSideCar`
- * slot nobody uses and make the SDK co-spend an input the covenant never looks at.
- *
- * It also cannot be computed on chain at this size: a Uniswap pair's creation code is 12,509 bytes = 92 keccak
- * blocks, and one side-car input funds three.
- */
 /**
  * True when an expression statement is observationally inert, so a fold replay may skip it: no call, no
  * assignment, no emit/transfer/selfdestruct, and no indexed read (an out-of-range index fails, and a failure is
@@ -752,7 +742,6 @@ function returnGuardsOf(fn: FunctionDefinitionNode, target: Node): PathGuard[] {
   return guards.some((guard) => readsName(guard.expression, assigned)) ? [] : guards;
 }
 
-/** The conjunction of `conditions`, left to right, or undefined for none. */
 /** True when an entry body reads `address(this)` and can publish a CREATE-anchor witness. */
 function entryReadsOwnAddress(fn: FunctionDefinitionNode): boolean {
   let found = false;
@@ -1855,9 +1844,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.visitUsingForDirective(ufd);
     }
 
-    // Event-only hold+initialize injection runs during route synthesis (before admission examines entry
-    // points). A late inject here would publish initialize as not-examined-by-route-synthesis → JOURNAL_LAYOUT.
-
     // Register state variables with bin-packing layout computation
     const commitmentLimit = this.compilerOptions.commitmentLimit ?? 128;
     let nftIndex = 0;
@@ -2167,13 +2153,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       const sig = this.selectorSignatureFor(func.name, visibleParams.map((p) => p.type));
       // D27: the dispatch scheme follows the compile's mode, so an evmCompat compile derives the keccak selector
       // its abi.* family emits, and a native compile keeps BCH's sha256 one.
-      const selector = false
-        ? Uint8Array.from([0x53, 0x43, 0x42, 0x31])
-        : (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram !== undefined
-          && func.name === '__construct' ? DEPLOYER_SELECTOR_CREATE
-          : (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram !== undefined
-            && func.name === '__solidcash_sweep' ? DEPLOYER_SELECTOR_SWEEP
-            : this.computeAbiSelector(sig);
+      const deployerProgram = (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram !== undefined;
+      const selector = deployerProgram && func.name === '__construct' ? DEPLOYER_SELECTOR_CREATE
+        : deployerProgram && func.name === '__solidcash_sweep' ? DEPLOYER_SELECTOR_SWEEP
+          : this.computeAbiSelector(sig);
       const selectorHex = binToHex(selector);
 
       const collision = selectorMap.get(selectorHex);
@@ -2396,20 +2379,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       });
     }
 
-    // X29 / SEC-7. An effect-carrying graph emission handler stays behind OP_INVOKE so its outgoing edges keep
-    // their callManifest binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
-    // subroutine has no block layout of its own. Reserve those owner-local slots in the ROUTE's block instead,
-    // one frame per dispatch site; refuse the effects no frame can express. Both run after every function is
-    // visited, because both need per-handler metadata assigned during that function's own visit.
-    // token-container co-layout: plan graph effect frames (incl. tcTransfer widths) BEFORE refusing unframed
-    // token-container effects, so dyn+transfer handlers can receive route tcTransfer slots.
-
-    // A generated handler can execute with caller operands below its ABI frame and graph operands above it, so
-    // neither end of the live stack is a stable basis for recovering the participant owner. Publish the route's
-    // authenticated transaction-layout relation here as part of semantic analysis, including for referenced
-    // contracts that take the abbreviated compilation path. The top-level compiler refreshes this value after
-    // adding any late compute sidecars that enlarge the final route block.
-
     if (node.fallbackDef) {
       const loc = node.fallbackDef.location ? ` at line ${node.fallbackDef.location.start.line}` : '';
       emitCompilerWarning(`Warning: fallback() is a Solidity compatibility feature${loc}. Its usage on BCH is discouraged as BCH does not use the same contract call model.`);
@@ -2422,15 +2391,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // After every block layout is known, so the containers an entry co-spends count too.
-    this.refuseUpgradeStrandingBoundRecords(node);
+    this.publishUpgradeContainerSurface(node);
 
     this.decideLibraryInlining(node);
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
-      // Batch routes are compiler-owned source. Their deliberately generic parser/context
-      // locals vary by admitted handler shape, so reporting them as user warnings makes default-on
-      // compilation noisy without identifying anything the user can fix.
+      // Compiler-generated source's unused locals identify nothing the user can fix.
       if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
@@ -2488,7 +2455,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // the same name as its function, `function max(..) returns (int max)`, which is legal Solidity. Both live at
     // contract/library level, so this never masks a genuine same-scope param/local collision. Native solidcash
     // keeps the strict check.
-    // Compiler-generated code (route route/verifier helpers) reaches user state only through `this.x`,
+    // Compiler-generated code reaches user state only through `this.x`,
     // so a generated parameter may shadow a state-variable name without ambiguity; native source stays strict.
     const generatedParameter = generatedOriginOf(node.location) !== undefined;
     const shadowsOuter = (existing?.symbolType === SymbolType.FUNCTION && this.compilerOptions.evmCompat)
@@ -3930,8 +3897,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     // Delegate execution's proxy-master witness is appended with the other compiler-owned parameters only
     // after the body survey, so it retains the established final ABI position. Generated delegate bodies may
-    // nevertheless need to reference that authenticated identity (the atomic route route does when it
-    // binds participant membership). Predeclare the eventual parameter in the function scope without appending
+    // nevertheless need to reference that authenticated identity. Predeclare the eventual parameter in the
+    // function scope without appending
     // or stack-tracking it yet; the normal injection point below reuses this exact symbol after every earlier
     // hidden parameter has been discovered.
     let deferredProxyMasterParam: ParameterNode | undefined;
@@ -4044,19 +4011,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       const usesMsgSender = bodySurvey.usesMsgSender || node.usesMsgSender === true;
       if (usesMsgSender) {
         node.usesMsgSender = true;
-        // Graph handlers receive logical msg.sender from the caller vector
-        // authenticated by the participant mutual verifier. Neither the cloned
-        // handler nor its compiler-owned route batch wrapper may acquire the
-        // unrelated direct-route category witness.
         // Entry points authenticate a transaction-level category witness. Internal/public subroutine bodies
         // instead receive the already-resolved logical sender as hidden OP_INVOKE context; giving those helpers
-        // a second declared category parameter makes graph handlers call `_checkOwner(bytes32)` as `_checkOwner()`.
+        // a second declared category parameter makes their callers call `_checkOwner(bytes32)` as `_checkOwner()`.
         // A constructor is never such a subroutine: `constructor () internal` only marks a Solidity 0.6 contract
         // abstract, and its body runs as the deploy entry point like a public constructor's. A free or library
         // function is never an entry point, whatever its visibility: a public library one is reached by a call.
         const subroutineBody = node.name !== '__construct' && (node.isFreeFunction
           || node.visibility === 'internal' || node.visibility === 'private');
-        if (!subroutineBody && !false && !false) {
+        if (!subroutineBody) {
           const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
           categoryParam.location = node.location;
           node.parameters.push(categoryParam);
@@ -4216,20 +4179,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.entryAccesses = ordered;
         this.detectAliasConditionalWrites(node.body, ordered);
 
-        // Bounded route routes unroll the same physical collection access once per possible row. Runtime
-        // selectors may therefore bind two row slots to the same logical key. Publish every earlier same-shape
-        // slot as an allowed alias before batch classification: the batch covenant then distinguishes a true
-        // same-target alias from distinct absent targets which merely share one predecessor proof.
-        if (false) {
-          for (const info of ordered) {
-            info.runtimeAliasPriorSlots = ordered
-              .filter((prior) => prior.slotIndex < info.slotIndex
-                && prior.collection === info.collection
-                && prior.keyParams.length === info.keyParams.length)
-              .map((prior) => prior.slotIndex);
-          }
-        }
-
         // Multiple fixed vmap writes in one function are verified as transaction-wide batches, grouped by collection.
         // A group may contain one target when another collection is also written: using the same batch path keeps
         // shared key parameters live and gives every collection an independent exact-output-count proof.
@@ -4255,11 +4204,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // their shared transition as one batch (notably upgradeable initializers with literal-key inserts).
         // A split facet batches a lone write too: its root leaves batch-censused collections to the facet's exact
         // input and output counts, which is what lets a first-touch insert settle.
-        // A route handler clone is flagged, not recognised by name: its route owns the topology.
         const splitFacetLoneWrite = this.currentContract?.isSplitFacet === true && fixedSortedWriteCount === 1;
-        const ownsCollectionTopology = (node.modifiers.includes(FunctionModifier.DELEGATE)
-          && fixedSortedWriteCount <= 1 && !splitFacetLoneWrite)
-          || node.ownRecordsScalarOnly === true;
+        const ownsCollectionTopology = node.modifiers.includes(FunctionModifier.DELEGATE)
+          && fixedSortedWriteCount <= 1 && !splitFacetLoneWrite;
         if (!ownsCollectionTopology) {
           this.assignComposeAliasPriors(node, ordered, batchByCollection, loopWrittenCollections);
         }
@@ -4269,13 +4216,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           .map(([collection, slotIndices]) => ({
             collection,
             slotIndices,
-            // A route route describes the union of every handler's writes. At runtime some of those slots
-            // can be inactive, so its batch cardinality is not fixed and cannot use the dense linear row witness.
-            // The general batch proof accepts the -2 inactive sentinel on a per-target basis.
             // A key taken from another call's return is only known at build time; it can collapse onto a sibling
             // target (a zero protocol recipient shares the MINIMUM_LIQUIDITY key), so the batch must use the
             // general per-target witness rather than the dense linear row vector.
-            ...(!false && slotIndices.length > 1 && slotIndices.every((batchSlot) => {
+            ...(slotIndices.length > 1 && slotIndices.every((batchSlot) => {
               const info = ordered.find((candidate) => candidate.slotIndex === batchSlot);
               return info?.aliasCondDeleteSlot === undefined && (info?.runtimeAliasPriorSlots?.length ?? 0) === 0
                 && !info?.keySources?.some((source) => source.producer !== undefined);
@@ -4286,8 +4230,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // predecessor). Let it prove its key with the collection's first slot's proof input; the covenant refuses
         // a key a batch write targets, so a read never sees a written node's old value. Every write of the
         // collection must be a batch target for that check.
-        if (!false && node.ownRecordsScalarOnly !== true
-          && !node.modifiers.includes(FunctionModifier.DELEGATE) && this.compilerOptions.composition !== 'framed') {
+        if (!node.modifiers.includes(FunctionModifier.DELEGATE) && this.compilerOptions.composition !== 'framed') {
           for (const info of ordered) {
             const coll = this.collectionMap.get(info.collection);
             if (!coll?.sorted || info.inLoop || isWritten(info) || isChunkableValueType(coll.innermostValueType)) continue;
@@ -4443,22 +4386,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    if (false) {
-      walkInvocationAst(node.body, (candidate) => {
-        if (!(candidate instanceof FunctionCallNode)) return;
-        const target = this.routeCallTarget(candidate);
-        if (!target?.collectionIterations?.length) return;
-        const existing = node.collectionIterations ?? [];
-        node.collectionIterations = [
-          ...existing,
-          ...target.collectionIterations.map((iteration, index) => ({
-            ...iteration,
-            iterationIndex: existing.length + index,
-          })),
-        ];
-      });
-    }
-
     // External reads pre-scan: collect all external state/collection reads and assign slot indices
     if (bodySurvey.hasExternalRead) {
       const externalReadMap = new Map<string, ExternalReadSlot>();
@@ -4509,94 +4436,80 @@ export default class SymbolTableTraversal extends AstTraversal {
           ));
         }
       }
-      // A graph route batch route invokes compiler-owned clones whose foreign calls are authenticated against the
-      // participant emission frame. They are logical edges, not physical co-spends owned by this route, so do
-      // not synthesize the ordinary external-call index/return witnesses for their transitive closure.
-      if (false) {
-        externalCallSlots.length = 0;
-      }
 
       if (externalCallSlots.length > 0) {
         const logicalCallSlots = [...externalCallSlots];
-        // A synthesized route batch route already assigns physical owner blocks and logical rows. Applying the
-        // owner-local Release-5 collapse while that route is analysed would collapse the source handler's rows
-        // a second time and make its slot/effect layout disagree with the generated covenant. Release-5 grouping
-        // therefore runs on source entry points only; their synthesized local or graph route consumes the
-        // compiler-authored grouping instead of rediscovering it.
-        if (!false) {
-          const callOccursInLoop = (target: ExternalFunctionCallNode | undefined): boolean => {
-            if (!target) return false;
-            const seen = new Set<Node>();
-            const walk = (candidate: Node, inLoop = false): boolean => {
-              if (candidate === target) return inLoop;
-              if (seen.has(candidate)) return false;
-              seen.add(candidate);
-              const nestedLoop = inLoop || /^(WhileNode|DoWhileNode)$/.test(candidate.constructor.name);
-              for (const [key, child] of Object.entries(candidate)) {
-                if ([
-                  'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
-                  'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
-                ].includes(key)) continue;
-                if (child instanceof Node && walk(child, nestedLoop)) return true;
-                if (Array.isArray(child)) {
-                  for (const item of child) {
-                    if (item instanceof Node && walk(item, nestedLoop)) return true;
-                  }
+        const callOccursInLoop = (target: ExternalFunctionCallNode | undefined): boolean => {
+          if (!target) return false;
+          const seen = new Set<Node>();
+          const walk = (candidate: Node, inLoop = false): boolean => {
+            if (candidate === target) return inLoop;
+            if (seen.has(candidate)) return false;
+            seen.add(candidate);
+            const nestedLoop = inLoop || /^(WhileNode|DoWhileNode)$/.test(candidate.constructor.name);
+            for (const [key, child] of Object.entries(candidate)) {
+              if ([
+                'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+                'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+              ].includes(key)) continue;
+              if (child instanceof Node && walk(child, nestedLoop)) return true;
+              if (Array.isArray(child)) {
+                for (const item of child) {
+                  if (item instanceof Node && walk(item, nestedLoop)) return true;
                 }
               }
-              return false;
-            };
-            return walk(node.body);
+            }
+            return false;
           };
-          const allByTarget = new Map<string, ExternalCallSlot[]>();
-          for (const slot of logicalCallSlots) {
-            // A loop over targets calls a callee per iteration through its receiver declaration: two loops may
-            // each declare `pair` for callees of their own.
-            const fixedIdentity = slot.addressParam ? `param:${slot.addressParam}`
-              : slot.addressStateVar ? `state:${slot.addressStateVar}`
-                : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
-            const identity = slot.loopArrayVar ? (slot.loopReceiver ? `loop:${slot.loopReceiver}` : '') : fixedIdentity;
-            if (identity === '') continue;
-            const ownerKey = `${identity}|${slot.interfaceName}`;
-            const allGroup = allByTarget.get(ownerKey) ?? [];
-            allGroup.push(slot);
-            allByTarget.set(ownerKey, allGroup);
-          }
+          return walk(node.body);
+        };
+        const allByTarget = new Map<string, ExternalCallSlot[]>();
+        for (const slot of logicalCallSlots) {
+          // A loop over targets calls a callee per iteration through its receiver declaration: two loops may
+          // each declare `pair` for callees of their own.
+          const fixedIdentity = slot.addressParam ? `param:${slot.addressParam}`
+            : slot.addressStateVar ? `state:${slot.addressStateVar}`
+              : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
+          const identity = slot.loopArrayVar ? (slot.loopReceiver ? `loop:${slot.loopReceiver}` : '') : fixedIdentity;
+          if (identity === '') continue;
+          const ownerKey = `${identity}|${slot.interfaceName}`;
+          const allGroup = allByTarget.get(ownerKey) ?? [];
+          allGroup.push(slot);
+          allByTarget.set(ownerKey, allGroup);
+        }
 
-          const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
-          // Repeated calls to one callee run in one spend of its master, through the callee's multi-call entry,
-          // each call reading the record of its own frame.
-          const directConvention = this.compilerOptions.composition !== 'framed';
-          // A loop repeats its call while a callee master is spent once. Only a per-iteration target (an array
-          // element or witness, checked where it runs) or a frame of the callee's multi-call spend runs once per
-          // iteration; any other looped call would take results and effects of runs its callee never made.
-          const inLoop = (slot: ExternalCallSlot): boolean => slot.sourceCallNode !== undefined
-            && (this.loopNestedExternalCalls.has(slot.sourceCallNode) || callOccursInLoop(slot.sourceCallNode));
-          const groupedSlots = new Set(knownRepeated.flat());
-          const loopedCalls = directConvention ? logicalCallSlots.filter((slot) => !groupedSlots.has(slot)
-            && !slot.loopArrayVar && inLoop(slot)).map((slot) => [slot]) : [];
-          if (directConvention && node.isEntryPoint) this.assignDirectCallOrdinals(allByTarget.values(), inLoop);
-          // An entry's repeated or looped call reads its own record only as a numbered frame.
-          const refusedRepeated = directConvention
-            ? [...knownRepeated, ...loopedCalls].filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)
-              && (!node.isEntryPoint || slot.callOrdinal !== undefined)))
-            : knownRepeated;
-          // Retained but unreachable helpers are still typechecked. Their hypothetical transactions do not make
-          // the selected contract require a graph route; enforce the opt-out on reachable functions only.
-          if (directConvention && refusedRepeated.length > 0
-            && (!this.sourceFreeFunctions.has(node) || this.reachableSourceFreeFunctions.has(node))
-            && (!this.sourceContractFunctions.has(node) || this.reachableSourceContractFunctions.has(node))) {
-            const chains = refusedRepeated.map((group) => group.map((slot) =>
-              `${slot.interfaceName}.${slot.functionName}`).join(' -> '));
-            throw new SolidcDiagnosticError(
-              'REPEATED_CALL_UNSUPPORTED',
-              `Function '${node.name}' repeats calls to the same state owner (${chains.join('; ')}). `
-              + 'A UTXO master can be spent only once. The direct convention runs several calls in one spend only '
-              + "through the callee's multi-call entry, whose calls are regular and value-free, name a fixed method "
-              + 'of a fixed target and pass every argument their records digest; this transaction cannot be built.',
-              { functionName: node.name, callChains: chains },
-            );
-          }
+        const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
+        // Repeated calls to one callee run in one spend of its master, through the callee's multi-call entry,
+        // each call reading the record of its own frame.
+        const directConvention = this.compilerOptions.composition !== 'framed';
+        // A loop repeats its call while a callee master is spent once. Only a per-iteration target (an array
+        // element or witness, checked where it runs) or a frame of the callee's multi-call spend runs once per
+        // iteration; any other looped call would take results and effects of runs its callee never made.
+        const inLoop = (slot: ExternalCallSlot): boolean => slot.sourceCallNode !== undefined
+          && (this.loopNestedExternalCalls.has(slot.sourceCallNode) || callOccursInLoop(slot.sourceCallNode));
+        const groupedSlots = new Set(knownRepeated.flat());
+        const loopedCalls = directConvention ? logicalCallSlots.filter((slot) => !groupedSlots.has(slot)
+          && !slot.loopArrayVar && inLoop(slot)).map((slot) => [slot]) : [];
+        if (directConvention && node.isEntryPoint) this.assignDirectCallOrdinals(allByTarget.values(), inLoop);
+        // An entry's repeated or looped call reads its own record only as a numbered frame.
+        const refusedRepeated = directConvention
+          ? [...knownRepeated, ...loopedCalls].filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)
+            && (!node.isEntryPoint || slot.callOrdinal !== undefined)))
+          : knownRepeated;
+        // Retained but unreachable helpers are still typechecked; enforce the refusal on reachable functions only.
+        if (directConvention && refusedRepeated.length > 0
+          && (!this.sourceFreeFunctions.has(node) || this.reachableSourceFreeFunctions.has(node))
+          && (!this.sourceContractFunctions.has(node) || this.reachableSourceContractFunctions.has(node))) {
+          const chains = refusedRepeated.map((group) => group.map((slot) =>
+            `${slot.interfaceName}.${slot.functionName}`).join(' -> '));
+          throw new SolidcDiagnosticError(
+            'REPEATED_CALL_UNSUPPORTED',
+            `Function '${node.name}' repeats calls to the same state owner (${chains.join('; ')}). `
+            + 'A UTXO master can be spent only once. The direct convention runs several calls in one spend only '
+            + "through the callee's multi-call entry, whose calls are regular and value-free, name a fixed method "
+            + 'of a fixed target and pass every argument their records digest; this transaction cannot be built.',
+            { functionName: node.name, callChains: chains },
+          );
         }
         // Approach B (method binding): a void call through an interface naming exactly one function verifies no
         // co-spent selector (a one-method callee has no selector prefix), so a multi-method co-spent callee could
@@ -4613,7 +4526,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // which binds its calls where it runs. A framed body binds its calls by their frames. Grouped slots are already
         // removed above, and this block only runs off-route, so it reaches only direct calls.
         const directConventionVoidBinding = this.compilerOptions.composition !== 'framed';
-        if (directConventionVoidBinding && node.isEntryPoint && !false) {
+        if (directConventionVoidBinding && node.isEntryPoint) {
           for (const slot of externalCallSlots) {
             if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
             if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar) continue;
@@ -4766,10 +4679,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               if (operand instanceof IdentifierNode) node.opRolls.delete(operand.name);
             }
           }
-          // Graph emission may read a forwarded argument more than once
-          // (raw calldata is split once for its selector and once for its ABI
-          // tail). Keep every compiler-declared forwarded source PICK-only;
-          // the ordinary function epilogue removes the retained parameter.
+          // A forwarded argument may be read more than once (raw calldata is split once for its selector and once
+          // for its ABI tail). Keep every compiler-declared forwarded source PICK-only; the ordinary function
+          // epilogue removes the retained parameter.
           for (const source of slot.argSources ?? []) {
             if (source.kind !== 'forward' || source.paramIndex === undefined) continue;
             const parameter = node.parameters[source.paramIndex];
@@ -5052,7 +4964,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // B-side: inject _returnOutputIdx for functions with return types that are entry points
-    if (node.returnTypes.length > 0 && node.isEntryPoint && !false) {
+    if (node.returnTypes.length > 0 && node.isEntryPoint) {
       const returnOutputIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
       returnOutputIdxParam.location = node.location;
       node.parameters.push(returnOutputIdxParam);
@@ -5085,16 +4997,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     const readsExternalStorage = (node.externalReads?.length ?? 0) > 0;
     // An entry that delegatecalls settles no record of its own: its delegate's answers the call.
     const delegatecalls = describeFunctionLowLevelCallsites(node).some((site) => site.callMode === 'delegatecall');
-    // A fallback or receive entry publishes no inputs, so no caller could supply the witness. A route route
-    // settles no record of its own (each row's handler answers its call), so it reserves no carrier. In a route
-    // build, an entry whose native assembly the compiler cannot isolate keeps the settlement it had before such builds
-    // pinned void records: that assembly may take the digest the entry keeps across its body for its record.
-    if (node.returnTypes.length === 0 && node.isEntryPoint && !false
-      && !false
-      && !(false && false)
+    // A fallback or receive entry publishes no inputs, so no caller could supply the witness.
+    if (node.returnTypes.length === 0 && node.isEntryPoint
       && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
       && !readsExternalStorage && !delegatecalls && !node.isFallback && !node.isReceive
-      && this.compilerOptions.composition !== 'framed' && true
+      && this.compilerOptions.composition !== 'framed'
       && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
       const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
       voidRecordIdxParam.location = node.location;
@@ -5107,7 +5014,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // A-side: inject per-slot _externalReturnOutputIdx for functions that make external calls with return values
-    if (node.externalCalls && !false) {
+    if (node.externalCalls) {
       const returningSlots = node.externalCalls.filter((ec) => ec.hasReturnValues);
       for (const slot of returningSlots) {
         // The record a direct call reads is the digest of this method's selector and arguments; a method chosen at run
@@ -5207,52 +5114,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (this.isStatefulContract) {
       const tokenContainerAccessMap = new Map<string, TokenContainerAccessInfo>();
       this.collectTokenContainerAccesses(node.body, tokenContainerAccessMap);
-
-      // The route route invokes token handlers directly so their category parameter keeps the stack
-      // identity used by the token covenant. Pull each invoked handler's already-resolved access plan into the
-      // route under the actual forwarded category argument; otherwise the route reserves neither the container
-      // input nor its transfer outputs even though the selected handler enforces both.
-      if (false) {
-        walkInvocationAst(node.body, (candidate) => {
-          if (!(candidate instanceof FunctionCallNode)) return;
-          const target = this.routeCallTarget(candidate);
-          for (const access of target?.tokenContainerAccesses ?? []) {
-            // A key of the contract's own category or of its state is the same whichever row forwards it, so the
-            // access joins the route as the handler states it, under a key no argument can be named.
-            const fixedKey = access.keySource === 'own' ? '\u0000own'
-              : access.keySource === 'state' ? `\u0000state:${access.keyStateVariable}` : undefined;
-            if (fixedKey !== undefined) {
-              const fixed = [...tokenContainerAccessMap.values()].find((info) => info.keySource === access.keySource
-                && info.keyStateVariable === access.keyStateVariable);
-              if (fixed) {
-                for (const operation of access.operations) {
-                  if (!fixed.operations.includes(operation)) fixed.operations.push(operation);
-                }
-                fixed.transferCount += access.transferCount;
-                fixed.transferNftCount += access.transferNftCount;
-              } else {
-                tokenContainerAccessMap.set(fixedKey, { ...access, operations: [...access.operations], slotIndex: -1 });
-              }
-              continue;
-            }
-            const parameterIndex = target!.parameters.findIndex((parameter) => parameter.name === access.keyParam);
-            const actual = candidate.parameters[parameterIndex];
-            if (!(actual instanceof IdentifierNode)) continue;
-            const existing = tokenContainerAccessMap.get(actual.name);
-            if (existing) {
-              for (const operation of access.operations) {
-                if (!existing.operations.includes(operation)) existing.operations.push(operation);
-              }
-              existing.transferCount += access.transferCount;
-              existing.transferNftCount += access.transferNftCount;
-            } else {
-              tokenContainerAccessMap.set(actual.name, {
-                ...access, keyParam: actual.name, keySource: 'param', operations: [...access.operations], slotIndex: -1,
-              });
-            }
-          }
-        });
-      }
 
       if (tokenContainerAccessMap.size > 0) {
         let slotIndex = 0;
@@ -5376,8 +5237,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // F1: a compat call attests the call its pin binds. Held before the call-index witness, which stays last.
         const attestsCalls = this.compilerOptions.evmCompat === true && this.isStatefulContract && node.isEntryPoint
-          && this.compilerOptions.composition !== 'framed' && !false && !false
-          && true
+          && this.compilerOptions.composition !== 'framed'
           && !node.lowLevelCalls.some((call) => call.callMode === 'delegatecall');
         for (let i = 0; attestsCalls && i < lowLevelCallCount; i++) {
           if (node.lowLevelCalls[i].occurrence !== 'once' || silentCalls.has(i)) continue;
@@ -5459,15 +5319,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (hasExplicitDelegatecall && !this.delegatecallTargetsP2pkhLiteral(node.body)) {
       node.pinsDelegateCoSpend = true;
-      if (!false && !false) {
-        const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__delegateInputIndex');
-        idxParam.location = node.location;
-        node.parameters.push(idxParam);
-        this.symbolTables[0].set(Symbol.variable(idxParam));
-        const s = this.symbolTables[0].get('__internal__delegateInputIndex');
-        if (s) s.references.push({ name: '__internal__delegateInputIndex' } as IdentifierNode);
-        this.pushToStack(idxParam);
-      }
+      const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__delegateInputIndex');
+      idxParam.location = node.location;
+      node.parameters.push(idxParam);
+      this.symbolTables[0].set(Symbol.variable(idxParam));
+      const s = this.symbolTables[0].get('__internal__delegateInputIndex');
+      if (s) s.references.push({ name: '__internal__delegateInputIndex' } as IdentifierNode);
+      this.pushToStack(idxParam);
     }
 
     // C1/piece-7: the COMPILER-SYNTHESIZED delegatecall forms - `L.f()` library-call sugar and split-facet
@@ -5481,7 +5339,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // The derived index needs the block layout that reserves the slot, which exists only for a stateful entry
     // point. A synthesized delegatecall anywhere else has no reserved slot to pin to and is refused rather than
     // left silently unpinned.
-    if (!node.pinsDelegateCoSpend && !false && !false
+    if (!node.pinsDelegateCoSpend
       && hasSynthesizedDelegatecall) {
       if (!this.isStatefulContract || !node.isEntryPoint) {
         throw new InvalidModifierCombinationError(
@@ -5511,13 +5369,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     //  - 'loop': refused outright. The loop reuses one pinned input and one block slot per iteration, so N source
     //    delegations settle as ONE - a silent miscompile with no honest covenant to emit.
     //  - 'conditional': admitted, but codegen must preserve the proxy's own state on the not-taken path.
-    // Scope: the single-callsite pin only. A compiler-synthesized route route or graph handler dispatches
-    // its rows through a loop and derives each delegate index from its own per-row block slot rather than one
-    // shared slot, so neither the collapse nor the not-taken-path hole applies there. Same exclusion as the
-    // witness injection above. `L.f()` sugar and split forwarders are NOT excluded: they use one reserved slot
-    // per callsite exactly like a hand-written delegatecall, so both hazards apply verbatim (C1/piece-7).
-    if ((hasExplicitDelegatecall || hasSynthesizedDelegatecall)
-      && !false && !false) {
+    // `L.f()` sugar and split forwarders use one reserved slot per callsite exactly like a hand-written
+    // delegatecall, so both hazards apply verbatim (C1/piece-7).
+    if ((hasExplicitDelegatecall || hasSynthesizedDelegatecall)) {
       const reach = this.delegatecallReachability(node.body);
       if (reach === 'loop') {
         throw new InvalidModifierCombinationError(
@@ -5589,7 +5443,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       || (this.isStatefulContract && node.isEntryPoint && node !== this.currentContract.constructorDef
         && this.compilerOptions.composition !== 'framed'))
       && this.compilerOptions.evmCompat
-      && !false
       && !node.parameters.some((parameter) => parameter.name === '__internal__graphSelfIdentityInput')
       && entryReadsOwnAddress(node)) {
       const identity = new ParameterNode(PrimitiveType.BIGINT, '__internal__graphSelfIdentityInput');
@@ -5719,8 +5572,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // B8.7 rule 3: a marked creator's every entry except `receive` takes the created-children digest as its last
     // ABI input. It is injected after every other hidden witness, so it stays last; the body never reads it.
     if (this.currentContract?.createsSenderReadingChildren === true && node.isEntryPoint
-      && !node.isReceive && !node.isFallback && node.name !== '__construct' && !false
-      && this.compilerOptions.composition !== 'framed' && true
+      && !node.isReceive && !node.isFallback && node.name !== '__construct'
+      && this.compilerOptions.composition !== 'framed'
       && !node.parameters.some((parameter) => parameter.name === '__internal__createdChildren')) {
       const createdParam = new ParameterNode(new BytesType(), '__internal__createdChildren');
       createdParam.location = node.location;
@@ -5943,8 +5796,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * Runtime-loop transfer outputs are verified by the lowered handler, but their satoshi container belongs to
-   * the physical entry point which invokes it. Follow resolved internal calls so a route route reserves
-   * that shared input/output slot even when the marked transfer lives in a compiler-owned handler clone.
+   * the physical entry point which invokes it. Follow resolved internal calls so the entry reserves that shared
+   * input/output slot even when the marked transfer lives in a callee.
    */
   private hasRuntimeLoopTransfer(
     node: FunctionDefinitionNode,
@@ -6181,8 +6034,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // `allocateEmitSlots` reserves continuation chunks), so the provider's limit decides. Older layout planning
       // estimated a synthetic `chunkCount` from 128-byte pieces, but code generation and the SDK still emitted
       // one commitment. That advanced every later semantic emit index without reserving or producing the
-      // invented chunks, so a wide event followed by another event failed internally at `event[N]` and could
-      // make an otherwise composable route route fall back to direct-only compilation.
+      // invented chunks, so a wide event followed by another event failed internally at `event[N]`.
       const eventDef = node.eventDefinition;
       const candidates = node.eventCandidates;
       if (eventDef || (candidates && candidates.length > 0)) {
@@ -8618,26 +8470,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     return { access, arrayId };
   }
 
-  /**
-   * A graph row carries its call targets as pinned parameters or state; a target selected by an internal loop
-   * index has no row binding. The direct-function lowering would synthesize the loop target witness here, but a
-   * handler clone has no parameter to carry it, leaving an unresolved array access that the final typecheck
-   * rejects for the whole contract. Refuse the handler by name so route synthesis quarantines exactly it and
-   * still publishes every independently valid row.
-   */
-  private assertGraphHandlerLoopWitness(node: Node): void {
-    const fn = this.currentFunction;
-    if (fn === undefined) return;
-    // Every route clone has a compiler-owned parameter frame; the direct source handler is the only place a
-    // loop-target witness array can be threaded in from its caller.
-    if (true && !false) return;
-    throw new GraphHandlerShapeError(
-      node,
-      `Graph handler '${fn.name}' requires a pinned call target: a target selected by a loop index has no row `
-      + 'binding',
-    );
-  }
-
   private viewReturnCounter = 0;
 
   // These fields point outside the lexical body currently being rewritten. Following one while replacing a
@@ -8697,11 +8529,6 @@ export default class SymbolTableTraversal extends AstTraversal {
   private rewriteMultiUseViewCalls(fn: FunctionDefinitionNode): boolean {
     const body = fn.body;
     if (!body) return false;
-    // A graph handler does not physically co-spend the receiver once per call. Its calls are authenticated
-    // logical emission rows, and their return values arrive in the graph result frame. Replacing them with
-    // caller-supplied direct-route witnesses both discards those rows and creates a hidden parameter which the
-    // already-synthesized route cannot own. Preserve every call for the normal graph-slot collector instead.
-    if (false) return true;
     // A framed body makes each call as a frame of its own, on a master of its own, with the result in the call's
     // record, so a receiver a loop calls more than once needs no caller-supplied view witnesses.
     if (this.compilerOptions.composition === 'framed') return true;
@@ -9703,16 +9530,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       expression: ExpressionNode; negated: boolean; shortCircuit?: boolean;
     }[] = [],
   ): void {
-    if (true
-      && node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
-      // Direct-only codegen never executes the impossible arm, so it owns no runtime call slot and cannot
-      // create a repeated-owner spend requirement. An opted-in graph route still lowers both arms and needs
-      // their slots until graph codegen itself supports pruning them.
+    if (node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
+      // Codegen never executes the impossible arm, so it owns no runtime call slot and cannot create a
+      // repeated-owner spend requirement.
       const active = node.condition.value ? node.ifBlock : node.elseBlock;
       if (active) this.collectExternalCalls(active, slots, enclosingConditions);
       return;
     }
-    if (true && node instanceof WhileNode
+    if (node instanceof WhileNode
       && node.condition instanceof BoolLiteralNode && node.condition.value === false) return;
     if (node instanceof ExternalFunctionCallNode && node.callInfo && !node.foldedIntoDeploy) {
       // Lowered struct constructors can retain the same argument node through two AST edges. One source
@@ -9899,7 +9724,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
-            this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
             const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
@@ -9915,7 +9739,6 @@ export default class SymbolTableTraversal extends AstTraversal {
             ?? this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
-            this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
             this.uncheckedLoopTargets.add(witnessName);
@@ -10014,7 +9837,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           // call runs, so the callee is checked against it and the witness bound to it (`loopIndexExpression`).
           const loopIdx = this.findLoopIndexInComputedTarget(ae, this.currentFunction?.body);
           if (loopIdx && this.loopTargetIsCallerChosen(ae, this.currentFunction)) {
-            this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
             const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
@@ -12227,9 +12049,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(rawFunctionName && { rawFunctionName }),
         ...(rawSelector && { rawSelector }),
         ...(rawReadsRecord && { rawReadsRecord: true }),
-        // Keep the decoded AST parameters on the compiler-internal slot. Synthetic graph handlers are cloned
-        // after helper inlining, when the low-level payload may only remain as an identifier; the clone must still
-        // reconstruct the concrete callee's canonical argument vector from the values proven at the source edge.
+        // Keep the decoded AST parameters on the compiler-internal slot: after helper inlining the low-level payload
+        // may only remain as an identifier, and the callee's canonical argument vector is rebuilt from them.
         ...(rawParameters && { rawParameters }),
         ...(rawArgSources && { rawArgSources }),
         slotIndex: provisionalSlotIndex,
@@ -12391,13 +12212,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     node: Node, slots: ExternalCallSlot[],
     counter: { idx: number; visited?: Set<ExternalFunctionCallNode> },
   ): void {
-    if (true
-      && node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
+    if (node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
       const active = node.condition.value ? node.ifBlock : node.elseBlock;
       if (active) this.assignExternalCallSlotIndices(active, slots, counter);
       return;
     }
-    if (true && node instanceof WhileNode
+    if (node instanceof WhileNode
       && node.condition instanceof BoolLiteralNode && node.condition.value === false) return;
     if (node instanceof ExternalFunctionCallNode && node.callInfo) {
       counter.visited ??= new Set();
@@ -14008,7 +13828,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.indexCanonStatements(node);
   }
 
-  /** True when an expression reads a written local (`writtenLocals`), directly or through a local's initializer. */
   /**
    * A guarded write kept in its branch publishes its predicated form's value, `ternary(cond,v,map:m(k))`, as before
    * 766d02e42: the SDK then seeds a skipped write's kept node, not the value the body did not write.
@@ -14142,9 +13961,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     node: FunctionDefinitionNode, ordered: EntryAccessInfo[], batchByCollection: ReadonlyMap<string, number[]>,
     loopWrittenCollections: ReadonlySet<string>,
   ): void {
-    if (false || node.ownRecordsScalarOnly === true || this.insideConstructor
-      || node.modifiers.includes(FunctionModifier.DELEGATE) || this.compilerOptions.composition === 'framed'
-      || !(node.body instanceof BlockNode)) return;
+    if (this.insideConstructor || node.modifiers.includes(FunctionModifier.DELEGATE)
+      || this.compilerOptions.composition === 'framed' || !(node.body instanceof BlockNode)) return;
     const statements = node.body.statements ?? [];
     const bySlotKey = new Map(ordered.map((info) => [`${info.collection}:${info.keyParams.join(':')}`, info]));
     const slotOf = (collection: string, keys: ExpressionNode[]): number | undefined =>
@@ -14321,7 +14139,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Solidity. set() below adds it to the inner scope, so the shadow resolves correctly. Shadowing an outer
       // LOCAL that is still live is NOT accepted: codegen slots locals by name, so a live shadow would reuse the
       // outer's slot and miscompile - a clean rejection is sound; disjoint sibling scopes reuse names fine.
-      // Compiler-generated code (route route/verifier helpers) reaches user state only through the
+      // Compiler-generated code reaches user state only through the
       // explicit `this.x` form, so a generated local may shadow a state-variable name without ambiguity.
       // Native source stays strict: the evmCompat gate is what relaxes it for user code.
       const generatedLocal = generatedOriginOf(node.location) !== undefined;
@@ -15055,8 +14873,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // The symbols above are installed before visiting the RHS so references in later statements can bind, but
     // their synthetic initializer must describe the resolved value, not the stale surface FunctionCallNode.
-    // Record an explicit component projection for a multi-return RHS; downstream graph lowering can then refer
-    // to one stable producer callsite and result index without rediscovering or cloning the call.
+    // Record an explicit component projection for a multi-return RHS; downstream passes can then refer to one
+    // stable producer callsite and result index without rediscovering or cloning the call.
     node.elements.forEach((variable, index) => {
       if (variable.skip || variable.existing || !variable.name) return;
       const definition = this.symbolTables[0].get(variable.name)?.definition;
@@ -16060,8 +15878,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
       }
 
-      // Generated route route source cannot call arbitrary user-private helpers. Inline the same
-      // conservative straight-line pure subset that deployment-recipe analysis accepts.
+      // Inline the conservative straight-line pure helper subset that deployment-recipe analysis accepts.
       this.inlineChildDeploymentHelpers(node, this.currentContract?.functions ?? []);
 
       if (node.isDeployerNew !== true) {
@@ -16328,8 +16145,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private injectGenesisCallParameter(node: FunctionDefinitionNode): void {
     // On by default (A7); `genesisCalls: false` is the switch. A framed compile and a route compile emit no
     // record-sound master, whatever their route admits.
-    if (this.compilerOptions.genesisCalls === false || this.compilerOptions.composition === 'framed'
-      || false) return;
+    if (this.compilerOptions.genesisCalls === false || this.compilerOptions.composition === 'framed') return;
     // Nothing of B6.4 to B6.7 is emitted in a master that is not record-sound: such an entry cannot answer a
     // constructor, so it takes no genesis parameter. Code generation decides the same from the same facts.
     const contract = this.currentContract;
@@ -16375,21 +16191,6 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * The definition a route route's call invokes. The route spells each call at the arity its callee had before
-   * this traversal gave it hidden witnesses, which later padding accounts for: the definition of that
-   * arity, or the one definition whose parameters past it are all hidden.
-   */
-  private routeCallTarget(call: FunctionCallNode): FunctionDefinitionNode | undefined {
-    const definitions = this.functionDefinitions.get(call.identifier.name) ?? [];
-    const exact = definitions.find((definition) => definition.parameters.length === call.parameters.length);
-    if (exact !== undefined) return exact;
-    const padded = definitions.filter((definition) => definition.parameters.length > call.parameters.length
-      && definition.parameters.slice(call.parameters.length)
-        .every((parameter) => parameter.name.startsWith('__internal__')));
-    return padded.length === 1 ? padded[0] : undefined;
-  }
-
-  /**
    * The arguments a call made once per turn of a loop over targets (a parameter array, a computed-target witness or a
    * state array: code generation refuses any other) leaves to each turn's callee: the caller takes a witness list of
    * each (callArgumentListName) and digests each turn's element, so each turn's record binds its method and arguments.
@@ -16419,8 +16220,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * and a caller that names its reader refuses their records.
    */
   private injectCallRecordReaderParameter(node: FunctionDefinitionNode): void {
-    if (this.compilerOptions.composition === 'framed' || false
-      || false || false) return;
+    if (this.compilerOptions.composition === 'framed') return;
     if (node.parameters.some((parameter) => parameter.name === CALL_RECORD_READER_INPUT)) return;
     const parameter = new ParameterNode(PrimitiveType.BIGINT, CALL_RECORD_READER_INPUT);
     parameter.location = node.location;
@@ -16567,7 +16367,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
     if (!(type instanceof AddressType) || type.interfaceName === undefined) return;
-    if (this.compilerOptions.composition === 'framed' || false) return;
+    if (this.compilerOptions.composition === 'framed') return;
     const name = type.interfaceName;
     const declaration = this.contractMap.get(name);
     const isInterface = this.interfaceMap.has(name);
@@ -16600,7 +16400,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /** `node` pays `target` a raw call's value: refused where the target is seen to be a stateful contract. */
   private refuseRawValueTarget(node: Node, target: ExpressionNode): void {
-    if (this.compilerOptions.composition === 'framed' || false) return;
+    if (this.compilerOptions.composition === 'framed') return;
     const name = this.statefulTargetName(target);
     if (name !== undefined) throw new StatefulRawValueCallError(node, name);
   }
@@ -16681,11 +16481,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     return iface !== undefined && (iface.stateVariables.length > 0 || iface.collections.length > 0) ? name : undefined;
   }
 
-  /**
-   * `this.payMinerFee(amount)`. Framed conservation has no such term: its validator weighs only sends and calls, so
-   * value leaves a framed contract only as a send (spec 4b). The statement is a top-level one, and one per entry, so
-   * every run of the entry authorizes exactly the amount its source names, and its layout can read it from the body.
-   */
   /** A4.4: the deployer program's rewrite of a constructor's collection write. */
   visitJournalAppend(node: JournalAppendNode): Node {
     const collection = this.collectionMap.get(node.collectionName);
@@ -19524,18 +19319,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (objType instanceof AddressType) {
         const data = node.parameters.length === 1
           ? this.visit(node.parameters[0]) as ExpressionNode : node.parameters[0];
-        // EVM-parity sound low-level call: `(bool, bytes) = addr.call/staticcall(payload)` co-spends the callee
-        // and returns its REAL integrity-bound return (identity + return-event); staticcall is the read-only
-        // variant (preserves the callee's commitments). The `{value:}`/`{gas:}` forms keep the existing weak
-        // path for now (value-transfer handling), and delegatecall self-verifies via _proxyMasterIndex.
-        const graphRawCallsRequested = false;
         // A payload naming a function that declares a result takes the raw external call with its options too: only
         // that call reads its callee's record, where the low-level form answers with no result read. Its `gas` is an
         // inert hint, dropped below, and its `value` is the call's authenticated transfer.
         const readsRecord = this.compilerOptions.composition !== 'framed' && node.callOptions?.salt === undefined
           && this.payloadNamesReturningFunction(data);
         const graphRawValueCall = node.methodName === 'call'
-          && (graphRawCallsRequested || readsRecord)
+          && (readsRecord)
           && node.callOptions?.value !== undefined
           && node.callOptions.salt === undefined;
         const gasOnlyRecordRead = readsRecord && node.callOptions?.value === undefined;
@@ -19953,32 +19743,18 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * CRYPTO-4 binds every data NFT, mapping entry, value chunk and satoshi or token container to the master's exact
-   * lock. An in-place upgrade moves the master to the replacement's lock, so a contract keeping any of them would
-   * strand them. The journal's in-place append upgrade leaves its records at the old lock too. A framed record binds
-   * no master lock.
+   * lock; a direct upgrade migrates them. Publish the container surface to the upgrade codegen: the satoshi and token
+   * containers migrate on a direct upgrade; the per-foreign-category token container population is bounded by the
+   * SDK-provided category list. A framed record binds no master lock.
    */
-  private refuseUpgradeStrandingBoundRecords(contract: ContractNode): void {
+  private publishUpgradeContainerSurface(contract: ContractNode): void {
     if (this.compilerOptions.composition === 'framed') return;
-    // Name the source entry rather than a route clone of it.
-    const upgrades = contract.functions.filter((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE));
-    const upgrade = upgrades.find((fn) => !fn.name.startsWith('__')) ?? upgrades[0];
-    if (upgrade === undefined) return;
+    if (!contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE))) return;
     const slots = [...contract.functions, contract.fallbackDef, contract.receiveDef]
       .flatMap((fn) => fn?.blockLayout?.slots ?? []);
-    // Publish the container surface to the upgrade codegen: the satoshi and token containers migrate on a direct
-    // upgrade; the per-foreign-category token container population is bounded by the SDK-provided category list.
     contract.keepsSatoshiContainer = slots.some((slot) => slot.kind === 'satoshiContainer');
     contract.keepsTokenContainer = slots.some((slot) => slot.kind === 'tokenContainer');
     contract.tokenContainerCount = slots.filter((slot) => slot.kind === 'tokenContainer').length;
-    // Data NFTs and the satoshi container migrate on a pure direct upgrade (the bounded half of CRYPTO-4). A
-    // route journal upgrade route (in-place append) keeps them at the old lock and still strands them, so it
-    // stays refused. Route synthesis runs before this pass, so its upgrade marker is present.
-    const upgradeMigratesDataNfts = true;
-    const records = [
-      ...(!upgradeMigratesDataNfts && contract.stateVariables.length > 0
-        ? ['state variables in data NFTs'] : []),
-    ];
-    if (records.length > 0) throw new UpgradeStrandsBoundStateError(upgrade, upgrade.name, records);
   }
 
   /** Whether `body` writes the local or parameter `name`: assigns it or an element of it, pushes, pops or deletes. */
@@ -20013,8 +19789,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    */
   private recoversOnlyInTrailingLoops(node: FunctionDefinitionNode): boolean {
     const effects = Math.max(node.recoveryEffectCount ?? 0, node.ecrecoverCallCount ?? 0);
-    if (effects === 0 || !node.body || !node.isEntryPoint || node.name === '__construct'
-      || false || false || this.compilerOptions.composition === 'framed') {
+    if (effects === 0 || !node.body || !node.isEntryPoint || node.name === '__construct' || this.compilerOptions.composition === 'framed') {
       return false;
     }
     const recovery = new Set<string>([
@@ -20046,9 +19821,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * the emitted blockLayout slots and reproduce input/output indices 1:1. External read/call groups reserve
    * offset space for their callee data NFTs without emitting a slot kind.
    */
-  private computeAuxiliaryBand(
-    node: FunctionDefinitionNode, base: number, graphEcrecover: number,
-  ): { slots: BlockLayoutSlot[]; offset: number } {
+  private computeAuxiliaryBand(node: FunctionDefinitionNode, base: number): { slots: BlockLayoutSlot[]; offset: number } {
     const slots: BlockLayoutSlot[] = [];
     let offset = base;
 
@@ -20059,11 +19832,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // function's returnEvent, an `emit`, a transfer or a token-container transfer - claimed the same position,
     // the SDK materialized a funder there, and the implementation was pushed one input later until the
     // covenant's subtraction disagreed with the witness. Reserve the position instead.
-    if (!false && !false) {
-      for (let i = 0; i < (node.lowLevelCalls ?? []).length; i++) {
-        if (node.lowLevelCalls![i].callMode !== 'delegatecall') continue;
-        slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
-      }
+    for (let i = 0; i < (node.lowLevelCalls ?? []).length; i++) {
+      if (node.lowLevelCalls![i].callMode !== 'delegatecall') continue;
+      slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
     }
 
     // External reads
@@ -20126,10 +19897,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 3 * i + 2 }); // B (pubkey)
       }
     }
-    const existingEcrecover = slots.filter((slot) => slot.kind === 'ecrecoverSideCar').length;
-    for (let i = existingEcrecover; i < graphEcrecover; i++) {
-      slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: i, conditional: true });
-    }
 
     // Reserve offset space for outState groups (between reads and entries)
     if (node.externalOutStateReads) {
@@ -20149,17 +19916,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * Compute the 1:1 block layout for a stateful function.
-   * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
-   */
-  /**
    * F1: this entry is a callee that reads a contract-caller msg.sender, so it must bind which contract called it.
    * A direct, non-framed, non-route stateful entry whose body uses msg.sender; the route binds its callers
    * through the route instead, and framed through its call records.
    */
   private entryRequiresCallerEdge(node: FunctionDefinitionNode): boolean {
-    return this.isStatefulContract && node.isEntryPoint && node.usesMsgSender === true
-      && !false && !false && node.name !== '__construct'
+    return this.isStatefulContract && node.isEntryPoint && node.usesMsgSender === true && node.name !== '__construct'
       && this.compilerOptions.composition !== 'framed';
   }
 
@@ -20222,7 +19984,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
     // A raw call whose payload names its method attests through the callee pushes its compat binding reads.
     const attestsRawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__' && node.isEntryPoint
-      && slot.rawSelector !== undefined && true
+      && slot.rawSelector !== undefined
       && (callMode === ExternalCallMode.REGULAR || callMode === ExternalCallMode.STATICCALL);
     const attestsTypedCall = slot.callRecordSelector !== undefined && this.interfaceMap.has(slot.interfaceName)
       && slot.calleeMethod !== undefined && !slot.opaqueReturn && callMode === ExternalCallMode.REGULAR
@@ -20232,7 +19994,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && slot.sourceCallNode !== undefined
       && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], slot.sourceCallNode.parameters.length);
     return this.isStatefulContract && (attestsRawCall || attestsTypedCall)
-      && this.compilerOptions.composition !== 'framed' && !false && !false
+      && this.compilerOptions.composition !== 'framed'
       && !slot.runtimeSelector && !slot.selectorArrayVar
       && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined
       && slot.condition === undefined && !slot.addressIsSelf && !slot.addressIsMsgSender;
@@ -20240,16 +20002,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * `pragma satoshicontainer single` and `pragma tokencontainer single` keep one coin at a container's lock, which a
-   * framed contract, whose frames settle its containers, a route route and an upgrade, which moves them to a new
-   * lock, cannot promise. The error names the satoshi pragma when the contract has both.
+   * framed contract, whose frames settle its containers, and an upgrade, which moves them to a new lock, cannot
+   * promise. The error names the satoshi pragma when the contract has both.
    */
   private validateSingleContainers(node: ContractNode): void {
     const pragma = node.singleSatoshiContainer ? 'satoshicontainer' : 'tokencontainer';
     if (this.compilerOptions.composition === 'framed') {
       throw new SingleContainersError(node, pragma, 'is not available to a framed contract');
-    }
-    if (false) {
-      throw new SingleContainersError(node, pragma, 'is not available to a route contract');
     }
     const upgrade = node.functions.find((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE));
     if (upgrade) {
@@ -20277,13 +20036,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
-    // X29: effect slots the route reserves on behalf of graph emission handlers it invokes behind OP_INVOKE.
-    const graphFrame = false ? node.graphEffectFrame : undefined;
-    const graphEvents = (graphFrame?.sites ?? 0) * (graphFrame?.eventWidth ?? 0);
-    const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
-    const graphTokenTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.tokenTransferWidth ?? 0);
-    const graphEcrecover = (graphFrame?.sites ?? 0) * (graphFrame?.ecrecoverWidth ?? 0);
-    const graphDeployWidth = graphFrame?.deployWidth ?? 0;
 
     // Master
     slots.push({ kind: 'master', offset: offset++ });
@@ -20303,7 +20055,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // data NFTs and the effect tail (delegate, external read, blockhash/block-info oracles, keccak/ecrecover
     // side-cars, external read/call reservations) is allocated by ONE driver in a canonical order, so the
     // SDK can iterate the emitted blockLayout slots and reproduce input/output indices 1:1.
-    const band = this.computeAuxiliaryBand(node, offset, graphEcrecover);
+    const band = this.computeAuxiliaryBand(node, offset);
     slots.push(...band.slots);
     offset = band.offset;
 
@@ -20318,8 +20070,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Satoshi container (if function has transfers - its own, or a graph handler's frames - or pays the miner fee,
-    // which the container funds)
+    // Satoshi container (if function has transfers or pays the miner fee, which the container funds)
     const minerFeeStatement = node.body?.statements?.find(
       (statement): statement is MinerFeeStatementNode => statement instanceof MinerFeeStatementNode,
     );
@@ -20327,7 +20078,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // rides its record takes the value from the container too.
     const singleSatoshiContainer = this.currentContract?.singleSatoshiContainer === true;
     if ((node.transferInfos && node.transferInfos.length > 0)
-      || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0 || minerFeeStatement
+      || this.hasRuntimeLoopTransfer(node) || minerFeeStatement
       || (singleSatoshiContainer && node.modifiers.includes(FunctionModifier.PAYABLE))
       || this.sendsDeployerValue(node.body)
       || (node.externalCalls ?? []).some((slot) => slot.callValueInRecord === true)) {
@@ -20350,13 +20101,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'transfer', offset: offset++, slotIndex: i });
       }
     }
-    for (let i = node.transferInfos?.length ?? 0; i < graphTransfers; i++) {
-      slots.push({ kind: 'transfer', offset: offset++, slotIndex: i, conditional: true });
-    }
 
-    // TC transfers (output-only - one slot per transfer/transferNft operation). Graph frames
-    // reserve `sites * tokenTransferWidth` so a loop dispatch can index row `s` at
-    // `[base + s * width, ...)`, matching satoshi `graphTransfers` padding.
+    // TC transfers (output-only - one slot per transfer/transferNft operation).
     if (node.tokenContainerAccesses) {
       let tcTransferIdx = 0;
       const fixedSites = node.tokenContainerTransferSiteCount
@@ -20365,13 +20111,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         );
       for (; tcTransferIdx < fixedSites; tcTransferIdx++) {
         slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: tcTransferIdx });
-      }
-      for (let i = tcTransferIdx; i < graphTokenTransfers; i++) {
-        slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: i, conditional: true });
-      }
-    } else {
-      for (let i = 0; i < graphTokenTransfers; i++) {
-        slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: i, conditional: true });
       }
     }
 
@@ -20384,9 +20123,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           slots.push({ kind: 'eventChunk', offset: offset++, slotIndex: i, chunk, conditional: true });
         }
       }
-    }
-    for (let i = node.emitInfos?.length ?? 0; i < graphEvents; i++) {
-      slots.push({ kind: 'event', offset: offset++, slotIndex: i, conditional: true });
     }
 
     // Return event (output-only). A void entry that attests a universal void call record (approach B) also pins a
@@ -20403,32 +20139,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       || (node.returnTypes.length === 0 && !runsMappingLoop && !node.modifiers.includes(FunctionModifier.DELEGATE)
         && node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx'))) {
       slots.push({ kind: 'returnEvent', offset: offset++ });
-      // The route route commits its complete result vector here. Atomic graph derivation extracts each
-      // logical invocation's typed result from that authenticated vector; no per-row return NFT is consumed or
-      // materialized. Reserving maximumRows additional output-only slots merely pads every returning route,
-      // including direct batches, and makes its covenant scan those inert transaction outputs.
     }
 
-    // Low-level call slots. Ordinary address.call / staticcall use a runtime __internal__callInputIndex
-    // witness (see visitFunctionDefinition) so multi-UTXO callees can sit after the caller's trailing
-    // region. Only delegatecall keeps a fixed layout slot (paired with proxy co-spend geometry).
-    // In a balanced route batch block, a delegate is a real co-spent covenant paired with its
-    // preserved output; direct wrappers continue to use their positional delegate-input witness.
-    if (node.lowLevelCalls) {
-      for (let i = 0; i < node.lowLevelCalls.length; i++) {
-        // Direct delegate implementations already own a reserved slot next to the data-NFT region above.
-        if (node.lowLevelCalls[i].callMode === 'delegatecall'
-          && !false && !false) continue;
-        // Non-delegatecall: runtime callInputIndex, no fixed slot.
-        if (node.lowLevelCalls[i].callMode !== 'delegatecall') continue;
-        slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
-      }
-    }
-    if (false && (node.graphDelegateSlotCount ?? 0) > 0) {
-      for (let i = 0; i < node.graphDelegateSlotCount!; i++) {
-        slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
-      }
-    }
+    // Low-level calls take no slot here: address.call / staticcall use a runtime __internal__callInputIndex
+    // witness (see visitFunctionDefinition) so multi-UTXO callees can sit after the caller's trailing region, and
+    // a delegatecall's delegate input owns its reserved slot next to the data-NFT region above.
 
     // Deploy slots (deploy modifier functions have a genesis input per child deploy site).
     // After each deploy master, reserve a fixed `deployDataNft` slot per child data NFT so the
@@ -20437,14 +20152,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // (see docs/deferrals.md "Factory deploy of a stateful child alongside vmap mapping writes").
     // deployTargets is not yet populated here; resolve counts from each InstantiationNode's
     // referenced contract (or deployedDataNftCount once the site has been visited).
-    if (false && graphDeployWidth > 0) {
-      for (let row = 0; row < (graphFrame?.sites ?? 0); row++) {
-        slots.push({ kind: 'deploy', offset: offset++, slotIndex: row });
-        for (let nftIdx = 1; nftIdx < graphDeployWidth; nftIdx++) {
-          slots.push({ kind: 'deployDataNft', offset: offset++, slotIndex: row, nftIndex: nftIdx - 1 });
-        }
-      }
-    } else if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
+    if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
       const deploySiteCounts = this.listDeploySiteDataNftCounts(node.body);
       const siteCount = Math.max(1, deploySiteCounts.length);
       for (let i = 0; i < siteCount; i++) {

@@ -1005,10 +1005,8 @@ export function analyzeFixedBchEffectRecipes(
         : 'kind' in child && recipeUsesTransactionSignature(child as ChildDeploymentValueRecipe, seen)));
   };
   const recipe = (expression: ExpressionNode, environment: Environment): ChildDeploymentValueRecipe | undefined => {
-    // Graph lowering replaces msg.sender with this compiler-owned row local before final artifact analysis.
-    // Both spellings name the manifest-authenticated logical caller, not a user-controlled ABI input.
-    if ((expression instanceof NullaryOpNode && expression.operator === NullaryOperator.MSG_SENDER)
-      || (expression instanceof IdentifierNode && false)) {
+    // msg.sender names the authenticated logical caller, not a user-controlled ABI input.
+    if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.MSG_SENDER) {
       return { kind: 'logicalCaller', resultType: 'address' };
     }
     const resolved = childDeploymentValueRecipe(

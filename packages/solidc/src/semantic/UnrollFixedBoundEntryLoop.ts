@@ -25,8 +25,6 @@ import {
   ContinueNode,
   ReturnNode,
   FunctionCallNode,
-  IndirectCallNode,
-  MethodCallNode,
   InstantiationNode,
   NewArrayNode,
   CastNode,
@@ -474,11 +472,6 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private hasChildDeployment(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof InstantiationNode
       && this.contractNames.has(n.identifier.name));
-  }
-
-  private hasIndirectCall(stmts: Node[]): boolean {
-    return this.anyNode(stmts, (n) => n instanceof IndirectCallNode
-      || (n instanceof MethodCallNode && (n.selectorArrayVar !== undefined || n.pointerTableBroadcast)));
   }
 
   /**

@@ -1379,9 +1379,6 @@ const expressionSource = (
     && (expression as unknown as { operator?: string }).operator === 'msg.sender') {
     return { kind: 'msgSender' };
   }
-  if (expression.constructor.name === 'IdentifierNode' && false) {
-    return { kind: 'msgSender' };
-  }
   if (expression.constructor.name === 'IdentifierNode' && shaped.name) {
     const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
     const parameterIndex = visible.findIndex((parameter) => parameter.name === shaped.name);
@@ -3560,10 +3557,6 @@ function buildFunctionAbiMetadata(
     };
   })();
   const signatureGuard = signatureGuardOf(func, contract, provenance);
-  // Graph handlers execute behind the synthetic route, while their loop-write metadata is discovered during
-  // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
-  // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
-  // mutable placeholder and its handler covenant correctly rejects the missing entry-NFT output.
   const routeEntryLoopWrites = func.entryLoopWrites;
   const loopSignatureFunctions = [func];
   const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
@@ -4021,7 +4014,6 @@ function buildFunctionAbiMetadata(
     ...(argumentFieldUpdates && { argumentFieldUpdates }),
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
-    ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
     ...(func.runtimeLoopAffineRecursiveFrameDescriptors?.length && {
@@ -4256,7 +4248,7 @@ function buildFunctionAbiMetadata(
           ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
           ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
           // Publish false too: absence denotes a legacy artifact, not a proven value-free edge.
-          callValueEffect: rawCall && (func.graphRawCallValueEffect === true || hasExternalCallValueEffect(ec)),
+          callValueEffect: rawCall && hasExternalCallValueEffect(ec),
           ...(ec.callValueInRecord && ec.callValueSource && { callValue: ec.callValueSource }),
           ...(ec.opaqueReturn && { opaqueReturn: true }),
           ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),

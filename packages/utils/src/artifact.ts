@@ -390,18 +390,10 @@ export interface FunctionBlockLayout {
   fixedSuffix?: number;
 }
 
-/**
- * Compiler-authored geometry for one typed stateful child-creation site reached by a route handler.
- *
- * This is published even while the admission gate remains closed, so transaction assemblers can grow
- * against an exact, application-neutral topology rather than rediscovering `new C(...)` from contract names.
- * One genesis input supplies the category; the corresponding output run is the child master followed by its
- * mutable data NFTs.
- */
 /** A pure value expression which an SDK can reproduce from a decoded handler row and authenticated pre-state. */
 export type ChildDeploymentValueRecipe =
   | { kind: 'handlerInput'; inputIndex: number; resultType?: string }
-  /** The graph-authenticated logical caller for this invocation row. */
+  /** The authenticated logical caller (`msg.sender`). */
   | { kind: 'logicalCaller'; resultType: 'address' }
   /** A scalar decoded from the authenticated incoming participant state commitment. */
   | { kind: 'state'; name: string; resultType: string }
@@ -1525,18 +1517,6 @@ export interface CallsiteCallerIdentityAbi {
   subjectLockingBytecode?: string;
 }
 
-/**
- * One compiler-authored outgoing call edge.
- *
- * Callsite identity is a four-tuple carried through discovery → composition → result consumption:
- * - **Physical callsite ID** (`callsiteId`): post-collapse co-spend / consumer lane.
- * - **Occurrence** (`occurrence` / runtime `occurrenceIndex`): reach index of that source row.
- *
- * Non-batched calls: physical === source; logical index absent; occurrence 0 unless loop/conditional.
- * Batched calls (journal): physical ≠ source in general; every row publishes `sourceCallsiteId` +
- * `logicalIndex`; runtime occurrence is required and monotone per `(sourceCallsiteId, logicalIndex)`.
- * Do not invent source identity from proxy/delegate/locking bytecode.
- */
 /**
  * A direct call's ordinal among one function's calls to one callee, the frame of the callee's multi-call spend whose
  * record it reads: `ordinal` fixed at compile time, or `counted`, the value of the group's counter (0 at entry, one

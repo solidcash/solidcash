@@ -3434,11 +3434,18 @@ and the list is spent to its end. A caller that keeps state reads the record eac
 `__internal__lowLevelCallRecordBase<i>` plus the turn, a carrier of that callee's category, by the payload's digest for
 a visible payload, and pins an opaque payload's run reader to its input. `.withCall()` lists one callee per turn. The
 three Kashi files compile again. Still refused by name: such a call outside an entry point, beside a delegatecall, or in
-a message-bus direct participant. Residuals: a `{value:}` pays from one turn per transaction (a second paying turn fails
-at the VM); the SDK refuses a turn that is a returning callee, a raw coin (where records are read) or a second run of
-one contract (`LowLevelCallTurnsError`). Open: the SDK's build of a stateful caller's turns fails its value balance
-before the VM runs (`LowLevelCallTurns.e2e`, its 4 stateful rows), so the record, reader and digest checks are not
-VM-run yet; the stateless list binding is (two callees, one callee twice as two runs, one run for two turns refused).
+a message-bus direct participant. Residuals: a `{value:}` pays from one turn per transaction; the SDK refuses a turn
+that is a returning callee, a raw coin (where records are read) or a second run of one contract (`LowLevelCallTurnsError`).
+
+**Stateful turns settle 2026-11-25** (`55f2cf8d5`): the build no longer drifts. The return-event pass held each turn's
+record witness open as a return slot and padded up to it before the band, so every build moved the band and its records
+6 outputs further (record base 42 by the send, unfunded pads, the fee funder copied whole). It skips the turns' callee
+runs, so the records follow the band, at the lowest base past the continuations, funded with the fee. The stateful rows
+VM-run: the honest send settles; one run for two turns, a record of another payload and one naming another reader are
+refused at the caller. A row whose `{value:}` is not statically zero publishes `valueSource`, and the SDK refuses before
+building a listing two of whose turns may pay (an amount every turn pays, two nonzero elements of a loop-indexed array
+argument, or a value it cannot evaluate). Open: a value-only send loop (`to.call{value: v}("")`) lists no turns, so a
+second paying turn of it still fails at the VM; a turn's value read any other way is refused rather than evaluated.
 
 ## Value calls nothing binds (2026-11-24)
 

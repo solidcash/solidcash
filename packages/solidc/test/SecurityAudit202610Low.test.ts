@@ -194,7 +194,7 @@ describe('October 2026 low holes', () => {
     const bundle = compileStringSplit(
       `${P} contract C { int n; function ping() { this.n = this.n + 1; require(true); }`
       + ' function ping(int x) internal { require(x == 0); } }',
-      { forceSplit: true},
+      { forceSplit: true },
     );
     const info = bundle.manifest.facets[0];
     if (!info) throw new Error('ping was not moved to a facet');

@@ -213,7 +213,7 @@ describe('MinimalNativeToken bytecode budget', () => {
       'library ReadFacet { mapping(bytes20=>uint256) balances;'
       + ' function f(bytes20 a, bytes20 b, bytes20 c) public {'
       + ' require(this.balances[a] == this.balances[b] || this.balances[c] == 0); } }',
-      { brandLibrary: true},
+      { brandLibrary: true },
     );
     expect(delegate.debug.invokeDebug?.['-18']?.name).not.toBe('compiler helper -18');
 

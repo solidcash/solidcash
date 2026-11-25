@@ -86,7 +86,7 @@ describe('local array-element assignment', () => {
   it('reuses the decoded length when rebuilding a fixed array', () => {
     const artifact = compileString('contract C { function f(uint256 x) public returns(uint256) {'
       + ' uint256[5] memory p; p[0]=x; p[1]=x+1; p[2]=x+2; p[3]=x+3; p[4]=x+4;'
-      + ' return p[4]; } }', { evmCompat: true});
+      + ' return p[4]; } }', { evmCompat: true });
     expect(artifact.debug.bytecode.length / 2).toBeLessThan(1200);
   });
 
@@ -164,7 +164,7 @@ describe('whole fixed-array copy with a per-element bytes conversion (bytes2[N] 
   });
   it('is byte-identical to the explicit element-wise cast form', () => {
     const whole = compileString('contract C{bytes1[2] d1;bytes2[2] d2;function f()external{d2=d1;require(true);}}',
-      { evmCompat: true});
+      { evmCompat: true });
     const explicit = compileString('contract C{bytes1[2] d1;bytes2[2] d2;'
       + 'function f()external{d2[0]=bytes2(d1[0]);d2[1]=bytes2(d1[1]);require(true);}}', {
       evmCompat: true,

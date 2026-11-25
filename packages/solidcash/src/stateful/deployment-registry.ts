@@ -1,6 +1,5 @@
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript, lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
 
@@ -216,11 +215,6 @@ export function registeredValueAddressLockingBytecode(
 ): Uint8Array | undefined {
   const deployment = findDeploymentByExactAddress(provider, address);
   if (!deployment) return undefined;
-  const contract = deployment.contract as {
-    inner?: { artifact?: Artifact };
-    implementation?: { inner?: { artifact?: Artifact } };
-  };
-  const artifact = contract.implementation?.inner?.artifact ?? contract.inner?.artifact;
   const authenticatesPublicSelf = false;
   // New compiler-generated routes prove their public SCID on-chain. Persisting the physical execution address instead
   // would make an otherwise identical CREATE reference depend on whether its deployment was already known.

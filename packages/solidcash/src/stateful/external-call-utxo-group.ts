@@ -335,7 +335,8 @@ export interface ExternalCallUtxoGroup {
   ) => void;
   /** Rebuild the physical unlocker after compiler-derived visible arguments change during dependency convergence. */
   refreshFunctionArgs?: (args: any[]) => void;
-  /** Recompute hidden witnesses derived from a direct call frame's visible arguments (for example, replayed array pushes). */
+  /** Recompute hidden witnesses derived from a direct call frame's visible arguments (for example, replayed
+   * array pushes). */
   refreshRouteDerivedArguments?: (
     rowArguments: readonly {
       selector: string;

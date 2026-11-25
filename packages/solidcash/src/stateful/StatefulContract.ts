@@ -1,59 +1,5 @@
 /* eslint-disable max-len, @typescript-eslint/no-loop-func, @typescript-eslint/no-shadow */
-import {
-  type Artifact,
-  type FunctionSplitBundle,
-  type ArtifactMap,
-  
-  type AbiFunction,
-  type ArgSource,
-  type ExternalCallExpression,
-  type ExternalCallAbi,
-  type ExternalResultConsumerAbi,
-  type ExternalResultEncoding,
-  
-  type SortedUpsertLoopAbi,
-  buildDataNftCovenantScript,
-  buildEntryNftCovenantScript,
-  computeCollectionHash,
-  dynamicChunkSignature,
-  parseValueChunkCommitment,
-  splitValueIntoValueChunks,
-  VALUE_HEAD_SIZE,
-  VALUE_CHUNK_SIZE,
-  VALUE_CHUNK_MAX_COUNT,
-  VALUE_INLINE_LIMIT,
-  encodeChunkableValueTail,
-  joinValueChunks,
-  parseEntryCommitment,
-  type StateValue,
-  attachDecodedAccessors,
-  decodePushdataValue,
-  parseEntryCommitmentMultiKey,
-  Op,
-  type StateLayout,
-  type ExternalReadAbi,
-  type EntryAccessAbi,
-  type EmitAbi,
-  type EventDefinitionAbi,
-  type FunctionBlockLayout,
-  isComputedBlockhashKey,
-  encodePushdataValue,
-  encodeEventPushdataValue,
-  ORACLE_POOL_PARAMETER,
-  getDefaultStateValue,
-  keccakComputeLockingBytecode,
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  sha256 as sha256Sync,
-  ripemd160 as ripemd160Sync,
-  hash160 as hash160Sync,
-  hash256 as hash256Sync,
-  parseArrayTypeString,
-  addressToGraphEmissionBytes,
-  type FixedBchTransferAbi,
-  
-  peekPushdataEncodedLength,
-} from '@solidcash/utils';
-import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
+import { type Artifact, type FunctionSplitBundle, type ArtifactMap, type AbiFunction, type ArgSource, type ExternalCallExpression, type ExternalCallAbi, type ExternalResultConsumerAbi, type SortedUpsertLoopAbi, buildDataNftCovenantScript, buildEntryNftCovenantScript, computeCollectionHash, dynamicChunkSignature, parseValueChunkCommitment, splitValueIntoValueChunks, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT, VALUE_INLINE_LIMIT, encodeChunkableValueTail, joinValueChunks, parseEntryCommitment, type StateValue, attachDecodedAccessors, decodePushdataValue, parseEntryCommitmentMultiKey, Op, type StateLayout, type ExternalReadAbi, type EntryAccessAbi, type EmitAbi, type EventDefinitionAbi, type FunctionBlockLayout, isComputedBlockhashKey, encodePushdataValue, encodeEventPushdataValue, ORACLE_POOL_PARAMETER, getDefaultStateValue, keccakComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, sha256 as sha256Sync, ripemd160 as ripemd160Sync, hash160 as hash160Sync, hash256 as hash256Sync, parseArrayTypeString, addressToGraphEmissionBytes, peekPushdataEncodedLength } from '@solidcash/utils';
 import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
 import { boundedIntegerRange, givenOrderRangeBreak, upsertLoopRewriteReason } from './upsert-loop-rewrites.js';
@@ -92,43 +38,32 @@ import {
   decodeJournalEntryJournalAccesses,
   encodeJournalEntryJournalAccesses,
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
-  
+
   kernelEntryJournalSettlementOutputSegments,
-  
-  
-  
-  
+
+
+
+
   planJournalEntryJournalAccessTopology,
   scheduleJournalEntryJournalOccurrences,
   planJournalEntryJournalPhysicalSettlement,
   resolveJournalEntryJournalDirtyFinalBodies,
   validateJournalEntryJournalSettlementGroups,
-  
-  
+
+
   type KernelEntryJournalAccess,
-  
+
   type KernelEntryJournalSettlementOccurrence,
   type KernelEntryJournalSettlementReference,
   type KernelEntryJournalDirtyFinalBodyCandidate,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
 import { fillLeftCallArgumentWitnesses } from './call-record.js';
-import {
-  KERNEL_JOURNAL_ACCESS_STREAMS,
-  KERNEL_JOURNAL_RECORDS,
-  assertJournalJournalRecordBudget,
-  defaultInternalFunctionArg,
-  kernelJournalAccessStreamPlaceholders,
-  kernelJournalRecordSegmentWitnesses,
-  readCarrierOwnsDuplicateProof,
-  materializeInternalFunctionArgument,
-  shouldDeferJournalJournalBatchMaterialization,
-} from './entry-journal-planning.js';
+import { KERNEL_JOURNAL_ACCESS_STREAMS, KERNEL_JOURNAL_RECORDS, assertJournalJournalRecordBudget, defaultInternalFunctionArg, kernelJournalAccessStreamPlaceholders, kernelJournalRecordSegmentWitnesses, readCarrierOwnsDuplicateProof, materializeInternalFunctionArgument } from './entry-journal-planning.js';
 import { directCallUsesPhysicalWrapper } from './route-resource-selection.js';
-import type { GraphBlockhashSelection, GraphEcrecoverCall } from './runtime-call-metadata.js';
+import type { GraphEcrecoverCall } from './runtime-call-metadata.js';
 import { completeInternalFunctionArguments } from './internal-function-args.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import { resolveBlockhashCoSpend, type BlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
   artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolClock,
 } from '../oracle/pool/reader.js';
@@ -567,15 +502,7 @@ import {
   encodeStoredElementSource as encodeStoredElementSourceImpl,
   encodeStoredValueSource as encodeStoredValueSourceImpl,
 } from './sc-encode-stored-element-source.js';
-import { foldRouteStoredValues } from './fold-route-stored-values.js';
-import {
-  buildChunkablePushFoldPlan,
-  createFoldRowActivationEnvResolver,
-  foldActivationEnvironmentFromRouteRow,
-  foldCompleteRouteArrayPushes,
-  foldLeadingRouteArrayPushes,
-  materializeCompletePushValueWitness,
-} from './resource-fold-route.js';
+import { foldCompleteRouteArrayPushes, foldLeadingRouteArrayPushes, materializeCompletePushValueWitness } from './resource-fold-route.js';
 import { resolveExternalArgs as resolveExternalArgsImpl } from './sc-resolve-external-args.js';
 import { sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl } from './sc-send-without-logical-nonce.js';
 import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from './sc-with-external-call.js';
@@ -614,7 +541,6 @@ import { buildNamespaces as buildNamespacesImpl } from './sc-build-namespaces.js
 import { deriveReturnValue as deriveReturnValueImpl } from './sc-derive-return-value.js';
 import { resolveSelectedDynamicWrites } from './selected-dynamic-writes.js';
 import { applyOverrides as applyOverridesImpl, reApplyOverrides as reApplyOverridesImpl } from './sc-apply-overrides.js';
-import { vmapCounterPermutationSpec } from './internal-function-args.js';
 import { evaluateFixedEffectPredicate } from './fixed-effect-predicate.js';
 import type { FixedEffectEntryResolver } from './fixed-effect-entries.js';
 import { runtimeEntryAliasOwners } from './sorted-batch-activity.js';
@@ -1935,8 +1861,6 @@ export function externalReturnsForCallsites(
   for (const [argument, source] of (argSources ?? []).entries()) visit(source.expression, argument);
   return resolved;
 }
-
-
 
 /** True when a trace candidate is exactly one encoded collection value, with no trailing neighboring value. */
 function isCompleteCollectionValue(
@@ -3298,35 +3222,6 @@ export function resolvePreparedProducerEntry(
   return undefined;
 }
 
-function resolveStatefulAbiFunction(
-  artifact: Artifact,
-  identifier: string,
-  args: readonly FunctionArgument[],
-  selector?: string,
-): AbiFunction {
-  const signatureMatch = artifact.abi.find((candidate) => canonicalAbiFunctionSignature(candidate) === identifier);
-  const name = signatureMatch?.name ?? identifier;
-  const sameName = artifact.abi.filter((candidate) => candidate.name === name);
-  let candidates = signatureMatch ? [signatureMatch] : sameName;
-  if (selector !== undefined) {
-    const normalized = selector.replace(/^0x/i, '').toLowerCase();
-    if (!/^[0-9a-f]{8}$/.test(normalized)) {
-      throw new Error(`Function selector '${selector}' must be exactly four hexadecimal bytes.`);
-    }
-    candidates = candidates.filter((candidate) => candidate.selector?.toLowerCase() === normalized);
-  }
-  if (candidates.length === 0) {
-    throw new Error(`No function '${identifier}' with the requested selector on ${artifact.contractName}.`);
-  }
-  if (candidates.length === 1) return candidates[0];
-  const arityMatches = candidates.filter((candidate) => visibleHandlerInputs(candidate.inputs).length === args.length);
-  if (arityMatches.length === 1) return arityMatches[0];
-  throw new Error(
-    `Ambiguous call to overloaded function '${name}'. Use explicit signature or selector: `
-    + sameName.map(canonicalAbiFunctionSignature).join(', '),
-  );
-}
-
 /** Prefer source-level arguments only when they exactly cover the function's visible ABI. */
 export function selectVisibleCallArguments<T>(
   inputs: readonly { name: string }[],
@@ -4378,7 +4273,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     return sc;
   }
-
 
   static async deploy<T extends Artifact>(
     artifact: T,
@@ -5816,7 +5710,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           stb, externalOutStateUtxoGroups, debugTargetDerivation,
         );
 
-
         const {
           dummyLbc, satoshiTransferCount, ftOps, nftOps,
         } = seedDeriveFullPhase2PlaceholdersImpl(
@@ -6006,7 +5899,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               commitmentProgress += nestedCommitsEventPins.commitmentProgressDelta;
               nestedPinProgress += nestedCommitsEventPins.nestedPinProgressDelta;
               // nested-commits-event-pins-complete (size-guarded end of nested LLC iteration)
-
 
             }
             if (debugTargetsThisDerivation) console.error('derive-phase2-nested-complete', {
@@ -6872,7 +6764,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       blockBase?: number;
       /** A atomic composition supplies one global fee tail after all participant blocks. */
       omitLocalFeeTail?: boolean;
-        /** DS-6: the sorted batch targets that spend, or chain on, a node they share with other targets (else the first). */
+      /** DS-6: the sorted batch targets that spend, or chain on, a node they share with other targets (else the first). */
       sortedNodeOwners?: readonly number[];
       /** DS-6: lent present deletes that run on their node's owner write: the node is relinked at its default value. */
       sortedChainedDeletes?: readonly number[];
@@ -7084,8 +6976,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Direct stateful calls publish no route rows: every entry settles its own physical inputs.
     const selectedRouteRows: readonly RouteExpressionKeyRow[] = [];
-    const planAuthenticatedJournalJournalDispositionChain = undefined as never;
-    const selectedJournalHandlers = entryAbiFunction ? [entryAbiFunction] : [];
     const deferRuntimeJournalMaterialization = false;
     const selectedUpsertRows: never[] = [];
     const upsertPlanningFrames: Array<{
@@ -7347,9 +7237,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const hasChunkableValueWitness = collection.sorted && collection.chunkableValue
           && (entryOperations(slotIndex).includes('read') || entryOperations(slotIndex).includes('write'));
-        const participatesInSortedBatch = entryAbiFunction?.sortedBatchInfo?.some(
-          (batch) => batch.slotIndices.includes(slotIndex),
-        ) ?? false;
         const collectionEntries = await collectionEntriesFor(collection.signature);
 
         // vmap sorted-linked-list mapping (mapping(K=>bool) set): co-spend ONE entry read-only - the exact entry if
@@ -8311,7 +8198,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // covenant authenticates and decodes the proof value before the slot comparison selects the logical
           // default. Supplying an empty witness for an absent key therefore fails whenever its predecessor is
           // long, even though the eventual source-level value is empty.
-          let authenticatedChunkableValue: Uint8Array | undefined;
           if (hasChunkableValueWitness) {
             let witness: Uint8Array = new Uint8Array();
             const present = list.has(slot);
@@ -8359,14 +8245,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   if (binToHex(sha256Sync(witness)) !== binToHex(root)) {
                     throw new Error('vmap value chunks do not match the authenticated root');
                   }
-                  authenticatedChunkableValue = witness;
-                } else if (present) {
-                  authenticatedChunkableValue = tail.slice(4, 4 + len);
                 }
               }
-            }
-            if (!present && parseArrayTypeString(collection.valueType)) {
-              authenticatedChunkableValue = encodePushdataValue([], collection.valueType, stateLayout.structs);
             }
             if (['SOLIDC_DEBUG_COLLECTION_FETCH', 'SOLIDC_DEBUG_VALUE_WITNESS'].some((name) =>
               (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
@@ -8635,7 +8515,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
         }
-
 
         const exists = !!matchingUtxo;
         const entryUnlocker = createEntryNftUnlocker(
@@ -12068,7 +11947,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       }
 
-
       await completeCreateBuilderNestedUnlockersImpl(
         {
           categoryId: this.categoryId,
@@ -12170,7 +12048,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           logicalCreateLock,
         },
       );
-
 
     }
 
@@ -14019,7 +13896,7 @@ export class StatefulFunctionCall {
       abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
       emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
       logicalIdentity?: ResolvedLogicalIdentity;
-      },
+    },
     private readonly functionSelector?: string,
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
@@ -14048,10 +13925,6 @@ export class StatefulFunctionCall {
     }
     return this.parentContract.inner.artifact.abi.find((candidate) => candidate.name === this.functionName);
   }
-
-
-
-
 
   setState(name: string, value: StateValueType): this;
   setState(values: Record<string, StateValueType>): this;
@@ -14796,7 +14669,6 @@ export class StatefulFunctionCall {
       getLibrary: (name: string) => this.parentContract!._getLibrary(name) as any,
     });
   }
-
 
   private _applyOverridesHost(): any {
     const self = this as any;

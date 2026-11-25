@@ -1641,8 +1641,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (key.kind !== 'id' || key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)) continue;
         if (scope.declaredInLoop.has(key.name) || scope.reassigned.has(key.name)) { keyUsable = false; break; }
         if (!scope.assigned.has(key.name)) continue;
-        // The route-snapshot instance runs before compiler-generated route synthesis, where a handler's collection accesses are
-        // the ones the route covenant and the SDK's argument derivation both read by name. An anchored local
+        // The route-snapshot instance runs before compiler-generated route synthesis, where a handler's collection
+        // accesses are the ones the route covenant and the SDK's argument derivation both read by name. An anchored local
         // there changes that shape, so the anchored form stays with the ordinary pipeline; journal handlers keep
         // their established snapshot-key caching.
         if (this.routeSnapshotKeysOnly) { keyUsable = false; break; }

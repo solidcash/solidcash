@@ -28,13 +28,9 @@ import {
 } from './route-probe-progress.js';
 import { entryAccessAt } from './route-expression-key.js';
 import { deriveRouteValueChunks } from './route-value-chunk-helpers.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
-import {
-  describeValueChunkWrites,
-  physicalExternalCallFunction,
-} from './writer-group-selection.js';
+import { describeValueChunkWrites } from './writer-group-selection.js';
 
 export interface DeriveFullPhase1ProgressiveEntriesHost {
   readonly inner: { provider: NetworkProvider };

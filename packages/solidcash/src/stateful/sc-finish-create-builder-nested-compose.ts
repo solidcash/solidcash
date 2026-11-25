@@ -3,8 +3,8 @@
  * (value-chunk producer epoch, prepared atomic nodes, arg refresh, finish log).
  */
 
-import { binToHex, binsAreEqual, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, Artifact, ExternalCallAbi } from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { externalReturnsForCallsites } from './external-returns-for-callsites.js';
@@ -99,8 +99,6 @@ export function finishCreateBuilderNestedCompose(
   const resolveGraphNestedArgs = params.resolveGraphNestedArgs as
     ((results: ReadonlyMap<number, FunctionArgument>) => FunctionArgument[] | undefined) | undefined;
   const delegateFn = params.delegateFn as AbiFunction | undefined;
-  const calleeRouteArtifact = params.calleeRouteArtifact as Artifact;
-  const delegateCallerIdentity = params.delegateCallerIdentity as { lockingBytecode: string };
 
   let routeValueChunkProducerAliases = bags.routeValueChunkProducerAliases;
   let routeValueChunkProducerPhysicalGroup = bags.routeValueChunkProducerPhysicalGroup;

@@ -6,126 +6,7 @@ import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-import {
-  asmToScript,
-  ArrayType,
-  bytecodeToScript,
-  MINIMUM_WINDOW_ELEMENTS,
-  encodeBool,
-  encodeArgumentPayload,
-  decodeInt,
-  encodeInt,
-  encodeString,
-  ORACLE_POOL_PARAMETER,
-  ORACLE_POOL_SENTINEL,
-  POOL_FIELD_WIDTH,
-  POOL_FLAG_SLOT,
-  POOL_INFO_OFFSETS,
-  POOL_SLOT_OFFSETS,
-  type BlockOracleField,
-  Op,
-  type OpOrData,
-  PrimitiveType,
-  TupleType,
-  type Script,
-  scriptsEqual,
-  needsOptimiserCrossCheck,
-  normaliseScript,
-  scriptToBytecode,
-  buildDataNftCovenantScript,
-  buildEntryNftCovenantScript,
-  buildSatoshiContainerCovenantScript,
-  containerKeepsTokenless,
-  buildTokenContainerCovenantScript,
-  containerMasterRetires,
-  VALUE_CHUNK_DOMAIN_TAG,
-  VALUE_HEAD_SIZE,
-  VALUE_CHUNK_SIZE,
-  DYNAMIC_CHUNK_SIZE,
-  encodeNftIndexTag,
-  generateSourceMap,
-  normaliseSourceMapLocationData,
-  type FullLocationData,
-  type LogEntry,
-  type RequireStatement,
-  type RevertArgumentSource,
-  PositionHint,
-  type SingleLocationData,
-  type StackItem,
-  BytesType,
-  IntType,
-  FixedType,
-  type CompilerOptions,
-  type Type,
-  StructType,
-  computeEventNameHash,
-  computeEventContinuationHash,
-  EVENT_CHUNK_BYTES,
-  computeCollectionHash,
-  computeCollectionSignature,
-  valueChunkSignature,
-  type FunctionDebugInformation,
-  optimiseBytecode,
-  optimiseBytecodeOld,
-  OPTIMISER_COMPAT_CHECK_MAX_OPS,
-  AddressBytesType,
-  AddressType,
-  ValueType,
-  EnumType,
-  FunctionType,
-  type BlockLayoutSlot,
-  type BlockSlotKind,
-  resolveLibraries,
-  libraryDefinedIds,
-  type ExternalLibrary,
-  sidecarStripOffsets,
-  encodeComputedBlockhashKey,
-  KECCAK256_COMPUTE_COVENANT_HASH,
-  KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH,
-  KECCAK256_COMPUTE_STATEFUL_COVENANT,
-  KECCAK256_COMPUTE_SHIFTED_COVENANT,
-  KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK,
-  KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
-  KECCAK_CHAIN_COVENANT_HASH,
-  ECRECOVER_COMPUTE_A_COVENANT_HASH,
-  ECRECOVER_COMPUTE_B_COVENANT_HASH,
-  ECRECOVER_COMPUTE_B2_COVENANT_HASH,
-  ECRECOVER_COMPUTE_B3_COVENANT_HASH,
-  ECRECOVER_COMPUTE_M_COVENANT_HASH,
-  ECRECOVER_COMPUTE_V_COVENANT_HASH,
-  ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH,
-  ECRECOVER_COMPUTE_A_SHARED_LOCK,
-  ECRECOVER_COMPUTE_B_SHARED_LOCK,
-  ECRECOVER_COMPUTE_B2_SHARED_LOCK,
-  ECRECOVER_COMPUTE_B3_SHARED_LOCK,
-  ECRECOVER_COMPUTE_M_SHARED_LOCK,
-  isChunkableValueType,
-  outlineSharedSpans,
-  controlStackDepth,
-  invocationDepths,
-  literalDefinitions,
-  MAXIMUM_CONTROL_STACK_DEPTH,
-  nestingSafeFunctionIds,
-  type OutlineResult,
-  childStateLayoutDigest,
-  abiTypeString,
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  blockInputSize,
-  isOutputOnlyBlockSlot,
-  FrameKind,
-  computeFunctionSelector,
-  computeFunctionSignature,
-  canonicalSelectorSignature,
-  isEvmNotationScalarType,
-  resolveAddressForm,
-  INVALID_FUNCTION_POINTER_ID,
-  implicitlyCastable,
-  validatorTemplateHash,
-  type AbiFunction,
-  type AddressForm,
-  type DeployerAbi,
-  CALL_RECORD_READER_INPUT,
-} from '@solidcash/utils';
+import { asmToScript, ArrayType, bytecodeToScript, MINIMUM_WINDOW_ELEMENTS, encodeBool, encodeArgumentPayload, decodeInt, encodeInt, encodeString, ORACLE_POOL_PARAMETER, ORACLE_POOL_SENTINEL, POOL_FIELD_WIDTH, POOL_FLAG_SLOT, POOL_INFO_OFFSETS, POOL_SLOT_OFFSETS, type BlockOracleField, Op, type OpOrData, PrimitiveType, TupleType, type Script, scriptsEqual, needsOptimiserCrossCheck, normaliseScript, scriptToBytecode, buildDataNftCovenantScript, buildEntryNftCovenantScript, buildSatoshiContainerCovenantScript, containerKeepsTokenless, buildTokenContainerCovenantScript, containerMasterRetires, VALUE_CHUNK_DOMAIN_TAG, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, DYNAMIC_CHUNK_SIZE, encodeNftIndexTag, generateSourceMap, normaliseSourceMapLocationData, type FullLocationData, type LogEntry, type RequireStatement, type RevertArgumentSource, PositionHint, type SingleLocationData, type StackItem, BytesType, IntType, FixedType, type CompilerOptions, type Type, StructType, computeEventNameHash, computeEventContinuationHash, EVENT_CHUNK_BYTES, computeCollectionHash, computeCollectionSignature, valueChunkSignature, type FunctionDebugInformation, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, AddressBytesType, AddressType, ValueType, EnumType, FunctionType, type BlockLayoutSlot, type BlockSlotKind, resolveLibraries, libraryDefinedIds, type ExternalLibrary, sidecarStripOffsets, encodeComputedBlockhashKey, KECCAK256_COMPUTE_COVENANT_HASH, KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH, KECCAK256_COMPUTE_STATEFUL_COVENANT, KECCAK256_COMPUTE_SHIFTED_COVENANT, KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK, KECCAK256_COMPUTE_SALT_PREFIX_LENGTH, KECCAK_CHAIN_COVENANT_HASH, ECRECOVER_COMPUTE_A_COVENANT_HASH, ECRECOVER_COMPUTE_B_COVENANT_HASH, ECRECOVER_COMPUTE_B2_COVENANT_HASH, ECRECOVER_COMPUTE_B3_COVENANT_HASH, ECRECOVER_COMPUTE_M_COVENANT_HASH, ECRECOVER_COMPUTE_V_COVENANT_HASH, ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH, ECRECOVER_COMPUTE_A_SHARED_LOCK, ECRECOVER_COMPUTE_B_SHARED_LOCK, ECRECOVER_COMPUTE_B2_SHARED_LOCK, ECRECOVER_COMPUTE_B3_SHARED_LOCK, ECRECOVER_COMPUTE_M_SHARED_LOCK, isChunkableValueType, outlineSharedSpans, controlStackDepth, invocationDepths, literalDefinitions, MAXIMUM_CONTROL_STACK_DEPTH, nestingSafeFunctionIds, type OutlineResult, childStateLayoutDigest, abiTypeString, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, blockInputSize, isOutputOnlyBlockSlot, FrameKind, computeFunctionSelector, computeFunctionSignature, canonicalSelectorSignature, isEvmNotationScalarType, resolveAddressForm, INVALID_FUNCTION_POINTER_ID, implicitlyCastable, validatorTemplateHash, type AddressForm, type DeployerAbi, CALL_RECORD_READER_INPUT } from '@solidcash/utils';
 import {
   analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries,
   childDeploymentGenesisState, childDeploymentStructDefinitions, type ChildDeploymentRecipeAnalysis,
@@ -134,15 +15,8 @@ import {
   canonicalizeUpsertKeyExpression, sameKeyExpression,
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
-
-type JournalReadCarrierFamilyScope = { selectorHex: string; completedDescriptorDigest: string; streamDescriptorDigests: string[] };
-type JournalDispositionHandlerScope = Record<string, any>;
 const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
 const KERNEL_ENTRY_JOURNAL_MAX_RECORDS = 99;
-const deriveJournalJournalDispositionHandlerScope = (..._args: any[]): undefined => undefined;
-const sameJournalJournalDispositions = (..._args: any[]): boolean => true;
-const kernelJournalDispositionScopeKey = (_scope: any): string => '';
-const kernelJournalDispositionManifestDigest = (_manifest: any): string => '';
 
 import { hasEffectiveCallValue, hasExternalCallValueEffect, isDirectOwnerTransferNode } from '../semantic/branchOps.js';
 import { checksTransactionSignature, inlinesSignatureChecks } from '../semantic/transactionSignatureCheck.js';
@@ -349,7 +223,6 @@ import {
   DeployerInternalError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
-import { isNativeAssemblySafe } from '../semantic/NativeAssemblySafety.js';
 import {
   externalResultEncoding, externalResultMayNeedPreimage, callArgumentListName, callArgumentWitnessName,
   CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES, namesCallRecordArguments,
@@ -712,20 +585,6 @@ export class GraphHandlerEffectError extends SolidCashError {
     super(node, `${reason}: ${detail}`);
   }
 }
-
-const GRAPH_HANDLER_EFFECT_DETAIL: Record<string, string> = {
-  'graph-handler-deploy-not-enabled':
-    'deploying a contract (new C(...)) inside a route graph handler is not admitted. The graph route\'s '
-    + 'block layout reserves owner slots only, with no deploy slot, so the child genesis input and its genesis '
-    + 'output have nowhere to be verified and the handler cannot describe the deploy in its callManifest row. '
-    + 'Move the deploy into a function that makes no external call: that function stays on the direct route, '
-    + 'where the deploy covenant is emitted',
-  'graph-handler-blockhash-not-enabled':
-    'reading blockhash(n) inside a route graph handler is not admitted. The block-oracle co-spend is '
-    + 'located through a synthesized __internal__blockhashInputIndex witness that the route batch route does not carry, '
-    + 'so the handler would read an unlocated input. Move the blockhash read into a function that makes no '
-    + 'external call: that function stays on the direct route, where the SDK fills the oracle input index',
-};
 
 /**
  * X83. A keccak256 side-car read whose block-layout slot was never reserved, refused by name.
@@ -1382,36 +1241,6 @@ function hasDirectChildDeployment(body: Node | undefined): boolean {
     for (const [key, child] of Object.entries(value)) {
       if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
       walk(child);
-    }
-  };
-  walk(body);
-  return found;
-}
-
-/** The first effect kind a graph emission handler's body carries that the graph route cannot describe. */
-function graphHandlerUnsupportedEffect(
-  body: Node | undefined, blockhashRouteContext = false, deploymentRouteContext = false,
-): { reason: string; node: Node } | undefined {
-  if (!body) return undefined;
-  let found: { reason: string; node: Node } | undefined;
-  const seen = new WeakSet<object>();
-  const walk = (n: unknown): void => {
-    if (found) return;
-    if (Array.isArray(n)) { for (const item of n) walk(item); return; }
-    if (!(n instanceof Node) || seen.has(n)) return;
-    seen.add(n);
-    if (n instanceof InstantiationNode && n.isStatefulDeploy && n.referencedContract && !deploymentRouteContext) {
-      found = { reason: 'graph-handler-deploy-not-enabled', node: n };
-      return;
-    }
-    if (n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.BLOCKHASH
-      && !blockhashRouteContext) {
-      found = { reason: 'graph-handler-blockhash-not-enabled', node: n };
-      return;
-    }
-    for (const [key, value] of Object.entries(n)) {
-      if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
-      walk(value);
     }
   };
   walk(body);
@@ -3942,7 +3771,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return localSlot;
   }
 
-
   /**
    * Pre-allocate only this function's own fixed entry slots. `collectMappingSlots` follows invoked callees, so a
    * journal row loop that dispatches `create(...)` would otherwise treat a callee's trailing upsert (`m[xs[i]]=v`,
@@ -4074,7 +3902,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
   ): SharedEntryCheck | undefined {
     if (this.framedMaster || !this.directConvention
-      ) return undefined;
+    ) return undefined;
     const fullKey = `stack|${key}`;
     let check = this.sharedEntryChecks.get(fullKey);
     if (check === undefined) {
@@ -4169,10 +3997,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_INPUTINDEX, locationData);
   }
 
-
-
-
-
   /**
    * Legacy delegate entries place dynamic continuations immediately before the transaction trailer. A routed
    * delegate instead owns an authenticated participant block, so its dynamic outputs stay at that block's
@@ -4181,7 +4005,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private usesDelegateTransactionSuffix(): boolean {
     return this.currentFunctionIsDelegate && !false;
   }
-
 
   /**
    * State belongs to a proxy whenever the physical entry frame carries the authenticated proxy-master witness.
@@ -5125,9 +4948,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // `verifierProgram.inputs`, with the authenticated envelope deliberately left underneath. It does not
       // participate in compiler-to-compiler hidden-context threading, even when a sibling route handler uses a
       // compute side-car. Giving it this phantom slot makes its return cleanup NIP the preserved envelope.
-      if (entries.some((entry) => false)) {
-        this.outlinedComputeBlockBaseFunctionIds.add(functionId);
-      }
     }
 
     // keccak256 side-car basis for FREE functions (imported/internal library helpers, which are flattened into
@@ -7691,17 +7511,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const journalSlotsOf = (id: number, slots: Map<string, StateVariableNode>): StateVariableNode[] =>
       [...slots.values()].filter((sv) =>
         !sv.isDynamic || writerIds.has(id) || dynamicInvokerHolders.has(id));
-    // L2-F2. The route must HOLD the journal its rows load through. The walk above admits the route's
-    // callees and never the route itself, so a route with no writer among them - a pure-reader resource
-    // route, or the `_self_alias` clone the resource shape emits - was filtered out while its callees were
-    // kept. `visitFunctionDefinition` then computed `invokesJournalHandler` true against an EMPTY
-    // `candidateJournalSlots`, and the first invoke aborted with a bare `Missing journal context '...' while
-    // invoking '...'`: fail-closed, but an availability regression on honest input with no name, no position
-    // and no remedy. Admitting the route is not a widening of what loads live - it is the holder of the very
-    // context those callees were already admitted to read, so no shape that compiles today can move.
-    const admitted = (id: number): boolean =>
-      writerIds.has(id)
-      && journalSlotsOf(id, slotsById.get(id) ?? new Map()).length > 0;
     // X139, completing L2-F2. The route is not the only holder a journalled callee needs. `visitUserFunctionCall`
     // PICKs the callee's context off the CALLER's frame, so EVERY invoker of an admitted handler must hold it,
     // and the route walk above reaches only what the route calls. `solidity-by-example/StakingRewards` is the
@@ -7830,9 +7639,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const first = sideCarOffsets(entries[0]);
       if (first === '' || !entries.every((entry) => sideCarOffsets(entry) === first)) continue;
       this.keccakSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (entries.some((entry) => false)) {
-        this.outlinedComputeBlockBaseFunctionIds.add(functionId);
-      }
     }
     // ecrecover helper basis. Keep the same deliberately narrow proof as keccak: exactly one A/B pair and the
     // same offsets in every reaching entrypoint. Multi-call helpers need call-site ordinals threaded through the
@@ -7857,9 +7663,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           keccakOffsetsOf(entry).join(',') === firstKeccak.join(','))) continue;
       }
       this.ecrecoverSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (entries.some((entry) => false)) {
-        this.outlinedComputeBlockBaseFunctionIds.add(functionId);
-      }
     }
     // OP_DEFINE internal/private functions (subroutine-only) + entry points actually invoked internally (via
     // `this.f` / function pointers). An entry point never called internally compiles as an entry point only, so it
@@ -7959,7 +7762,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // record, so no returning entry pushes its own. Batch programs and the multi-call entry keep theirs.
       this.dispatchHandsCallPrefix = !hasFallback && !hasReceive && !this.currentContractCarriesCallBatch
         && this.directConvention && this.contractSettlesCallRecords() && this.compactCallRecords
-        ;
+      ;
       // OP_DEFINE each entry-point function with its 4-byte hash selector, then dispatch
       dispatchFunctions.forEach((f) => {
         this.emitEntryPointFunctionDefine(f, node.parameters);
@@ -9013,7 +8816,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return false;
   }
 
-
   /** The call-site form: physicalSlot may be undefined, and currentFunction is the body being emitted. */
   private isRouteBoundLoopedCallSite(slot: ExternalCallSlot | undefined): boolean {
     return slot !== undefined && this.isRouteBoundLoopedCall(this.currentFunction, slot);
@@ -9225,29 +9027,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Count leftover tracked temps that are not named parameters as anonymous live cells.
     // DEFINE fail-closed validation: returning bodies legitimately leave `returnTypes.length` result cells — subtract that
     // arity so return values are not false-positive live-anonymous.
-    const parameterNames = new Set(func.parameters.map((parameter) => parameter.name));
-    const bandNames = new Set<string>();
-    const leftover = subTraversal.stack.filter((name) => (
-      !parameterNames.has(name)
-      && !bandNames.has(name)
-      && !name.startsWith('__internal__')
-    ));
-    const returnArity = func.returnTypes?.length ?? 0;
-    const anonymousLive = Math.max(0, leftover.length - returnArity);
-    // DEFINE helper-effect recording: record per-helper stack effects for each named frame slot that
-    // validateDefineEmission places into the handler-frame schema (args + caller band).
-    const helperEffects = [
-      ...func.parameters
-        .filter((parameter) => !parameter.name.startsWith('__internal__'))
-        .map((parameter) => ({
-          helperId: `${func.name}:arg:${parameter.name}`,
-          reads: [parameter.name],
-        })),
-      ...([]).map((name) => ({
-        helperId: `${func.name}:band:${name}`,
-        reads: [name],
-      })),
-    ];
     const frameResult: { ok: boolean; failures: readonly { invariantId: string }[] } = { ok: true, failures: [] };
     // DEFINE fail-closed validation: under journal, fail-closed for every DEFINE kind. Return-aware leftover counting
     // (`anonymousLive = max(0, leftover - returnArity)`) is the exact model for user returns and
@@ -19782,7 +19561,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return argument;
   }
 
-
   /** Copy a contiguous fixed segment bank into a callee frame in reverse-argument order using constant code. */
   private emitJournalJournalSegmentCallArguments(
     targetFunc: FunctionDefinitionNode, locationData: SingleLocationData,
@@ -28826,7 +28604,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
-
   /**
    * Emit standard pushdata frame: <len> <data> or OP_PUSHDATA1 <len> <data> or OP_PUSHDATA2 <len_LE> <data>
    * Assumes value is on top of stack (non-empty).
@@ -28884,7 +28661,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
   }
-
 
   // === Pushdata decode helpers ===
 
@@ -30295,8 +30071,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const physicalSlot = node.callInfo
       ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
-    // A collapsed physical participant is a storage coordinate; the direct call is its own row.
-    const graphEmissionSlot = physicalSlot;
     // A route build binds this looped call only on its route, which re-derives the loop row by row in its own
     // handler and never runs this entry body. A direct spend of the entry's own selector reaches this body with no
     // co-spend bound, so a run that enters the loop (>= 1 iteration) fails here; a zero-iteration direct spend never
@@ -30692,8 +30466,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (counter !== undefined) this.emitAdvanceCallOrdinal(counter, node, loc);
   }
 
-
-
   /** Stable hidden-frame name for one producer result field. */
   private graphResultName(slot: ExternalCallSlot, field: number): string {
     return `__internal__graphResult${slot.returnSlotIndex ?? 0}_${field}`;
@@ -30749,7 +30521,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     skipLengthPrefixed();
   }
 
-
   /**
    * Selector for one collapsed batch row's graph-emission transcript.
    * Mixed-handler batches share one physical slot whose compileTimeSelector is the first row; each source
@@ -30761,7 +30532,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): Uint8Array | undefined {
     return undefined;
   }
-
 
   /**
    * The route checks a handler's call rows from the frame it hands the handler, before the handler's body runs
@@ -32668,7 +32438,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || slot.addressIsSelf || slot.callOrdinal !== undefined) return undefined;
     if ((!inLoop && (this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot)))
       || false
-      ) return undefined;
+    ) return undefined;
     // A call whose record digests its arguments (emitCallerCallRecordDigest) is bound there, a loop's call from the
     // witness lists of those it leaves.
     if (slot.hasReturnValues && slot.callRecordSelector !== undefined
@@ -32701,7 +32471,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (slot.addressIsSelf || slot.callOrdinal !== undefined
       || this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot)
       || false
-      ) return undefined;
+    ) return undefined;
     if (slot.hasReturnValues && slot.callRecordSelector !== undefined
       && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], node.parameters.length)) return undefined;
     const parameterTypes = slot.sourceCallNode?.resolvedCallee?.parameterTypes;
@@ -33198,7 +32968,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * one-call prefix check cannot describe it. The typed/raw external slot still pins the target identity and
    * the route covenant authenticates the complete batch. Single low-level calls retain the direct prefix proof.
    */
-
 
   // ===== Mapping (Entry NFT) Support =====
 
@@ -33832,7 +33601,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.arrayIndex) this.emitArrayElementExtract(node, gLoc);
       return node;
     }
-
 
     // A sorted (vmap linked-list) mapping read `m[k]`: co-spend one entry (exact if present, else the predecessor)
     // and return the real value (set -> membership bit; value mapping -> the value tail if present, else the type
@@ -41276,7 +41044,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Emit auto-covenant verification for state writes */
-  private externalCallReceiverStateWrites(node: FunctionDefinitionNode): Set<string> {
+  private externalCallReceiverStateWrites(_node: FunctionDefinitionNode): Set<string> {
     const retained = new Set<string>();
     // Only the ordinary direct-call epilogue below consumes these values. Graph handlers authenticate their
     // receivers at the callsite, and a function that delegatecalls writes no state of its own to retain.
@@ -47124,7 +46892,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // to the end) so a prior var's count is ceil(size(value)/CHUNK), computed on demand.
     const declIndex = (n: string): number => this.stateVariables.findIndex((v) => v.name === n);
     const writesInDeclOrder = [...this.pendingDynamicWrites.entries()]
-      .filter(([name]) => !false)
       .sort(([a], [b]) => declIndex(a) - declIndex(b));
     const writtenValueStackNames: string[] = [];
 
@@ -47414,10 +47181,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     }
     // --- final cleanup: drop the deferred written-var values + the foreign-read count temps ---
-    const readOnlyValues = [...this.pendingDynamicWrites.entries()]
-      .filter(([name]) => false)
-      .map(([, write]) => write.valueStackName);
-    const finalTemps = [...writtenValueStackNames, ...readOnlyValues, ...fReadTempNames];
+    const finalTemps = [...writtenValueStackNames, ...fReadTempNames];
     if (this.valueChunkTrailingCountActive) {
       finalTemps.push(GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT);
     }
@@ -49823,7 +49587,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_IF, locationData);
         this.popFromStack();
       }
-
 
       // 1. Verify output locking bytecode
       const lbIdx = this.getStackIndex(lockingBytecodeStackName);
@@ -54813,7 +54576,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Stack: [idx] (1 untracked)
       }
 
-
       // 5. Commitment preservation (STATICCALL only)
       // Verify all NFT commitments are unchanged (input == output)
       if (callMode === ExternalCallMode.STATICCALL) {
@@ -54925,8 +54687,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // that one callee and have one run serve both. The fixed call's identity reads this same offset.
     const fixedPoints = this.externalCallSlots.filter((slot) => !slot.inlineLoopDispatch && !slot.loopArrayVar
       && !this.isExternalCallSlotLoopNested(slot) && this.getStackIndex(index(slot), true) < 0
-      && !this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
-        ));
+      && !this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex,
+      ));
     for (const claim of claims) {
       for (const fixed of fixedPoints) {
         if (target(claim) !== undefined && target(claim) === target(fixed)) continue;
@@ -57641,8 +57403,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
-
-
   /**
    * Emits the records' owner input/output preservation check for one token field. A minted genesis owner has no
    * spent input, so the check is skipped there rather than reading an input at the flagged output reference.
@@ -57815,7 +57575,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * never disagree.
    */
   private ownerAnchorPreconditionHolds(
-    _debugEnv: Record<string, string | undefined> | undefined, node: FunctionDefinitionNode,
+    _debugEnv: Record<string, string | undefined> | undefined, _node: FunctionDefinitionNode,
   ): boolean {
     return false;
   }
@@ -58052,7 +57812,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Ordinary entry points retain the smaller top-relative form.
    */
   private emitPickSettlementValue(
-    name: string, locationData: SingleLocationData, node = this.currentFunction,
+    name: string, locationData: SingleLocationData, _node = this.currentFunction,
   ): void {
     if (false) {
       this.emitPickTrackedFromBottom(name, locationData);
@@ -58064,7 +57824,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Drop the original of a value copied by emitPickSettlementValue. */
   private emitDropSettlementValue(
-    name: string, locationData: SingleLocationData, node = this.currentFunction,
+    name: string, locationData: SingleLocationData, _node = this.currentFunction,
   ): void {
     if (false) {
       this.emitDropTrackedFromBottom(name, locationData);
@@ -58161,7 +57921,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }));
     return site;
   }
-
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.sharedCheckBody !== undefined) {
@@ -61196,7 +60955,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private noteRouteLaneWrite(_node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode): void {
     return;
   }
-
 
   /** Set a conditional sorted write's "the write ran" flag true at its upsert site (no-op without the flag). */
   private markConditionalSortedWriteFlag(slotIndex: number, node: Node): void {
@@ -66551,7 +66309,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-
     // Transfer values remain live until container preservation. The preservation equation consumes their
     // authenticated amount witnesses directly, allowing inactive conditional suffix slots to contribute zero
     // without introspecting transaction outputs which intentionally do not exist.
@@ -66794,10 +66551,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SUB, locationData);
         // still 1 untracked (adjusted_input)
       }
-      // NFT transfer checks prove a zero fungible amount, and unused graph slots are tokenless (SEC-16).
-      // A frame with no fungible transfer effects therefore has no debit to scan; container preservation
-      // below still requires the entire input fungible balance to remain. Unknown metadata keeps the scan.
-      const hasFungibleGraphTransfers = node.tokenContainerAccesses?.some((access) => access.transferCount > 0) ?? true;
       const hasRuntimeEffectSpan = this.stack.includes(
         GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START,
       ) && this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END);
@@ -66869,7 +66622,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         !this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex));
       const conditionalNftTransfers = nftTransfersForSlot.filter((transfer) =>
         this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex));
-      const hasGraphNftOccurrence = false
+      const hasGraphNftOccurrence = false;
       const hasConditionalNftOccurrence = conditionalNftTransfers.length > 0
         || hasGraphNftOccurrence || hasRuntimeNftCounts;
       const emitConditionalNftOccurrence = (untrackedDepth: number): void => {

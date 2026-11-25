@@ -9,7 +9,7 @@ import { createTestProvider, getSigners } from '../test-util.js';
 // spend, so for a call after a write of its target it named the contract from before the write, which the covenant's
 // pin refuses: the spend failed at preflight. The artifact now marks such a call (`targetWrittenBeforeCall`), and the
 // builder refuses by name to resolve its callee; the author passes it with `.withCall()`.
-const OPTIONS = { evmCompat: true, forceStateful: true} as any;
+const OPTIONS = { evmCompat: true, forceStateful: true } as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 
 const LEDGER = `

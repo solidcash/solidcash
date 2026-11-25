@@ -7,7 +7,6 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { legacyLiveValueChunkBandWidth } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { mintingSwapShift } from './value-chunk-band-helpers.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -51,7 +50,7 @@ export function relocateCreateBuilderPredOutBases(params: {
   const {
     externalCallUtxoGroups, lowLevelCallUtxoGroups, returningExternalGroups,
     nestedMasterIndices, physicalReturnIndexForGroup, delegateReturnOutputBase,
-    lowLevelCallInputBase, entryAbiFunction, tailReturnRank,
+    lowLevelCallInputBase, tailReturnRank,
   } = params;
 
   const relocatedPredOutBase = new Map<number, number>();

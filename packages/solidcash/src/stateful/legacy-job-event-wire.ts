@@ -103,7 +103,7 @@ export function encodeStructArgument(
 
 
 export function usesLegacyJobEventCompatibility(
-  artifact: Artifact, type: string, structs: Artifact['structs'],
+  _artifact: Artifact, _type: string, _structs: Artifact['structs'],
 ): boolean {
   return false;
 }

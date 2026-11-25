@@ -3,12 +3,9 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { scriptToBytecode, type AbiFunction, type Artifact, type ExternalCallAbi, type StateValue } from '@solidcash/utils';
+import { type AbiFunction, type Artifact, type ExternalCallAbi, type StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import {
-  encodeExternalReturnValue,
-  encodeExternalReturnValues,
-} from './external-return-encoding.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 
 export type PrecomputeCreateBuilderNestedComposeReturnsHost = {
@@ -62,11 +59,11 @@ export async function precomputeCreateBuilderNestedComposeReturns(
   },
 ): Promise<PrecomputeCreateBuilderNestedComposeReturnsResult> {
   const {
-    nested, proxyCallee, callee, selectedFn, proxyTargetFn, nestedArgs,
-    delegateVisibleArgs, delegateVisibleInputs, childWritesState,
-    sharedDirectCallCoversCall, graphPlanningResults, publicSelfAddress,
-    childFunctionName, childFunctionArgs, callInfoContract, onChainState, delegateSelfAddress,
-    nestedProxyReadCache,
+    nested, proxyCallee, callee, selectedFn, proxyTargetFn,
+    delegateVisibleArgs, delegateVisibleInputs,
+    publicSelfAddress,
+    callInfoContract, onChainState, delegateSelfAddress,
+
   } = params;
 
   let precomputedReturnCommitment: Uint8Array | undefined;
@@ -92,32 +89,6 @@ export async function precomputeCreateBuilderNestedComposeReturns(
       effectiveReturnTypes,
       `function '${effectiveReturnFn?.name ?? nested.functionName}' result`,
     ) === 'evm-abi-v1';
-  const proxyStateNames = proxyCallee
-    ? new Set([
-      ...(proxyCallee.implementation.inner.artifact.stateLayout?.variables ?? []).map((v: any) => v.name),
-      ...(proxyCallee.implementation.inner.artifact.stateLayout?.collections ?? []).map((c: any) => c.name),
-    ]) : undefined;
-  const evaluateProxyRead = (
-    fn: AbiFunction, readArgs: FunctionArgument[],
-  ): Promise<FunctionArgument | undefined> => {
-    // Public state getters read the proxy-owned category directly. They are ordinary view entry
-    // points, not delegate executors, so routing them through `forward()` would incorrectly require
-    // a state-writing delegate ABI variant. The exact state-layout name and selected ABI handler are
-    // compiler-owned identities; no source-application convention participates in this decision.
-    if (proxyCallee && proxyStateNames?.has(fn.name)) {
-      const accessor = (proxyCallee.proxy.state as unknown as Record<
-      string, (...values: FunctionArgument[]) => Promise<StateValue>
-      >)[fn.name];
-      if (typeof accessor !== 'function') {
-        throw new Error(`Proxy state getter '${fn.name}' is not available.`);
-      }
-      return accessor(...readArgs) as Promise<FunctionArgument>;
-    }
-    return proxyCallee
-      ? proxyCallee.forward(fn.name, readArgs).staticCall() as Promise<FunctionArgument>
-      : host.deriveReturnValue(fn.name, readArgs, undefined, undefined, undefined,
-        publicSelfAddress, host.categoryId) as Promise<FunctionArgument>;
-  };
   if (nested.occurrence === 'loop' && nested.hasReturnValues) {
     const returnType = effectiveReturnFn?.outputs?.[0]?.type ?? 'string';
     const encodeReturn = (value: StateValue): Uint8Array => encodeExternalReturnValue(

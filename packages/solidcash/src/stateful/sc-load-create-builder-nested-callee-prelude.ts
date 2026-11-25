@@ -16,14 +16,9 @@ import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import { callBatchFrameLayout } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { vmapCounterPermutationSpec } from './internal-function-args.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
-import { isDirectConventionArtifact } from './sc-expand-resolve-create-builder-external-calls.js';
 import type { OnChainState } from './StateReader.js';
-import {
-  deriveValueChunkProducerChildPath,
-  type ValueChunkProducerPathDisposition,
-} from './ValueChunkProducerIdentity.js';
+import { type ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 
 export type NestedCalleeOnChainState = OnChainState & { masterUtxo: Utxo };
 
@@ -108,13 +103,13 @@ export async function loadCreateBuilderNestedCalleePrelude(
   slotIndex: number,
   ec: ExternalCallAbi,
   callInfo: NestedCalleeCallInfo | undefined,
-  args: FunctionArgument[],
-  artifact: Artifact,
-  abiFunction: AbiFunction | undefined,
-  callerStateSnapshot: Record<string, StateValue> | undefined,
-  publicSelfAddress: FunctionArgument | undefined,
-  publicSelfIdentity: { categoryId: string; lockingBytecode: string },
-  rootProducerPath: ValueChunkProducerPathDisposition,
+  _args: FunctionArgument[],
+  _artifact: Artifact,
+  _abiFunction: AbiFunction | undefined,
+  _callerStateSnapshot: Record<string, StateValue> | undefined,
+  _publicSelfAddress: FunctionArgument | undefined,
+  _publicSelfIdentity: { categoryId: string; lockingBytecode: string },
+  _rootProducerPath: ValueChunkProducerPathDisposition,
 ): Promise<LoadCreateBuilderNestedCalleePreludeResult> {
   if (!callInfo) {
     throw new Error(

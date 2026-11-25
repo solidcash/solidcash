@@ -11,7 +11,6 @@ import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import { resolveValueChunkResourceLanes } from './value-chunk-lanes.js';
 import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { AssembledWitnessBag } from './sc-rebind-create-builder-assembled-witnesses.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { dropSkippedConditionalInserts } from './conditional-sorted-activity.js';
@@ -263,8 +262,6 @@ export async function runCreateBuilderDerivePass(
     await builder.ensurePersistedValueChunkInputs();
     timing?.('persisted-inputs-ready');
     const graphOwnsValueChunkWitness = false;
-    const hasExactComputedValueChunkLane = computedValueChunkRuns.length > 0
-    && computedValueChunkRuns.every((run) => run.slot?.length === 32);
     const valueChunkWitnessGroups: any[] = [];
     if (valueChunkWitnessGroups.length > 0) {
     // Collapse repeated callsites for one resource, but keep distinct collections/keys as ordered lanes.

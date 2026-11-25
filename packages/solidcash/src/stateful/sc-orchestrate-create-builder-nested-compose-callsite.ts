@@ -1,10 +1,4 @@
-/**
- * phase-boundary extract: SC _createBuilder extract — one nested-compose callsite orchestration
- * under a delegate LLC (callee resolve → route plan → returns → shared-writer →
- * slots → publish → finish). Host keeps the for-loop and group-index bookkeeping.
- */
 
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
@@ -569,20 +563,20 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
           resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
           describeValueChunkWrites,
           preparedChildProducerPath: (...a: any[]) => (host.preparedChildProducerPath as any)(...a),
-          },
+        },
         {
           nested,
           selectedFn,
           sharedGroupIndex,
           delegateCallGroupIndex,
           childExternalGroupIndex,
-            childCompilerInternalArgs,
+          childCompilerInternalArgs,
           childFunctionName,
           nestedArgs,
           nestedSources,
           needsExpressionReturns,
           directInvocationRows,
-            resolveGraphNestedReturns,
+          resolveGraphNestedReturns,
           resolveGraphNestedArgs,
           graphNestedArgs,
           delegateVisibleArgs,

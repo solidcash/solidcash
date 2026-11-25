@@ -34,7 +34,6 @@ import {
 } from './runtime-loop-event-domain.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { OnChainState } from './StateReader.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { RuntimeLoopTransferOutput } from './StatefulTransactionBuilder.js';
 
 export type LoadCreateBuilderDynamicChunksHost = {
@@ -730,8 +729,7 @@ export async function loadCreateBuilderDynamicChunks(
       const offset = runtimeLoopEventOutputs.length;
       const rowIndex = routeRowIndex(row);
       if (rowIndex < 0) throw new Error('Batch runtime event row is missing from its route frame');
-      const rowArtifact = (delegateRouteRows as any[] | undefined)?.some((candidate: any) => candidate === row) && delegateRouteGroup
-        ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
+      const rowArtifact = host.inner.artifact;
       await appendRuntimeEvents(row.handler, [...row.args], rowArtifact, (name) =>
         row.internalArgs?.[name] ?? selectedRowArgument(row, name), rowIndex);
       const count = runtimeLoopEventOutputs.length - offset;
@@ -778,8 +776,7 @@ export async function loadCreateBuilderDynamicChunks(
       const offset = runtimeLoopTransferOutputs.length;
       const rowIndex = routeRowIndex(row);
       if (rowIndex < 0) throw new Error('Batch runtime transfer row is missing from its route frame');
-      const rowArtifact = (delegateRouteRows as any[] | undefined)?.some((candidate: any) => candidate === row) && delegateRouteGroup
-        ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
+      const rowArtifact = host.inner.artifact;
       await appendRuntimeTransfers(row.handler, [...row.args], rowArtifact, (name) =>
         row.internalArgs?.[name] ?? selectedRowArgument(row, name), rowIndex);
       const count = runtimeLoopTransferOutputs.length - offset;

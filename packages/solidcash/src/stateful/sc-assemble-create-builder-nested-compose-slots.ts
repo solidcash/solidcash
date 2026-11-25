@@ -4,7 +4,6 @@
 
 import { foldRouteStoredValues, type StoredValueMutationRow } from './fold-route-stored-values.js';
 import type { StoredValueIncomingEntry } from './sc-encode-stored-element-source.js';
-import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
@@ -51,13 +50,7 @@ import {
   deriveChunkableArrayValueChannels,
   foldLeadingRouteArrayPushes,
 } from './resource-fold-route.js';
-import {
-  entryAccessAt,
-  parseRowArgsDecodeLabel,
-  resolvePreparedProducerEntry,
-  resolveRouteRowExpressionKey,
-} from './route-expression-key.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
+import { entryAccessAt, resolvePreparedProducerEntry, resolveRouteRowExpressionKey } from './route-expression-key.js';
 import {
   SortedList, getCachedSortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
 } from './SortedList.js';
@@ -341,10 +334,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
           }
           let keys = keySources.map((source, keyIndex) => {
             if (isMsgSenderKeySource(source)) {
-              const selectedUsesSender = (selectedFn.entryAccesses ?? []).some((candidate: any) =>
-                candidate.collection === access.collection
-                && (candidate.keySources ?? []).some((candidateSource: any) =>
-                  isMsgSenderKeySource(candidateSource)));
               // CALL observes the calling contract, while DELEGATECALL preserves the transaction
               // caller. Resolve the same identity carried by the route witness or the selected entry
               // and covenant key diverge.
@@ -384,15 +373,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
             const encodedName = source.paramName
               ?? ('expressionLabel' in source ? source.expressionLabel : undefined)
               ?? access.keyParams[keyIndex];
-            // Fixed route routes reserve one witness lane per possible row. Only the handler
-            // selected in that row may consume its lane. The unused ABI witnesses are canonical
-            // zeroes, and resolving all of them against the sorted list can select the same
-            // predecessor repeatedly; the later input de-duplication then keeps an inactive lane
-            // and funder-fills the active one which the covenant actually reads.
-            const perRowLane = encodedName?.match(/_r(\d+)$/);
-            const participatesInSortedBatch = (selectedFn.sortedBatchInfo ?? []).some(
-              (batch) => batch.slotIndices.includes(slot.slotIndex ?? -1),
-            );
             const paramName = encodedName?.startsWith('id:')
               ? encodedName.slice(3) : encodedName;
             const visibleInputs = selectedFn.inputs

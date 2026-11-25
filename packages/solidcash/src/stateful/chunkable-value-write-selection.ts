@@ -83,7 +83,6 @@ export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGr
   const activeFunctions = route?.rowArguments?.length
     ? route.rowArguments.map((row) => row.handler)
     : route?.abiFunction ? [route.abiFunction] : direct ? [direct] : [];
-  const activeWriteCollections = undefined;
   const collections = group.stateLayout?.collections ?? artifact?.stateLayout?.collections ?? [];
   const matches = new Set<string>();
   for (const handler of activeFunctions) {

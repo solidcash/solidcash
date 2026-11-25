@@ -125,7 +125,7 @@ describe('sorted mapping proof-input coordinate', () => {
 contract Callee() {
   int count;
   function bump() public { this.count = this.count + 1; require(true); }
-}`, { ...stateful, evmCompat: false});
+}`, { ...stateful, evmCompat: false });
     const hostArtifact = compileString(`pragma solidcash >=0.8.0;
 interface ICallee { function bump() external; }
 contract Host() {

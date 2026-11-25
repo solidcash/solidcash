@@ -20,7 +20,7 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type SourceOutputs = NonNullable<VmProgram['sourceOutputs']>;
 interface Spend { transaction: VmTransaction; sourceOutputs: SourceOutputs }
 
-const OPTIONS = { evmCompat: true, forceStateful: true} as any;
+const OPTIONS = { evmCompat: true, forceStateful: true } as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 
 const LEDGER = `

@@ -16,7 +16,7 @@ const contract = (body: string): string => `contract C() {
   }
 }`;
 const quiet = { suppressWarnings: true };
-const conventions = [quiet, { ...quiet}];
+const conventions = [quiet, { ...quiet }];
 
 describe('a loop guard the published upsert recipe cannot carry', () => {
   it.each([

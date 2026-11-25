@@ -1,19 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-import {
-  type AbiFunction,
-  type Artifact,
-  asmToScript,
-  CALL_RECORD_NO_READER,
-  CALL_RECORD_READER_INPUT,
-  bytecodeToScript,
-  countOpcodes,
-  generateContractBytecodeScript,
-  hash256,
-  Op,
-  scriptToBytecode,
-  type StateLayout,
-} from '@solidcash/utils';
+import { type AbiFunction, type Artifact, asmToScript, CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, countOpcodes, generateContractBytecodeScript, hash256, Op, scriptToBytecode, type StateLayout } from '@solidcash/utils';
 import {
   type ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, type FunctionArgument,
   isDeferredSignatureArgument,
@@ -541,7 +528,6 @@ export class Contract<
       const signingBytecode = (selectorHex && this.artifact.functionBodies?.[selectorHex])
         ? parsedFunctionBody(this.artifact.functionBodies[selectorHex])
         : bytecode;
-;
 
       const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
       // Coerce ethers-v5 BigNumber / wrapEthersBN objects before encode (MistSwap removeCollateral share).
@@ -698,7 +684,7 @@ export class Contract<
     return this.createUnlocker(abiFunction, abiFunction.selector ? hexToBin(abiFunction.selector) : undefined);
   }
 
-  
+
 
   /**
    * An unlocker for the multi-call entry (`artifact.callBatch`): one spend of the master runs `frames` in order,

@@ -10,7 +10,6 @@ import {
   type Artifact,
   type EntryAccessAbi,
 } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
 import {
   decodeEntryCommitment,
 } from './SortedList.js';
@@ -163,7 +162,6 @@ export function describeValueChunkWrites(
   const layout = abiFunction.blockLayout ?? group.blockLayout;
   if (!layout) return [];
   const activeFunctions = [abiFunction];
-  const activeWriteCollections = undefined;
   const writes: ValueChunkWriteDescriptor[] = [];
   const appendWrite = (access: EntryAccessAbi, entryAccessSlot: number, routeSlot: number): void => {
     if (!access.operations.includes('write')) return;
@@ -236,7 +234,6 @@ export function chunkableValueWriteCollections(
   group: ExternalCallUtxoGroup,
   abiFunction: AbiFunction,
 ): string[] {
-  const activeWriteCollections = undefined;
   const activeFunctions = [abiFunction];
   return [...new Set(activeFunctions.flatMap((activeFunction) => (
     activeFunction.entryAccesses ?? []

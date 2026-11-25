@@ -3,17 +3,14 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, StateValue } from '@solidcash/utils';
+import type { StateValue } from '@solidcash/utils';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
-import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type Signer from '../Signer.js';
 import {
   legacyStatefulSimulationEnabled,
   softOracleRate,
 } from './soft-state-overlays.js';
-import { encodeExternalReturnValue } from './external-return-encoding.js';
-import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 

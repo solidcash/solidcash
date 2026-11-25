@@ -18,20 +18,24 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
  */
 export const compileFile = (
   sourcePath: Parameters<typeof compileFileRaw>[0], options: FileOptions = {},
-): ReturnType<typeof compileFileRaw> => compileFileRaw(sourcePath, { enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+): ReturnType<typeof compileFileRaw> => compileFileRaw(sourcePath, {
+  enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileString = (
   source: string, options: StringOptions = {},
-): ReturnType<typeof compileStringRaw> => compileStringRaw(source, { enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+): ReturnType<typeof compileStringRaw> => compileStringRaw(source, {
+  enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileStringMulti = (
   source: string, options: MultiOptions = {},
-): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, { enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, {
+  enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileStringSplit = (
   source: string, options: SplitOptions = {},
-): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, { enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, {
+  enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });

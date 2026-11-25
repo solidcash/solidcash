@@ -32,7 +32,7 @@ describe('SOLIDC env registry compile-cache artifact identity', () => {
     const base = buildArtifactCacheKey(src, { suppressWarnings: true }, 'CacheIdentityPin');
     const withJournal = buildArtifactCacheKey(
       src,
-      { suppressWarnings: true, forceStateful: true},
+      { suppressWarnings: true, forceStateful: true },
       'CacheIdentityPin',
     );
     const withOwnerAlt = buildArtifactCacheKey(
@@ -51,10 +51,10 @@ describe('SOLIDC env registry compile-cache artifact identity', () => {
     delete process.env.SOLIDC_ROW_ASSERT;
     try {
       clearCompileCache();
-      compileString(src, { suppressWarnings: true});
+      compileString(src, { suppressWarnings: true });
       expect(getCompileCacheEntryCount()).toBe(1);
       process.env.SOLIDC_ROW_ASSERT = '1';
-      compileString(src, { suppressWarnings: true});
+      compileString(src, { suppressWarnings: true });
       expect(getCompileCacheEntryCount()).toBe(2);
     } finally {
       if (previousRow === undefined) delete process.env.SOLIDC_ROW_ASSERT;
@@ -77,14 +77,14 @@ describe('SOLIDC env registry compile-cache artifact identity', () => {
   it('distinct execution options create distinct in-process cache entries', () => {
     process.env.SOLIDC_COMPILE_CACHE = '1';
     clearCompileCache();
-    compileString(src, { suppressWarnings: true});
+    compileString(src, { suppressWarnings: true });
     expect(getCompileCacheEntryCount()).toBe(1);
     compileString(src, {
       suppressWarnings: true, forceStateful: true,
     });
     expect(getCompileCacheEntryCount()).toBe(2);
     // Same options hit the same entry.
-    compileString(src, { suppressWarnings: true});
+    compileString(src, { suppressWarnings: true });
     expect(getCompileCacheEntryCount()).toBe(2);
   });
 

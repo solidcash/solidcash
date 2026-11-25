@@ -22,7 +22,6 @@ import { callNamesNoReader } from './call-record.js';
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
 } from './mapping-key-lookup.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
   groupLayoutTrailingBase,
@@ -96,7 +95,6 @@ export async function completeCreateBuilderNestedUnlockers(
   const pendingDelegateInputFills = params.pendingDelegateInputFills as any[];
   const pendingAnchorFills = params.pendingAnchorFills as any[];
   const pendingExternalCallInputFills = params.pendingExternalCallInputFills as any[];
-  const entryAbiFunction = params.entryAbiFunction as AbiFunction | undefined;
   const identityAnchors = params.identityAnchors as UnlockableUtxo[];
   const publicSelfAddress = params.publicSelfAddress as Uint8Array;
   const authenticatedSelfAddress = params.authenticatedSelfAddress as Uint8Array | undefined

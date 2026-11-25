@@ -21,13 +21,9 @@ import { materializeInternalFunctionArgument } from './internal-function-args.js
 import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import {
-  directCallUsesPhysicalWrapper,
-  selectedRouteResourceMetadata,
-} from './route-resource-selection.js';
+import { directCallUsesPhysicalWrapper } from './route-resource-selection.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import { resolveMaterializedDynamicWriteOutputBase } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
 import {
   StatefulTransactionBuilder,

@@ -1,7 +1,4 @@
-import {
-  encodePushdataValue,
-  type Artifact,
-} from '@solidcash/utils';
+import { encodePushdataValue } from '@solidcash/utils';
 /** Global v1 transport ceiling across all journal streams. */
 export const KERNEL_ENTRY_JOURNAL_MAX_RECORDS = 99;
 /** Compiler-owned ABI input name prefix for one journal record segment. */

@@ -18,33 +18,10 @@ import { ArmHeadError, verifyArmHeads } from './generation/ArmHeads.js';
 import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { sha256 as sha256Bytes } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
-import {
-  type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode,
-  findOraclePoolSlots, ORACLE_POOL_PARAMETER, oraclePoolTreeReads, type OraclePoolReads, BytesType,
-  type CompilerOptions,
-  FixedType, IntType,
-  computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
-  canonicalSelectorSignature,
-  computeFunctionSignature,
-  encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
-  needsOptimiserCrossCheck, scriptToBytecode, bytecodeToScript, asmToScript, Op,
-  optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
-  type AbiFunction, type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle,
-  type DeployerAbi, type FunctionBlockLayout, type BlockSlotKind,
-  type SplitStateFootprint, StructType, TupleType,
-  type Type,
-  ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
-  isChunkableValueType,
-  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature, dynamicChunkSignature, fillerLockingBytecode,
-} from '@solidcash/utils';
-import {
-  generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
-} from './artifact/Artifact.js';
+import { type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, findOraclePoolSlots, ORACLE_POOL_PARAMETER, oraclePoolTreeReads, type OraclePoolReads, BytesType, type CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex, canonicalSelectorSignature, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, MappingType, needsOptimiserCrossCheck, scriptToBytecode, bytecodeToScript, asmToScript, Op, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual, type AbiFunction, type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle, type DeployerAbi, type FunctionBlockLayout, type BlockSlotKind, type SplitStateFootprint, StructType, TupleType, type Type, ValueType, isDynamicStorageType, childStateLayoutDigest, abiTypeString, dynamicChunkSignature } from '@solidcash/utils';
+import { generateArtifact, generateDeclarationArtifact, resultArrayOutputOf } from './artifact/Artifact.js';
 import {
   enforceSolidcEnvPolicy,
-  resolveSolidcFeatureFlags,
   solidcEnvFlagEnabled,
   solidcEnvValue,
   solidcFeatureIdentityBits,
@@ -77,35 +54,7 @@ import {
   emitCompilerWarning, withDistinctWarnings, withSuppressedWarnings, withWarningListener, type WarningListener,
 } from './warnings.js';
 
-import {
-  type Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode,
-  ContractReferenceNode,
-  EmitStatementNode, type EventDefinitionNode,
-  ExpressionNode, FieldAccessNode, LiteralNode,
-  FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, InterfaceFunctionNode, InterfaceNode,
-  ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
-  ExpressionStatementNode,
-  IdentifierNode,
-  InstantiationNode,
-  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayNode, NewArrayNode,
-  ArrayPushNode, ArrayPopNode, CollectionIterationNode,
-  CollectionIterationMode,
-  CollectionNode, StateAccessNode, StateAssignNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
-  StateArrayDeleteNode,
-  FunctionCallStatementNode,
-  LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
-  MappingFieldAssignNode,
-  MethodCallNode, MethodCallStatementNode, ModifierDefinitionNode, Node, ParameterNode, RequireNode, RevertNode,
-  NullaryOpNode, TupleAssignmentNode, TupleIndexOpNode, VariableDefinitionNode, DeleteLocalNode, DeleteStateNode,
-  SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
-  TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
-  TokenContainerMethodStatementNode, SelfdestructStatementNode,
-  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, MinerFeeStatementNode,
-  WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
-  type ExternalCallExpression,
-  BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
-  exactArrayLength, TimeOpNode, type CustomModifierInvocation,
-} from './ast/AST.js';
+import { type Ast, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode, ExpressionNode, FieldAccessNode, FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, ExpressionStatementNode, IdentifierNode, InstantiationNode, ArrayDeleteNode, CollectionIterationNode, StateAccessNode, StateArrayDeleteNode, LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode, DeleteStateNode, SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode, TokenContainerMethodStatementNode, SelfdestructStatementNode, AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, MinerFeeStatementNode, WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode, BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode, exactArrayLength, TimeOpNode, type CustomModifierInvocation } from './ast/AST.js';
 import { YulFunctionCallNode } from './ast/YulAST.js';
 import AstBuilder, { lvalueKeyUnitsBuilt } from './ast/AstBuilder.js';
 import { Class, GlobalFunction, TimeOp } from './ast/Globals.js';
@@ -113,17 +62,13 @@ import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorList
 import GenerateTargetTraversal, {
   assertKeccakChainBand, assertKeccakLoopBand, assertRecoveryLoopBand,
 } from './generation/GenerateTargetTraversal.js';
-import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
 import SymbolTableTraversal, { assignFunctionSourceEffectOrdinals } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
-import { getEventChunkCount } from './semantic/maxEncodedSize.js';
 import { packedStateLayoutVariables } from './semantic/packedStateLayout.js';
-import EnsureFinalRequireTraversal, {
-  rejectFreeFunctionMissingReturns,
-} from './semantic/EnsureFinalRequireTraversal.js';
+import EnsureFinalRequireTraversal from './semantic/EnsureFinalRequireTraversal.js';
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation, { holdsUnconfinedReturn } from './semantic/EarlyReturnTransformation.js';
 import confineReturns from './semantic/ConfineReturns.js';
@@ -167,39 +112,19 @@ import HoistInlineDeployCalls from './semantic/HoistInlineDeployCalls.js';
 import HoistChainedContractCalls from './semantic/HoistChainedContractCalls.js';
 import InlineMappingReturnFunctions from './semantic/InlineMappingReturnFunctions.js';
 import LowerMappingStorageAlias from './semantic/LowerMappingStorageAlias.js';
-import InlineReturningStateHelpers, {
-  captureCallsiteActivations,
-} from './semantic/InlineReturningStateHelpers.js';
+import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
 import LowerCollectionJournalHelpers from './semantic/LowerCollectionJournalHelpers.js';
 import LowerDynamicStateJournalHelpers from './semantic/LowerDynamicStateJournalHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
 import AlphaRenameLocalShadows from './semantic/AlphaRenameLocalShadows.js';
 import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
-import { createDefaultValueExpression } from './ast/defaults.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
 import ExpandBoundedPointerTableLoop from './semantic/ExpandBoundedPointerTableLoop.js';
 import {
-  LowLevelCallShapeError, validateFunctionLowLevelCallShapes, validateLowLevelCallShapes,
-} from './semantic/LowLevelCallShapes.js';
-import {
   containsIndirectCall, type PointerTableExpansion, type PointerTableExpansionMap, type ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
-import LowerVMapCounterLoops, {
-  CounterLoopReadWriteConflictError,
-  KERNEL_JOURNAL_ACCESS_STREAMS,
-  KERNEL_JOURNAL_RECORDS,
-  VMAP_COUNTER_OLD_PREFIX,
-  VMAP_COUNTER_INPUT_COUNT_PREFIX,
-  VMAP_COUNTER_OUTPUT_COUNT_PREFIX,
-  VMAP_COUNTER_PERM_PREFIX,
-  VMAP_COUNTER_VALUE_PREFIX,
-  VMAP_COUNTER_PREFIX_COUNT_PREFIX,
-  VMAP_COUNTER_SOURCE_INDEX_PREFIX,
-  VMAP_RUNTIME_INPUT_COUNT_PREFIX,
-  VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
-} from './semantic/LowerVMapCounterLoops.js';
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerFramedCreate2Address, { type FramedCreateSite } from './semantic/LowerFramedCreate2Address.js';
@@ -210,12 +135,10 @@ import ScalarReplaceStructLocals from './semantic/ScalarReplaceStructLocals.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
-import CacheMappingEntryInLoop, { CloseDirectEntryCaches } from './semantic/CacheMappingEntryInLoop.js';
+import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
-import SynthesizeBlockOracle, {
-  bindOraclePool, createdPoolReads, markBlockOracleCallers, readsBlockOracle, setOraclePoolBinding, takesOraclePool,
-} from './semantic/SynthesizeBlockOracle.js';
+import SynthesizeBlockOracle, { bindOraclePool, createdPoolReads, markBlockOracleCallers, setOraclePoolBinding, takesOraclePool } from './semantic/SynthesizeBlockOracle.js';
 import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
 import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
@@ -250,44 +173,20 @@ import { createMapResolver } from './createMapResolver.js';
 import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
 import { compileFunctionSplit } from './split/function-split.js';
 import { DEPLOYER_SELECTOR_CREATE, DEPLOYER_SELECTOR_SWEEP, deployerConstantsOf } from './generation/deployerConstants.js';
-import {
-  AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
-  UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
-  CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
-  SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
-  UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
-  ChildGenesisFoldError, DeployerUnsupportedWarning, DeployerUnsupportedError, DeployerInternalError,
-  DeployCycleError,
-} from './Errors.js';
+import { AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError, UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError, CompilerRecursionLimitError, NestedSelfdestructError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError, DeployerUnsupportedWarning, DeployerUnsupportedError, DeployerInternalError, DeployCycleError } from './Errors.js';
 import {
   compilesInDirectConvention, type DeployerChild,
 } from './generation/deployerChildren.js';
-import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
+import { Location, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   CALL_BATCH_INPUT_RESERVE_FRACTION, CALL_BATCH_ROW_SHIFT, CALL_BATCH_SELECTOR_HEX,
 } from './semantic/CallBatch.js';
-import {
-  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, createFootprintAnalysisCache,
-  directCallNames, emitsAnyEvent,
-  visibleFreeFunctionsForContract,
-  walkInvocationAst,
-} from './analysis/InvocationAnalysis.js';
+import { analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, createFootprintAnalysisCache, directCallNames, emitsAnyEvent, walkInvocationAst } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
-import {
-  analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentCollectionDefinitions,
-  // Finalized typed effect IR: compiler admission analyzes recipes under requireFinalizedTypes
-  // (the default in analyzeChildDeploymentRecipes).
-  childDeploymentGenesisEntries, childDeploymentGenesisState, childDeploymentStructDefinitions,
-  childDeploymentValueRecipe, hasExactRecipeHelperIdentity,
-} from './deploymentRecipes.js';
+import { analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries, childDeploymentGenesisState, childDeploymentStructDefinitions, childDeploymentValueRecipe } from './deploymentRecipes.js';
 import { cloneNode, cloneNodeGraph } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
-
-// A participant's row results are concatenated into one VM byte string before that complete return vector is
-// hash-committed. This is therefore a cumulative participant-route bound, not a per-row allowance. Source the
-// ceiling from the active BCH-2026 consensus profile.
-const MAX_JOURNAL_RESULT_BYTES = ConsensusBch2026.maximumStackItemLength;
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -303,11 +202,6 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   optimise: true,
   composition: 'direct',
 };
-
-function normalizeAbiSelector(selector: string): string | undefined {
-  const normalized = selector.startsWith('0x') || selector.startsWith('0X') ? selector.slice(2) : selector;
-  return /^[0-9a-fA-F]{8}$/.test(normalized) ? normalized.toLowerCase() : undefined;
-}
 
 /** Selector identity of a source ABI entry point; compiler-internal physical operands never affect it. */
 function sourceFunctionSelectorHex(fn: FunctionDefinitionNode, evmCompat = false): string {
@@ -327,15 +221,7 @@ function sourceFunctionSelectorHex(fn: FunctionDefinitionNode, evmCompat = false
   return computeFunctionSelectorHex(signature, evmCompat);
 }
 
-
-
-
-
 /** Remaining eligible names when late fences demoted a handler already synthesized into the route. */
-
-
-
-
 
 function scanSourceImports(code: string): string[] {
   const specs: string[] = [];
@@ -491,16 +377,6 @@ function validateExpandedSelfdestructs(contract: ContractNode): void {
     }
   }
 }
-
-/** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
-type AdmissionWinner = {
-  direct?: boolean;
-  admitExternalHandlers: boolean;
-  normalizeBareEntries: boolean;
-  relaxResultRouteEffects: boolean;
-  admitMixedScalarHandlers: boolean;
-  admitBareForwardingHandlers: boolean;
-};
 type CaughtCompilerAttempt = {
   stage: 'admission' | 'full-recompile' | 'verifier-bind';
   errorName: string;
@@ -1015,7 +891,6 @@ function compileDeployerProgram(
     __admissionWinnerBox: undefined,
     __attemptFailureBox: undefined,
     __internalAttemptFailureState: undefined,
-    __singlePassVerifierSource: undefined,
   } as InternalCompilerOptions;
   delete (inner as { delegateVariant?: unknown }).delegateVariant;
   let artifact: Artifact;
@@ -1561,11 +1436,12 @@ type InternalCompilerOptions = CompilerOptions & {
    */
   __logicalContractEvents?: readonly string[];
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
-  __pristineAstBox?: { ast?: Ast };  /** Inlined verifier source for `__synthesizeBoundRoutePlaceholder`; compiled as a detached mini-contract. */
-  __singlePassVerifierSource?: string;  /** Unspecialized verifier template retained across the participant-lock binding pass. */  /**
+  __pristineAstBox?: { ast?: Ast };
+  /**
    * Shared with the shallow-copied admission options. Records the rung that produced the returned artifact so
    * a missing verifierProgram does not replay the whole search as full compiles.
-   */  /** Test-only observation of failures consumed by an admission/rebinding recovery path. */
+   */
+  /** Test-only observation of failures consumed by an admission/rebinding recovery path. */
   __attemptFailureBox?: { failures: CaughtCompilerAttempt[] };
   /** Test-only explicit audit flag; journal compiles enforce this invariant regardless of the flag's value. */
   __strictNoInternalRecovery?: boolean;
@@ -1661,40 +1537,6 @@ function emitContractScript(
     logs: traversal.consoleLogs,
     requires: traversal.requires,
   };
-}
-
-function isInternalCodegenAttemptFailure(error: unknown): boolean {
-  if (error instanceof BlockLayoutUnavailableError
-    || error instanceof StackVariableUnavailableError
-    || error instanceof UnboundReturnCallError) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  // Some older generator invariants predate named error classes. Keep the strict audit useful while those are
-  // migrated, without treating typed JOURNAL_* admission fences as compiler failures.
-  return message.startsWith('Block slot not found:')
-    || message.startsWith('Missing journal context ')
-    || message.startsWith('Batch owner frame for ')
-    || /lacks compiler metadata \(slot /.test(message);
-}
-
-function recordCaughtCompilerAttempt(
-  options: InternalCompilerOptions,
-  stage: CaughtCompilerAttempt['stage'],
-  error: unknown,
-): void {
-  const internalCodegen = isInternalCodegenAttemptFailure(error);
-  const box = options.__attemptFailureBox;
-  if (box) {
-    box.failures.push({
-      stage,
-      errorName: error instanceof Error ? error.name : typeof error,
-      message: error instanceof Error ? error.message : String(error),
-      internalCodegen,
-    });
-  }
-  if (internalCodegen && options.__internalAttemptFailureState
-    && options.__internalAttemptFailureState.firstError === undefined) {
-    options.__internalAttemptFailureState.firstError = error;
-  }
 }
 
 function assertNoInternalAttemptRecovery(options: InternalCompilerOptions): void {
@@ -1989,8 +1831,6 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   };
 }
 
-
-
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
   // Composition convention is resolved and checked before any lowering: the two conventions produce different
   // addresses and unlocking bytecode, so a request whose code generation is absent must refuse rather than emit
@@ -2010,8 +1850,6 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     ?? !solidcEnvFlagEnabled('SOLIDC_NO_OPTIMISE');
   // Production-semantics SOLIDC_* features: explicit CompilerOptions win; else env via registry.
   // Unknown SOLIDC_* keys are ignored (never silently alter bytecode).
-  const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-  const featureFlags = resolveSolidcFeatureFlags(env, { releaseMode: true });
   const normalized = {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
@@ -2242,7 +2080,6 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__parsedAst;
   delete keyOptions.__pristineAstBox;
   delete keyOptions.__synthesizeBoundRoutePlaceholder;
-  delete keyOptions.__singlePassVerifierSource;
   delete keyOptions.__admissionWinnerBox;
   delete keyOptions.__attemptFailureBox;
   delete keyOptions.__strictNoInternalRecovery;
@@ -2544,12 +2381,6 @@ interface ExternalAdmissionAttribution {
   reasons: Map<string, string>;
 }
 
-
-
-
-
-
-
 /** Identity of one source handler: name plus declaration position, so two overloads stay distinct. */
 function externalHandlerKey(fn: FunctionDefinitionNode): string {
   const start = fn.location?.start;
@@ -2608,50 +2439,6 @@ function markDynamicChunkInputBaseFunctions(
   return keys;
 }
 
-/** Record `fn` as an entry point the route considered. Idempotent across ladder attempts. */
-function recordExternalHandlerSpan(
-  attribution: ExternalAdmissionAttribution | undefined, fn: FunctionDefinitionNode,
-): void {
-  if (!attribution) return;
-  const key = externalHandlerKey(fn);
-  if (attribution.spans.some((span) => span.key === key)) return;
-  attribution.spans.push({ key, name: fn.name, location: fn.location });
-}
-
-
-
-
-
-/** A source-owned refusal whose outcome cannot depend on which optional route handlers are admitted. */
-function isAdmissionIndependentSourceError(error: unknown): boolean {
-  return error instanceof CounterLoopReadWriteConflictError
-    // A child genesis the direct creator cannot fold fails its direct entry too.
-    || error instanceof ChildGenesisFoldError
-    || (error instanceof UnsupportedInlineAssemblyError && !generatedOriginOf(error.node.location));
-}
-
-/** EVM ABI bytes occupied by a static type, or undefined when the type has a dynamic tail. */
-function staticAbiByteSize(type: Type): number | undefined {
-  if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return undefined;
-  if (type instanceof ArrayType) {
-    if (type.bound === undefined) return undefined;
-    const elementBytes = staticAbiByteSize(type.elementType);
-    return elementBytes === undefined ? undefined : type.bound * elementBytes;
-  }
-  if (type instanceof StructType) {
-    let bytes = 0;
-    for (const field of type.fields) {
-      const fieldBytes = staticAbiByteSize(field.type);
-      if (fieldBytes === undefined) return undefined;
-      bytes += fieldBytes;
-    }
-    return bytes;
-  }
-  return 32;
-}
-
-
-
 /**
  * Compiles one contract, refusing each function whose loop upsert writes under a guard its published recipe cannot
  * carry: every admission rung records such a function in one record per attempt, and the compile reruns with the
@@ -2662,12 +2449,6 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   const artifact = compileStringRefusingLoopGuards(code, compilerOptions);
   return artifact;
 }
-
-/** The script is over the per-input limit the compile names: the subject of the `contract-size-limit` diagnostic. */
-function overInputLimit(artifact: Artifact, compilerOptions: CompileOptions): boolean {
-  return asmToBytecode(artifact.bytecode).length > (compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE);
-}
-
 
 function compileStringRefusingLoopGuards(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const inherited = (compilerOptions as InternalCompilerOptions).__loopGuardRefusals;
@@ -3021,36 +2802,6 @@ function setPrimaryContract(ast: Ast, name: string): void {
   ast.importedContracts = all.filter((c) => c !== target);
 }
 
-
-/** Exact capability attached to each compiler-generated detached verifier source. */
-/** Artifact-fixed P2SH32 shape (`OP_HASH256 <32> OP_EQUAL`); content is patched after cheap verifier emit. */
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) return false;
-  for (let i = 0; i < left.length; i += 1) if (left[i] !== right[i]) return false;
-  return true;
-}
-
-
-
-
-
-/**
- * Verifier covenant locks, keyed by everything that can change the covenant script.
- *
- * The pre-codegen verifier compile exists to produce this lock and nothing else: a journal pass replaces its
- * program with the post-codegen specialized one, and the published program carries only ids, names and
- * bytecode. The lock itself is not root-file dependent - two integration roots with different root files and
- * different verifier sources already produced the same lock - so the same route shape recompiled in another
- * root would otherwise repeat a ~0.3s mini-compile for a value it can be handed.
- */
-const detachedVerifierLockCache = new Map<string, Uint8Array>();
-
-
-
-
-
-
-
 /**
  * Memo for a detached verifier. A multi-declaration compile hands the same generated verifier
  * source to every declaration, and the emit is a pure function of that source and its options, so the second and
@@ -3060,11 +2811,6 @@ const detachedVerifierLockCache = new Map<string, Uint8Array>();
  * `detachedVerifierOptionsKey`). Entries are deep-cloned on the way out so a caller mutating a returned program
  * cannot poison the memo. Bounded, because each entry retains a large source string.
  */
-
-
-
-
-
 
 /** A source function's selector cannot be the multi-call entry's (semantic/CallBatch.ts). */
 export function assertNoReservedCallBatchSelector(
@@ -3087,205 +2833,6 @@ export function assertNoReservedCallBatchSelector(
   );
 }
 
-type TransactionSignaturePathSegment =
-  | { kind: 'field'; name: string; index: number }
-  | { kind: 'array'; elementType: string; bound?: number };
-
-interface TransactionSignatureLeaf {
-  path: TransactionSignaturePathSegment[];
-  /** Per-invocation witness type. The route adds one dynamic row dimension. */
-  type: string;
-}
-
-/**
- * Describe every transaction-signature leaf which can be detached from a value-copy argument.
- *
- * Struct fields and arrays have an assignable source representation, so the route can decode an ABI-valid
- * signature-free copy and rebuild these leaves from witnesses. Tuples do not: tuple members are projections,
- * not assignable lvalues, and therefore continue to fail closed if one ever reaches a public parameter.
- */
-function transactionSignatureLeaves(
-  type: Type,
-  path: TransactionSignaturePathSegment[] = [],
-  activeStructs = new Set<StructType>(),
-): TransactionSignatureLeaf[] | undefined {
-  if (type === PrimitiveType.SIG) {
-    let witnessType = 'sig';
-    for (const segment of [...path].reverse()) {
-      if (segment.kind === 'array') witnessType += `[${segment.bound ?? ''}]`;
-    }
-    return [{ path, type: witnessType }];
-  }
-  if (type instanceof ArrayType) {
-    return transactionSignatureLeaves(type.elementType, [...path, {
-      kind: 'array', elementType: type.elementType.toString(),
-      ...(type.bound !== undefined && { bound: type.bound }),
-    }], activeStructs);
-  }
-  if (type instanceof StructType) {
-    if (activeStructs.has(type)) return undefined;
-    activeStructs.add(type);
-    const leaves: TransactionSignatureLeaf[] = [];
-    for (const [index, field] of type.fields.entries()) {
-      const nested = transactionSignatureLeaves(
-        field.type, [...path, { kind: 'field', name: field.name, index }], activeStructs,
-      );
-      if (nested === undefined) {
-        activeStructs.delete(type);
-        return undefined;
-      }
-      leaves.push(...nested);
-    }
-    activeStructs.delete(type);
-    return leaves;
-  }
-  if (type instanceof TupleType) {
-    return type.elements.some((element) => transactionSignatureLeaves(element)?.length) ? undefined : [];
-  }
-  return [];
-}
-
-/**
- * Return-type safety needs only a containment query, rather than the assignable paths required for parameter
- * witness extraction above. Keep it separate so tuple members and cyclic aggregate graphs still classify a
- * reachable `sig` as transaction-bound instead of accidentally falling through to the generic layout fence.
- */
-function containsTransactionSignature(type: Type, seen = new Set<object>()): boolean {
-  if (type === PrimitiveType.SIG) return true;
-  if (typeof type !== 'object' || type === null) return false;
-  if (seen.has(type)) return false;
-  seen.add(type);
-  if (type instanceof ArrayType) return containsTransactionSignature(type.elementType, seen);
-  if (type instanceof StructType) {
-    return type.fields.some((field) => containsTransactionSignature(field.type, seen));
-  }
-  if (type instanceof TupleType) {
-    return type.elements.some((element) => containsTransactionSignature(element, seen));
-  }
-  return false;
-}
-
-const isEntireTransactionSignatureType = (type: Type): boolean => type === PrimitiveType.SIG
-  || (type instanceof ArrayType && isEntireTransactionSignatureType(type.elementType));
-
-
-/** Event definitions visible to `ast`. */
-function visibleEventDefinitions(ast: Ast): EventDefinitionNode[] {
-  return [
-    ...ast.contract.eventDefinitions, ...ast.eventDefinitions,
-    ...ast.interfaceDefinitions.flatMap((definition) => definition.eventDefinitions),
-    ...ast.importedContracts.flatMap((contract) => contract.eventDefinitions),
-  ];
-}
-
-/** Names of the events visible to `ast` whose payload can exceed one NFT commitment of `chunkBytes`. */
-function wideEventNames(ast: Ast, chunkBytes: number): Set<string> {
-  return new Set(visibleEventDefinitions(ast)
-    .filter((event) => getEventChunkCount(event.parameters, chunkBytes) > 1)
-    .map((event) => event.name));
-}
-
-/** True when `type`'s encoded size has no static bound: a dynamic array or an unbounded bytes/string. */
-function holdsUnboundedValue(type: Type, seen = new Set<object>()): boolean {
-  if (type instanceof ArrayType) return type.bound === undefined || holdsUnboundedValue(type.elementType, seen);
-  if (type instanceof BytesType) return type.bound === undefined;
-  if (type === PrimitiveType.STRING) return true;
-  if (!(type instanceof StructType) || seen.has(type)) return false;
-  seen.add(type);
-  return type.fields.some((field) => holdsUnboundedValue(field.type, seen));
-}
-
-/** Names of the events visible to `ast` whose payload can grow past any one commitment (`getEventChunkCount`
- * counts such a parameter as 9 bytes): a dynamic array or an unbounded string/bytes parameter. */
-function unboundedEventNames(ast: Ast): Set<string> {
-  return new Set(visibleEventDefinitions(ast)
-    .filter((event) => event.parameters.some((parameter) => holdsUnboundedValue(parameter.type)))
-    .map((event) => event.name));
-}
-
-/** Emits `body` reaches through nested blocks alone, in source order, and whether a return precedes the last. */
-function topLevelEmits(body: BlockNode): { emits: EmitStatementNode[]; returnBeforeLast: boolean } {
-  const emits: EmitStatementNode[] = [];
-  let returned = false;
-  let returnBeforeLast = false;
-  const visit = (statements: readonly Node[]): void => {
-    for (const statement of statements) {
-      if (statement instanceof EmitStatementNode) {
-        emits.push(statement);
-        if (returned) returnBeforeLast = true;
-      } else if (statement instanceof BlockNode) {
-        visit(statement.statements ?? []);
-      } else if (containsReturn(statement)) {
-        returned = true;
-      }
-    }
-  };
-  visit(body.statements ?? []);
-  return { emits, returnBeforeLast };
-}
-
-function containsReturn(statement: Node): boolean {
-  let found = false;
-  walkInvocationAst(statement, (node) => { if (node instanceof ReturnNode) found = true; });
-  return found;
-}
-
-/**
- * Whether a compiler-generated route can settle every emit of `fn` on its runtime effect stream: each one sits in `fn`'s own
- * body outside branches, loops and try blocks with no return before the last, no helper emits, and no counter loop
- * already orders a stream of its own. Each emit then always pushes its records, so a builder plans one per site.
- */
-function streamsEveryEmit(fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>): boolean {
-  if (!fn.body || (fn.runtimeLoopEvents?.length ?? 0) > 0 || (fn.runtimeLoopTransfers?.length ?? 0) > 0) {
-    return false;
-  }
-  const helperEmits = [...collectNamedFunctionClosure(fn, byName)].some((name) => name !== fn.name
-    && (byName.get(name) ?? []).some((helper) => {
-      let found = false;
-      walkInvocationAst(helper.body, (node) => { if (node instanceof EmitStatementNode) found = true; });
-      return found;
-    }));
-  if (helperEmits) return false;
-  const { emits, returnBeforeLast } = topLevelEmits(fn.body);
-  let total = 0;
-  walkInvocationAst(fn.body, (node) => { if (node instanceof EmitStatementNode) total += 1; });
-  return emits.length > 0 && emits.length === total && !returnBeforeLast;
-}
-
-
-/**
- * Stream clone: its top-level emits become the records of one exact-count runtime event segment, one compact
- * record per emit, or the chunked records of each payload when one can pass a commitment.
- */
-function streamHandlerEmits(handler: FunctionDefinitionNode, cheap: boolean, chunked: boolean): void {
-  // The records share the route's trailing band; reserve the default wide band beside any other stream.
-  handler.runtimeCounterLoopOutputCapacity = Math.max(handler.runtimeCounterLoopOutputCapacity ?? 0, 64);
-  if (cheap || !handler.body) return;
-  topLevelEmits(handler.body).emits.forEach((emit, siteIndex) => {
-    emit.runtimeLoopEvent = { loopIndex: 0, siteIndex };
-    if (chunked) emit.runtimeLoopEventChunked = true;
-  });
-  handler.runtimeLoopEvents = [{ loopIndex: 0, repeatCount: 1, ...(chunked && { chunked: true as const }) }];
-}
-
-/** True when `body` holds an emit of an event named in `names`. */
-function emitsNamedEvent(body: unknown, names: ReadonlySet<string>): boolean {
-  let found = false;
-  walkInvocationAst(body, (node) => {
-    if (node instanceof EmitStatementNode && names.has(node.eventName)) found = true;
-  });
-  return found;
-}
-
-/** True when `fn` or a helper it reaches emits an event named in `wide` (by name, so any overload counts). */
-function emitsWideEvent(
-  fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>, wide: ReadonlySet<string>,
-): boolean {
-  if (wide.size === 0) return false;
-  return [...collectNamedFunctionClosure(fn, byName)].some((name) =>
-    (name === fn.name ? [fn] : byName.get(name) ?? []).some((candidate) => emitsNamedEvent(candidate.body, wide)));
-}
-
 /** Map admission reasons onto the shared frozen JOURNAL_* catalog. */
 /** True when a body names a token container. */
 function namesTokenContainer(body: BlockNode): boolean {
@@ -3302,11 +2849,6 @@ function contractNamesTokenContainer(contract: ContractNode): boolean {
   return [...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : []),
     ...(contract.fallbackDef ? [contract.fallbackDef] : [])].some((fn) => namesTokenContainer(fn.body));
 }
-
-
-
-
-
 
 type InvocationExternalCall = NonNullable<Artifact['abi'][number]['externalCalls']>[number];
 
@@ -3392,100 +2934,9 @@ function applyRolledLoopCeilings(
  * is still named; inventing a remedy for one would be worse than stating the refusal alone.
  */
 
-
 function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): number {
   const variables = packedStateLayoutVariables(contract, commitmentLimit, tagSingletonDataNfts);
   return variables.length === 0 ? 0 : Math.max(...variables.map((variable) => variable.nftIndex)) + 1;
-}
-
-interface FoldedChildInitializationProof {
-  deployment: InstantiationNode;
-  call: Node;
-  proof: InstantiationNode;
-}
-
-/**
- * Prove the deliberately small finite post-new initialization form before compiler-generated route synthesis:
- *
- *     Child local = new Child(args);
- *     local.method(args);
- *
- * Discovery is restricted to adjacent statements in the handler's top-level block. The child transition itself
- * is evaluated by SymbolTableTraversal's canonical constructor/call folder, so proof and production lowering do
- * not carry competing expression semantics. Names are resolved only as lexical local/method identities.
- */
-function proveStraightLineChildInitializations(
-  root: FunctionDefinitionNode, statefulChildren: ReadonlyMap<string, ContractNode>,
-  compilerOptions: CompilerOptions,
-): FoldedChildInitializationProof[] {
-  const statements = root.body instanceof BlockNode ? (root.body.statements ?? []) : [];
-  const proofs: FoldedChildInitializationProof[] = [];
-  const fixedScalarChild = (child: ContractNode): boolean => child.collections.length === 0
-    && child.stateVariables.every((state) => !state.isDynamic && !isDynamicStorageType(state.type)
-      && !(state.type instanceof ArrayType) && !(state.type instanceof MappingType)
-      && !(state.type instanceof StructType) && !(state.type instanceof EnumType));
-  const directCall = (statement: StatementNode): {
-    receiver: string; method: string; args: ExpressionNode[]; node: Node;
-  } | undefined => {
-    if (statement instanceof MethodCallStatementNode
-      && statement.call.object instanceof IdentifierNode) {
-      return {
-        receiver: statement.call.object.name,
-        method: statement.call.methodName,
-        args: statement.call.parameters,
-        node: statement.call,
-      };
-    }
-    if (statement instanceof FunctionCallStatementNode) {
-      const qualified = statement.call.identifier.name;
-      const separator = qualified.indexOf('.');
-      if (separator > 0 && separator === qualified.lastIndexOf('.')) {
-        return {
-          receiver: qualified.slice(0, separator),
-          method: qualified.slice(separator + 1),
-          args: statement.call.parameters,
-          node: statement.call,
-        };
-      }
-    }
-    return undefined;
-  };
-
-  for (let i = 0; i + 1 < statements.length; i += 1) {
-    const declaration = statements[i];
-    if (!(declaration instanceof VariableDefinitionNode)
-      || !(declaration.expression instanceof InstantiationNode)) continue;
-    const child = statefulChildren.get(declaration.expression.identifier.name);
-    if (!child || !fixedScalarChild(child)) continue;
-    const call = directCall(statements[i + 1]);
-    if (!call || call.receiver !== declaration.name) continue;
-    const candidates = child.functions.filter((fn) => fn.name === call.method
-      && fn.parameters.length === call.args.length
-      && fn.returnTypes.length === 0
-      && (fn.visibility === 'public' || fn.visibility === 'external'));
-    // Pre-semantic proof has no overload resolution authority. A unique source signature is the only sound
-    // choice; production semantic analysis will independently resolve and fold that same method.
-    if (candidates.length !== 1) continue;
-    const deployment = declaration.expression;
-    const proof = Object.assign(
-      Object.create(Object.getPrototypeOf(deployment)) as InstantiationNode,
-      deployment,
-      {
-        referencedContract: child,
-        parameters: deployment.parameters.map((parameter) => cloneNode(parameter)),
-        foldedStateInit: undefined,
-        foldedConstructorPredicates: undefined,
-        foldedCollectionEntries: undefined,
-        hasFoldedChildCall: undefined,
-        constructorStateFoldComplete: undefined,
-        ctorFoldFailed: undefined,
-      },
-    );
-    const folder = new SymbolTableTraversal(compilerOptions);
-    if (!folder.tryFoldChildInitializationProof(proof, candidates[0], call.args)) continue;
-    proofs.push({ deployment, call: call.node, proof });
-  }
-  return proofs;
 }
 
 function childDeploymentSites(
@@ -3687,390 +3138,6 @@ function childDeploymentSites(
   return sites;
 }
 
-
-
-/** A shared call/outState group exposes the callee's final output, so source cannot read it before invoking it. */
-function foreignOutStatePrecedesSharedCall(fn: FunctionDefinitionNode): boolean {
-  const calls: ExternalFunctionCallNode[] = [];
-  const reads: ExternalOutputStateAccessNode[] = [];
-  const rawReads: { node: FieldAccessNode; interfaceName: string; addressName: string }[] = [];
-  const rawCalls: { node: MethodCallNode; interfaceName: string; addressName: string }[] = [];
-  const seen = new Set<Node>();
-  const visit = (value: unknown): void => {
-    if (!(value instanceof Node) || seen.has(value)) return;
-    seen.add(value);
-    if (value instanceof ExternalFunctionCallNode) calls.push(value);
-    if (value instanceof ExternalOutputStateAccessNode) reads.push(value);
-    if (value instanceof FieldAccessNode && value.expression instanceof FieldAccessNode
-      && value.expression.name === 'outState'
-      && value.expression.expression instanceof FunctionCallNode
-      && value.expression.expression.identifier instanceof IdentifierNode
-      && value.expression.expression.parameters[0] instanceof IdentifierNode) {
-      rawReads.push({
-        node: value,
-        interfaceName: value.expression.expression.identifier.name,
-        addressName: value.expression.expression.parameters[0].name,
-      });
-    }
-    if (value instanceof MethodCallNode && value.object instanceof FunctionCallNode
-      && value.object.identifier instanceof IdentifierNode
-      && value.object.parameters[0] instanceof IdentifierNode) {
-      rawCalls.push({
-        node: value,
-        interfaceName: value.object.identifier.name,
-        addressName: value.object.parameters[0].name,
-      });
-    }
-    for (const child of Object.values(value)) {
-      if (child instanceof Node) visit(child);
-      else if (Array.isArray(child)) child.forEach(visit);
-    }
-  };
-  visit(fn.body);
-  const before = (left: Node, right: Node): boolean => left.location.start.line < right.location.start.line
-    || (left.location.start.line === right.location.start.line
-      && left.location.start.column < right.location.start.column);
-  return rawReads.some((read) => rawCalls.some((call) => call.interfaceName === read.interfaceName
-    && call.addressName === read.addressName && before(read.node, call.node))) || reads.some((read) => {
-    const address = read.outStateNode.addressExpression;
-    if (!(address instanceof IdentifierNode)) return false;
-    return calls.some((call) => call.interfaceName === read.outStateNode.interfaceName
-      && call.addressExpression instanceof IdentifierNode
-      && call.addressExpression.name === address.name
-      && before(read.outStateNode, call));
-  });
-}
-
-
-
-
-
-/** The root's transitive contract bases by name through `implements`; interfaces and expanded roots yield none. */
-function inheritedSourceContracts(ast: Ast): ContractNode[] {
-  const byName = new Map(ast.importedContracts.map((imported) => [imported.name, imported]));
-  const bases: ContractNode[] = [];
-  const seen = new Set([ast.contract.name]);
-  const pending = [...ast.contract.implements];
-  while (pending.length > 0) {
-    const name = pending.shift()!;
-    const base = byName.get(name);
-    if (!base || seen.has(name)) continue;
-    seen.add(name);
-    bases.push(base);
-    pending.push(...base.implements);
-  }
-  return bases;
-}
-
-
-
-/** Snapshot enumerable-iteration hidden witnesses before journal clones, matching SymbolTableTraversal. */
-function injectCollectionIterationWitnesses(ast: Ast): void {
-  const inject = (fn: FunctionDefinitionNode | undefined): void => {
-    if (!fn?.body) return;
-    const modes: CollectionIterationMode[] = [];
-    walkInvocationAst(fn.body, (node) => {
-      if (node instanceof CollectionIterationNode) modes.push(node.mode);
-    });
-    modes.forEach((mode, index) => {
-      const countName = `__internal__collectionIterCount_${index}`;
-      if (!fn.parameters.some((parameter) => parameter.name === countName)) {
-        fn.parameters.push(new ParameterNode(PrimitiveType.BIGINT, countName));
-      }
-      if (mode === CollectionIterationMode.VALUES) return;
-      const keysName = `__internal__collectionIterKeys_${index}`;
-      if (!fn.parameters.some((parameter) => parameter.name === keysName)) {
-        fn.parameters.push(new ParameterNode(new BytesType(), keysName));
-      }
-    });
-  };
-  for (const fn of ast.contract.functions) inject(fn);
-  inject(ast.contract.fallbackDef);
-  inject(ast.contract.receiveDef);
-}
-
-
-
-function collectFixedCollectionWrites(fn: FunctionDefinitionNode, collections: ReadonlySet<string>): Set<string> {
-  const writes = new Set<string>();
-  if (!fn.body || collections.size === 0) return writes;
-  const scan = (node: Node, inLoop: boolean): void => {
-    const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
-    const collection = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
-      || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode
-      || node instanceof ArrayPushNode || node instanceof ArrayPopNode ? node.name : undefined;
-    if (collection && collections.has(collection) && !nowLoop) writes.add(collection);
-    for (const [field, value] of Object.entries(node)) {
-      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
-        'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) scan(value, nowLoop);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) scan(item, nowLoop);
-      }
-    }
-  };
-  scan(fn.body, false);
-  return writes;
-}
-
-function hasUntransportedChunkableWrite(
-  fn: FunctionDefinitionNode,
-  collections: ReadonlySet<string>,
-  functionsByName?: Map<string, FunctionDefinitionNode[]>,
-  footprintCache?: ReturnType<typeof createFootprintAnalysisCache>,
-): boolean {
-  if (!fn.body || collections.size === 0) return false;
-  let unsupported = false;
-  const scan = (node: Node, inLoop: boolean): void => {
-    if (unsupported) return;
-    const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
-    if (node instanceof FunctionCallNode && functionsByName && footprintCache) {
-      const helperWritesChunkable = (functionsByName.get(node.identifier.name) ?? []).some((helper) =>
-        [...analyseFunctionFootprint(helper, functionsByName, footprintCache).writes].some((resource) => (
-          resource.startsWith('collection:')
-          && collections.has(resource.slice('collection:'.length).split(':', 1)[0])
-        )));
-      if (helperWritesChunkable) {
-        unsupported = true;
-        return;
-      }
-    }
-    const collection = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
-      || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode
-      || node instanceof ArrayPushNode || node instanceof ArrayPopNode ? node.name : undefined;
-    if (collection && collections.has(collection)) {
-      // LowerVMapCounterLoops publishes this replay expression only after it has proven and transported the
-      // concrete counter-keyed array mutation. Loop position alone is not authority: an invariant-key write or
-      // an inlined fixed-key helper can share a function with an unrelated transported stream.
-      const transported = nowLoop && node instanceof MappingAssignNode
-        && node.runtimeLoopJournalTransport?.collection === collection;
-      if (!transported) {
-        unsupported = true;
-        return;
-      }
-    }
-    for (const [field, value] of Object.entries(node)) {
-      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
-        'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) scan(value, nowLoop);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) scan(item, nowLoop);
-      }
-    }
-  };
-  scan(fn.body, false);
-  return unsupported;
-}
-
-type FixedChunkableResourceWrite = {
-  node: MappingAssignNode | ArrayAssignNode;
-  activation?: ExternalCallExpression;
-};
-
-/**
- * Bool-parameter activation recipes for fixed-chunkable path selection. v1 admits only a direct boolean
- * handler parameter or its logical NOT — enough for resource-indexed presence without opening general
- * path/effect schedules.
- */
-function fixedChunkableBoolParamActivation(
-  expression: ExpressionNode,
-  fn: FunctionDefinitionNode,
-): ExternalCallExpression | undefined {
-  const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  if (expression instanceof IdentifierNode) {
-    const parameterIndex = visible.findIndex((parameter) => parameter.name === expression.name);
-    if (parameterIndex < 0) return undefined;
-    if (visible[parameterIndex]!.type !== PrimitiveType.BOOL) return undefined;
-    return { kind: 'source', source: { kind: 'forward', paramIndex: parameterIndex } };
-  }
-  if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT) {
-    const inner = fixedChunkableBoolParamActivation(expression.expression, fn);
-    return inner === undefined ? undefined : { kind: 'unary', operator: '!', expression: inner };
-  }
-  return undefined;
-}
-
-
-
-/** Row arguments are authenticated at entry, not after a handler reassigns its own parameter. */
-function mutableFunctionParameterNames(fn: FunctionDefinitionNode): Set<string> {
-  const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
-  const mutable = new Set<string>();
-  if (!fn.body) return mutable;
-  walkInvocationAst(fn.body, (node) => {
-    if ((node instanceof AssignNode || node instanceof DeleteLocalNode)
-      && parameters.has(node.identifier.name)) mutable.add(node.identifier.name);
-    if (node instanceof TupleAssignmentNode) {
-      for (const element of node.elements) {
-        if (element.existing && element.name && parameters.has(element.name)) mutable.add(element.name);
-      }
-    }
-  });
-  return mutable;
-}
-
-
-
-/**
- * path-effect activation: bool-param BranchNode (+ opaque-control) activations for direct emit sites.
- * Maps emitIndex → ECE stamped onto pathEffectSchedule event entries.
- * Else arms receive a negated activation. Loops/collection-iteration preserve the
- * enclosing activation. Bool-discriminant switches refine true/false/default arms;
- * other switches preserve the enclosing activation without case refinement.
- */
-function pathEffectBoolParamActivationsForEmits(
-  fn: FunctionDefinitionNode,
-): Map<number, ExternalCallExpression> {
-  const result = new Map<number, ExternalCallExpression>();
-  if (!fn.body) return result;
-  const combine = (
-    outer: ExternalCallExpression | undefined,
-    inner: ExternalCallExpression,
-  ): ExternalCallExpression => (outer === undefined
-    ? inner
-    : { kind: 'binary', operator: '&&', left: outer, right: inner });
-  const scan = (node: Node, activation: ExternalCallExpression | undefined): void => {
-    if (node instanceof BranchNode) {
-      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
-      if (branchActivation === undefined) {
-        scan(node.ifBlock, activation);
-        if (node.elseBlock !== undefined) scan(node.elseBlock, activation);
-        return;
-      }
-      scan(node.ifBlock, combine(activation, branchActivation));
-      if (node.elseBlock !== undefined) {
-        const negated: ExternalCallExpression = {
-          kind: 'unary', operator: '!', expression: branchActivation,
-        };
-        scan(node.elseBlock, combine(activation, negated));
-      }
-      return;
-    }
-    if (node instanceof EmitStatementNode && node.runtimeLoopEvent === undefined) {
-      if (activation !== undefined) {
-        // Switch/if arms may share one emitIndex (capacity union). OR activations so the
-        // slot stays active when any arm that writes it would fire.
-        const prior = result.get(node.emitIndex);
-        result.set(
-          node.emitIndex,
-          prior === undefined
-            ? activation
-            : { kind: 'binary', operator: '||', left: prior, right: activation },
-        );
-      }
-      return;
-    }
-    if (node instanceof WhileNode || node instanceof DoWhileNode) {
-      // Opaque loop predicate: preserve enclosing activation into the body.
-      scan(node.block, activation);
-      return;
-    }
-    if (node instanceof CollectionIterationNode) {
-      scan(node.body, activation);
-      return;
-    }
-    if (node instanceof SwitchNode) {
-      const boolDiscriminant = fixedChunkableBoolParamActivation(node.expression, fn);
-      const intDiscriminant = (() => {
-        const disc = node.expression;
-        if (!(disc instanceof IdentifierNode)) return undefined;
-        const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-        const parameterIndex = visible.findIndex((parameter) => parameter.name === disc.name);
-        if (parameterIndex < 0) return undefined;
-        const parameterType = visible[parameterIndex]!.type;
-        // Bool discriminants use the bool path above; equality literals → handlerInputEq.
-        if (parameterType === PrimitiveType.BOOL) return undefined;
-        return {
-          kind: 'source' as const,
-          source: { kind: 'forward' as const, paramIndex: parameterIndex },
-        };
-      })();
-      if (boolDiscriminant !== undefined) {
-        let sawTrue = false;
-        let sawFalse = false;
-        for (const arm of node.cases) {
-          if (arm.value instanceof BoolLiteralNode && arm.value.value === true) {
-            sawTrue = true;
-            scan(arm.body, combine(activation, boolDiscriminant));
-          } else if (arm.value instanceof BoolLiteralNode && arm.value.value === false) {
-            sawFalse = true;
-            const negated: ExternalCallExpression = {
-              kind: 'unary', operator: '!', expression: boolDiscriminant,
-            };
-            scan(arm.body, combine(activation, negated));
-          } else {
-            scan(arm.body, activation);
-          }
-        }
-        if (node.defaultCase !== undefined) {
-          if (sawTrue && !sawFalse) {
-            const negated: ExternalCallExpression = {
-              kind: 'unary', operator: '!', expression: boolDiscriminant,
-            };
-            scan(node.defaultCase, combine(activation, negated));
-          } else if (sawFalse && !sawTrue) {
-            scan(node.defaultCase, combine(activation, boolDiscriminant));
-          } else {
-            scan(node.defaultCase, activation);
-          }
-        }
-        return;
-      }
-      if (intDiscriminant !== undefined) {
-        const caseEqs: ExternalCallExpression[] = [];
-        for (const arm of node.cases) {
-          if (arm.value instanceof IntLiteralNode) {
-            const eq: ExternalCallExpression = {
-              kind: 'binary',
-              operator: '==',
-              left: intDiscriminant,
-              right: { kind: 'literal', type: 'bigint', value: arm.value.value.toString() },
-            };
-            caseEqs.push(eq);
-            scan(arm.body, combine(activation, eq));
-          } else {
-            scan(arm.body, activation);
-          }
-        }
-        if (node.defaultCase !== undefined) {
-          if (caseEqs.length === 0) {
-            scan(node.defaultCase, activation);
-          } else {
-            // default ⇔ ¬(c0 ∨ c1 ∨ …)
-            const anyCase = caseEqs.slice(1).reduce<ExternalCallExpression>(
-              (left, right) => ({ kind: 'binary', operator: '||', left, right }),
-              caseEqs[0]!,
-            );
-            const negated: ExternalCallExpression = {
-              kind: 'unary', operator: '!', expression: anyCase,
-            };
-            scan(node.defaultCase, combine(activation, negated));
-          }
-        }
-        return;
-      }
-      // Other discriminants: preserve enclosing activation without case refinement.
-      for (const arm of node.cases) scan(arm.body, activation);
-      if (node.defaultCase !== undefined) scan(node.defaultCase, activation);
-      return;
-    }
-    if (node instanceof TryCatchNode) {
-      scan(node.tryBlock, activation);
-      return;
-    }
-    for (const [field, value] of Object.entries(node)) {
-      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
-        'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) scan(value, activation);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) scan(item, activation);
-      }
-    }
-  };
-  scan(fn.body, undefined);
-  return result;
-}
-
 /**
  * Whether a body of the contract calls another of the contract's functions by name. A call to itself is the
  * recursion lowering's, and `this.f()` is a message call, whose callee does not keep the caller's sender.
@@ -4105,431 +3172,6 @@ const callsOwnFunction = (contract: ContractNode): boolean => {
   return found;
 };
 
-const nodeContainsChunkableWrite = (
-  root: Node,
-  chunkableNames: ReadonlySet<string>,
-  footprintNames: ReadonlySet<string>,
-  locallyBound: ReadonlySet<string>,
-): boolean => {
-  let found = false;
-  const walk = (node: Node): void => {
-    if (found) return;
-    if (node instanceof MappingAssignNode && chunkableNames.has(node.name) && footprintNames.has(node.name)) {
-      found = true;
-      return;
-    }
-    if (node instanceof ArrayAssignNode && footprintNames.has(node.name) && !locallyBound.has(node.name)) {
-      found = true;
-      return;
-    }
-    for (const [field, value] of Object.entries(node)) {
-      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
-        'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) walk(value);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) walk(item);
-      }
-    }
-  };
-  walk(root);
-  return found;
-};
-
-/**
- * Prove the fixed-row continuation shape whose handler-local chunk pins are sound when the enclosing route
- * admits at most one such row. The proof excludes push/pop/element mutation, helper-hidden writes, and general
- * control-flow effects. Multiple distinct storage resources are allowed: the SDK publishes ordered
- * continuation-resource claims so each band is authenticated independently under the scalar band[0] witness.
- * A write may also sit behind a single bool-parameter BranchNode (empty else); its activation recipe is
- * published on the entry access so inactive resources omit continuation bands without shifting entry layout.
- * A route-level aggregate selector counter supplies the missing terminality fact across rows unless completed
- * collection-journal lowering proves all accesses share the route's one pending-value pool and terminal flush.
- */
-function fixedChunkableWriteWithSingleOccurrenceBound(
-  fn: FunctionDefinitionNode,
-  collections: ReadonlyMap<string, CollectionNode>,
-  functionsByName: Map<string, FunctionDefinitionNode[]>,
-  footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
-): {
-    collection: string;
-    collections: string[];
-    effectOrdinal: number;
-    effectOrdinals: number[];
-    resources: Array<{ collection: string; effectOrdinal: number; activation?: ExternalCallExpression }>;
-  } | undefined {
-  if (!fn.body) return undefined;
-  const chunkableNames = new Set([...collections].flatMap(([name, collection]) => (
-    collection.sorted && isChunkableValueType(collection.innermostValueType) ? [name] : []
-  )));
-  if (chunkableNames.size === 0) return undefined;
-  const footprintNames = new Set([...analyseFunctionFootprint(fn, functionsByName, footprintCache).writes]
-    .flatMap((resource) => {
-      if (!resource.startsWith('collection:')) return [];
-      const name = resource.slice('collection:'.length).split(':', 1)[0];
-      return chunkableNames.has(name) ? [name] : [];
-    }));
-  if (footprintNames.size === 0) return undefined;
-  const locallyBound = new Set(fn.parameters.map((parameter) => parameter.name));
-  walkInvocationAst(fn.body, (node) => {
-    if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
-  });
-  const direct: FixedChunkableResourceWrite[] = [];
-  let unsupported = false;
-  const scan = (node: Node, activation: ExternalCallExpression | undefined): void => {
-    if (unsupported) return;
-    if (node instanceof BranchNode) {
-      const ifWritesChunkable = nodeContainsChunkableWrite(
-        node.ifBlock, chunkableNames, footprintNames, locallyBound,
-      );
-      const elseWritesChunkable = node.elseBlock !== undefined && nodeContainsChunkableWrite(
-        node.elseBlock, chunkableNames, footprintNames, locallyBound,
-      );
-      // Control flow unrelated to the proved resource does not make an unconditional write conditional. Still
-      // inspect every expression and arm: helper-hidden writes and a successful early return before the direct
-      // write must continue to invalidate the exactly-once proof.
-      if (!ifWritesChunkable && !elseWritesChunkable) {
-        scan(node.condition, activation);
-        scan(node.ifBlock, activation);
-        if (node.elseBlock !== undefined) scan(node.elseBlock, activation);
-        return;
-      }
-      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
-      if (branchActivation === undefined) {
-        // A compiler-synthesized dirty flush (`__vmapcache_*_dirty` / `__dlcache_*_dirty`) gates its write on
-        // a local bit, never a route argument, so the write is still direct. Any other single-arm condition is
-        // a source read (`records[key].length > 1`): the route cannot replay it and must not invent an
-        // argument activation, so keep the handler non-routed.
-        if (node.preserveConditionalEntryWrites !== true) {
-          unsupported = true;
-          return;
-        }
-        scan(node.ifBlock, activation);
-        return;
-      }
-      if (elseWritesChunkable) {
-        // Writes in both arms are same-iteration resource selection — still fenced.
-        unsupported = true;
-        return;
-      }
-      const combined: ExternalCallExpression = activation === undefined
-        ? branchActivation
-        : { kind: 'binary', operator: '&&', left: activation, right: branchActivation };
-      scan(node.ifBlock, combined);
-      return;
-    }
-    const nestedUnsupported = node instanceof WhileNode
-      || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode
-      || node instanceof CollectionIterationNode || node instanceof TernaryOpNode
-      || (node instanceof BinaryOpNode
-        && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
-    if (nestedUnsupported) {
-      if (nodeContainsChunkableWrite(node, chunkableNames, footprintNames, locallyBound)) {
-        unsupported = true;
-      }
-      return;
-    }
-    if (node instanceof ReturnNode && direct.length === 0) {
-      // A successful early return can bypass a later top-level write even though the write itself has no
-      // conditional ancestor. Final or post-write returns remain compatible with the exactly-once proof.
-      unsupported = true;
-      return;
-    }
-    if (node instanceof MappingAssignNode && chunkableNames.has(node.name)) {
-      if (!footprintNames.has(node.name) || node.arrayIndex || node.arrayPush || node.arrayPop
-        || node.runtimeLoopJournalTransport) {
-        unsupported = true;
-      } else {
-        direct.push({ node, ...(activation && { activation }) });
-      }
-      return;
-    }
-    if (node instanceof ArrayAssignNode && footprintNames.has(node.name)
-      && !locallyBound.has(node.name)) {
-      // Solidity-compatible imports can retain a bare `m[k] = value` as ArrayAssign until the route clone's
-      // collection normalization. It is the same whole mapping write because `collection` is compiler-resolved
-      // above; an actual state array cannot appear in this collection map.
-      direct.push({ node, ...(activation && { activation }) });
-      return;
-    }
-    if ((node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
-      && chunkableNames.has(node.name)) {
-      unsupported = true;
-      return;
-    }
-    if (node instanceof FunctionCallNode) {
-      const hiddenWrite = (functionsByName.get(node.identifier.name) ?? []).some((helper) =>
-        [...analyseFunctionFootprint(helper, functionsByName, footprintCache).writes].some((resource) => (
-          resource.startsWith('collection:')
-          && chunkableNames.has(resource.slice('collection:'.length).split(':', 1)[0])
-        )));
-      if (hiddenWrite) unsupported = true;
-    }
-    for (const [field, value] of Object.entries(node)) {
-      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
-        'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) scan(value, activation);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) scan(item, activation);
-      }
-    }
-  };
-  scan(fn.body, undefined);
-  if (unsupported || direct.length === 0) return undefined;
-  const writtenCollections = new Set(direct.map((entry) => entry.node.name));
-  if ([...footprintNames].some((name) => !writtenCollections.has(name))) return undefined;
-  const resources = direct.map((entry) => {
-    const effectOrdinal = entry.node.sourceEffectOrdinal;
-    if (effectOrdinal === undefined) return undefined;
-    return {
-      collection: entry.node.name,
-      effectOrdinal,
-      ...(entry.activation && { activation: entry.activation }),
-    };
-  });
-  if (resources.some((resource) => resource === undefined)) return undefined;
-  const definedResources = resources as Array<{
-    collection: string; effectOrdinal: number; activation?: ExternalCallExpression;
-  }>;
-  const orderedCollections = [...footprintNames];
-  return {
-    collection: orderedCollections[0]!,
-    collections: orderedCollections,
-    effectOrdinal: definedResources[definedResources.length - 1]!.effectOrdinal,
-    effectOrdinals: definedResources.map((resource) => resource.effectOrdinal),
-    resources: definedResources,
-  };
-}
-
-/**
- * Prove the direct array-push shape which the compiler-generated route's typed collection journal can compose across rows.
- * The proof is intentionally about source flow and value shape, not a contract or member name. Each selected
- * row executes its ordinary post-mutation element expression inside one OP_INVOKE; LowerCollectionJournalHelpers
- * threads the pending whole array through those invokes and emits one final sorted-entry write. Consequently no
- * SDK replay value is part of the authority for this capability.
- *
- * Path-effect activation: a single bool-parameter BranchNode with empty else (the same subset as fixed-chunkable
- * writes) may gate the push; the activation ECE is published for fold `activationSchedule` / entry-access gating.
- */
-function pooledChunkableArrayPushCollection(
-  fn: FunctionDefinitionNode,
-  collections: ReadonlyMap<string, CollectionNode>,
-  functionsByName: Map<string, FunctionDefinitionNode[]>,
-  footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
-): { collection: string; effectOrdinal: number; activation?: ExternalCallExpression } | undefined {
-  // Bool-param empty-else gates mark sourceEffectOrder unsupported-flow (same as fixed-chunkable writes);
-  // the scan below is the authority for the admitted push shape, not the coarse flow tag.
-  if (!fn.body) return undefined;
-  const chunkableArrays = new Set([...collections].flatMap(([name, collection]) => (
-    collection.sorted && collection.innermostValueType instanceof ArrayType
-      && isChunkableValueType(collection.innermostValueType) ? [name] : []
-  )));
-  const footprintNames = new Set([...analyseFunctionFootprint(fn, functionsByName, footprintCache).writes]
-    .flatMap((resource) => {
-      if (!resource.startsWith('collection:')) return [];
-      const name = resource.slice('collection:'.length).split(':', 1)[0];
-      return chunkableArrays.has(name) ? [name] : [];
-    }));
-  if (footprintNames.size !== 1) return undefined;
-  const [collection] = [...footprintNames];
-  const parameterNames = new Set(fn.parameters.map((parameter) => parameter.name));
-  const locallyBound = new Set(fn.parameters.map((parameter) => parameter.name));
-  walkInvocationAst(fn.body, (node) => {
-    if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
-  });
-  const direct: Array<{ node: MappingAssignNode; activation?: ExternalCallExpression }> = [];
-  let unsupported = false;
-  const scan = (
-    node: Node,
-    activation: ExternalCallExpression | undefined,
-    conditional: boolean,
-  ): void => {
-    if (unsupported) return;
-    if (node instanceof ReturnNode && direct.length === 0) {
-      // A successful early return can bypass a later top-level push. Post-push returns are harmless because the
-      // pooled resource mutation has already occurred exactly once.
-      unsupported = true;
-      return;
-    }
-    if (node instanceof BranchNode) {
-      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
-      if (branchActivation === undefined) {
-        // Non-bool-param branches fence any chunkable push in either arm (legacy nestedConditional).
-        if (nodeContainsChunkableWrite(node, chunkableArrays, footprintNames, locallyBound)) {
-          unsupported = true;
-        }
-        return;
-      }
-      if (node.elseBlock !== undefined
-        && nodeContainsChunkableWrite(node.elseBlock, chunkableArrays, footprintNames, locallyBound)) {
-        // Writes in both arms are same-iteration resource selection — still fenced.
-        unsupported = true;
-        return;
-      }
-      const combined: ExternalCallExpression = activation === undefined
-        ? branchActivation
-        : { kind: 'binary', operator: '&&', left: activation, right: branchActivation };
-      // Bool-param empty-else: push in the if-arm is admitted with activation (not "conditional" fence).
-      scan(node.ifBlock, combined, conditional);
-      return;
-    }
-    const nestedConditional = conditional || node instanceof WhileNode
-      || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode
-      || node instanceof CollectionIterationNode || node instanceof TernaryOpNode
-      || (node instanceof BinaryOpNode
-        && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
-    if (node instanceof MappingAssignNode && chunkableArrays.has(node.name)) {
-      if (node.name !== collection || !node.arrayPush || node.arrayPop || node.arrayIndex
-        || node.runtimeLoopJournalTransport || node.sourceEffectOrdinal === undefined || nestedConditional
-        || node.keys.length !== 1 || node.keys.some((key) => (
-        !(key instanceof IdentifierNode) || !parameterNames.has(key.name)
-      ))) {
-        unsupported = true;
-      } else {
-        direct.push({ node, ...(activation && { activation }) });
-      }
-      return;
-    }
-    if ((node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
-      && chunkableArrays.has(node.name)) {
-      unsupported = true;
-      return;
-    }
-    if (node instanceof FunctionCallNode) {
-      const hiddenWrite = (functionsByName.get(node.identifier.name) ?? []).some((helper) =>
-        [...analyseFunctionFootprint(helper, functionsByName, footprintCache).writes].some((resource) => (
-          resource.startsWith('collection:')
-          && chunkableArrays.has(resource.slice('collection:'.length).split(':', 1)[0])
-        )));
-      if (hiddenWrite) {
-        unsupported = true;
-        return;
-      }
-    }
-    for (const [field, value] of Object.entries(node)) {
-      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
-        'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) scan(value, activation, nestedConditional);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) scan(item, activation, nestedConditional);
-      }
-    }
-  };
-  scan(fn.body, undefined, false);
-  if (unsupported || direct.length !== 1) return undefined;
-  const entry = direct[0]!;
-  return {
-    collection: entry.node.name,
-    effectOrdinal: entry.node.sourceEffectOrdinal!,
-    ...(entry.activation !== undefined && { activation: entry.activation }),
-  };
-}
-
-function collectJournalTransportedWrites(
-  fn: FunctionDefinitionNode,
-): Array<{ collection: string; varyingArrayParam: string }> {
-  const transports: Array<{ collection: string; varyingArrayParam: string }> = [];
-  if (!fn.body) return transports;
-  walkInvocationAst(fn.body, (node) => {
-    if (node instanceof MappingAssignNode && !node.runtimeLoopReadOnly
-      && node.runtimeLoopJournalTransport) {
-      transports.push(node.runtimeLoopJournalTransport);
-    }
-  });
-  return transports;
-}
-
-function injectChunkableEntryWitnesses(ast: Ast): void {
-  const sorted = new Set(
-    ast.contract.collections.filter((collection) => collection.sorted).map((collection) => collection.name),
-  );
-  const chunkable = new Set(
-    ast.contract.collections.filter((collection) => {
-      const valueType = collection.innermostValueType;
-      return valueType instanceof ArrayType
-        || valueType === PrimitiveType.STRING
-        || (valueType instanceof BytesType && valueType.bound === undefined);
-    }).map((collection) => collection.name),
-  );
-  const inject = (fn: FunctionDefinitionNode | undefined): void => {
-    if (!fn?.body) return;
-    const written = new Set<string>();
-    walkInvocationAst(fn.body, (node) => {
-      if ((node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
-        || node instanceof MappingDeleteNode) && chunkable.has(node.name)) {
-        written.add(node.name);
-      }
-    });
-    [...written].forEach((_name, slot) => {
-      const witness = `__internal__valueWitness_${slot}`;
-      if (!fn.parameters.some((parameter) => parameter.name === witness)) {
-        fn.parameters.push(new ParameterNode(new BytesType(), witness));
-      }
-      const leading = `__internal__leadingPushValue_${slot}`;
-      if (!fn.parameters.some((parameter) => parameter.name === leading)) {
-        fn.parameters.push(new ParameterNode(new BytesType(), leading));
-      }
-    });
-    // Route source is synthesized before SymbolTableTraversal classifies fixed sorted writes into
-    // `sortedBatchInfo`. Make the shared trailing-width witness part of the source handler now, so a row route
-    // can forward it at the original parameter position. Appending it later cannot be repaired by arity padding:
-    // entry clones insert their physical key/owner arguments after the source parameters, so the newly inserted
-    // source argument is not a suffix of the already-generated call.
-    //
-    // Mirror the essential batch classification here. A fixed sorted write always participates, including when
-    // the same collection also owns a distinct runtime-loop stream: the fixed transition retains its ordinary
-    // authenticated slot while the runtime entries occupy the bounded trailing region.
-    const fixedSortedWrites = collectFixedCollectionWrites(fn, sorted);
-    const hasFixedSortedBatch = fixedSortedWrites.size > 0;
-    if ((written.size > 0 || hasFixedSortedBatch)
-      && !fn.parameters.some((parameter) => parameter.name === '__internal__vmapBatchTrailingCount')) {
-      fn.parameters.push(new ParameterNode(PrimitiveType.BIGINT, '__internal__vmapBatchTrailingCount'));
-    }
-  };
-  for (const fn of ast.contract.functions) inject(fn);
-  inject(ast.contract.fallbackDef);
-  inject(ast.contract.receiveDef);
-}
-
-
-
-/**
- * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. In the trailing
- * band, `bandStates`, the dynamic state it writes, whose chunk locks it rewrites there, and `bandCollections`, whose
- * entry locks it may consume there (a non-sorted collection's records, or every collection it touches where it has a
- * loop or a delete); and the sorted collections it writes, whose fixed entry slots it may rewrite. A sorted value's
- * chunks need no claim: the route admits, in the band, the locks the run itself pinned or spent (its value-chunk lock
- * list, which only a write that ran fills). A token container holds no own-category record, and a state array's
- * records are its chunks (a dynamic one) or the route's own data record (a packed or fixed one). A sorted entry or
- * dynamic state the row only
- * reads comes back at its own index (the SDK keeps a read-only entry's commitment, a journal flushes only a written
- * cache, read-only chunks lead the band 1:1), which is what the pin requires, so a read claims none of them.
- * A typed external call claims nothing of its own: the callee runs as its own row, in its own block, and a call back
- * into this contract is another row with its own claims. A low-level `call` or `staticcall` to another address runs
- * its callee the same way; a value it carries moves out of the tokenless satoshi container, no record. Journal-safe
- * native assembly is a closed computation (NativeAssemblySafety) and an unsafe(2) row writes no state, entry,
- * container, transfer or event (SymbolTableTraversal), so neither claims anything of its own. A shape whose writes
- * the route cannot bound (routeUnboundedWriteShape) or an unknown effect is refused admission, so reaching it here
- * is an invariant violation. A lifecycle row claims what its body writes, as any row: the verifier holds a split,
- * merge or selfdestruct participant to its exact span (master, data records, then a funding or consumed-master tail,
- * atomic.ts), a routed upgrade's contract keeps no record (UpgradeStrandsBoundStateError), and a deployment's
- * records take the child's new category. None of them rewrites another own-category record of the block.
- */
-const generatedHostFunctionCache = new Map<string, FunctionDefinitionNode>();
-
-function parseGeneratedHostFunction(
-  source: string, chunkedArrays: boolean, origin: string,
-): FunctionDefinitionNode {
-  const key = `${chunkedArrays ? '1' : '0'}\x00${source}`;
-  let template = generatedHostFunctionCache.get(key);
-  if (!template) {
-    const ast = withGeneratedSource(origin, () => parseCode(source, undefined, false, chunkedArrays));
-    template = ast.contract.functions[ast.contract.functions.length - 1];
-    generatedHostFunctionCache.set(key, template);
-  }
-  return cloneNode(template);
-}
-
-
 /**
  * Parsed route helper functions, keyed by the generated text that produced them. The helpers are
  * contract-independent by construction - their text depends only on the route shape - so one parse serves
@@ -4539,28 +3181,12 @@ function parseGeneratedHostFunction(
  * the first, so no compile can mutate what a later compile reads.
  */
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
 // compileString and compileStringMulti.
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
-  admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
-  admitMixedScalarHandlers = true, admitBareForwardingHandlers = true,
+  _admitExternalHandlers = true, _normalizeBareEntries = true, _relaxResultRouteEffects = true,
+  _admitMixedScalarHandlers = true, _admitBareForwardingHandlers = true,
   attribution?: ExternalAdmissionAttribution,
   fnPtrArraysPreLowered = false,
   out?: { delegateFunctionsMarked: number },
@@ -5443,7 +4069,6 @@ function compileResolvedAst(
     out.delegateFunctionsMarked = autoMarkDelegateFunctions(ast, mergedCompilerOptions.forceStateful ?? false);
   }
 
-
   // Propagate logical msg.sender use through the named internal-call closure before the body-local semantic
   // survey injects entry-point context. Modifier expansion commonly leaves `entry -> _checkOwner -> _msgSender`;
   // surveying only the entry body cannot see the NullaryOp and a delegate build then reaches code generation
@@ -5754,8 +4379,6 @@ function compileResolvedAst(
   if (emitsEvent) refuseEmittingReturningStateHelpers(ast.contract);
 
   mark('semantic');
-  const singlePassVerifierProgram: undefined = undefined;
-  const singlePassVerifierSource: undefined = undefined;
   // B7.5/B7.4: classify the constructor, publish the facts, then require the two arms of A4.2.
   if (isDeployerProgram) {
     inspectDeployerConstructor(ast, mergedCompilerOptions as InternalCompilerOptions);

@@ -59,19 +59,12 @@ import {
   selectSingletonValueChunkProducer,
   type ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
-import {
-  chunkableValueWriteCollections,
-  describeValueChunkWrites,
-  physicalExternalCallFunction,
-  writesChunkableValue,
-} from './writer-group-selection.js';
+import { chunkableValueWriteCollections, describeValueChunkWrites, writesChunkableValue } from './writer-group-selection.js';
 import { ownsCapturedValueChunkOutputBase } from './value-chunk-base-writer-select.js';
 import {
   identityScanValueChunkOutputBase,
   publishIdentityScanValueChunkRange,
 } from './identity-scan-value-chunk-range.js';
-
-type RuntimeCallAbiFunction = AbiFunction;
 
 type RouteValueChunkProgress = { changed: boolean; discovered: boolean };
 
@@ -527,7 +520,6 @@ export function deriveRouteValueChunks(
   let progressed = false;
   let discovered = false;
   const localWrites = group.valueChunkWrites ?? describeValueChunkWrites(group);
-  const localSelection = selectValueChunkWriteCategory(localWrites);
   // In a multi-resource journal row, the failing pin's redeem lock can identify one compiler-described
   // write only when that write's complete value is visible in the VM trace. Require a unique exact-lock
   // match; never infer a collection/key merely from the shape or output position of a chunk.

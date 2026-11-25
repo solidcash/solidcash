@@ -163,7 +163,7 @@ interface ICallee { function poke() external; }
 contract Caller {
     int d;
     function sendTo(address target) { ICallee(target).poke{value: 1000}(); d = 1; }
-}`, { allowUnsafeOperations: true} as never);
+}`, { allowUnsafeOperations: true } as never);
     const fn = artifact.abi.find((entry) => entry.name === 'sendTo')!;
     expect(fn.transferCount ?? 0).toBe(0);
     expect(fn.blockLayout?.slots.filter((slot) => slot.kind === 'transfer')).toHaveLength(0);

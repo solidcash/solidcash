@@ -4,13 +4,9 @@
  * Extracted from `StatefulContract.ts`: pure, artifact-driven planners for the shipped state journal.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import {
-  type AbiFunction, type AbiInput, type Artifact, type EntryAccessAbi,
-  type TokenContainerTransferSiteAbi,
-} from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { type AbiFunction, type AbiInput } from '@solidcash/utils';
 import { type FunctionArgument } from '../Argument.js';
-import type { RouteExpressionKeyRow } from './StatefulContract.js';
 import {
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
@@ -23,7 +19,6 @@ import {
   kernelEntryJournalReadCarrierCapabilityCovers,
   type KernelEntryJournalReadCarrierCapability,
 } from './KernelEntryJournal.js';
-import { resolveDelegateForwardingTarget, resolveDelegatePromotion } from './DelegateForwarding.js';
 
 export const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
 export const KERNEL_JOURNAL_RECORDS = '__internal__kernelJournalRecords';

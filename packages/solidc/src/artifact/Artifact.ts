@@ -406,8 +406,8 @@ export const sourceEffectOrderForArtifact = (
 ): FunctionDefinitionNode['sourceEffectOrder'] => {
   const complete = externalCalls.every((call) => safeSourceEffectOrdinal(call.sourceEffectOrdinal))
     && entryAccesses.filter((access) =>
-    access.operations.includes('write') || access.operations.includes('delete'))
-    .every((access) => access.mutationEffectOrdinals?.length
+      access.operations.includes('write') || access.operations.includes('delete'))
+      .every((access) => access.mutationEffectOrdinals?.length
       && access.mutationEffectOrdinals.every(safeSourceEffectOrdinal));
   return declared === 'linear' && !complete ? undefined : declared;
 };
@@ -3564,16 +3564,8 @@ function buildFunctionAbiMetadata(
   // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
   // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
   // mutable placeholder and its handler covenant correctly rejects the missing entry-NFT output.
-  const routeEntryLoopWrites = false
-    ? [...new Set([
-      ...(func.entryLoopWrites ?? []),
-      ...(contract?.functions ?? []).filter((candidate) => false)
-        .flatMap((candidate) => candidate.entryLoopWrites ?? []),
-    ])]
-    : func.entryLoopWrites;
-  const loopSignatureFunctions = false
-    ? [func, ...(contract?.functions ?? []).filter((candidate) => false)]
-    : [func];
+  const routeEntryLoopWrites = func.entryLoopWrites;
+  const loopSignatureFunctions = [func];
   const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
     .flatMap((candidate) => candidate.entryAccesses ?? [])
     // Codegen may mark its private entry-slot copy as inLoop after semantic traversal; the authoritative

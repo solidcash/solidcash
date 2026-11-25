@@ -8,7 +8,7 @@ const keySource = (body: string): string | undefined => {
     function write(int value) public {
       ${body}
     }
-  }`, { forceStateful: true});
+  }`, { forceStateful: true });
   return artifact.abi.find((fn) => fn.name === 'write')?.entryAccesses?.[0]?.keyParams[0];
 };
 

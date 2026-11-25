@@ -592,7 +592,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       // before a layout is planned. A route participant settles its value edge in its route; a send of that one
       // refuses the master-lock output itself.
       if (callInfo && ec.interfaceName === '__raw__' && ec.callValueEffect === true
-        ) {
+      ) {
         const callee = callInfo.externalContract.inner.artifact.contractName;
         throw new RawCallCalleeRequiredError(
           'value to a co-spent callee', rawCallName(ec), `${callee}.${callInfo.functionName}`,

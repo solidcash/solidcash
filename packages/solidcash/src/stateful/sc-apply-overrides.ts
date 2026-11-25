@@ -3,19 +3,11 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import {
-  type AbiFunction,
-  type Artifact,
-  type EventDefinitionAbi,
-  type FixedBchTransferAbi,
-  type StateValue,
-} from '@solidcash/utils';
+import { type AbiFunction, type EventDefinitionAbi, type StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
-import { loadFixedEffectEntries } from './fixed-effect-entries.js';
-import { addressToLockScript } from '../utils.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { autoWireLowLevelCalls, type AutoWireLowLevelCallsHost } from './sc-auto-wire-low-level-calls.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
@@ -275,7 +267,6 @@ export async function applyOverrides(
   }
 
   const effectiveTransfers = host.transfers;
-
 
   // Apply transfers: user overrides replace auto-derived transfers
   if (effectiveTransfers.length > 0) {

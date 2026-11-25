@@ -30,7 +30,6 @@ import {
   MappingAccessNode,
   MappingAssignNode,
   MappingDeleteNode,
-  MappingFieldAssignNode,
   Node,
   NullaryOpNode,
   ParameterNode,
@@ -289,24 +288,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     const collections = new Map(node.collections.map((collection) => [collection.name, collection]));
-    // Capture the route before generated cache loads/flushes are installed. A raw access already in this body
-    // must never be mistaken for one of those authenticated accesses when discharging an occurrence guard.
-    const rawCollections = (fn: FunctionDefinitionNode): Set<string> => {
-      const names = new Set<string>();
-      const locals = new Set(fn.parameters.map((parameter) => parameter.name));
-      this.walk(fn.body, (child) => { if (child instanceof VariableDefinitionNode) locals.add(child.name); });
-      this.walk(fn.body, (child) => {
-        if (child instanceof MappingAccessNode || child instanceof MappingAssignNode
-          || child instanceof MappingDeleteNode || child instanceof MappingFieldAssignNode) names.add(child.name);
-        else if (child instanceof ArrayAccessNode && child.array instanceof IdentifierNode
-          && !locals.has(child.array.name)) names.add(child.array.name);
-        else if ((child instanceof ArrayAssignNode || child instanceof ArrayDeleteNode)
-          && !locals.has(child.name)) names.add(child.name);
-        // An unresolved function pointer can reach an unjournalled helper; no collection is proven pooled.
-        else if (child instanceof IndirectCallNode) for (const name of collections.keys()) names.add(name);
-      });
-      return new Set([...names].filter((name) => collections.has(name)));
-    };
     const callees = (fn: FunctionDefinitionNode): Set<FunctionDefinitionNode> => {
       const targets = new Set<FunctionDefinitionNode>();
       this.walk(fn.body, (child) => {
@@ -1236,7 +1217,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         (target.fn.collectionJournalLinearKeyPools ?? []).some((pool) =>
           identity === `parameter:${pool.argumentName}`));
       const laneSelection = linearArgument && runtimeAliases.every((alias) =>
-        alias.keyIdentity.every((identity) => false));
+        alias.keyIdentity.length === 0);
       if (laneSelection) {
         const laneCache = [...this.activeMultiCaches.values()].find((candidate) => candidate.calls.has(call));
         const temps = [
@@ -1493,15 +1474,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           } : {}),
         };
       });
-      for (const binding of callLocals!) {
-        const lanes = binding.runtimeAliases ?? [];
-        const laneBacked = lanes.length > 0 && lanes.every((alias) => alias.keyIdentity.every((identity) =>
-          false));
-        // A function-level flush cannot name the row-loop argument. Lane parameters own that write.
-        if (laneBacked && binding.local.keyIdentity.some((identity) => false)) {
-          binding.local.mutates = false;
-        }
-      }
       cache!.calls.set(call, callLocals);
       if (debugRoute) {
         debugCalls.push({

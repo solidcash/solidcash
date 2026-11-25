@@ -23,7 +23,6 @@ import {
   extractFailingP2sh32OutputPin,
   lastExtractedComputedValue,
 } from './route-value-chunk-helpers.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlot } from './SortedList.js';
 import {
   sameDerivedChunkOutputObservation,

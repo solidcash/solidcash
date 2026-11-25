@@ -64,21 +64,21 @@ export function booleanArgumentIndices(fn: FunctionDefinitionNode): ReadonlySet<
 
 export function argumentConditionActivation(
   expression: ExpressionNode, argumentIndices: ReadonlyMap<string, number>,
-  booleanArgumentIndices: ReadonlySet<number>,
+  booleanArgs: ReadonlySet<number>,
 ): ExternalCallExpression | undefined {
   if (expression instanceof IdentifierNode) {
     const index = argumentIndices.get(expression.name);
-    return index !== undefined && booleanArgumentIndices.has(index)
+    return index !== undefined && booleanArgs.has(index)
       ? { kind: 'source', source: { kind: 'forward', paramIndex: index } } : undefined;
   }
   if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT) {
-    const inner = argumentConditionActivation(expression.expression, argumentIndices, booleanArgumentIndices);
+    const inner = argumentConditionActivation(expression.expression, argumentIndices, booleanArgs);
     return inner === undefined ? undefined : { kind: 'unary', operator: '!', expression: inner };
   }
   if (expression instanceof BinaryOpNode
     && (expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR)) {
-    const left = argumentConditionActivation(expression.left, argumentIndices, booleanArgumentIndices);
-    const right = argumentConditionActivation(expression.right, argumentIndices, booleanArgumentIndices);
+    const left = argumentConditionActivation(expression.left, argumentIndices, booleanArgs);
+    const right = argumentConditionActivation(expression.right, argumentIndices, booleanArgs);
     return left === undefined || right === undefined ? undefined
       : { kind: 'binary', operator: expression.operator, left, right };
   }

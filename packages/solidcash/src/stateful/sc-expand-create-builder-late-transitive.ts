@@ -16,7 +16,6 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { projectHandlerArguments } from './handler-arguments.js';
 import { RouteDiagnosticError } from './route-diagnostics.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import { addressToLockScript } from '../utils.js';
 import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   createDataNftUnlocker,

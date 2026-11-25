@@ -164,7 +164,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(uint160(a)); } }',
-      { evmCompat: true}).debug.bytecode));
+      { evmCompat: true }).debug.bytecode));
     expect(asm).toContain(P2PKH_IDENTITY);
     expect(asm).toContain('OP_BIN2NUM');
     expect(asm).toContain('OP_REVERSEBYTES');

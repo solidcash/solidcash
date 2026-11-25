@@ -142,14 +142,12 @@ import { cloneNode } from '../ast/clone.js';
 import {
   type Location, computeExpressionSiteKey, generatedOriginOf, sourceFileOf,
 } from '../ast/Location.js';
-import {
-  computeBranchOps, countBranchOps, countTransfersMinMax, hasEffectiveCallValue, isDirectOwnerTransferNode,
-} from './branchOps.js';
+import { computeBranchOps, countBranchOps, hasEffectiveCallValue } from './branchOps.js';
 import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
 import {
   hasRecordSoundArms, isRecordMaster, publishesCallRecord,
 } from './RecordSound.js';
-import { KERNEL_JOURNAL_ACCESS_STREAMS, VMAP_RUNTIME_INPUT_COUNT_PREFIX } from './LowerVMapCounterLoops.js';
+import { VMAP_RUNTIME_INPUT_COUNT_PREFIX } from './LowerVMapCounterLoops.js';
 import { blockEndsWithReturn, nestedStatementLists } from './EarlyReturnTransformation.js';
 import { isReturnFlag } from './ConfineReturns.js';
 import {
@@ -280,21 +278,6 @@ import { deployerChildOf, type DeployerChild } from '../generation/deployerChild
 import { CALL_BATCH_ROW_SHIFT, isCallBatchFrameCandidate } from './CallBatch.js';
 
 export { getMaxPushdataEncodedSizeForType };
-
-// Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
-//
-// X28 measured whether this can be split into a compile-time-sized LOOP leg and a conservative CHUNK leg, and
-// it cannot: there is no loop leg. Trailing reservations are gated per entry, and every reservation
-// measured - 18 of 2,283 layout computations in the compiler suite, 111 of 6,881 in the SDK suite - fired
-// through the chunk term. No loop term fired on any function that reached the reservation. See the note there.
-//
-// Nor can the chunk leg be narrowed to "only when a dispatched handler touches a dynamic variable": the scan
-// that would decide it sees `StateAccessNode`/`StateAssignNode` only, and the bare `note = t` spelling is still
-// an `AssignNode` over an `IdentifierNode` here (X19's gap). 4 of those 18 reservations report NO function
-// touching a dynamic variable while the contract writes one, so that narrowing would drop the region for
-// exactly those contracts - and the failure is silent, since the SDK enforces `trailingCapacity` only when the
-// layout declares one and otherwise appends the chunk run past the block, misaligning every later participant.
-const BALANCED_TRAILING_CAPACITY = 64;
 
 /** Deterministic evaluation-order numbering shared by entry writes and external graph calls. */
 class SourceEffectOrderTraversal extends AstTraversal {
@@ -588,7 +571,6 @@ function isFoldableCreationCodeHash(node: FunctionCallNode): boolean {
     && (arg.property === 'creationCode' || arg.property === 'runtimeCode')
     && arg.contractName !== undefined;
 }
-
 
 // Object keys that are RESOLVED cross-reference back-edges, not structural children. Once SymbolTable sets them a
 // generic child-walk that follows them cycles (a FunctionCall's `resolvedFunction` -> its body -> a call back to it,
@@ -4505,7 +4487,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Propagate slot indices to individual external read nodes
         this.assignExternalReadSlotIndices(node.body, externalReadMap);
 
-
       }
     }
 
@@ -4578,17 +4559,6 @@ export default class SymbolTableTraversal extends AstTraversal {
               return false;
             };
             return walk(node.body);
-          };
-          const hasUnresolvedExpression = (value: unknown, seen = new Set<object>()): boolean => {
-            if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
-            seen.add(value as object);
-            const kind = (value as { kind?: string }).kind;
-            if (kind === 'missing' || kind === 'unsupported' || kind === 'reference') return true;
-            return Object.values(value).some((child) => (
-              Array.isArray(child)
-                ? child.some((item) => hasUnresolvedExpression(item, seen))
-                : hasUnresolvedExpression(child, seen)
-            ));
           };
           const allByTarget = new Map<string, ExternalCallSlot[]>();
           for (const slot of logicalCallSlots) {
@@ -4727,7 +4697,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           for (const slot of externalCallSlots) {
             if (!slot.loopArrayVar || !slot.selectorArrayVar || slot.loopRecordSelector === undefined) continue;
             if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn || slot.runtimeSelector
-              ) continue;
+            ) continue;
             if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
             const method = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
             if (!method || slot.sourceCallNode === undefined) continue;
@@ -5337,7 +5307,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.tokenContainerTransferSiteCount = transferSites.counter > 0 ? transferSites.counter : undefined;
     }
 
-
     // Emit statement pre-scan: collect all emit statements and assign sequential indices. The framed convention
     // keeps the numbering its witness blocks were built on; the direct convention places each slot by path.
     if (this.eventMap.size > 0) {
@@ -5353,7 +5322,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
     }
-
 
     // Low-level call pre-scan: count LowLevelCallNode/LowLevelCallStatementNode and inject _callInputIndex parameters
     {
@@ -5589,8 +5557,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         + 'See packages/solidc/docs/delegatecall-security.md.',
       );
     }
-
-
 
     // Inject _proxyMasterIndex for delegate functions
     if (node.modifiers.includes(FunctionModifier.DELEGATE)) {
@@ -9028,7 +8994,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const walk = (n: unknown): void => {
       if (!n || typeof n !== 'object') return;
       if (n instanceof ArrayAccessNode && n.index instanceof ExpressionNode
-        ) {
+      ) {
         consider(n.index);
       }
       if (n instanceof IdentifierNode && !seen.has(n.name)) {
@@ -19856,7 +19822,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     return undefined;
   }
 
-
   /**
    * Whether a low-level call's payload names a function that declares a result, `abi.encodeCall(I.f, (..))` or
    * `abi.encodeWithSelector(I.f.selector, ..)`, directly or through the local or constant that holds it. Such a call
@@ -20045,7 +20010,6 @@ export default class SymbolTableTraversal extends AstTraversal {
    * for direct calls. Distinct key identities on one collection stay distinct physical slots.
    */
 
-
   /**
    * Re-derive a shared graph-effect frame's cached block-layout offsets after the route's layout is recomputed.
    *
@@ -20080,7 +20044,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         .length;
     }
   }
-
 
   /** Whether `body` writes the local or parameter `name`: assigns it or an element of it, pushes, pops or deletes. */
   private writesLocalName(body: Node | undefined, name: string): boolean {

@@ -21,7 +21,7 @@ export function usesOrdinarySelfIdentity(abi: AbiFunction | undefined): boolean 
 }
 
 /** A route that proves its own SCID is addressed by its logical CREATE lock on every call path (graph parity). */
-export function routeAuthenticatesPublicSelf(artifact: Artifact | undefined): boolean {
+export function routeAuthenticatesPublicSelf(_artifact: Artifact | undefined): boolean {
   return false;
 }
 

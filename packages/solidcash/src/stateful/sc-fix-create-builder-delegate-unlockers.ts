@@ -24,7 +24,6 @@ import {
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
 } from './mapping-key-lookup.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
   groupLayoutTrailingBase,

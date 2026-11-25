@@ -9,7 +9,6 @@ import type NetworkProvider from '../network/NetworkProvider.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { callNamesNoReader } from './call-record.js';
 import { isPoolInfoInput } from '../oracle/pool/reader.js';
-import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
   CALL_ARGUMENT_LIST, CALL_ARGUMENT_WITNESS, leftCallArgumentList, leftCallArgumentWitness,
 } from './call-record.js';
@@ -43,7 +42,6 @@ export function selectorParamSlot(
     .filter(({ call }) => call.needsSelectorVerification !== false && !call.selectorArrayVar);
   return implicit.length === 1 ? implicit[0].index : 0;
 }
-
 
 export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;
@@ -493,7 +491,6 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       : hasResolvedHiddenArgs && bAbiFunc
         ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...bFinalArgs)
         : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
-
 
     if (group.directCall && routeArgIndex !== routeArgs.length) {
       throw new Error(

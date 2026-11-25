@@ -9,7 +9,6 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -55,7 +54,7 @@ export function applyCreateBuilderPendingInputFills(params: {
   const {
     builder,
     overrides,
-    entryAbiFunction,
+
     externalCallUtxoGroups,
     lowLevelCallUtxoGroups,
     pendingDynamicChunkInputFills,

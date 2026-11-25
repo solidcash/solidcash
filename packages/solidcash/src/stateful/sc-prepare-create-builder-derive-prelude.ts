@@ -20,7 +20,6 @@ import {
 } from './physical-return-layout.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
 import { tokenContainerKeyValue } from './sc-load-create-builder-token-containers.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 

@@ -1,4 +1,4 @@
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+
 import { isContractUnlocker } from '../interfaces.js';
 import { isPoolInfoOutput } from '../oracle/pool/reader.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';

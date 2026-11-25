@@ -3,34 +3,14 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-import {
-  Op, bytecodeToScript, scriptToBytecode, sha256 as sha256Sync,
-  type AbiFunction, type Artifact, type ExternalResultEncoding,
-} from '@solidcash/utils';
+import { bytecodeToScript, type Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
-import {
-  extractEvmReturnCommitment,
-  extractMixedReturnBlob,
-  isCanonicalEvmReturnBlob,
-  isConstrainedEvmResultVector,
-  probeRequireStatement,
-} from './external-return-encoding.js';
-import { followsProbeEquality } from './probe-instruction-sequence.js';
+import { probeRequireStatement } from './external-return-encoding.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import { extractHashedReturnCommitmentAtOutput } from './hashed-return-probe.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
-import {
-  decodeScriptNumber,
-  extractCommitmentsFromTrace,
-  extractPendingReturnCommitment,
-  extractPendingReturnCommitmentAtOutput,
-} from './trace-commitment-helpers.js';
-import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
-import { extractGraphEventExpectations } from './graph-event-expectations.js';
+import { extractCommitmentsFromTrace, extractPendingReturnCommitmentAtOutput } from './trace-commitment-helpers.js';
 
 export interface DeriveReturnBlobHost {
   readonly inner: { provider: NetworkProvider; artifact: Artifact };
@@ -326,7 +306,6 @@ export function deriveReturnBlob(
   // A direct entry pins its call's record; the builder keeps the result behind it.
   return commitment === undefined ? undefined : builder.rawOfReturnRecord(undefined, hexToBin(commitment), trace);
 }
-
 
 /**
  * Summarize why a return-value probe failed (OP_EQUALVERIFY mismatch / stack dump).

@@ -360,7 +360,6 @@ export function entryInsertLockRepairs(
     }]
   ));
   if (linearRepairs.length > 0) return linearRepairs;
-  const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
 
   // Other descriptor-published functions: empty planned inserts must not invent coordinates.
   if (layout !== undefined || abiFunction?.entryAccesses !== undefined) return [];

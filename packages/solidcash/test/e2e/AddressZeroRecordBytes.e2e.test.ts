@@ -22,7 +22,7 @@ import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.j
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
 const ZERO = '00'.repeat(20);
-const COMPILE = { deployer: true, genesisCalls: true} as const;
+const COMPILE = { deployer: true, genesisCalls: true } as const;
 
 let serial = 0xa00;
 const nextTxid = (): string => (serial++).toString(16).padStart(64, '0');

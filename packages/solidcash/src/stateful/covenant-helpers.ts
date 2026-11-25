@@ -1,6 +1,5 @@
 import { cashAddressToLockingBytecode, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   type AbiFunction,
   type AbiInput,
@@ -54,27 +53,6 @@ export function validateMasterInputIndex(index: number): void {
     throw new Error(`Invalid masterInputIndex: expected a non-negative integer, got ${index}`);
   }
 }
-
-
-
-
-
-
-
-const verifierConsensusLimit = (
-  provider: NetworkProvider, field: keyof Pick<NonNullable<NetworkProvider['consensusLimits']>,
-  'maximumInputBytes' | 'maximumStackItemBytes' | 'maximumNftCommitmentBytes'>, fallback: number,
-): number => {
-  const value = provider.consensusLimits?.[field] ?? fallback;
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`route verifier requires '${field}' to be a positive safe integer, got ${value}`);
-  }
-  return value;
-};
-
-
-
-
 
 function categoryOf(utxos: Utxo[], where: string): string {
   const tokenUtxo = utxos.find((u) => u.token?.category);
@@ -196,12 +174,6 @@ export function getDataNftAddress(contract: Contract<any, any>, categoryId: stri
   const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), directConventionMasterLock(contract));
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
-
-
-
-
-
-
 
 export function getEntryNftAddress(
   contract: Contract<any, any>, categoryId: string, collectionNameOrSignature: string,
@@ -461,8 +433,6 @@ export async function getContractState(
 // ---------------------------------------------------------------------------
 // Covenant unlocker factories
 // ---------------------------------------------------------------------------
-
-
 
 export function createDataNftUnlocker(
   contract: Contract<any, any>, masterInputIndex: number, categoryId: string,

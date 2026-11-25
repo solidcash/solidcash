@@ -58,8 +58,6 @@ export function bindMaterializedValueChunkWitnesses(
         ?.find((candidate) => candidate.name === carrier.functionName);
     if (!abiFunction?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')) continue;
     const activeFunctions = [abiFunction];
-    const activeWriteCollections = (abiFunction as AbiFunction & {
-    });
     const chunkableCollections = [...new Set(activeFunctions.flatMap((activeFunction) => (
       activeFunction.entryAccesses ?? []
     ).flatMap((access) => {
@@ -94,7 +92,6 @@ export function bindMaterializedValueChunkWitnesses(
       group?.valueChunkWrites ?? []
     )).map(valueChunkWriteResourceIdentity));
     let selectedStart = -1;
-    let selectedWidth = 0;
     let selectedResourceIdentity: string | undefined;
     const provisionalBase = carrier.valueChunkOutputBase;
     let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
@@ -176,8 +173,6 @@ export function bindMaterializedValueChunkWitnesses(
         if (writesChanged) alias.valueChunkWrites = nextWrites;
         if (alias.valueChunkOutputBase !== scalarStart
           || alias.internalArgs?.__internal__valueChunkOutputBase !== BigInt(scalarStart)) {
-          const trailingBase = alias.blockLayout?.trailingBase ?? carrier.blockLayout?.trailingBase;
-          const blockSize = alias.blockLayout?.blockSize ?? carrier.blockLayout?.blockSize;
           refreshCapturedValueChunkOutputBase(alias, scalarStart, { shiftPredOut: false });
           changedCarriers.add(alias);
         } else if (writesChanged) changedCarriers.add(alias);
@@ -298,7 +293,6 @@ export function bindMaterializedValueChunkWitnesses(
       const owner = occupiedBases.get(absoluteStart);
       if (owner === undefined || owner === physicalOwnerId) {
         selectedStart = start;
-        selectedWidth = width;
         selectedResourceIdentity = runResourceIdentity;
       }
     }
@@ -336,15 +330,6 @@ export function bindMaterializedValueChunkWitnesses(
           : alias.valueChunkWrites
         : alias.valueChunkWrites?.map((write) => valueChunkWriteResourceIdentity(write) === selectedResourceIdentity
           ? { ...write, outputBase: absoluteStart } : write);
-      // Sole authority: when trailing geometry is published, assign via resolve (not invent).
-      const trailingBase = alias.blockLayout?.trailingBase
-        ?? carrier.blockLayout?.trailingBase;
-      const blockSize = alias.blockLayout?.blockSize
-        ?? carrier.blockLayout?.blockSize;
-      const writes = alias.valueChunkWrites ?? carrier.valueChunkWrites ?? [];
-      const write = selectedResourceIdentity === undefined
-        ? writes.length === 1 ? writes[0] : undefined
-        : writes.find((candidate) => valueChunkWriteResourceIdentity(candidate) === selectedResourceIdentity);
       refreshCapturedValueChunkOutputBase(alias, absoluteStart, { shiftPredOut: false });
       changedCarriers.add(alias);
     }

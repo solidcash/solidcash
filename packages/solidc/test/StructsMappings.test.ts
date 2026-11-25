@@ -193,10 +193,10 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
   it('direct-indexed call result L.ch(a,b,c)[k] is byte-identical to c ? a[k] : b[k]', () => {
     const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;`
       + ' function g(bool c, uint256 k) external view returns (uint256) { return L.ch(a,b,c)[k]; } }',
-    { evmCompat: true});
+    { evmCompat: true });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
       + ' function g(bool c, uint256 k) external view returns (uint256) { return c ? a[k] : b[k]; } }',
-    { evmCompat: true});
+    { evmCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });

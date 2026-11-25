@@ -95,7 +95,7 @@ export async function planCreateBuilderNestedComposeRoute(
     nested, nestedSources, delegateVisibleArgs, delegateVisibleInputs, delegateFn,
     callInfoContract, onChainState, delegateSelfAddress, publishedNestedExternalCalls,
     preparedAtomicNodes, proxyCallee, callee, nestedArgs, graphNestedArgs,
-    graphExpressionReturns, resolvedRawFunctionName, delegateCallerIdentity,
+    graphExpressionReturns, resolvedRawFunctionName,
     rootProducerPath, nestedIndices, nestedByCallsite, externalCallUtxoGroups,
     lowLevelCallUtxoGroups, groupProxyMasterIndices, nestedDelegateProxyGroupByLowLevel,
   } = params;

@@ -23,12 +23,8 @@ import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { canonicalizeUpsertKeyExpression } from '../generation/upsertKeySources.js';
-
-/** Compiler-owned journal record segment prefix and capacity. */
-const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
-const KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS = 33;
 import {
-  AddressType, ArrayType, BytesType, FixedType, FunctionType, IntType, PrimitiveType, StructType, type Type,
+  AddressType, ArrayType, BytesType, FixedType, IntType, PrimitiveType, StructType, type Type,
 } from '@solidcash/utils';
 import {
   isFunctionEntryInvariantMappingKey, VMAP_KEY_SNAPSHOT_PREFIX,
@@ -44,19 +40,6 @@ export const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCoun
 export const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 export const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
-/** One compact `0x06` access program per runtime journal stream in this selected row. */
-export const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
-/** Transaction-wide truthful initial `0x05` records selected by the compact access programs. */
-export const KERNEL_JOURNAL_RECORDS = '__internal__kernelJournalRecords';
-export class CounterLoopReadWriteConflictError extends Error {
-  constructor(collection: string) {
-    super(
-      `Counter-loop requirement cannot read collection '${collection}' while the same loop writes it; `
-      + 'pending cross-iteration mapping reads are unsupported',
-    );
-    this.name = this.constructor.name;
-  }
-}
 export const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 export const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -92,14 +75,6 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * number of distinct elements in that domain, hence it is a complete permutation rather than an SDK convention.
  */
 export default class LowerVMapCounterLoops extends AstTraversal {
-  constructor(
-    private readonly publishJournalAccessStreams = false,
-    // A framed master head supplies no route witness, so a framed composition publishes no fallback count.
-    private readonly framedComposition = false,
-  ) {
-    super();
-  }
-
   private collections = new Set<string>();
   private collectionsByName = new Map<string, CollectionNode>();
   private stateTypes = new Map<string, Type>();
@@ -263,139 +238,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
-    if (this.publishJournalAccessStreams) this.propagateJournalJournalContext(node);
     return node;
-  }
-
-  /**
-   * Thread the runtime-journal ABI to a fixed point over ordinary internal calls.
-   *
-   * The route owns one transaction-wide record vector, while the leaf which interprets an access stream can be
-   * several OP_INVOKE edges below it. Every intermediate DEFINE therefore accepts the same compiler-only
-   * parameters and forwards them unchanged. Parameters retain the leaf's canonical order, and are inserted before
-   * the independently threaded physical-owner context. Source ABI signatures remain unchanged because all names
-   * are compiler-reserved.
-   *
-   * Function-pointer calls have no declared place for this hidden ABI. If a locally declared pointer could reach
-   * a context-bearing target, retain an explicit refusal marker and propagate it to every named caller. This is
-   * deliberately fail-closed until pointer target-set analysis can prove and encode one uniform hidden frame.
-   */
-  propagateJournalJournalContext(contract: ContractNode): void {
-    const functions = [
-      ...contract.functions,
-      ...(contract.constructorDef ? [contract.constructorDef] : []),
-      ...(contract.fallbackDef ? [contract.fallbackDef] : []),
-      ...(contract.receiveDef ? [contract.receiveDef] : []),
-    ];
-    const byName = new Map<string, FunctionDefinitionNode[]>();
-    for (const fn of functions) {
-      const overloads = byName.get(fn.name) ?? [];
-      overloads.push(fn);
-      byName.set(fn.name, overloads);
-    }
-    const contextParameter = (parameter: ParameterNode): boolean =>
-      parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_SOURCE_INDEX_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
-      || parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
-      || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
-      || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS
-      || parameter.name === KERNEL_JOURNAL_RECORDS
-      || parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX);
-    const visibleArity = (fn: FunctionDefinitionNode): number =>
-      fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length;
-    const callVisibleArity = (call: FunctionCallNode): number => call.parameters.filter((argument) =>
-      !(argument instanceof IdentifierNode && argument.name.startsWith('__internal__'))).length;
-    const directCalls = new Map<FunctionDefinitionNode, Set<FunctionDefinitionNode>>();
-    const pointerCalls = new Map<FunctionDefinitionNode, number[]>();
-    const walk = (root: Node, visit: (candidate: Node) => void): void => {
-      visit(root);
-      for (const [key, value] of Object.entries(root)) {
-        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-          || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
-          || key === 'stateVariable') continue;
-        if (value instanceof Node) walk(value, visit);
-        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, visit);
-      }
-    };
-    for (const fn of functions) {
-      const callees = new Set<FunctionDefinitionNode>();
-      const functionPointerNames = new Set(fn.parameters
-        .filter((parameter) => parameter.type instanceof FunctionType)
-        .map((parameter) => parameter.name));
-      walk(fn.body, (candidate) => {
-        if (candidate instanceof VariableDefinitionNode && candidate.type instanceof FunctionType) {
-          functionPointerNames.add(candidate.name);
-        }
-      });
-      walk(fn.body, (candidate) => {
-        if (candidate instanceof FunctionCallNode) {
-          if (functionPointerNames.has(candidate.identifier.name) || candidate.lexicalIndirectCall) {
-            const arities = pointerCalls.get(fn) ?? [];
-            arities.push(callVisibleArity(candidate));
-            pointerCalls.set(fn, arities);
-            return;
-          }
-          const targets = (byName.get(candidate.identifier.name) ?? [])
-            .filter((target) => visibleArity(target) === callVisibleArity(candidate));
-          for (const target of targets) callees.add(target);
-        } else if (candidate instanceof IndirectCallNode) {
-          const arities = pointerCalls.get(fn) ?? [];
-          arities.push(candidate.parameters.length);
-          pointerCalls.set(fn, arities);
-        }
-      });
-      directCalls.set(fn, callees);
-    }
-
-    const addContext = (caller: FunctionDefinitionNode, callee: FunctionDefinitionNode): boolean => {
-      let changed = false;
-      const existing = new Set(caller.parameters.map((parameter) => parameter.name));
-      let insertionIndex = caller.parameters.length;
-      for (const parameter of callee.parameters.filter(contextParameter)) {
-        if (existing.has(parameter.name)) continue;
-        const forwarded = new ParameterNode(parameter.type, parameter.name, [...parameter.modifier]);
-        forwarded.location = caller.location;
-        forwarded.syntheticallyUsed = true;
-        forwarded.kernelJournalForwardedContext = true;
-        caller.parameters.splice(insertionIndex++, 0, forwarded);
-        existing.add(parameter.name);
-        changed = true;
-      }
-      return changed;
-    };
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const caller of functions) {
-        for (const callee of directCalls.get(caller) ?? []) changed = addContext(caller, callee) || changed;
-      }
-    }
-
-    const unsafe = new Set(functions.filter((fn) => fn.kernelJournalContextUnsafeCall === true));
-    for (const [caller, arities] of pointerCalls) {
-      if (arities.some((arity) => functions.some((target) => visibleArity(target) === arity
-        && target.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_RECORDS
-          || parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX))))) {
-        unsafe.add(caller);
-      }
-    }
-    let unsafeChanged = true;
-    while (unsafeChanged) {
-      unsafeChanged = false;
-      for (const caller of functions) {
-        if (unsafe.has(caller)) continue;
-        if ([...(directCalls.get(caller) ?? [])].some((callee) => unsafe.has(callee))) {
-          unsafe.add(caller);
-          unsafeChanged = true;
-        }
-      }
-    }
-    for (const fn of unsafe) fn.kernelJournalContextUnsafeCall = true;
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
@@ -404,10 +247,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const prelude: StatementNode[] = [];
     const handlerClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
     const keySnapshotPrelude: StatementNode[] = [];
-    const markCarrierRole = (
-      _name: string,
-      _role: 'counter-permutation' | 'old-values-witness',
-    ): void => {};
     // The compiler invokes this pass both before speculative admission and, when needed, before final codegen.
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
     // the generated proof statements on the second pass.
@@ -1170,7 +1009,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       return write.keys.findIndex((key) => containsIdentifier(key, logical));
     };
     const hasObservableEffect = (x: Node): boolean => this.hasObservableEffect(x);
-    // The route effect frame has one fixed window per OUTER message row. Reaching the same emit/transfer
+    // An emit/transfer site has one fixed output. Reaching the same emit/transfer
     // site N times in this inner runtime loop would therefore address one slot N times, while the SDK can only
     // materialize the statically declared site once. Typed external calls are different: their call manifest
     // already carries a runtime occurrence loop, so leave those in source order. Ordinary explicitly-pure
@@ -2270,43 +2109,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         });
       };
       for (const statement of block.statements ?? []) collectRuntimeReadRequirements(statement);
-      if (loop.sourceAuthoredLoop && keyed.length > 0 && directRuntimeReadRequirements.length > 0) {
-        const writtenCollections = new Set(keyed.map((write) => write.name));
-        const conflictingReadCollection = (candidate: Node): string | undefined => {
-          if (candidate instanceof MappingAccessNode
-            && writtenCollections.has(candidate.name)
-            && candidate.keys.some((key) => containsIdentifier(key, logical))) return candidate.name;
-          if (candidate instanceof ArrayAccessNode) {
-            const keys: ExpressionNode[] = [];
-            let root: ExpressionNode = candidate;
-            while (root instanceof ArrayAccessNode) {
-              keys.unshift(root.index);
-              root = root.array;
-            }
-            if ((root instanceof IdentifierNode || root instanceof StateAccessNode)
-              && writtenCollections.has(root.name)
-              && keys.some((key) => containsIdentifier(key, logical))) return root.name;
-          }
-          for (const [key, value] of Object.entries(candidate)) {
-            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
-            if (value instanceof Node) {
-              const conflict = conflictingReadCollection(value);
-              if (conflict) return conflict;
-            }
-            if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
-              const conflict = conflictingReadCollection(item);
-              if (conflict) return conflict;
-            }
-          }
-          return undefined;
-        };
-        const conflict = directRuntimeReadRequirements.map(({ requirement }) =>
-          conflictingReadCollection(requirement.expression)).find((collection) => collection !== undefined);
-        if (conflict) {
-          throw new CounterLoopReadWriteConflictError(conflict);
-        }
-      }
       const prefixCountTraces = [...new Map(keyed.flatMap((write) =>
         (this.constructedArrayPrefixCountUses.get(write) ?? []).map((trace) => [trace.witnessParam, trace]))).values()];
       if (keyed.some((write) => (this.constructedArrayPrefixCountUses.get(write)?.length ?? 0) > 1)) return false;
@@ -6115,7 +5917,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const p = new ParameterNode(new ArrayType(counterType), group.hidden);
         p.location = node.location;
         added.push(p);
-        markCarrierRole(group.hidden, 'counter-permutation');
         if (group.inputCount && group.outputCount) {
           const inputCount = new ParameterNode(new IntType(true, 256), group.inputCount);
           inputCount.location = node.location;
@@ -6146,11 +5947,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const parameter = new ParameterNode(new ArrayType(valueType), plan.witnessParam);
         parameter.location = node.location;
         added.push(parameter);
-        markCarrierRole(plan.witnessParam, 'old-values-witness');
         // The synthetic no-op transition is a physical runtime journal stream just like a write. It is
         // introduced after `keyedCollections` is collected, so enroll its source explicitly in the shared
-        // transaction-wide cardinality protocol. Without these remainders an internal route clone falls back to
-        // a local address scan, which cannot compose its source stream with the route's other trailing groups.
+        // transaction-wide cardinality protocol.
         runtimeCountCollections.add(plan.synthetic.name);
       }
       if (generalOldEntryWrites.size > 0) {
@@ -6183,38 +5982,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const counterWorkLoopSet = new Set(counterWorkLoops.map(([loop]) => loop));
     const allSafe = counterWorkLoops.length > 0
       && counterWorkLoops.every(([loop]) => tryLower(loop, false));
-    // Some canonical loops have a valid per-iteration runtime-upsert lowering in codegen but cannot enter the
-    // permutation rewrite (for example, an eventful helper call inside the loop). Two such sibling loops over
-    // one collection still need one transaction-wide cardinality remainder: a local scan after either loop
-    // cannot distinguish the other loop's legitimate entries from orphans. Publish only the count witnesses
-    // here; these loops do not use the compact journal-access carrier owned by the full permutation lowering.
-    const fallbackRuntimeCountCollections = new Set<string>();
-    if (!allSafe && this.publishJournalAccessStreams && !this.framedComposition) {
-      const loopCounts = new Map<string, number>();
-      for (const [loop, canonical] of counterWorkLoops) {
-        const collections = new Set<string>();
-        const visitWrite = (candidate: Node): void => {
-          if (candidate !== loop.block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
-          if (isWrite(candidate) && this.collections.has(candidate.name)
-            && counterKeyIndex(candidate, canonical.logical) >= 0) collections.add(candidate.name);
-          for (const [key, value] of Object.entries(candidate)) {
-            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
-            if (value instanceof Node) visitWrite(value);
-            else if (Array.isArray(value)) {
-              for (const item of value) if (item instanceof Node) visitWrite(item);
-            }
-          }
-        };
-        visitWrite(loop.block);
-        for (const collection of collections) {
-          loopCounts.set(collection, (loopCounts.get(collection) ?? 0) + 1);
-        }
-      }
-      for (const [collection, count] of loopCounts) {
-        if (count >= 2) fallbackRuntimeCountCollections.add(collection);
-      }
-    }
     if (!allSafe) rollbackConstructedArrayPrefixCounts();
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
     // an `emit after` ahead of all repeated records. Serializable nested if/else predicates provide an exact
@@ -6416,7 +6183,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       node.runtimeLoopEvents = orderedSegments;
       node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0) + outerEmits.length;
     }
-    for (const collection of new Set([...runtimeCountCollections, ...fallbackRuntimeCountCollections])) {
+    for (const collection of runtimeCountCollections) {
       const inputCount = new ParameterNode(
         new IntType(true, 256), vmapRuntimeInputCountName(collection),
       );
@@ -6426,19 +6193,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       );
       outputCount.location = node.location;
       added.push(inputCount, outputCount);
-    }
-    if (this.publishJournalAccessStreams && runtimeCountCollections.size > 0
-      && !node.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
-      const accesses = new ParameterNode(new ArrayType(new BytesType()), KERNEL_JOURNAL_ACCESS_STREAMS);
-      accesses.location = node.location;
-      const recordSegments = Array.from({ length: KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS }, (_unused, index) => {
-        const records = new ParameterNode(
-          new BytesType(), `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${index}`,
-        );
-        records.location = node.location;
-        return records;
-      });
-      added.push(accesses, ...recordSegments);
     }
     if (keySnapshotPrelude.length > 0 || prelude.length > 0) {
       node.body.statements = [...keySnapshotPrelude, ...prelude, ...(node.body.statements ?? [])];

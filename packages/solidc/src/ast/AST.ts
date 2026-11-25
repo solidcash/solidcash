@@ -384,78 +384,11 @@ export interface TokenContainerAccessInfo {
   readsOutput?: boolean;      // the body reads the output side of the amount (`this.outState.tokens[c]`)
 }
 
-// X29. Owner-local effect frames an route batch route reserves on behalf of an effect-carrying graph emission handler
-// it invokes behind OP_INVOKE. Dispatch site `s` owns `[base + s * width, base + s * width + width)` of each
-// kind; the site ordinal rides to the shared subroutine as hidden context.
-export interface GraphEffectFrame {
-  sites: number;
-  eventBase: number;
-  eventWidth: number;
-  eventOffset?: number;
-  transferBase: number;
-  transferWidth: number;
-  transferOffset?: number;
-  tokenTransferBase: number;
-  tokenTransferWidth: number;
-  tokenTransferOffset?: number;
-  tokenNftTransfers: boolean;
-  ecrecoverBase?: number;
-  ecrecoverWidth?: number;
-  ecrecoverOffset?: number;
-  deployBase?: number;
-  /** Output slots per selected row: one child master followed by its data NFTs. */
-  deployWidth?: number;
-  deployOffset?: number;
-  /** Input-relative offset of the first row's vout-0 genesis input. */
-  deployInputOffset?: number;
-}
 
 export interface CustomModifierInvocation {
   name: string;
   args: ExpressionNode[];
   location: Location;
-}
-
-/**
- * Lossless, typed source snapshot for a locally constructed mapping-key vector.
- *
- * This deliberately remains compiler-internal: a later descriptor lowering projects the replayable subset into
- * the SDK ABI. Keeping the complete source program here means that lowering/inlining cannot manufacture a
- * provenance proof after the fact. `sourceFunctionIdentity`, rather than a local variable spelling, is the
- * durable key shared by all physical route clones of the source function.
- */
-
-/**
- * Compiler-only execution coordinate.  It intentionally contains neither source spellings nor source locations:
- * statement paths give the source execution nesting and preorder gives a deterministic tie-breaker inside a
- * statement.  It is retained solely to bind a future journal witness protocol to the source program which was
- * actually analysed before lowering.
- */
-export interface KernelJournalStreamExecutionCoordinate {
-  readonly statementPath: readonly number[];
-  readonly preorder: number;
-}
-
-/**
- * One exact locally-constructed-vector data-flow edge discovered before compiler admission.
- *
- * This is deliberately not an ABI and must never influence route selection.  In particular, it lets later
- * carrier work distinguish one allocation feeding one producer write and one mapping-key consumer from a
- * merely similar lowered array expression, without using a local variable name as an identity.
- */
-export interface KernelJournalStreamPlanEdge {
-  readonly allocationOrdinal: number;
-  readonly allocation: KernelJournalStreamExecutionCoordinate;
-  readonly producerLoop: KernelJournalStreamExecutionCoordinate;
-  readonly producerWrite: KernelJournalStreamExecutionCoordinate;
-  readonly consumerLoop: KernelJournalStreamExecutionCoordinate;
-  readonly consumerWrite: KernelJournalStreamExecutionCoordinate;
-  readonly consumerKeyComponent: number;
-}
-
-export interface KernelJournalStreamPlan {
-  readonly version: 1;
-  readonly edges: readonly KernelJournalStreamPlanEdge[];
 }
 
 export class FunctionDefinitionNode extends Node implements Named {
@@ -487,45 +420,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   entryAccesses?: EntryAccessInfo[];
   /** Whether shared source-effect ordinals are complete for this straight-line handler. */
   sourceEffectOrder?: 'linear' | 'unsupported-flow';
-  /** Compiler-owned route handler mapping from its function-local entry
-   * slot ordinals to the enclosing route's physical participant slots. */
-  /** Route-slot projection for compiler-owned entry witness parameters. A lowered clone can intentionally own
-   * no fixed entry slots while still forwarding the source handler's local witness ABI. */
-  /** Fixed route-slot choices for each function-local entry. The first slot is the entry's physical slot;
-   * later slots are compiler-authenticated tuple alternatives, never maximum-row copies. */
-  /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
-  /** Route-wide read-only chunk runs preserved before streamed effects; an empty list is authoritative. */
-  /** Authenticated participant-master offset used by route handler code generation. */
-  /** Compiler-generated route whose selected upgrade rows may replace the participant master locking bytecode. */
-  /**
-   * Route synthesis pushed this clone's owner operand as the call's LAST argument, so at body entry it is the top
-   * item (depth 0) and can be captured without depending on any frame-model position.
-   */
-  /** Set on compiler-cloned route handlers; identifies the source handler the clone was made from. */
-  /**
-   * Set on every compiler-cloned route handler, whatever its name. The route owns the clone's collection
-   * topology, so the clone's sorted records take the scalar path and carry no batch witnesses (ROUTE-SKIP-1).
-   */
-  ownRecordsScalarOnly?: boolean;
-  /**
-   * The route route's declared input names, in push order. A route handler shares the caller's stack, so these
-   * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
-   * makes a deep read address the item the runtime actually has there.
-   */
-  /**
-   * This OP_DEFINE body captured its authenticated participant owner into the ALT STACK at entry.
-   *
-   * A DEFINE'd route handler shares the caller's stack, so the owner parameter's distance from the bottom depends
-   * on what the caller leaves under the argument band - which the frame model does not know. The owner's distance
-   * from the TOP is exact at entry (the caller pushes the argument vector last), so the value is read once there
-   * and re-read from the alt stack, whose depth no main-stack push can shift.
-   */
-  /** The exact named-call closure can execute CHECKSIG/CHECKMULTISIG (excluding data signatures). */
-  /** Direct scalar or one-dimensional signature-array parameters constrained to SIGHASH_ALL by the route. */
-  /** Exact OP_INVOKE signing body per detached root parameter and signature leaf. */
-  /** Compiler-owned row clone kept as a stable OP_INVOKE signing body on delegate routes. */
-  /** Stable KTS1 identity captured before journal lowering appends physical value-threading parameters. */
-  /** Physical route entry slots whose transition covenant is emitted by a route handler subroutine. */
   tokenContainerAccesses?: TokenContainerAccessInfo[];
   /** Number of statically allocated token-transfer output coordinates after branch alternatives share indices. */
   tokenContainerTransferSiteCount?: number;
@@ -726,32 +620,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Physical stream widths keyed by the compiler-owned permutation parameter. */
   runtimeCounterLoopCardinalityParams?: Map<string, { input: string; output: string }>;
 
-  /** A locally constructed key array has a loop-carried resize/read schedule the bounded replay pass cannot
-   * represent. Compiler admission refuses only this handler rather than letting later route synthesis fail. */
-  /** Pre-admission saw the narrow local-vector shape; final compiler admission still requires emitted provenance. */
-  /**
-   * Normalized compiler-owned vector proof programs ready for artifact publication. Raw AST provenance is never
-   * serialized here: an unsupported expression leaves this absent and preserves the JOURNAL_LAYOUT fence.
-   */
-  /** Stable source-level identity used to attach pre-lowering constructed-key proof programs. */
-  /** Source snapshots indexed exclusively by stable source-function identity. */
-  /** Internal pre-admission source-flow plan. Never serialized and never an admission capability. */
-  /** Immutable first-pass read-carrier discovery; source names and locations never cross into this record. */
-  /** Exact source ABI arity captured before any physical/compiler-owned operands are appended. */
-  /** Explicit roles for carrier operands. Authorization never infers authority from reserved-name prefixes. */
-  /** Completed-descriptor validation of the discovery. Still compiler-private while the release gate is false. */
-  /**
-   * Stable source selector carried by compiler-generated physical clones. This is compiler-private identity:
-   * clone names and locations are never authorization, and the value is useful only beside the binder's exact
-   * completed-descriptor scope.
-   */
-  /** Stable selector carried by every generated journal handler clone for disposition authorization. */
-  /** Exact completed-descriptor families owned by this generated aggregate route. Compiler-private. */
-
-  /** Ordered compiler-private disposition manifest owned by this generated aggregate route. */
-
-  /** Digest emitted only by the authenticated aggregate route as the SCJD v1 bytecode marker. */
-
   /** Names-free affine recursive mapping-frame proof; metadata only, never an admission capability. */
   runtimeLoopAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
   /** Idempotence marker for the pre-admission constructed-array replay normalization. */
@@ -821,54 +689,13 @@ export class FunctionDefinitionNode extends Node implements Named {
    * admission must retain this marker across speculative clones and refuse the generic tail-loop representation.
    * The name still says read; a write-only shape sets it too, because that loop also has no per-frame key witness. */
   unloweredVaryingRecursiveMappingRead?: boolean;
-  /** An indirect internal call may reach a journal-context ABI without a statically complete target set. The
-   * journal must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */
-  kernelJournalContextUnsafeCall?: boolean;
-  /** A source entry reaches an internal effect helper which closes over a contract constructor parameter.
-   * External-call lowering appends a physical settlement frame to that helper, but the constructor-captured
-   * value has no source-row slot from which that frame can be rebuilt. Compiler admission records this before
-   * graph lowering so the handler remains a deterministic JOURNAL_LAYOUT refusal rather than reaching type/codegen
-   * with a source-arity helper call. */
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
    * single entry, so sibling handlers over the same entry resolve to one pending value and one vmap slot. */
   forceCollectionJournalPool?: boolean;
-  /** Compiler-owned pooled helper whose independently keyed entries can each alias an earlier route row.
-   * LowerCollectionJournalHelpers selects and updates those physical caches at runtime without expanding the
-   * dispatcher's branches into their Cartesian product. */
-  collectionJournalRuntimeAliases?: boolean;
-  /** Pooled journal key lanes chosen at one handler call. The decoded row argument is matched to these lane
-   * witnesses with a linear compare, instead of cloning the handler for every combination of pools. */
-  collectionJournalLinearKeyPools?: Array<{ argumentName: string; lanes: string[] }>;
-  // Compiler-only route batch physical route; dispatched on the reserved selector but
-  // omitted from the source ABI.
-  /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
-  /**
-   * Bound route, graph and proxy ones included: one route-local row counter per handler whose row may rewrite
-   * records in the participant block, which its selector branch increments. `bandStates`: the dynamic state whose
-   * chunk locks it rewrites in the trailing band; `bandCollections`: the
-   * collections whose entry locks it may consume there; `collections`: the sorted collections it writes, whose `lanes`
-   * (route entry slots, stamped once the handler's physical lanes are known) it may rewrite. Empty when no handler
-   * claims any; absent where the C3 record pin keeps the whole block to the census.
-   */
-
-  /** Compiler-owned route batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
-
-  /** Compiler-generated route: this handler's emits settle as records on its runtime effect stream, not in event windows. */
-  /** A stream emit can pass one commitment, so every record of the stream is chunked (head, then continuations). */
-  /** Stable index of this eligible handler in the route's eligible dispatch set, the ordinal witness names use.
-   * Published on the handler so the SDK never re-derives the filtered-list ordering. */
-  /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
-  /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param
-   * activated). The generated participant route authenticates that at most one row from the complete marked
-   * selector family executes, so its body is the unique terminal continuation producer. This is an occurrence
-   * bound, not permission to chain mutations unless completed lowering additionally proves route pooling. */
   /** Completed collection-journal lowering proved every access to these resources shares the route cache. */
   runtimeLoopPooledChunkableWrite?: true;
-  /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
-  /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
-
   /** This handler owns one direct push into a chunkable sorted mapping-array entry (unconditional and/or
    * bool-param activated with empty else). Compiler-generated route lowering threads the typed pending array through every
    * selected OP_INVOKE row and flushes it exactly once, so repeated same-key rows compose without intermediate
@@ -922,8 +749,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Exact signatures of collections whose split facet authenticates complete input and output cardinality.
    * The root excludes only these addresses from its otherwise-strict mutable-NFT conservation. */
   splitDelegateCensusedCollectionSignatures?: string[];
-  /** Block-local delegate covenants reserved by an route batch graph clone/route. */
-  graphDelegateSlotCount?: number;
   isFallback: boolean = false;
   isReceive: boolean = false;
   isAbstract: boolean = false;
@@ -942,12 +767,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** This function or a named internal callee reads msg.data. */
   usesMsgData?: boolean;
   usesMsgValue?: boolean;
-  /**
-   * Compiler-owned route batch clone whose one supported tail external call is verified against the authenticated
-   * participant emission frame instead of performing ordinary physical-call settlement.
-   */
-  /** This graph handler owns the admitted raw-call `{ value: ... }` edge. */
-  graphRawCallValueEffect?: boolean;
   /** This function, or a named internal callee, reads chunk-backed dynamic state. Its first physical chunk input
    * is supplied as an authenticated transaction coordinate because compact delegate layouts need not preserve
    * the function's maximum block width. */
@@ -960,22 +779,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   deployerTemplate?: Uint8Array;
   /** Per-call: the value-witness slots the body reads, recorded when the head takes over their parameters. */
   framedValueWitnessSlots?: number;
-  /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
-  /** Runtime emission vector is returned and threaded across this route's repeated local rows. */
-  graphRuntimeEmissionThreaded?: boolean;
-  // X29. Effect frame this graph emission handler owns in the ROUTE's block; also set on the route itself.
-  // Assigned by the route's layout computation, the only place both are visible. See GraphEffectFrame.
-  graphEffectFrame?: GraphEffectFrame;
-  /**
-   * SEC-8. Does THIS handler's subroutine settle the co-spent satoshi container?
-   *
-   * `graphEffectFrame` is ONE object shared by every framed handler, so its `transferWidth` is the group
-   * maximum and says nothing about the handler reached at a given dispatch site. The route's not-reached
-   * container preservation is skipped on the strength of a reached flag, so that flag must be written from a
-   * PER-HANDLER fact - otherwise an emit-only sibling suppresses a guard it never replaces and the co-spent
-   * container gets no identity check and no value check. Set only where frame membership is decided.
-   */
-  graphEffectSettlesTransfers?: boolean;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)
@@ -1063,11 +866,6 @@ export class ParameterNode extends Node implements Named, Typed {
   // reference (a delegate-library forwarded arg `L.f(x)`, or a branded library's `__brand` ctor arg). The
   // unused-variable warning must skip it.
   syntheticallyUsed = false;
-  /**
-   * Physical journal-journal context copied from a callee solely to keep an internal OP_INVOKE chain's frame
-   * uniform. This operand belongs to the generated route, not to the source entry point's published ABI.
-   */
-  kernelJournalForwardedContext = false;
   /** A contract parameter of a deployer `create`: part of C's redeem arguments A (A4.2), not a constructor arg. */
   deployerContractParameter = false;
 
@@ -1123,7 +921,6 @@ export class StateVariableNode extends Node implements Named, Typed {
 }
 
 export abstract class StatementNode extends Node {
-  /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
   /**
    * Set by the parser on the statements it lowers a state initialiser into (the variable or collection named):
    * A4.1's `ctor-construction-order` tells a contract's initialisers from its constructor body by it.
@@ -1487,8 +1284,6 @@ export class CatchClauseNode extends Node {
 
 export class DoWhileNode extends StatementNode {
   forLoopUpdateCount: number = 0;
-  /** Retains source-loop provenance across early journal lowering and pristine binder recompilation. */
-  sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
 
@@ -1508,8 +1303,6 @@ export class WhileNode extends StatementNode {
   // Number of trailing block statements that form a desugared for-loop update (see AstBuilder.visitForStatement).
   // Used by BreakContinueTransformation so `continue` still runs the update.
   forLoopUpdateCount: number = 0;
-  /** Retains source-loop provenance across early journal lowering and pristine binder recompilation. */
-  sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
   /**
@@ -1956,16 +1749,6 @@ export class FunctionCallNode extends ExpressionNode {
   // A lexical function-pointer variable/parameter may shadow a same-named contract function. Symbol resolution
   // marks that exceptional call so type checking does not consult the contract-wide overload map.
   lexicalIndirectCall?: boolean;
-  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the route batch route body.
-  // The handler is one shared OP_INVOKE subroutine, so its event / transfer OUTPUT indices cannot be compile-time
-  // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
-  // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
-  graphEffectSite?: number;
-  // Runtime row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
-  graphEffectSiteFromRow?: boolean;
-  // Compiler-generated legacy route: every mutually exclusive handler call emitted for one logical row
-  // carries that row's stable ordinal. Graph-effect planning uses it instead of counting each handler's calls
-  // independently (different handler kinds in distinct rows can both be the Nth call of their kind).
   /** Stable first recovery-effect ordinal contributed by this source call within its defining function.
    * A call to a helper contributes the helper's complete formal recovery sequence at this position. */
   recoveryEffectOrdinal?: number;
@@ -2947,8 +2730,6 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   resolvedCallee?: { name: string; parameterTypes: Type[]; stateMutability?: string };
   /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
   resultArrayOutput?: number;
-  /** Ordered row identity within one inferred repeated-callee route batch. */
-  externalBatchLogicalIndex?: number;
   /** Function-local program point shared with mapping-write effects. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */

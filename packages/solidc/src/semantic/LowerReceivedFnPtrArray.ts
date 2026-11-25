@@ -94,15 +94,6 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
   private tables = new Map<string, ArrayType>();
   private localNames = new WeakMap<FunctionDefinitionNode, Set<string>>();
 
-  /**
-   * `graphMode` only affects a broadcast (in-loop) call: a route graph handler reconstructs one authoritative
-   * row per reached iteration and needs the live selector as well, while the ordinary broadcast covenant verifies
-   * every element against the whole selector array after the loop.
-   */
-  constructor(private readonly graphMode = false) {
-    super();
-  }
-
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
     this.synthIfaces = [];
@@ -408,9 +399,7 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
           selectorRead.location = node.location;
           const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
           selectorCast.location = node.location;
-          // A graph handler checks the row's selector; a direct entry's record digest names it.
-          if (this.graphMode) mc.runtimeSelector = selectorCast;
-          else mc.loopRecordSelector = selectorCast;
+          mc.loopRecordSelector = selectorCast;
           return mc;
         }
         const idx = this.visit(target.index) as ExpressionNode;

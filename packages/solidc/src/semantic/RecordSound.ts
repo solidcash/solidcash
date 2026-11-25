@@ -39,8 +39,7 @@ export function publishesCallRecord(fn: FunctionDefinitionNode): boolean {
 export function isOrdinaryRecordArm(
   fn: FunctionDefinitionNode, makesDelegatecall: (fn: FunctionDefinitionNode) => boolean,
 ): boolean {
-  return fn.isEntryPoint === true && !false
-    && !makesDelegatecall(fn)
+  return fn.isEntryPoint === true && !makesDelegatecall(fn)
     && !fn.modifiers.some((modifier) => modifier === FunctionModifier.UNSAFE
       || modifier === FunctionModifier.SPLIT || modifier === FunctionModifier.MERGE
       || modifier === FunctionModifier.DELEGATE);

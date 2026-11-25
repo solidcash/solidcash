@@ -1383,9 +1383,6 @@ const expressionSource = (
     && (expression as unknown as { operator?: string }).operator === 'msg.sender') {
     return { kind: 'msgSender' };
   }
-  if (expression.constructor.name === 'IdentifierNode' && false) {
-    return { kind: 'msgSender' };
-  }
   if (expression.constructor.name === 'IdentifierNode' && shaped.name) {
     const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
     const parameterIndex = visible.findIndex((parameter) => parameter.name === shaped.name);
@@ -3564,10 +3561,6 @@ function buildFunctionAbiMetadata(
     };
   })();
   const signatureGuard = signatureGuardOf(func, contract, provenance);
-  // Graph handlers execute behind the synthetic route, while their loop-write metadata is discovered during
-  // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
-  // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
-  // mutable placeholder and its handler covenant correctly rejects the missing entry-NFT output.
   const routeEntryLoopWrites = func.entryLoopWrites;
   const loopSignatureFunctions = [func];
   const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
@@ -4025,7 +4018,6 @@ function buildFunctionAbiMetadata(
     ...(argumentFieldUpdates && { argumentFieldUpdates }),
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
-    ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
     ...(func.runtimeLoopAffineRecursiveFrameDescriptors?.length && {
@@ -4263,7 +4255,7 @@ function buildFunctionAbiMetadata(
           ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
           ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
           // Publish false too: absence denotes a legacy artifact, not a proven value-free edge.
-          callValueEffect: rawCall && (func.graphRawCallValueEffect === true || hasExternalCallValueEffect(ec)),
+          callValueEffect: rawCall && hasExternalCallValueEffect(ec),
           ...(ec.callValueInRecord && ec.callValueSource && { callValue: ec.callValueSource }),
           ...(ec.opaqueReturn && { opaqueReturn: true }),
           ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
@@ -4691,12 +4683,7 @@ export function generateArtifact(
     name: func.name,
     ...(func.mappingArrayPagination && { mappingArrayPagination: func.mappingArrayPagination }),
     ...(func.functionSelector && { selector: binToHex(func.functionSelector) }),
-    // A caller several OP_INVOKE edges above a runtime journal receives a physical copy of the leaf's hidden
-    // context so generated calls have one typed frame. Those forwarded operands are route-owned implementation
-    // details; publishing them as source inputs leaks the depth of the helper closure and makes equivalent
-    // source signatures ABI-incompatible. Parameters introduced by the function's own lowering remain present:
-    // SDK journal planning still consumes those physical witness declarations.
-    inputs: func.parameters.filter((parameter) => !parameter.kernelJournalForwardedContext).map((parameter) => ({
+    inputs: func.parameters.map((parameter) => ({
       name: parameter.name,
       type: abiTypeString(parameter.type),
     })),
@@ -4707,10 +4694,7 @@ export function generateArtifact(
         ...(compilerOptions.composition === 'framed' && (func.returnNames[index] ?? '') !== ''
           ? { name: func.returnNames[index]! } : {}),
       })),
-      // The compiler-generated route always carries its aggregate vector in one compact outer bytes field.
-      // Individual handler rows independently publish EVM or compact result encodings inside that carrier.
-      resultEncoding: false
-        ? 'compact-pushdata-v1' : externalResultEncoding(func.returnTypes, compilerOptions),
+      resultEncoding: externalResultEncoding(func.returnTypes, compilerOptions),
     }),
     ...(func.settlesCallRecord === true && { callRecord: true }),
     ...(func.recordDigestsValue === true && { callRecordValue: true }),

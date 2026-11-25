@@ -3,10 +3,8 @@
  *
  * An arm's head is the code it opens with: the positional items its kind takes, then `OP_DEPTH n OP_NUMEQUALVERIFY`
  * with n the number of items the compiler's model holds there. A dispatched entry's selector was taken by the
- * dispatcher, so its head is the check alone. A route route first drops its positional items; under the
- * proxy-forward envelope it keeps the drop's decision across the check and then re-reads the proxy master index
- * where the model holds it. A body that can also run as a frame of the multi-call entry takes its call context and
- * checks only a standalone run. The multi-call entry takes its frames before its check.
+ * dispatcher, so its head is the check alone. A body that can also run as a frame of the multi-call entry takes its
+ * call context and checks only a standalone run. The multi-call entry takes its frames before its check.
  *
  * The generator records each arm's head; `verifyArmHeads` reads the finished code and requires every recorded arm
  * to begin with the head its form gives, so nothing an emitter or a later pass put before the check goes unseen.
@@ -19,11 +17,6 @@ import {
 export type ArmHeadForm =
   | { readonly kind: 'check' }
   | { readonly kind: 'callContext' }
-  | {
-    readonly kind: 'route';
-    /** The third positional item: dropped at input 0 (root), or on the proxy-forward decision. */
-    readonly envelope?: 'root' | { readonly decisionOrdinal: number; readonly reread: number };
-  }
   | { readonly kind: 'multiCall'; readonly takes: Uint8Array }
   | { readonly kind: 'refused' };
 
@@ -44,9 +37,6 @@ export class ArmHeadError extends Error {
 }
 
 const depthCheck = (depth: number): Script => [Op.OP_DEPTH, encodeInt(BigInt(depth)), Op.OP_NUMEQUALVERIFY];
-const dropBottom: Script = [Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_DROP];
-const pickAt = (index: number): Script => (index === 0 ? [Op.OP_DUP]
-  : index === 1 ? [Op.OP_OVER] : [encodeInt(BigInt(index)), Op.OP_PICK]);
 
 /** The bytes an arm of this form and depth begins with (for a refused arm, its whole body). */
 export function armHeadBytes(form: ArmHeadForm, depth: number): Uint8Array {
@@ -61,23 +51,6 @@ export function armHeadBytes(form: ArmHeadForm, depth: number): Uint8Array {
       return Uint8Array.from([...form.takes, ...scriptToBytecode(depthCheck(depth))]);
     case 'refused':
       return scriptToBytecode([Op.OP_0, Op.OP_VERIFY]);
-    case 'route': {
-      const head: Script = [...dropBottom, ...dropBottom];
-      if (form.envelope === 'root') {
-        head.push(Op.OP_INPUTINDEX, Op.OP_0, Op.OP_NUMEQUAL, Op.OP_IF, ...dropBottom, Op.OP_ENDIF, ...depthCheck(depth));
-      } else if (form.envelope !== undefined) {
-        const { decisionOrdinal, reread } = form.envelope;
-        head.push(
-          Op.OP_DEPTH, ...(decisionOrdinal === 1 ? [Op.OP_1SUB] : [encodeInt(BigInt(decisionOrdinal)), Op.OP_SUB]),
-          Op.OP_PICK, Op.OP_0, Op.OP_NUMEQUAL, Op.OP_DUP, Op.OP_IF, ...dropBottom, Op.OP_ENDIF,
-          ...depthCheck(depth),
-          ...pickAt(reread), Op.OP_0, Op.OP_NUMEQUAL, Op.OP_EQUALVERIFY,
-        );
-      } else {
-        head.push(...depthCheck(depth));
-      }
-      return scriptToBytecode(head);
-    }
     default:
       throw new ArmHeadError(`unknown arm head form ${(form as { kind: string }).kind}`);
   }

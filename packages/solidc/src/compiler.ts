@@ -18,13 +18,22 @@ import { ArmHeadError, verifyArmHeads } from './generation/ArmHeads.js';
 import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { sha256 as sha256Bytes } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, findOraclePoolSlots, ORACLE_POOL_PARAMETER, oraclePoolTreeReads, type OraclePoolReads, BytesType, type CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex, canonicalSelectorSignature, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, MappingType, needsOptimiserCrossCheck, scriptToBytecode, bytecodeToScript, asmToScript, Op, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual, type AbiFunction, type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle, type DeployerAbi, type FunctionBlockLayout, type BlockSlotKind, type SplitStateFootprint, StructType, TupleType, type Type, ValueType, isDynamicStorageType, childStateLayoutDigest, abiTypeString, dynamicChunkSignature } from '@solidcash/utils';
+import {
+  type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, findOraclePoolSlots,
+  ORACLE_POOL_PARAMETER, oraclePoolTreeReads, type OraclePoolReads, BytesType, type CompilerOptions,
+  computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
+  canonicalSelectorSignature, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, MappingType,
+  needsOptimiserCrossCheck, scriptToBytecode, bytecodeToScript, asmToScript, Op, optimiseBytecode,
+  optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual, type AbiFunction,
+  type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle, type DeployerAbi,
+  type FunctionBlockLayout, type BlockSlotKind, type SplitStateFootprint, StructType, TupleType, type Type,
+  ValueType, isDynamicStorageType, childStateLayoutDigest, abiTypeString, dynamicChunkSignature,
+} from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact, resultArrayOutputOf } from './artifact/Artifact.js';
 import {
   enforceSolidcEnvPolicy,
   solidcEnvFlagEnabled,
   solidcEnvValue,
-  solidcFeatureIdentityBits,
 } from './solidc-env-registry.js';
 import {
   assertCompositionConventionSupported,
@@ -54,7 +63,21 @@ import {
   emitCompilerWarning, withDistinctWarnings, withSuppressedWarnings, withWarningListener, type WarningListener,
 } from './warnings.js';
 
-import { type Ast, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode, ExpressionNode, FieldAccessNode, FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, ExpressionStatementNode, IdentifierNode, InstantiationNode, ArrayDeleteNode, CollectionIterationNode, StateAccessNode, StateArrayDeleteNode, LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode, DeleteStateNode, SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode, TokenContainerMethodStatementNode, SelfdestructStatementNode, AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, MinerFeeStatementNode, WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode, BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode, exactArrayLength, TimeOpNode, type CustomModifierInvocation } from './ast/AST.js';
+import {
+  type Ast, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode,
+  EmitStatementNode, ExpressionNode, FieldAccessNode, FunctionCallNode, FunctionDefinitionNode,
+  InterfaceFunctionNode, InterfaceNode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier,
+  HexLiteralNode, ExpressionStatementNode, IdentifierNode, InstantiationNode, ArrayDeleteNode,
+  CollectionIterationNode, StateAccessNode, StateArrayDeleteNode, LowLevelCallNode, LowLevelCallStatementNode,
+  MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode, MethodCallNode,
+  MethodCallStatementNode, Node, ParameterNode, RequireNode, NullaryOpNode, TupleAssignmentNode,
+  VariableDefinitionNode, DeleteStateNode, SourceFileNode, StatementNode, TransferStatementNode,
+  AddressTransferStatementNode, AddressSendExpressionNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
+  TokenContainerMethodStatementNode, SelfdestructStatementNode, AssemblyStatementNode, CastNode, IntLiteralNode,
+  TryCatchNode, MinerFeeStatementNode, WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
+  BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
+  exactArrayLength, TimeOpNode, type CustomModifierInvocation,
+} from './ast/AST.js';
 import { YulFunctionCallNode } from './ast/YulAST.js';
 import AstBuilder, { lvalueKeyUnitsBuilt } from './ast/AstBuilder.js';
 import { Class, GlobalFunction, TimeOp } from './ast/Globals.js';
@@ -80,7 +103,6 @@ import LowerTailRecursion from './semantic/LowerTailRecursion.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import HoistBranchLocalExtcallTargets from './semantic/HoistBranchLocalExtcallTargets.js';
-import HoistPointerTableBranchLocals from './semantic/HoistPointerTableBranchLocals.js';
 import HoistNonLoopArrayElemExtcallTargets from './semantic/HoistNonLoopArrayElemExtcallTargets.js';
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
 import SplitExternalCallFnPtrArgs from './semantic/SplitExternalCallFnPtrArgs.js';
@@ -100,7 +122,6 @@ import PromoteConstructorExternalReads from './semantic/PromoteConstructorExtern
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
-import { inlinesSignatureChecks } from './semantic/transactionSignatureCheck.js';
 import PruneInlinedConstantBranches from './semantic/PruneInlinedConstantBranches.js';
 import LowerSelfLowLevelCalls from './semantic/LowerSelfLowLevelCalls.js';
 import LowerStaticLowLevelCalls from './semantic/LowerStaticLowLevelCalls.js';
@@ -121,10 +142,6 @@ import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
-import ExpandBoundedPointerTableLoop from './semantic/ExpandBoundedPointerTableLoop.js';
-import {
-  containsIndirectCall, type PointerTableExpansion, type PointerTableExpansionMap, type ProvenLoopCeilingMap,
-} from './semantic/PointerTableBound.js';
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerVMapCounterLoops from './semantic/LowerVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
@@ -139,7 +156,9 @@ import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
-import SynthesizeBlockOracle, { bindOraclePool, createdPoolReads, markBlockOracleCallers, setOraclePoolBinding, takesOraclePool } from './semantic/SynthesizeBlockOracle.js';
+import SynthesizeBlockOracle, {
+  bindOraclePool, createdPoolReads, markBlockOracleCallers, setOraclePoolBinding, takesOraclePool,
+} from './semantic/SynthesizeBlockOracle.js';
 import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
 import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
@@ -174,18 +193,30 @@ import { createMapResolver } from './createMapResolver.js';
 import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
 import { compileFunctionSplit } from './split/function-split.js';
 import { DEPLOYER_SELECTOR_CREATE, DEPLOYER_SELECTOR_SWEEP, deployerConstantsOf } from './generation/deployerConstants.js';
-import { AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError, UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError, CompilerRecursionLimitError, NestedSelfdestructError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError, DeployerUnsupportedWarning, DeployerUnsupportedError, DeployerInternalError, DeployCycleError } from './Errors.js';
+import {
+  AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
+  UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
+  CompilerRecursionLimitError, NestedSelfdestructError, UnpublishableLoopGuardError, RecursiveStructDefinitionError,
+  ContractStorageTooLargeError, DeployerUnsupportedWarning, DeployerUnsupportedError, DeployerInternalError,
+  DeployCycleError,
+} from './Errors.js';
 import {
   compilesInDirectConvention, type DeployerChild,
 } from './generation/deployerChildren.js';
-import { Location, withSourceFile } from './ast/Location.js';
+import { withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   CALL_BATCH_INPUT_RESERVE_FRACTION, CALL_BATCH_ROW_SHIFT, CALL_BATCH_SELECTOR_HEX,
 } from './semantic/CallBatch.js';
-import { analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, createFootprintAnalysisCache, directCallNames, emitsAnyEvent, walkInvocationAst } from './analysis/InvocationAnalysis.js';
+import {
+  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, createFootprintAnalysisCache,
+  directCallNames, emitsAnyEvent, walkInvocationAst,
+} from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
-import { analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries, childDeploymentGenesisState, childDeploymentStructDefinitions, childDeploymentValueRecipe } from './deploymentRecipes.js';
+import {
+  analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries,
+  childDeploymentGenesisState, childDeploymentStructDefinitions, childDeploymentValueRecipe,
+} from './deploymentRecipes.js';
 import { cloneNode, cloneNodeGraph } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
@@ -221,8 +252,6 @@ function sourceFunctionSelectorHex(fn: FunctionDefinitionNode, evmCompat = false
       visibleParams.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')));
   return computeFunctionSelectorHex(signature, evmCompat);
 }
-
-/** Remaining eligible names when late fences demoted a handler already synthesized into the route. */
 
 function scanSourceImports(code: string): string[] {
   const specs: string[] = [];
@@ -1411,12 +1440,8 @@ type InternalCompilerOptions = CompilerOptions & {
    * The public options the outermost compile was given. A contract this compile creates or embeds is compiled with
    * exactly these, as its own standalone compile, so the embedded bytes are the artifact a caller deploys.
    */
-  __referencedChildOptions?: CompilerOptions;  /**
-  /**
-   * Disk hits rebuild the delegate from caller options, which have not been through graph-free narrowing.
-   * The getter applies that narrowing once so the cold variant matches the warm one.
-   */
-  __coldDelegateRebuild?: boolean;  __parsedAst?: Ast;
+  __referencedChildOptions?: CompilerOptions;
+  __parsedAst?: Ast;
   /** Set on a per-entry shard whose storage-shaping passes already ran on the whole contract. */
   __functionSplitPrepared?: boolean;
   /** Frame kinds the shard's master head admits. Absent keeps the historical four. */
@@ -1438,10 +1463,6 @@ type InternalCompilerOptions = CompilerOptions & {
   __logicalContractEvents?: readonly string[];
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
   __pristineAstBox?: { ast?: Ast };
-  /**
-   * Shared with the shallow-copied admission options. Records the rung that produced the returned artifact so
-   * a missing verifierProgram does not replay the whole search as full compiles.
-   */
   /** Test-only observation of failures consumed by an admission/rebinding recovery path. */
   __attemptFailureBox?: { failures: CaughtCompilerAttempt[] };
   /** Test-only explicit audit flag; journal compiles enforce this invariant regardless of the flag's value. */
@@ -1478,7 +1499,6 @@ type InternalCompilerOptions = CompilerOptions & {
   };
   /** Compiler-owned shared state propagated through binder/recovery recursion. */
   __internalAttemptFailureState?: InternalAttemptFailureState;
-  /** Compiler-private completed-ABI authority crossing only the pristine verifier-binding boundary. */
   /** Set once the parsed contract is admitted as a shape this compiler can emit a framed master for. */
   __framedMaster?: boolean;
   /** Each entry's own external calls, in execution order, keyed by entry name, as that entry's sites bind them. */
@@ -2088,11 +2108,6 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   // Derived from the source and the public options by the compile that sets it.
   delete keyOptions.__loopGuardRefusals;
   delete keyOptions.__loopGuardRefusalRecord;
-  // Fold enabled production-semantics features into the cache identity (item 4).
-  const featureBits = solidcFeatureIdentityBits({ ownerAltAnchor: false, handlerBandModel: false });
-  if (Object.keys(featureBits).length > 0) {
-    keyOptions.__solidcFeatureIdentity = featureBits;
-  }
   return keyOptions;
 }
 
@@ -2365,23 +2380,6 @@ function cloneArtifact(artifact: Artifact, suppressWarnings = false): Artifact {
   return cloned;
 }
 
-/**
- * X100. The channel that lets the route-generation refusal name the handler whose shape actually threw.
- *
- * `spans` is recorded by route synthesis before anything downstream can throw: one entry per EXTERNAL entry
- * point it considered, keyed by name and declaration position. `refused` is read at the visibility arm, so a
- * key in it lands `external-handler-route-generation-unsupported` on that ONE handler while its clean siblings
- * keep their route - instead of the whole contract losing its route because one sibling was gapped.
- */
-interface ExternalAdmissionAttribution {
-  /** Handler keys to refuse on this compile. Empty on the first attempt. */
-  refused: Set<string>;
-  /** One entry per external entry point route synthesis considered. Accumulated across attempts, deduped. */
-  spans: { key: string; name: string; location?: Location }[];
-  /** Optional JOURNAL_* / named reason to apply instead of the generic attributed refusal. */
-  reasons: Map<string, string>;
-}
-
 /** Identity of one source handler: name plus declaration position, so two overloads stay distinct. */
 function externalHandlerKey(fn: FunctionDefinitionNode): string {
   const start = fn.location?.start;
@@ -2392,8 +2390,8 @@ function externalHandlerKey(fn: FunctionDefinitionNode): string {
  * Preserve the requirement for an absolute dynamic-state input coordinate across journal lowering. Later
  * transformations can replace state reads/writes with value-threaded locals, at which point a fresh footprint
  * scan can no longer rediscover the physical chunk dependency. Source declaration identity and the explicit
- * clone-source key remain stable across those transformations, so they—not generated names—carry the fact to
- * logical entries, routes, and OP_INVOKE handlers.
+ * clone-source key remain stable across those transformations, so they, not generated names, carry the fact to
+ * logical entries and OP_INVOKE handlers.
  */
 function markDynamicChunkInputBaseFunctions(
   ast: Ast,
@@ -2416,7 +2414,6 @@ function markDynamicChunkInputBaseFunctions(
   const footprintCache = createFootprintAnalysisCache(dynamicStateNames);
   for (const fn of functions) {
     const sourceKey = externalHandlerKey(fn);
-    const cloneSourceKey = undefined;
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
     const writesDynamicState = footprint.writes.some((resource) => {
       // Element/field mutations are collection resources before semantic lowering; whole-value writes use
@@ -2425,14 +2422,12 @@ function markDynamicChunkInputBaseFunctions(
         : resource.startsWith('collection:') ? resource.split(':')[1] : undefined;
       return name !== undefined && dynamicStateNames.has(name);
     });
-    if (writesDynamicState || writeKeys.has(sourceKey)
-      || (cloneSourceKey !== undefined && writeKeys.has(cloneSourceKey))) {
+    if (writesDynamicState || writeKeys.has(sourceKey)) {
       writeKeys.add(sourceKey);
     }
     const directlyRequiresBase = [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicStateNames.has(resource.slice('state:'.length)));
-    if (directlyRequiresBase || keys.has(sourceKey)
-      || (cloneSourceKey !== undefined && keys.has(cloneSourceKey))) {
+    if (directlyRequiresBase || keys.has(sourceKey)) {
       fn.usesDynamicChunkInputBase = true;
       keys.add(sourceKey);
     }
@@ -2544,7 +2539,6 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
       // Disk stores the primary artifact only (JSON cannot preserve the lazy getter).
       // Re-attach delegateArtifact before promoting so a cold worker matches a warm one.
       const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
-      diskOptions.__coldDelegateRebuild = true;
       attachDelegateVariant(diskHit, code, diskOptions, errorListener, primaryContractName, true);
       compileCacheSet(cacheKey, diskHit);
       return cloneArtifact(diskHit, suppressWarnings);
@@ -2553,7 +2547,7 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   if (parsedAst !== undefined) mergedCompilerOptions.__parsedAst = parsedAst;
   const ast = parsedAst ?? parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
-  const artifact = compileResolvedAst(ast, code, mergedCompilerOptions, false, true);
+  const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
   assertNoInternalAttemptRecovery(mergedCompilerOptions);
   attachDelegateVariant(
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
@@ -2649,7 +2643,7 @@ function attachDelegateVariant(
   // Solidity initializer inference marks the primary artifact itself as a proxy implementation. Do not attach a
   // second delegate pass to that already-delegate artifact: synthetic ABI helpers such as __updateBlockOracle
   // have no visibility modifier and previously looked like another candidate, producing a much larger hybrid
-  // route which the SDK then preferred over the correct primary implementation.
+  // artifact which the SDK then preferred over the correct primary implementation.
   if (artifact.abi.some((fn) => fn.modifiers?.includes(FunctionModifier.DELEGATE))) return;
   if (mergedCompilerOptions.delegateArtifactContracts !== undefined
     && !mergedCompilerOptions.delegateArtifactContracts.includes(artifact.contractName)) return;
@@ -2668,12 +2662,7 @@ function attachDelegateVariant(
   if (!couldBeImplementation) return;
 
   const buildVariant = (): Artifact | undefined => {
-    const internalOptions = mergedCompilerOptions as InternalCompilerOptions;
-    if (internalOptions.__coldDelegateRebuild === true) delete internalOptions.__coldDelegateRebuild;
-    // Proxy implementation bytecode is selected by the SDK for delegate execution. Atomic composition can also
-    // dispatch that implementation through its participant route, so the lazy variant must receive the same
-    // verifier-binding continuation as a primary artifact; otherwise its ABI omits the active verifier input
-    // while its participant verifier still authenticates the executing OP_UTXOBYTECODE identity.
+    // Proxy implementation bytecode is selected by the SDK for delegate execution.
     const variantOptions = {
       ...mergedCompilerOptions,
       autoDelegate: true,
@@ -2688,7 +2677,7 @@ function attachDelegateVariant(
     try {
       const variantAst = parseAndResolve(code, variantOptions, errorListener, primaryName);
       let variant = compileResolvedAst(
-        variantAst, code, variantOptions, false, true, true, true, true, true, undefined, false, out,
+        variantAst, code, variantOptions, false, false, out,
       );
       if (out.delegateFunctionsMarked > 0) built = variant;
     } catch (e) {
@@ -2803,16 +2792,6 @@ function setPrimaryContract(ast: Ast, name: string): void {
   ast.importedContracts = all.filter((c) => c !== target);
 }
 
-/**
- * Memo for a detached verifier. A multi-declaration compile hands the same generated verifier
- * source to every declaration, and the emit is a pure function of that source and its options, so the second and
- * later emits were recomputing an identical program (~150ms per extra declaration here).
- *
- * Keyed on every input the emit reads: the source text, the lifecycle flag, and the whole option set (see
- * `detachedVerifierOptionsKey`). Entries are deep-cloned on the way out so a caller mutating a returned program
- * cannot poison the memo. Bounded, because each entry retains a large source string.
- */
-
 /** A source function's selector cannot be the multi-call entry's (semantic/CallBatch.ts). */
 export function assertNoReservedCallBatchSelector(
   functions: readonly Pick<FunctionDefinitionNode, 'name' | 'functionSelector' | 'location'>[],
@@ -2834,7 +2813,6 @@ export function assertNoReservedCallBatchSelector(
   );
 }
 
-/** Map admission reasons onto the shared frozen JOURNAL_* catalog. */
 /** True when a body names a token container. */
 function namesTokenContainer(body: BlockNode): boolean {
   let names = false;
@@ -2849,85 +2827,6 @@ function namesTokenContainer(body: BlockNode): boolean {
 function contractNamesTokenContainer(contract: ContractNode): boolean {
   return [...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : []),
     ...(contract.fallbackDef ? [contract.fallbackDef] : [])].some((fn) => namesTokenContainer(fn.body));
-}
-
-type InvocationExternalCall = NonNullable<Artifact['abi'][number]['externalCalls']>[number];
-
-/**
- * Publish an expanded pointer-table dispatch loop as ONE bounded loop callsite in the invocation analysis.
- *
- * The compiler expands a bounded table into `count` syntactic callsites so every reached row has a
- * compile-time-constant table index; the ABI keeps those physical rows because direct (non-graph) execution
- * binds each one. Graph expansion instead needs the SOURCE shape: one dispatch site whose reached-row count is a
- * runtime value with an explicit compiler-proven ceiling. Coalescing is skipped whenever the correspondence is
- * not exact, so an unrecognized shape keeps the physical rows rather than publishing a wrong bound.
- */
-function coalesceExpandedPointerTable(
-  functionName: string,
-  calls: readonly InvocationExternalCall[],
-  expansions: PointerTableExpansionMap,
-): readonly InvocationExternalCall[] {
-  const groups: PointerTableExpansion[] | undefined = expansions.get(functionName);
-  if (!groups || groups.length !== 1) return calls;
-  const { count } = groups[0];
-  if (count < 1) return calls;
-  const dispatch = calls
-    .map((call, index) => (call.selectorArrayVar || call.fnPtrCall) ? index : -1)
-    .filter((index) => index >= 0);
-  if (dispatch.length !== count) return calls;
-  if (dispatch[count - 1] - dispatch[0] !== count - 1) return calls;
-  // Every field but the physical offset carries over; the expanded rows are `once`/`conditional`, so neither a
-  // floor nor a bound provenance can be present to carry over stale.
-  // The discarded field is deliberately named for destructuring; it must not survive into expanded rows.
-  // eslint-disable-next-line @typescript-eslint/naming-convention, @typescript-eslint/no-unused-vars
-  const { computedOffset: _computedOffset, ...first } = calls[dispatch[0]];
-  const { guarded } = groups[0];
-  // A guarded expansion reaches 0..count rows, decided on-chain; an unguarded one comes from a compile-time
-  // trip count. The floor is only real if every expanded row is ALSO straight-line: the same fixed loop nested
-  // under a branch, or holding a conditional dispatch, expands to `conditional` rows and reaches zero.
-  const rows = calls.slice(dispatch[0], dispatch[count - 1] + 1);
-  const exact = !guarded && rows.every((call) => (call.occurrence ?? 'once') === 'once');
-  return [
-    ...calls.slice(0, dispatch[0]),
-    {
-      ...first,
-      occurrence: 'loop' as const,
-      maximumOccurrences: count,
-      ...(exact && { minimumOccurrences: count }),
-      occurrenceBoundSource: (guarded ? 'guard' : 'literal') as 'guard' | 'literal',
-    },
-    ...calls.slice(dispatch[count - 1] + 1),
-  ];
-}
-
-/**
- * Attach the ceiling proven for a loop the compiler left ROLLED to the ABI rows that loop produces.
- *
- * The proof runs on the source shape, where a guard's mutation analysis is meaningful; the rows are matched
- * here, where the published order is known. Matching is positional and only accepted when the number of rows
- * still missing a ceiling equals the number of proven ceilings, so a function mixing a bounded and an
- * unbounded loop publishes nothing rather than attaching a bound to the wrong row.
- */
-function applyRolledLoopCeilings(
-  functionName: string,
-  calls: readonly InvocationExternalCall[],
-  ceilings: ProvenLoopCeilingMap,
-): readonly InvocationExternalCall[] {
-  const proven = ceilings.get(functionName);
-  if (!proven?.length) return calls;
-  const open = calls
-    .map((call, index) =>
-      call.occurrence === 'loop' && call.maximumOccurrences === undefined ? index : -1)
-    .filter((index) => index >= 0);
-  if (open.length !== proven.length) return calls;
-  const patched = [...calls];
-  open.forEach((index, order) => {
-    // A guard bounds the trip count from above only: the loop may still reach zero rows, so no floor.
-    patched[index] = {
-      ...calls[index], maximumOccurrences: proven[order], occurrenceBoundSource: 'guard' as const,
-    };
-  });
-  return patched;
 }
 
 /**
@@ -3173,22 +3072,10 @@ const callsOwnFunction = (contract: ContractNode): boolean => {
   return found;
 };
 
-/**
- * Parsed route helper functions, keyed by the generated text that produced them. The helpers are
- * contract-independent by construction - their text depends only on the route shape - so one parse serves
- * every contract in the process that generates the same shape.
- *
- * The cached functions are a TEMPLATE and are never handed out directly: every call returns clones, including
- * the first, so no compile can mutate what a later compile reads.
- */
-
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
 // compileString and compileStringMulti.
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
-  _admitExternalHandlers = true, _normalizeBareEntries = true, _relaxResultEffects = true,
-  _admitMixedScalarHandlers = true, _admitBareForwardingHandlers = true,
-  attribution?: ExternalAdmissionAttribution,
   fnPtrArraysPreLowered = false,
   out?: { delegateFunctionsMarked: number },
 ): Artifact {
@@ -3359,28 +3246,6 @@ function compileResolvedAst(
     return generateDeclarationArtifact(ast, code, mergedCompilerOptions);
   }
 
-  // The direct convention publishes no composition graph: pointer tables lower through their ordinary path.
-  const graphMode = false;
-  const pointerTableBounds = new Map<string, PointerTableExpansion[]>();
-  const rolledLoopCeilings: ProvenLoopCeilingMap = new Map<string, number[]>();
-  // Graph-mode pointer-table expansion is per function. A contract whose only graph edge is an IERC20
-  // transfer must not walk every sibling getter looking for `fns[i](...)`. Skip the whole pass when no
-  // function has a table call; the visitors still skip remaining functions that do not.
-  const needsPointerTableWork = graphMode && [
-    ...ast.contract.functions,
-    ast.contract.constructorDef,
-    ast.contract.fallbackDef,
-    ast.contract.receiveDef,
-  ].some((fn) => !!fn && containsIndirectCall(fn.body));
-  if (needsPointerTableWork) {
-    ast = ast.accept(new UnrollFixedBoundEntryLoop(true, pointerTableBounds)) as Ast;
-    // A pointer-table loop whose trip count is RUNTIME-sized survives the fixed-bound pass. Admit it only when a
-    // dominating source guard proves a finite ceiling, expand it to that many guarded rows, and reject every
-    // other shape with one stable diagnostic. The guard stays in the emitted covenant, so a runtime table longer
-    // than the published bound fails on-chain instead of executing a truncated prefix.
-    ast = ast.accept(new ExpandBoundedPointerTableLoop(pointerTableBounds, rolledLoopCeilings)) as Ast;
-  }
-
   // A foreign fn-ptr ARRAY (dispatch table) with a fixed method -> a plain `address[]` state var + the shipped
   // array-element co-spend `IFace(fns[i]).m()`. Runs FIRST so the moved array is a native `address[]` to every
   // later pass (the fn-ptr array parses as a COLLECTION; a plain address array is a dynamic-array STATE VAR).
@@ -3392,7 +3257,7 @@ function compileResolvedAst(
   const functionSplitPrepared = (mergedCompilerOptions as InternalCompilerOptions).__functionSplitPrepared === true;
   if (!fnPtrArraysPreLowered && !functionSplitPrepared && !ast.contract.isSplitFacet
     && !(rootSourceCoversProgram(ast) && !code.includes('function(') && !code.includes('function ('))) {
-    ast = ast.accept(new LowerForeignFunctionPointerArrayElements(graphMode)) as Ast;
+    ast = ast.accept(new LowerForeignFunctionPointerArrayElements()) as Ast;
   }
 
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
@@ -3445,11 +3310,9 @@ function compileResolvedAst(
   // delegate entry whether the variant came from `autoDelegate` or Solidity initializer inference.
   const inlineDelegateStateHelpers = (mergedCompilerOptions.autoDelegate ?? false)
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
-  // The SDK signs over an entry point's body, so a helper's transaction-signature check is inlined into it. A
-  // route build keeps the helper and publishes its body to the route's signer instead.
-  const signatureChecksInlined = inlinesSignatureChecks(mergedCompilerOptions);
+  // The SDK signs over an entry point's body, so a helper's transaction-signature check is inlined into it.
+  const signatureChecksInlined = true;
   // Auto-delegate compilation is an explicit whole-artifact owner context even before every function is marked.
-  // Ordinary explicit/inferred surfaces are resolved from the actual oracle-consumer graph in the synthesis pass.
   const oracleDelegateExecutionContext = mergedCompilerOptions.autoDelegate === true;
 
   // Modifier expansion (before semantic analysis)
@@ -3473,7 +3336,7 @@ function compileResolvedAst(
   }
 
   // A4.4/B7.3: in the deployer program, a constructor that reaches a collection keeps journals. Inline the helpers it
-  // reaches into it first, as the route prefix does, then rewrite every collection access of the constructor
+  // reaches into it first, then rewrite every collection access of the constructor
   // into journal code, before any pass that reasons about collections can act on it.
   if (isDeployerProgram && constructorReachesCollections(ast)) {
     checkConstructorCollectionShapes(ast);
@@ -3496,14 +3359,6 @@ function compileResolvedAst(
   // packed state. Consumes the slot-pointer factory's assembly before it reaches LowerInlineAssembly. Runs AFTER
   // expandModifiers so factory uses inside OZ initializer/reinitializer modifiers (now inlined into fn bodies) are
   // rewritten too (else the factory method is dropped with a dangling call left in the modifier body).
-  //
-  // X115. This MUST precede the early route synthesis below. A storage-slot pointer access is not a
-  // Mapping* node until this pass runs, so `analyseFunctionFootprint` reported NO `collection:` resource for a
-  // handler that reads or writes `__evm_storage`. The route's whole collection-eligibility branch is gated on
-  // that resource, so every such handler was admitted with no key witness and no reserved entry slot, and the
-  // published route could not settle a single row (owner-local: OP_EQUALVERIFY on the entry output commitment).
-  // Lowering first makes the footprint honest: the same handlers are now refused BY NAME when their key is a
-  // constant, and reserve a real entry slot when it is a parameter.
   if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
@@ -3595,7 +3450,7 @@ function compileResolvedAst(
   // `for`, journals no send and refuses an effect in a nested loop, while a rolled loop's effect has one output
   // register for every turn. A framed body binds a looped effect where it makes it.
   const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed';
-  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(unrollLoopEffects)) as Ast;
 
   // Keep direct compilation's narrow permutation ABI stable unless a looped payment or emit needs the richer
   // lowering, which pins each iteration's effect. A framed body binds a looped effect where it makes it instead
@@ -3645,9 +3500,8 @@ function compileResolvedAst(
   // fallback, receive and constructor (after every pass above has placed its returns).
   if (needsNestedBranchReturn) ast = confineReturns(ast);
 
-  // Drop unused compatibility-library low-level-call / assembly helpers before journal and memory lowering. A
-  // public-only admission otherwise spends seconds lowering unused library helpers the route will prune
-  // later; the late prune after synthesis remains so a later pass can still root a helper.
+  // Drop unused compatibility-library low-level-call / assembly helpers before journal and memory lowering, which
+  // would otherwise spend seconds on them; the late prune remains so a later pass can still root a helper.
   if (ast.freeFunctions.length > 0) ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
 
   // Solidity permits a nested block local to shadow an outer local/parameter. Target stack slots are named, so
@@ -3743,7 +3597,7 @@ function compileResolvedAst(
   // A foreign fn-ptr ARRAY holding RECEIVED values (`fns.push(p)`) -> `address[]` + a parallel `bytes[]`
   // selector array + the per-element on-chain-selector dispatch loop with SDK-filled witness master indices
   // (the array analogue of the storage pass). After the param lowering that splits `p` -> `__fnsel_p`.
-  if (hasFunctionPointers) ast = ast.accept(new LowerReceivedFnPtrArray(graphMode)) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerReceivedFnPtrArray()) as Ast;
   // A RECEIVED-value foreign fn-ptr in a struct field (method carried in the value) -> a bytes BLOB
   // `selector ++ address`; a call slices it into an audited state-address external call. After the fixed-method
   // struct-field pass (only received-value fields remain).
@@ -3832,11 +3686,6 @@ function compileResolvedAst(
   // `A.getter().m(args)` (getter returns a contract) -> `IReturn __chaincall_N = A.getter(); __chaincall_N.m(..)`,
   // so the chained call on the getter's (integrity-bound) return dispatches via the audited interface-local path.
   if (needsExternalCallLowering) ast = ast.accept(new HoistChainedContractCalls()) as Ast;
-
-  // Lower eligible single-entry mapping helpers to value-threaded OP_INVOKE handlers before the legacy
-  // entry-reading inline passes see them. Cheap admission does not emit user/clone bodies or the unrolled
-  // route, so journaling them is throwaway work; the binder pass still runs the full journal.
-  const cheapAdmissionCodegen = false;
   // A public collection getter/update can also be called from another public entry. Inline that call while
   // the callee still has its source arity; journal lowering below appends private witness parameters to its
   // dispatched definition, which an ordinary source call cannot supply.
@@ -3855,10 +3704,12 @@ function compileResolvedAst(
       mergedCompilerOptions.evmCompat ?? false,
     )) as Ast;
   }
-  if (needsDynamicStateJournal && !cheapAdmissionCodegen) {
+  // Lower eligible single-entry mapping helpers to value-threaded OP_INVOKE handlers before the legacy
+  // entry-reading inline passes see them.
+  if (needsDynamicStateJournal) {
     ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
   }
-  if (needsCollectionJournal && !cheapAdmissionCodegen) {
+  if (needsCollectionJournal) {
     ast = ast.accept(new LowerCollectionJournalHelpers(mergedCompilerOptions.composition === 'framed')) as Ast;
   }
 
@@ -3909,8 +3760,7 @@ function compileResolvedAst(
 
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
-  // Batch compilation already ran this pass before route synthesis. The IRSH above can still
-  // expose scalar state inside a previously context-only void wrapper (`_checkInitializing` after
+  // The IRSH above can still expose scalar state inside a previously context-only void wrapper (`_checkInitializing` after
   // `_isInitializing()` is reduced). Without a follow-up inline, that wrapper stays an OP_INVOKE
   // body and a delegate `initialize` re-reads the pre-tx NFT (or INPUTINDEX+1 on the impl).
   // This pass originally handled only explicit `storage` parameters, so the source-text fast path below used
@@ -3948,8 +3798,7 @@ function compileResolvedAst(
   // A boolean literal substituted for a bool param at an inline site (`_refund(jobId, false)`) leaves an arm of the
   // branch on it that never runs; drop it, so a write in that arm never reaches the entry's write analysis. Per-call
   // entries keep the arms only literals decide; a framed constructor folds them too, as its genesis refuses a read
-  // after a branch arm's write to an entry the read may name (`_mint` inlines `_update(address(0), to, v)`). A
-  // route compile of the default composition keeps them (see the fold on the route path above).
+  // after a branch arm's write to an entry the read may name (`_mint` inlines `_update(address(0), to, v)`).
   if (hasInternalHelpers || framedInlinedHelpers) {
     ast = ast.accept(new FoldConstantBoolBranches(
       mergedCompilerOptions.composition === 'framed' ? 'constructor' : true,
@@ -3962,7 +3811,7 @@ function compileResolvedAst(
   // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
   // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on
   // these post-inline new-array-bound loops, and on a fixed loop whose effect an inlined helper made.
-  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(unrollLoopEffects)) as Ast;
 
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
@@ -3980,11 +3829,9 @@ function compileResolvedAst(
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache. A framed body keeps the
   // cache inside the segments its own accesses run in, so the upsert lands where the source writes the entry.
-  // Without the route no route clones a body after this pass, so a mapping the body composes stays uncached.
+  // A mapping the body composes stays uncached.
   if (needsLoop || needsCollectionJournal) {
-    ast = ast.accept(new CacheMappingEntryInLoop(
-      false, mergedCompilerOptions.composition === 'framed', true,
-    )) as Ast;
+    ast = ast.accept(new CacheMappingEntryInLoop(mergedCompilerOptions.composition === 'framed')) as Ast;
   }
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
@@ -3997,9 +3844,6 @@ function compileResolvedAst(
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
   // B7.3: in the deployer program a constructor's external call is a call slot, not a deploy input.
   if (needsExternalCallLowering && !isDeployerProgram) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
-  // A guarded pointer-table row hoists its element + runtime-selector locals inside the branch; move only their
-  // DECLARATIONS to the body top so the epilogue can read them while the reads stay conditional.
-  if (needsPointerTableWork) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
   // A branch-local interface-cast external-call target variable -> hoist its DECLARATION to the body top so the
   // co-spend reads it at the epilogue (UniswapV2Pair mint's `migrator`); the external calls stay conditional.
   if (needsExternalCallLowering) ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
@@ -4065,7 +3909,7 @@ function compileResolvedAst(
   // Internal helper expansion may splice externally calling statements into an entry after the first source
   // effect survey. Their cloned ordinals are local to the helper, so keeping them would falsely place a nested
   // call before its caller's already-numbered producers. Re-number the final physical bodies before the late
-  // route/semantic passes publish callsite metadata; this also covers clones made by early route synthesis.
+  // semantic passes publish callsite metadata.
   if (needsExternalCallLowering || hasInternalHelpers || hasInternallyCalledPublicEntry) {
     for (const fn of [...ast.contract.functions, ...ast.freeFunctions]) {
       assignFunctionSourceEffectOrdinals(fn);
@@ -4107,7 +3951,7 @@ function compileResolvedAst(
     }
   }
 
-  // A caller of a block.* reader carries the oracle index to forward it, including the generated route.
+  // A caller of a block.* reader carries the oracle index to forward it.
   if (needsBlockOracle || ast.contract.usesBlockOracle) markBlockOracleCallers(ast.contract, ast.freeFunctions);
 
   // An entry's msg.data reads the unlocking frame, which can include compiler-hidden witnesses in addition
@@ -4305,7 +4149,7 @@ function compileResolvedAst(
   // Framed entries use their declared record coordinates, and delegates retain their suffix convention.
   if (mergedCompilerOptions.composition !== 'framed') {
     for (const fn of ast.contract.functions) {
-      if (!fn.isEntryPoint || false || false
+      if (!fn.isEntryPoint
         || fn.modifiers.includes(FunctionModifier.DELEGATE)
         || !dynamicChunkWriteFunctionKeys.has(externalHandlerKey(fn))
         || ((fn.externalCalls?.length ?? 0) === 0 && (fn.lowLevelCalls?.length ?? 0) === 0)
@@ -4316,12 +4160,6 @@ function compileResolvedAst(
     }
   }
 
-  // Graph-emission handlers execute as OP_DEFINE subroutines inside the hidden route's physical participant
-  // block. Their external edges are callManifest rows, not additional co-spent slots, so their independently
-  // inferred function layout is intentionally absent. Dynamic state reads/writes in those handlers must still
-  // address the owner's data NFTs and trailing chunks relative to the hidden route's block. Share that physical
-  // layout explicitly; otherwise the code generator falls back to activeInput+1 and aliases the first fixed or
-  // funding slot rather than the route's canonical trailing region.
   const typeCheckStarted = Date.now();
   ast = ast.accept(new TypeCheckTraversal(
     true, mergedCompilerOptions.evmCompat ?? false, mergedCompilerOptions.rootFileId,
@@ -4615,8 +4453,7 @@ function compileResolvedAst(
 
   mark('optimise');
   // Publish only the source snapshots which can be projected into the deliberately narrow, data-only replay ABI.
-  // This runs after all semantic validation but before artifact construction; route admission intentionally keeps
-  // every constructed-vector handler behind JOURNAL_LAYOUT until the authenticated carrier protocol consumes it.
+  // This runs after all semantic validation but before artifact construction.
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
@@ -4782,10 +4619,6 @@ function compileResolvedAst(
       }
     }
   }
-  if (traversal.routeOnlyEntries.size > 0) {
-    artifact.abi = artifact.abi.map((fn) => (traversal.routeOnlyEntries.has(fn.selector ?? fn.name)
-      ? { ...fn, routeOnly: true } : fn));
-  }
   if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     // The slots are located in the finished script, after the optimiser: emission records them, but only the
     // emitted bytes say where they survived. A master that can be reached through a call reserves the third slot
@@ -4851,24 +4684,6 @@ function compileResolvedAst(
   const hasCompilerDelegate = artifact.abi.some((fn) => fn.modifiers?.includes(FunctionModifier.DELEGATE));
   if (mergedCompilerOptions.autoDelegate || hasCompilerDelegate) {
     artifact.delegateProxyStateOutputCountPinned = true;
-  }
-  // Batch graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
-  // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a
-  // graph-route compilation, so ordinary direct dispatch keeps one ABI row per physical callsite.
-  if (graphMode && pointerTableBounds.size > 0) {
-    artifact.abi = artifact.abi.map((fn) => {
-      if (!fn.externalCalls?.length) return fn;
-      const coalesced = coalesceExpandedPointerTable(fn.name, fn.externalCalls, pointerTableBounds);
-      return coalesced === fn.externalCalls ? fn : { ...fn, externalCalls: coalesced };
-    });
-  }
-  // A loop that keeps its rolled form publishes no ceiling of its own; attach the one the source guard proves.
-  if (graphMode && rolledLoopCeilings.size > 0) {
-    artifact.abi = artifact.abi.map((fn) => {
-      if (!fn.externalCalls?.length) return fn;
-      const bounded = applyRolledLoopCeilings(fn.name, fn.externalCalls, rolledLoopCeilings);
-      return bounded === fn.externalCalls ? fn : { ...fn, externalCalls: bounded };
-    });
   }
   const invocationAnalysis = analyseContractInvocations(ast.contract);
   const invocationFunctionById = new Map(
@@ -4973,11 +4788,8 @@ function compileResolvedAst(
   }
   const artifactBytes = asmToBytecode(artifact.bytecode).length;
   const maximumInputBytes = mergedCompilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
-  // A placeholder-bound pass temporarily contains the participant route and detached verifier closure in one
-  // bare artifact. It is never deployed; the final verifier-bound participant is checked on its own pass.
-  const detachedVerifierIntermediate = false;
   // A contract over the limit with the multi-call entry is compiled again without it (settleCallBatch).
-  if (artifactBytes > maximumInputBytes && !detachedVerifierIntermediate && artifact.callBatch === undefined) {
+  if (artifactBytes > maximumInputBytes && artifact.callBatch === undefined) {
     const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the configured `
       + `${maximumInputBytes}-byte input-script limit by ${artifactBytes - maximumInputBytes}. `
       + 'Every spend of it is invalid at consensus; it cannot be deployed without splitting '
@@ -5369,9 +5181,8 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
       // Disk stores artifacts without their lazy `delegateArtifact` getter (JSON cannot preserve it). Re-attach
       // per declaration so a cold worker matches a warm one, exactly as the single-artifact disk path does.
       for (const [name, diskArtifact] of Object.entries(diskCached)) {
-        // One options object per declaration: narrowing is per contract, and the getter reads it later.
+        // One options object per declaration: the getter reads it later.
         const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
-        diskOptions.__coldDelegateRebuild = true;
         attachDelegateVariant(diskArtifact, code, diskOptions, errorListener, name, true);
       }
       // Promote into the process-local map so sibling declarations in this process skip the disk read.
@@ -5424,10 +5235,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
       continue;
     }
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
-    // Use the same complete pipeline as the single-artifact API. In particular, route compilation is a
-    // two-pass operation: the first pass extracts the verifier program and the second binds the compact route to
-    // it. Calling the lower-level admission ladder here published route ABI from pass one beside bytecode that
-    // could not select a participant-local verifier in an atomic graph.
+    // Use the same complete pipeline as the single-artifact API.
     // The probe AST is the complete import graph. Cloning it (~25ms) is much cheaper than re-lexing
     // large Solidity sources for every imported primary (~650ms+). The last contract can consume the
     // probe itself; every other primary gets an isolated clone with itself selected.
@@ -5931,8 +5739,7 @@ function compileStringSplitUnchecked(
       }
       const trialOptions = { ...merged };
       const trialRoot = compileResolvedAst(
-        trial, code, trialOptions, false, true, true, true, true, true, undefined,
-        splitPreLowersFnPtrArrays(trialOptions),
+        trial, code, trialOptions, false, true,
       );
       const trialLimit = maxShardBytes - spendReserve(trialRoot, trialRoot.constructorInputs);
       trialRootFits = byteSize(trialRoot) <= trialLimit;
@@ -6028,15 +5835,11 @@ function compileStringSplitUnchecked(
     fn.overrideBases = [];
     fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
   }
-  // A split root's mutating entries are delegate forwarders. Batch admission already refuses delegate
-  // handlers (`atomic-delegate-context-unpreservable`), leaving only incidental root-owned getters on the hidden
-  // route; on UniswapV2Pair that unusable getter-only route inflated the otherwise valid forwarding root to
-  // 13,658 bytes. Keep every ordinary ABI selector and one-hop forwarder, but omit the root's incoming batch route.
-  // Facet bodies retain their normal external-call/route lowering; this changes only the synthetic root.
+  // A split root's mutating entries are delegate forwarders. Keep every ordinary ABI selector and one-hop
+  // forwarder; facet bodies retain their normal external-call lowering.
   const rootOptions = { ...merged };
   const root = compileResolvedAst(
-    rootAst, code, rootOptions, false, true, true, true, true, true, undefined,
-    splitPreLowersFnPtrArrays(rootOptions),
+    rootAst, code, rootOptions, false, true,
   );
   const rootShardBytes = maxShardBytes - spendReserve(root, root.constructorInputs);
   if (byteSize(root) > rootShardBytes) {
@@ -6347,17 +6150,6 @@ function mergeFootprints(plans: PlannedFunction[]): SplitStateFootprint {
   };
 }
 
-/**
- * Batch GRAPH mode unrolls pointer-table loops (`UnrollFixedBoundEntryLoop`,
- * `ExpandBoundedPointerTableLoop`) BEFORE the fn-ptr array pass, and `prepareSplitAst` does not run those. Its
- * `loopDepth` decides broadcast-vs-single-element, so hoisting the pass ahead of them would lower different
- * callsites. Graph mode therefore keeps the post-filter route and leans on `assertSplitLayoutsAgree`, which
- * refuses the divergent bundle rather than emitting it.
- */
-function splitPreLowersFnPtrArrays(_options: CompilerOptions): boolean {
-  return true;
-}
-
 /** Prepare the complete logical contract before deciding physical placement. The normal compiler repeats these
  * passes, but each is idempotent after it has consumed its source metadata. This keeps split planning aware of
  * inherited entry points, inherited state, and modifier-injected calls/effects. */
@@ -6385,9 +6177,7 @@ function prepareSplitAst(
   // write with a different author. Running it here, on the complete function set, makes the decision one decision.
   // Position matches the ordinary pipeline's (after inheritance, BEFORE modifier expansion), so the root also
   // agrees with the unsplit baseline, which classifies from the same pre-expansion bodies.
-  if (splitPreLowersFnPtrArrays(options)) {
-    ast = ast.accept(new LowerForeignFunctionPointerArrayElements(false)) as Ast;
-  }
+  ast = ast.accept(new LowerForeignFunctionPointerArrayElements()) as Ast;
   if (ast.contract.modifierDefinitions.length > 0
     || ast.libraryModifierDefinitions.length > 0
     || ast.contract.functions.some((fn) => fn.customModifiers.length > 0)
@@ -6474,10 +6264,9 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
   contract.implements = [];
   contract.parentInvocations = [];
   // Public getters are synthesized later than split planning. Without suppressing them here, every facet silently
-  // regains every public state/collection/constant getter after its function set was filtered. Besides publishing
-  // unrelated selectors on every shard, those getters make each facet synthesize the full incoming route
-  // route (UniswapV2Pair's one-entry `approve` facet measured 13,066 bytes for this reason). The logical root keeps
-  // all getters and their ABI routes; a facet contains only the entries assigned to it and their call closure.
+  // regains every public state/collection/constant getter after its function set was filtered, publishing
+  // unrelated selectors on every shard. The logical root keeps all getters and their ABI routes; a facet contains
+  // only the entries assigned to it and their call closure.
   contract.flattenedPublicStructGetters = [];
   // `prepareSplitAst` has already flattened inheritance and resolved every explicit override list. Facets have no
   // Solidity base list, so retaining e.g. OZ's `override(Nonces)` would make the idempotent inheritance pass reject
@@ -6500,18 +6289,16 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
   } else if (fn.isEntryPoint) {
     // Any entry that is only KEPT here - including a root-owned view such as UniswapV2Pair.getReserves - is
     // reachable in this facet solely through an internal call from one of `plans`. Emitting its entry-point arm
-    // as well would charge this facet for selector dispatch, ABI decoding, and (for an otherwise delegate-only
-    // facet) an entire incoming route route it can never enter. Demote it to a plain internal helper; the
-    // body, and every modifier already expanded into it, is untouched. The logical root retains its real selector.
+    // as well would charge this facet for selector dispatch and ABI decoding it can never use. Demote it to a
+    // plain internal helper; the body, and every modifier already expanded into it, is untouched. The logical
+    // root retains its real selector.
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC, FunctionModifier.DELEGATE,
     ].includes(m));
     fn.modifiers.push(FunctionModifier.INTERNAL);
   }
   contract.isSplitFacet = true;
-  // Facets need the same verifier-binder pass as ordinary graph contracts. Compiling only the resolved AST
-  // publishes a detached verifier program but leaves its 6 KB atomic body inlined into this shard's route.
-  // The complete compiler owns admission, pristine-AST retries, exact verifier binding, and final certificates.
+  // A facet compiles through the complete compiler, like any contract.
   const artifact = compileStringUnchecked(code, { ...options, __parsedAst: ast } as InternalCompilerOptions);
   const facetInputs = artifact.constructorInputs.filter((input) => input.name !== ORACLE_POOL_PARAMETER);
   if (!artifact.isLibrary || !artifact.brandedLibrary
@@ -6793,22 +6580,19 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineReturningStateHelpers(
       compilerOptions.evmCompat ?? false,
       compilerOptions.composition === 'framed',
-      inlinesSignatureChecks(compilerOptions),
+      true,
     )) as Ast;
     singleAst = singleAst.accept(new LowerDynamicStateJournalHelpers()) as Ast;
     singleAst = singleAst.accept(new LowerCollectionJournalHelpers(compilerOptions.composition === 'framed')) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls(
-      compilerOptions.evmCompat ?? false, false, compilerOptions.composition === 'framed',
-      inlinesSignatureChecks(compilerOptions),
+      compilerOptions.evmCompat ?? false, false, compilerOptions.composition === 'framed', true,
     )) as Ast;
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
-    singleAst = singleAst.accept(new CacheMappingEntryInLoop(
-      false, compilerOptions.composition === 'framed', true,
-    )) as Ast;
+    singleAst = singleAst.accept(new CacheMappingEntryInLoop(compilerOptions.composition === 'framed')) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.composition === 'framed', compilerOptions.composition !== 'framed',
     )) as Ast;
@@ -7599,7 +7383,7 @@ function validateUnicodeDirectionMarkers(code: string): void {
  * an event: the OP_INVOKE epilogue returns before emit settlement, so the event would be silently dropped. It
  * raised `throw new Error("Returning state helper '<n>' with an event must be inlined before code generation")` -
  * an internal invariant, with no class name, no position and no remedy, reaching users on the canonical
- * solidity-by-example `ERC20.sol` in PLAIN direct-mode compilation (not only under the bus). `_mint` there is void
+ * solidity-by-example `ERC20.sol` in PLAIN direct-mode compilation. `_mint` there is void
  * as written; `LowerCollectionJournalHelpers` is what makes it returning.
  *
  * Placed HERE, immediately before code generation, rather than in the lowering pass that creates the shape: an
@@ -7612,7 +7396,7 @@ function validateUnicodeDirectionMarkers(code: string): void {
 function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   const functions = contract.fallbackDef ? [...contract.functions, contract.fallbackDef] : contract.functions;
   const candidates = functions.filter((fn) => fn.body && fn.functionId !== undefined && fn.returnTypes.length > 0
-    && (fn.emitInfos?.length ?? 0) > 0 && !false);
+    && (fn.emitInfos?.length ?? 0) > 0);
   if (candidates.length === 0) return;
   const walk = (node: Node, visit: (n: Node) => void, seen = new Set<Node>()): void => {
     if (seen.has(node)) return;
@@ -8398,7 +8182,7 @@ export function parseCode(
   // Line 63`, which is line 63 of the `IVotes.sol` it re-exports.
   //
   // `withSourceFile(undefined, ..)` for a root parse CLEARS an ambient stamp rather than inheriting one, so a
-  // nested parse of compiler-generated route source cannot pick up an importing file's id; the generated mark
+  // nested parse of compiler-generated source cannot pick up an importing file's id; the generated mark
   // wins over any file label anyway (`importedFileCaveat`).
   const parseStarted = compilerProfileEnabled() ? Date.now() : 0;
   let sllFailed = false;
@@ -8416,8 +8200,7 @@ export function parseCode(
     const parser = new SolidCashParser(tokens);
     // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
     // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
-    // across instances; do the same, so a process that parses many sources - a compile also parses the generated
-    // route route - reuses that work instead of repaying it.
+    // across instances; do the same, so a process that parses many sources reuses that work instead of repaying it.
     parser._interp = new ParserATNSimulator(
       parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
     );

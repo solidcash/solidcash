@@ -138,8 +138,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     checkUnauthenticatedSelfdestruct(node, this.allowUnsafeOperations);
 
     // An upgrade swaps in caller-supplied bytecode and a deploy emits a child from caller-supplied arguments;
-    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover. The
-    // journal lane manages lifecycle authority through its own signature policy, so this check is disabled there.
+    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover. The check
+    // is off without `lifecycleAuthorization` (the framed composition).
     checkLifecycleAuthorization(node, this.allowUnsafeOperations, this.lifecycleAuthorization);
 
     const visibility = node.visibility;
@@ -196,8 +196,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
       // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
       // path is only a warning by default). The selfdestruct statement itself does not authorize the destruction.
-      // Batch routes classify a lifecycle handler as ineligible instead of rejecting it, so there the
-      // selfdestruct statement is terminal and the classifier runs.
+      // Without `lifecycleAuthorization` the selfdestruct statement is terminal.
       ensureFinalStatementIsRequire(
         node.body.statements,
         this.enforceFinalRequire || (isSelfdestruct && !this.allowUnsafeOperations),

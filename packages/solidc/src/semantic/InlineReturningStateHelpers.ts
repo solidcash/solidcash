@@ -249,10 +249,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
-    // Batch compilation intentionally runs this pass both before and after route synthesis. The second
-    // traversal sees locals emitted by the first; restarting at `__rh0_` can collide with those locals inside a
-    // cloned handler. Continue after the largest serial already present in the tree. This also makes the pass
-    // idempotent when another lowering requests a second helper-inlining boundary.
+    // This pass can run more than once over a tree, and a later run sees the locals emitted by an earlier one.
+    // Continue after the largest `__rh` serial already present so the names cannot collide.
     let highestExistingSerial = -1;
     const findExistingSerials = (value: unknown, seen = new Set<object>()): void => {
       if (!value || typeof value !== 'object' || seen.has(value as object)) return;
@@ -511,9 +509,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // the state-touching criteria (its call SITES stay subroutine calls, matching prior behavior).
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
-      if (false || false) continue;
-      if (((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStoragePtr(fn))
-        && !(false && this.ownsRuntimeMappingLoop(fn))) {
+      if ((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStoragePtr(fn)) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -525,9 +521,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // that checks a transaction signature, which must run in the calling entry point's body.
     const calledByName = this.calledNames;
     for (const fn of node.functions) {
-      if (!false && !false && !fn.collectionJournal
+      if (!fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
-        && !(false && this.ownsRuntimeMappingLoop(fn))
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn) || this.statefulHashesThroughFreeFunction(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
@@ -535,41 +530,6 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           || this.writesCalledDynamicStateArray(fn) || this.recoveryLoopHelpers.has(fn.name))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
-      }
-    }
-    // A compiler-owned batch clone can also own a dynamic-state journal. For example EventSubscription's
-    // `subscribe` writes both a mapping entry and `subscriberList.push(..)`: its handler clone is selected
-    // for the entry journal, then LowerCollectionJournalHelpers makes it a single-tail returning value helper
-    // while retaining the array push. Resource-shaped clones have the same form. Keeping one
-    // behind OP_INVOKE splits its dynamic journal from the route frame, so
-    // code generation correctly refuses it. Inline it into the compiler-owned route just like a context-only
-    // graph clone. A real emission handler retains its definition and graph frame exactly as before.
-    for (const fn of node.functions) {
-      const writesDynamicArray = this.nodesOf(fn).some((candidate) =>
-        candidate instanceof StateArrayPushNode || candidate instanceof StateArrayPopNode
-        || candidate instanceof StateArrayAssignNode || candidate instanceof StateArrayDeleteNode);
-      const compilerOwnedRouteClone = false
-        || false
-        || (false && !false
-          && !this.transitivelyContainsExternalCall(fn)
-          && !this.transitivelyContainsLowLevelCall(fn));
-      const returningEntryEffectClone = false
-        && false && !false && this.eligibleShape(fn)
-        // A clone that owns a runtime mapping loop must stay an OP_INVOKE body. Its journal access vector is the
-        // selected row's own vector, whose cardinality is the handler's own stream count; splicing the loop into
-        // the compiler-owned route would charge it the route-wide union instead.
-        && !this.ownsRuntimeMappingLoop(fn)
-        // An IERC20/SafeERC20 edge must keep its graph OP_INVOKE frame. Flattening it into the journal
-        // dispatch loop makes SymbolTableTraversal treat the row iterator as a callee-target index and
-        // rewrite the call target to an unbound compiler-owned loop-target element.
-        && !this.transitivelyContainsExternalCall(fn)
-        && !this.transitivelyContainsLowLevelCall(fn);
-      if (returningEntryEffectClone || (compilerOwnedRouteClone
-        && fn.collectionJournal && writesDynamicArray
-        && (fn.parameters[0]?.name === `__dj_${fn.name}`
-          || fn.parameters[0]?.name.startsWith(`__cj_${fn.name}`))
-        && this.eligibleShape(fn))) {
-        this.inlinedFns.add(fn.name);
       }
     }
     // The fallback is internally callable via the self low-level-call lowering; a state-touching returning
@@ -631,18 +591,6 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.freeFunctionHashes(fn)
           || (this.keepSelfMessageCalls && this.framedLibraryHashes(fn)) || this.recoveryLoopHelpers.has(fn.name))) {
         this.inlinedFns.add(fn.name);
-      }
-    }
-    // Graph clones must stay OP_INVOKE bodies. Inlining one into an aggregate body puts typed
-    // calls inside the row loop, and SymbolTableTraversal then rewrites their targets to an unbound
-    // `__internal__loopTargets[rowArg]`.
-    for (const fn of node.functions) {
-      if (!(false || false
-        || false)) continue;
-      if (false || false
-        || this.transitivelyContainsExternalCall(fn)
-        || this.transitivelyContainsLowLevelCall(fn)) {
-        this.inlinedFns.delete(fn.name);
       }
     }
     if (this.inlinedFns.size === 0) return node;
@@ -725,9 +673,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
    * Canonicalize the early-return shape `normalizeMultiEarlyReturn` cannot reach: a guard whose return is NOT the
    * statement before the tail, as in a token's `if (failTransfers) return false; ... emit Transfer(..);
    * return true;`. Such a helper touches its own entry and emits, so it must inline (an OP_INVOKE subroutine has no
-   * caller block layout and would drop the event), yet `eligibleShape` sees two returns and leaves it behind. That
-   * is what kept a fee-on-transfer test token's route route from being synthesized at all: route generation
-   * refused the retained helper, every rung failed, and the artifact fell back to direct-only.
+   * caller block layout and would drop the event), yet `eligibleShape` sees two returns and leaves it behind.
    *
    * Rewrite every top-level `if (c) return a;` and the tail `return b;` into one assignment to a result temp, with
    * the statements after each guard nested in its `else` arm:
@@ -842,35 +788,6 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     }
   }
 
-  /**
-   * Whether a function body executes a mapping write from inside a loop. Such a write is lowered to the
-   * compiler-owned sorted-upsert journal, whose access vector belongs to the *entry point's own* stream ordinal
-   * space. A clone that owns one cannot be flattened into an aggregate route without merging its vector into the
-   * route's union cardinality.
-   */
-  private ownsRuntimeMappingLoop(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    const findWrite = (n: Node): void => {
-      if (found) return;
-      if ((n instanceof MappingAssignNode || n instanceof MappingDeleteNode)
-        && this.sortedCollectionNames.has(n.name)) {
-        found = true;
-        return;
-      }
-      for (const key of Object.keys(n)) {
-        if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type') continue;
-        const value = (n as unknown as Record<string, unknown>)[key];
-        if (value instanceof Node) findWrite(value);
-        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) findWrite(item);
-      }
-    };
-    this.walk(fn.body, (candidate) => {
-      if (found || !(candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
-      findWrite(candidate);
-    });
-    return found;
-  }
-
   // The structural half of `eligible`: single-tail-return, no storage params (visibility-agnostic).
   private eligibleShape(fn: FunctionDefinitionNode): boolean {
     if (!fn.body || fn.returnTypes.length < 1) return false;
@@ -880,10 +797,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     let returns = 0;
     for (const n of this.nodesOf(fn)) if (n instanceof ReturnNode) returns += 1;
     if (!isSourceReturn(last)) {
-      // A route route clone can be taken from a body snapshot made before NamedReturnTransformation
-      // appended the implicit named-return tail. Solidity returns the named values on fall-through, so such a
-      // body is still a single-return helper; `inlineCall` reads the named locals directly. Without this the
-      // clone stays behind OP_INVOKE and code generation refuses its event (X118, `_mintFee` -> `_mint`).
+      // A body without a tail return returns its named values on fall-through, so it is still a single-return
+      // helper; `inlineCall` reads the named locals directly.
       return returns === 0 && fn.returnNames.length > 0
         && fn.returnNames.length === fn.returnTypes.length;
     }
@@ -1378,10 +1293,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
   // Writes an entry of a sorted collection, which co-spends that entry's slots the way a read does; its batch
   // witnesses are the writing function's own parameters, which a call cannot pass.
-  // A function that calls itself is the recursion lowering's to serve, and a route handler owns its
-  // collection topology, so neither is an inliner's.
+  // A function that calls itself is the recursion lowering's to serve, so it is not an inliner's.
   private writesSortedEntry(fn: FunctionDefinitionNode): boolean {
-    if (false) return false;
     const nodes = this.nodesOf(fn);
     if (nodes.some((n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;
     return nodes.some((n) => (n instanceof ArrayAssignNode || n instanceof MappingAssignNode

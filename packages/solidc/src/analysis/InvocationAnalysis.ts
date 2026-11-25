@@ -276,10 +276,7 @@ export function analyseFunctionFootprint(
           ? collectionResourceName(resourceName, shaped.keys) : undefined;
         // X26: a bare element READ `m[k]` is an ArrayAccessNode carrying `array`/`index`, never `name`/`keys`, so
         // the shaped lookup above finds no resource and the read branch below cannot fire. It is the read half of
-        // the same gap X19 closed for writes, and it is NOT harmless: the bus route's collection-eligibility
-        // branch is gated on this footprint, so a handler whose only collection access is a bare read published a
-        // block layout with no entry slot while its covenant still addressed one - the next participant's block
-        // is placed on top of the slot the route reads. Recover the collection the same way the write half does.
+        // the same gap X19 closed for writes. Recover the collection the same way the write half does.
         const bareRead = kind === 'ArrayAccessNode'
           ? (node as unknown as { array?: Node }).array as unknown as { constructor: { name: string }; name?: string }
           : undefined;
@@ -312,8 +309,7 @@ export function analyseFunctionFootprint(
         // X19: a BARE element write `m[k] = v` / `delete m[k]` is an ArrayAssign/ArrayDelete until symbol
         // resolution decides state-vs-local (only the `this.`-prefixed spelling is a MappingAssign from the
         // parser). This analysis runs BOTH before and after that resolution, so omitting the bare forms made one
-        // spelling of the same write invisible to every pre-semantic caller - notably the route route's
-        // synthesis point, which then produced a route carrying a write it had reserved no entry descriptor for.
+        // spelling of the same write invisible to every pre-semantic caller.
         // A name bound locally in this function is a LOCAL array element write and stays out of the footprint;
         // the same test is what symbol resolution later applies to choose MappingAssign over ArrayAssign.
         } else if (/^(ArrayAssign|ArrayDelete)/.test(kind) && collectionResource

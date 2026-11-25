@@ -42,9 +42,8 @@ cross-check, not part of a production or timing run.
 `SOLIDC_DEBUG_COMPUTED_VALUE_DISCOVERY=1` reports the computed values observed at executed chunk-count guards
 on the complete composition graph. The normal settlement path accepts a value only when its exact
 compiler-described collection/key lock and chunk count also appear in that VM frame. The switch only logs. Use
-it with one title; `SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT=<input index>` can narrow a diagnostic probe, but an isolated
-run is never a passing-test gate. Logging overhead makes the run unsuitable for cold timing. This switch does not
-change emitted bytecode.
+it with one title; logging overhead makes the run unsuitable for cold timing. This switch does not change emitted
+bytecode.
 
 `SOLIDC_DEBUG_VALUE_CHUNKS=1` includes `value-chunk-base-plan` records for external computed writes: the
 selected band, fallback coordinate, requested width, and a bounded occupancy window around that coordinate.
@@ -73,10 +72,6 @@ or production bytecode. Verify any proposed identity fix again with the switch u
 it also reports `atomic-semantic-claims` with bounded per-domain counts/digests, pass number, local-repeat status,
 and changed observation indices (computed chunks, resources, values, tokens, sidecars). These records contain
 no claim value bytes and distinguish local claim cycles from a repeated active-session fingerprint.
-`SOLIDC_DEBUG_RESULT_PROPAGATION=1` reports result-dependent argument resolution and, on a repeated producer lane,
-`atomic-repeated-producer-lane` lists at most 24 matching producer indices and source/batch/occurrence coordinates, without
-argument or result bytes. Use one named title to distinguish repeated source callsites from duplicate graph rows;
-this observational probe does not alter validation or emitted bytecode.
 `SOLIDC_DEBUG_VMAP_PROOF=1` traces sorted-entry proof and predecessor-output rebinding;
 `SOLIDC_DEBUG_VALUE_WITNESS=1` traces chunked-entry witness selection across nested calls. These are opt-in
 reports, not alternate settlement modes. They can log large transaction or witness summaries, so use one named
@@ -91,22 +86,16 @@ not alter emitted bytecode.
 `SOLIDC_DEBUG_OUTPUT_TOKEN_COMPARE=1` reports mismatched `OP_OUTPUTTOKENCOMMITMENT` equalities during final
 preflight without changing the transaction. Use `SOLIDC_DEBUG_TRACE_INPUT_INDEX` to select an input and
 `SOLIDC_DEBUG_OUTPUT_TOKEN_COMPARE_IP` to inspect one instruction's stack before the comparison.
-`SOLIDC_DEBUG_RETURN_IDX=1` prints return-output index parameters only when preflight rejects an input.
 `SOLIDC_DEBUG_DERIVE_TRACE_OPS=1` emits `derive-op` records with an `executing` field. The VM also visits
 instructions inside inactive conditional arms, so an `OP_INVOKE` record with `executing: false` does not mean
 the callee ran. Use `programInputs` to distinguish a final composed probe from earlier setup transactions in
 the same named test.
 `SOLIDC_DEBUG_PROBE_CANDIDATE_TERMINAL=1` reports each deferred-compute candidate's terminal VM frame;
 the default no-progress report otherwise shows only the final candidate, which can hide an earlier failure.
-For `SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE=1`, set `SOLIDC_TRACE_INPUT=<input index>` on large compositions;
-the opt-in VM probe snapshots that input's instruction pre-states and can report compared operands and a bounded
-`SOLIDC_DEBUG_FAILURE_POINT_TRACE_FROM`/`_TO` instruction window without retaining every participant's stacks.
-`SOLIDC_TRACE_INPUT` bounds snapshot capture only: preflight still validates every transaction input.
-Use `SOLIDC_DEBUG_FAILURE_POINT_STACK_FULL=1` only with a selected input when comparing deep frame slots;
-it reports each item's size plus bounded head/tail bytes, enough to distinguish a stale dynamic value from a
-pending update without dumping full commitments. Avoid `SOLIDC_DEBUG_FAILURE_TRACE=1` on large invoked routes:
-its full VM replay can exhaust a worker's memory. `SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT=<index>` is a diagnostic
-isolation switch, not a passing-test gate: it deliberately skips the other inputs.
+`SOLIDC_DEBUG_FAILURE_POINT=1` makes a preflight refusal name the failing instruction (its ip, the opcode that
+failed and the instruction window before it), falls back to the source map for a require the published tables do
+not name, and prints one `preflight-failure-point` record: the program head, the instruction window, the control
+and data stacks, and the output the top stack item indexes. It only reports; the refusal is the same.
 
 `SOLIDC_DEBUG_FRAMED_COUNTS=1` counts the framed composer's own work — the plain call path's learning attempts,
 the derivation hosts it builds, the whole-composition and scoped derivations it runs, the hop's per-frame attempts,

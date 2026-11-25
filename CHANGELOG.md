@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- The message bus and its kernel are gone from the compiler and the SDK. The compiler options `messageBus`,
+  `messageBusKernel`, `messageBusGraphContext`, `messageBusHandlers`, `messageBusHandlersByContract`,
+  `messageBusByContract`, `messageBusRootEnvelope`, `messageBusProxyForwardEnvelope`, `messageBusEntryPoolCapacity`
+  and `messageBusDirectParticipant` no longer exist, an artifact publishes no `messageBus` field and no ABI entry
+  publishes `batchInvocations`. The SDK drops `StatefulContract.batch(...)`, message-bus composition and the
+  `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry points.
+- A contract whose default compile took a message-bus route (an external-call graph) now compiles to the direct build,
+  the bytes 0.52.1 emitted for it under `messageBus: false`: recompile and redeploy it. A function that repeats calls
+  to one state owner outside the callee's multi-call entry is refused (`REPEATED_CALL_UNSUPPORTED`, formerly
+  `MESSAGE_BUS_REQUIRED`).
+- A split contract's facets carried a message-bus route; they no longer do, so split facets and their roots compile to
+  new bytes.
+- Every other contract, direct or framed, compiles to the bytes 0.52.1 emitted.
+- An SDK preflight refusal no longer starts with `messageBus: `: it reads `BCH-2026 preflight failed at input N: ...`,
+  and `finalized transaction refused by its covenant and ...`.
+
 ## 0.52.1
 
 ### Fixed

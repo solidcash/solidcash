@@ -39,7 +39,6 @@ export interface DelegateImplEventReassertHost {
     // NetworkProvider is structural; getBlockTime is optional on mock providers.
     provider: object;
   };
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly composedParticipant: boolean;
   getLowLevelCallMasterInputIndex(index: number): number;
   getExternalCallMasterInputIndex(index: number): number;

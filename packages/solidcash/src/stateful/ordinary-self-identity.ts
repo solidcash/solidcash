@@ -16,15 +16,13 @@ type OrdinarySelfContract = {
 
 /** Only the selected ordinary ABI can request the existing optional self-identity protocol. */
 export function usesOrdinarySelfIdentity(abi: AbiFunction | undefined): boolean {
-  return abi !== undefined && !('messageBusConvention' in abi)
+  return abi !== undefined && !('routeConvention' in abi)
     && abi.inputs.some((input) => input.name === '__internal__graphSelfIdentityInput');
 }
 
 /** A route that proves its own SCID is addressed by its logical CREATE lock on every call path (graph parity). */
 export function routeAuthenticatesPublicSelf(artifact: Artifact | undefined): boolean {
-  return artifact?.messageBus?.route?.inputs.some(
-    (input) => input.name === '__internal__graphSelfIdentityInput',
-  ) === true;
+  return false;
 }
 
 export async function resolveOrdinarySelfIdentity(

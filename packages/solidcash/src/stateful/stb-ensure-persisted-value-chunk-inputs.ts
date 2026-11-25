@@ -29,7 +29,6 @@ import {
 export interface EnsurePersistedValueChunkInputsHost {
   ownerMasterLock?(): Uint8Array | undefined;
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly builderOptions: TransactionBuilderOptions;
   readonly allInputs: readonly UnlockableUtxo[];
   setPendingValueChunkPredecessors(extras: UnlockableUtxo[]): void;
@@ -54,7 +53,7 @@ export async function ensurePersistedValueChunkInputs(
   host: EnsurePersistedValueChunkInputsHost,
 ): Promise<void> {
   const tokenWriterPresent = host.externalCallUtxoGroups.some((group) =>
-    isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention));
+    isCompilerDescribedMintingBandWriter(group, true, undefined));
   const band = host.getChunkableValueWriteBand();
   const categoryId = host.persistedValueChunkCategory() ?? host.chunkableValueWriteCategory();
   if (!shouldRestorePersistedContinuationInputs({

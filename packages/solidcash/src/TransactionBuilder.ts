@@ -1578,7 +1578,7 @@ export class TransactionBuilder {
     //
     // MEASURED BEFORE LANDING, not assumed: 1,170 sends through this site across the whole SDK e2e population,
     // 1,159 of which the provider accepted, and the byte rules refuse NONE of them. See
-    // `test/journal-message-bus/e2e/message-bus-gatesite-probe.ts` for the per-site table and
+    // `test/journal-route/e2e/route-gatesite-probe.ts` for the per-site table and
     // `test/e2e/X131SendFinalizedBytesGate.test.ts`
     // for the throw census that confirms it after the gate was applied.
     //
@@ -1609,9 +1609,9 @@ export class TransactionBuilder {
     // ordering decides nothing. It costs nothing on the admitted path: the bytes are assessed first and an
     // admitted verdict returns before the VM is touched, so all 1,159 accepted sends the X126 probe measured
     // through this site are byte-for-byte unaffected.
-    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('./message-bus/preflight.js');
-    const { finalizedByteGateReceiptOf } = await import('./message-bus/finalized-byte-gate.js');
-    // A send that never ran an exact message-bus preflight has no receipt. The destination provider's consensus
+    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('./finalization.js');
+    const { finalizedByteGateReceiptOf } = await import('./finalization-byte-gate.js');
+    // A send that never ran an exact route preflight has no receipt. The destination provider's consensus
     // limits are then the only consensus profile available, and they are the authority a real provider would judge
     // the bytes against; a provider that publishes none gets the empty profile, BCH's own limits. Its limits reach
     // the consensus rules only: the relay rules stay on, because a provider's profile says nothing about relay.

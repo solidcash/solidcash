@@ -108,7 +108,6 @@ const sidebars: SidebarsConfig = {
       items: [
         'guides/stateful-guide',
         'guides/state-journal',
-        'guides/message-bus',
         'guides/framed-composition',
         'guides/block-oracles',
         'guides/covenants',
@@ -122,13 +121,6 @@ const sidebars: SidebarsConfig = {
         'guides/debugging',
         'guides/optimization',
         'guides/adversarial',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'Reference',
-      items: [
-        'reference/message-bus-artifact',
       ],
     },
     {

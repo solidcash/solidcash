@@ -14,20 +14,20 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { batchPredecessorCommitment, isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
+import { batchPredecessorCommitment, isPendingBatchPredecessor } from './pending-batch-predecessor.js';
 import { callRecordHashesResult } from './call-record.js';
 import { isDisposableAlignmentPad } from './value-chunk-band-helpers.js';
-import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { materializeInternalFunctionArgument } from './internal-function-args.js';
 import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   compilerRouteUsesPhysicalWrapper,
-  selectedMessageBusResourceMetadata,
-} from './message-bus-resource-routing.js';
+  selectedRouteResourceMetadata,
+} from './route-resource-selection.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import { resolveMaterializedDynamicWriteOutputBase } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
 import {
   StatefulTransactionBuilder,
@@ -302,10 +302,6 @@ export function constructCreateBuilderTransactionBuilder(
       composedParticipant: true,
       ...(overrides?.blockBase !== undefined && { composedBlockBase: overrides.blockBase }),
     }),
-    ...((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention && {
-      messageBusConvention:
-        (entryAbiFunction as MessageBusRuntimeAbiFunction).messageBusConvention,
-    }),
   });
   const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
   const selfIdentityArgumentIndex = abiFunction?.inputs.findIndex((input) =>
@@ -343,10 +339,10 @@ export function constructCreateBuilderTransactionBuilder(
         selectedDynamicWrites: new Set(abiFunction.dynamicWrites ?? []),
       }));
     };
-  const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments;
+  const selectedRows = (entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.routeRowArguments;
   const dynamicWriteActive = selectedRows === undefined
     ? dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0
-    : selectedMessageBusResourceMetadata(selectedRows).dynamicWrites.length > 0;
+    : selectedRouteResourceMetadata(selectedRows).dynamicWrites.length > 0;
   const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
     || compilerRouteUsesPhysicalWrapper(
       overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,

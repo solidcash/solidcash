@@ -13,7 +13,7 @@ import { addressToLockScript } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { logicalIdentityBandKey, resolveLogicalIdentity } from './logical-identity.js';
 import { externalCallTargetSourceLockingBytecodeHex } from './mapping-key-lookup.js';
-import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './internal-function-args.js';
 import { selectorParamSlot } from './physical-external-call.js';
 import type { CreateBuilderLoopIdxRange } from './sc-expand-resolve-create-builder-external-calls.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';

@@ -86,7 +86,6 @@ following fields belong to its third `options` argument.
 | `threadCount` | `number` | `1` | Number of master NFTs (threads); 12 for a framed artifact |
 | `initialBalance` | `bigint` | `0n` | Initial satoshi container balance |
 | `tokenContainers` | `{ utxo, unlocker }[]` | none | Fungible token coins the genesis moves whole into their containers |
-| `messageBusVerificationInputCount` | `number` | `1` when required | Message-bus verifier instances provisioned at genesis (experimental) |
 | `validatorCount` | `number` | `4` for a framed artifact | Validator UTXOs a framed genesis mints (experimental) |
 | `salt` | `Uint8Array` | none | CREATE/address salt and optional operation-density reserve |
 | `initArgs` | `FunctionArgument[]` | inferred/none | Arguments for an explicit `constructor(...)` block |
@@ -238,10 +237,8 @@ await counter.batch([
 ]).send();
 ```
 
-`sc.batch()` runs several public functions of one contract against one master input through the compiler's
-message-bus route. It works only when the artifact publishes a message bus whose selected handlers are eligible.
-`messageBus.compose()` from `@solidcash/solidcash/message-bus` composes calls to several contracts in one transaction. Both
-are experimental; see [Atomic Calls with the Message Bus](/docs/guides/message-bus).
+`sc.batch()` runs several public functions of one contract against one master input through the callee's multi-call
+entry. It works only when the artifact publishes `callBatch` and the named entries are `callBatchRow`.
 
 ## Reading State
 

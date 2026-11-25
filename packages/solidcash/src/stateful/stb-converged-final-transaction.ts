@@ -17,8 +17,8 @@ import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   allowsFinalizationVmRepairs,
   refuseFinalizationVmRepairsIfRecipe,
-} from '../message-bus/materialization-mode.js';
-import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
+} from './finalization-repairs.js';
+import { assertFinalizedTransactionCovenants } from '../finalization.js';
 import { stripRelocatedMutableDuplicates } from './mutable-output-reassert.js';
 
 export type ComputedChunkRepairResult = {
@@ -286,7 +286,7 @@ export function assertConvergedFinalTransaction(
       // VM-validator-only finalization: recipe mode — VM validates only. Do not mine commitments from the failing frame
       // or mutate planned outputs via `_repairComputedChunkOutput`. Explicit `devOracle` retains
       // the legacy repair-as-planner loop.
-      if (!allowsFinalizationVmRepairs()) {
+      if (!allowsFinalizationVmRepairs(undefined)) {
         // Validator-only mode must surface the covenant's actual rejection. The repair gate is an internal
         // planning constraint, not a replacement for the program error observed by callers.
         try { refuseFinalizationVmRepairsIfRecipe(); } catch { /* preserve the covenant error below */ }

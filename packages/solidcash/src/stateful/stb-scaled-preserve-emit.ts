@@ -113,7 +113,7 @@ export function scaledEmitOutputIndex(
 
 export function emitDestinationIndices(host: ScaledPreserveEmitHost): number[] {
   // `blockLayout` is the builder's effective physical layout. It can be a
-  // compiler-selected message-bus route rather than the public entry ABI,
+  // compiler-selected route route rather than the public entry ABI,
   // so its root event frame is authoritative even when the executing
   // delegate implementation declares no events of its own.
   const dests = (host.blockLayout?.slots ?? [])
@@ -146,7 +146,7 @@ export function emitDestinationIndices(host: ScaledPreserveEmitHost): number[] {
 
 export function hasMintingBandTokenWriter(host: ScaledPreserveEmitHost): boolean {
   return host.externalCallUtxoGroups.some((group) =>
-    isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention))
+    isCompilerDescribedMintingBandWriter(group, true, undefined))
     || host.mintingOutputSwap !== undefined;
 }
 
@@ -177,7 +177,7 @@ export function reassertScaledPreserveOneToOnes(
   const persistBand = host.getChunkableValueWriteBand();
   const returnWitnesses = returnWitnessOutputIndices(host.externalCallUtxoGroups);
   for (const group of host.externalCallUtxoGroups) {
-    if (!isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)) continue;
+    if (!isCompilerDescribedMintingBandWriter(group, true, undefined)) continue;
     const master = host.findMintingInputIndex(group.categoryId);
     if (master >= 0) {
       returnWitnesses.add(tokenWriterReturnIndex(master, group.blockLayout, persistBand));
@@ -244,7 +244,7 @@ export function scidReservedIndices(
     for (let index = range.start; index < range.endExclusive; index++) reserved.add(index);
   }
   for (const group of host.externalCallUtxoGroups) {
-    if (!isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)) continue;
+    if (!isCompilerDescribedMintingBandWriter(group, true, undefined)) continue;
     const master = host.findMintingInputIndex(group.categoryId);
     if (master >= 0) reserved.add(tokenWriterReturnIndex(master, group.blockLayout, band));
   }

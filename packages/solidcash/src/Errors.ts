@@ -492,7 +492,7 @@ export class CallValueUnpayableError extends Error {
   ) {
     super(reason === 'callee takes no value'
       ? `${call} sends {value:} to an entry whose record digests no value: it is not payable and reads no msg.value, `
-        + 'or it was compiled with the message bus. Its record cannot match the caller\'s, which names the value.'
+        + 'or it was compiled with the route. Its record cannot match the caller\'s, which names the value.'
       : reason === 'callee sends value on'
         ? `${call}, which sends {value:} with ${detail}: a nested value call is not built, since a deposit and its `
           + 'payer\'s debit are laid out only for the calls the root makes.'

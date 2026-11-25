@@ -116,7 +116,7 @@ export function assertCompleteLocalBlock(participant: number, layout: FunctionBl
 export interface BalancedAssemblyInputView {
   unlocker?: {
     abiFunction?: { blockLayout?: FunctionBlockLayout };
-    contract?: { artifact?: { messageBus?: unknown; compiler?: { options?: { messageBusDirectParticipant?: boolean } } } };
+    contract?: { artifact?: { compiler?: { options?: { routeDirectParticipant?: boolean } } } };
   };
 }
 
@@ -160,11 +160,7 @@ export function deriveBalancedAssemblyFromInputs(
   while (cursor < totalSlots) {
     const layout = publishedMasterBlock(inputs[cursor]);
     if (!layout) break;
-    const artifact = inputs[cursor]?.unlocker?.contract?.artifact;
-    const direct = artifact?.messageBus === undefined
-      && artifact?.compiler?.options?.messageBusDirectParticipant === true;
-    blocks.push({ participant: blocks.length, base: cursor, blockLayout: layout,
-      ...(direct && { authority: 'direct' as const }) });
+    blocks.push({ participant: blocks.length, base: cursor, blockLayout: layout });
     cursor += layout.blockSize;
   }
   if (blocks.length === 0) {

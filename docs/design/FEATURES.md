@@ -45,9 +45,9 @@ limits are in `packages/solidc/docs/deferrals.md`.
   `delegateArtifact` for `.delegatecall`
 
 **Cross-contract & introspection**
-- Message bus: inferred composition route for multi-call transactions; default **kernel** convention
-  (`OP_DEFINE` handlers, one row-loop wrapper). Unsupported handlers fail closed with `KERNEL_*`. Experimental
-  in 0.13.1; see `packages/solidc/docs/message-bus-kernel.md`.
+- Direct composition: repeated calls to one fixed target run as frames of the callee's multi-call entry
+  (`artifact.callBatch`), one spend settling one call record per frame. Compile the callee with `callBatch: true`
+  or in one `compileFileMulti`/`compileStringMulti` with its caller.
 - External reads `IFoo(category).stateVar`; external calls + low-level `.call/.staticcall/.delegatecall`; `address.transfer/.send`
 - `tx.version/locktime/time/age/origin/inputs/outputs`, `this.activeBytecode/activeInputIndex/age`,
   `msg.sender/value/data/sig`, and oracle-backed `block.*` properties/`blockhash`

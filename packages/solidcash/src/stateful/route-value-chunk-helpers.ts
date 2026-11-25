@@ -71,8 +71,9 @@ import {
   publishIdentityScanValueChunkRange,
 } from './identity-scan-value-chunk-range.js';
 
-type MessageBusRuntimeAbiFunction = AbiFunction & {
-  messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
+type RouteRuntimeAbiFunction = AbiFunction & {
+  routeConvention?: never;
+  routeRowArguments?: readonly any[];
 };
 
 type RouteValueChunkProgress = { changed: boolean; discovered: boolean };
@@ -597,8 +598,8 @@ export function deriveRouteValueChunks(
     if (usesSharedBand && group.categoryId && lastExtractedComputedValue) {
       const selection = resourceSelection;
       if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
-        [group], (physicalExternalCallFunction(group) as MessageBusRuntimeAbiFunction | undefined)
-          ?.messageBusConvention,
+        [group], (physicalExternalCallFunction(group) as RouteRuntimeAbiFunction | undefined)
+          ?.routeConvention,
       )) {
       // Compatibility only for descriptor-free artifacts.
         legacyRememberValueChunkValue(group.categoryId, lastExtractedComputedValue);

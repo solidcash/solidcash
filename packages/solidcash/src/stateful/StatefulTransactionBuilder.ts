@@ -27,7 +27,7 @@ import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
-import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
+import { assertFinalizedTransactionCovenants } from '../finalization.js';
 import { parseEventCommitment } from './StateReader.js';
 import { eventContinuationLockingBytecode, joinEventContinuations } from './event-chunks.js';
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
@@ -779,7 +779,6 @@ import {
 export {
   ownsCapturedValueChunkOutputBase,
   refreshCapturedValueChunkOutputBase,
-  assignValueChunkOutputBaseFromResolve,
   selectProtectedLoopEntryCollections,
   selectExternalEventProbeInput,
   selectCompilerWriterEvent,
@@ -836,7 +835,7 @@ export class StatefulTransactionBuilder {
   private sidecarUtxo?: UnlockableUtxo;
   private stateLayout: StateLayout;
   private masterUtxo: UnlockableUtxo;
-  private messageBusProbeMasterVout?: number;
+  private probeMasterVout?: number;
   private dataNftUtxos: UnlockableUtxo[];
   private categoryId: string;
   private requiredNftIndices: readonly number[];
@@ -967,7 +966,6 @@ export class StatefulTransactionBuilder {
   }
 
   private blockLayout?: FunctionBlockLayout;
-  private messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
   private logicalIdentityUtxo?: UnlockableUtxo;
   private externalIdentityAnchorUtxos: UnlockableUtxo[] = [];
@@ -1221,7 +1219,6 @@ export class StatefulTransactionBuilder {
     this.keccakLoopRecreates = options.keccakLoopRecreates ?? [];
     this._maximumFeeSatoshis = options.maximumFeeSatoshis;
     this.blockLayout = options.blockLayout;
-    this.messageBusConvention = options.messageBusConvention;
     this.composedParticipant = options.composedParticipant === true;
     this.composedBlockBase = options.composedBlockBase;
     this.funderUtxos = options.funderUtxos ?? [];
@@ -1231,15 +1228,15 @@ export class StatefulTransactionBuilder {
   }
 
   /** @internal Mark an impossible-output-index master used only by atomic VM derivation probes. */
-  _setMessageBusProbeMasterVout(realVout: number): void {
-    this.messageBusProbeMasterVout = realVout;
+  _setProbeMasterVout(realVout: number): void {
+    this.probeMasterVout = realVout;
   }
 
   /** @internal Restore the real spend before a atomic participant block leaves SDK construction. */
-  _restoreMessageBusProbeMasterOutpoint(): void {
-    if (this.messageBusProbeMasterVout === undefined) return;
-    this.masterUtxo.vout = this.messageBusProbeMasterVout;
-    this.messageBusProbeMasterVout = undefined;
+  _restoreProbeMasterOutpoint(): void {
+    if (this.probeMasterVout === undefined) return;
+    this.masterUtxo.vout = this.probeMasterVout;
+    this.probeMasterVout = undefined;
   }
 
   /** @internal Rebind later callee arguments after an authenticated return channel converges. */
@@ -1517,7 +1514,6 @@ export class StatefulTransactionBuilder {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
-      messageBusConvention: this.messageBusConvention,
       composedParticipant: this.composedParticipant,
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       getExternalCallMasterInputIndex: (index) => this.getExternalCallMasterInputIndex(index),
@@ -1562,7 +1558,6 @@ export class StatefulTransactionBuilder {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       externalOutStateUtxoGroups: this.externalOutStateUtxoGroups,
-      messageBusConvention: this.messageBusConvention,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       mintingOutputSwap: this.mintingOutputSwap,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
@@ -1599,7 +1594,6 @@ export class StatefulTransactionBuilder {
       categoryId: this.categoryId,
       detachedEventReceipts: this.detachedEventReceipts,
       builderOptions: this.builderOptions,
-      messageBusConvention: this.messageBusConvention,
       composedParticipant: this.composedParticipant,
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       getExternalCallMasterInputIndex: (index) => this.getExternalCallMasterInputIndex(index),
@@ -1655,7 +1649,6 @@ export class StatefulTransactionBuilder {
     return {
       allInputs: this.allInputs,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
-      messageBusConvention: this.messageBusConvention,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       derivedChunkOutputs: this.derivedChunkOutputs,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
@@ -1724,7 +1717,6 @@ export class StatefulTransactionBuilder {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       mintingOutputSwap: this.mintingOutputSwap,
-      messageBusConvention: this.messageBusConvention,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       authenticatedViewReturnByGroup: this.authenticatedViewReturnByGroup,
@@ -1836,7 +1828,6 @@ export class StatefulTransactionBuilder {
       allInputs: this.allInputs,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
-      messageBusConvention: this.messageBusConvention,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       derivedChunkOutputs: this.derivedChunkOutputs,
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
@@ -2022,7 +2013,6 @@ export class StatefulTransactionBuilder {
       categoryId: this.categoryId,
       composedParticipant: this.composedParticipant,
       builderOptions: this.builderOptions,
-      messageBusConvention: this.messageBusConvention,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       delegateReturnEventAfterEvents: this.delegateReturnEventAfterEvents,
@@ -2638,7 +2628,6 @@ export class StatefulTransactionBuilder {
       allInputs: this.allInputs,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
-      messageBusConvention: this.messageBusConvention,
       builderOptions: this.builderOptions,
       derivedChunkOutputs: this.derivedChunkOutputs,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
@@ -2916,7 +2905,6 @@ export class StatefulTransactionBuilder {
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
-      messageBusConvention: this.messageBusConvention,
       mintingOutputSwap: this.mintingOutputSwap,
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
@@ -3140,7 +3128,7 @@ export class StatefulTransactionBuilder {
       // boundary when the caller derived it from an actual output layout.
       suffixStart,
       tokenWriterPresent: this.externalCallUtxoGroups.some((group) =>
-        isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention)),
+        isCompilerDescribedMintingBandWriter(group, true, undefined)),
     };
   }
 
@@ -3152,7 +3140,6 @@ export class StatefulTransactionBuilder {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
-      messageBusConvention: this.messageBusConvention,
       derivedChunkOutputs: this.derivedChunkOutputs,
       allInputs: this.allInputs,
       composedParticipant: this.composedParticipant,
@@ -3259,7 +3246,6 @@ export class StatefulTransactionBuilder {
   private _ensurePersistedValueChunkInputsHost(): EnsurePersistedValueChunkInputsHost {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
-      messageBusConvention: this.messageBusConvention,
       builderOptions: this.builderOptions,
       allInputs: this.allInputs,
       setPendingValueChunkPredecessors: (extras) => {
@@ -3446,7 +3432,7 @@ export class StatefulTransactionBuilder {
         eventOrdinal += 1;
         if (slot.conditional !== true) continue;
         const learnedCommit = String(learned?.commitment ?? '');
-        // `SCID` marks an empty message-bus identity carrier; it is not evidence that a conditional event was
+        // `SCID` marks an empty route identity carrier; it is not evidence that a conditional event was
         // emitted. Generic route-event discovery can echo that provisional marker into `eventOutputs`, so treat
         // it as unresolved and restore the compiler-owned coordinate to a neutral output.
         const learnedIsDummy = learnedCommit === '' || /^(00)+$/.test(learnedCommit)
@@ -3460,7 +3446,7 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Empty-commitment own-category P2SH32 immutables are message-bus auth carriers.
+   * Empty-commitment own-category P2SH32 immutables are route auth carriers.
    * The event pin's empty-commitment skip `DUP`s the zero-amount bool (output 0/1)
    * instead of `j`, so a true empty carrier is still treated as a serialized event.
    * Prefix `SCID` so the disjoint-identity check excludes them. Do not touch OP_TRUE
@@ -3800,7 +3786,7 @@ export class StatefulTransactionBuilder {
     const keccak = this.deferredKeccakCompute?.preimages ?? [];
     const recovery = this.deferredEcrecoverCompute?.argBlobs ?? [];
     if (keccakPreimages.length !== keccak.length || ecrecoverArguments.length !== recovery.length) {
-      throw new Error('messageBus: compute recipe cardinality disagrees with selected side-car calls');
+      throw new Error('route: compute recipe cardinality disagrees with selected side-car calls');
     }
     let changed = false;
     keccakPreimages.forEach((preimage, callIndex) => {
@@ -4038,9 +4024,6 @@ export class StatefulTransactionBuilder {
       },
       get dataNftUtxos() {
         return self.dataNftUtxos;
-      },
-      get messageBusConvention() {
-        return self.messageBusConvention;
       },
       setState: (fieldName, value) => {
         self.setState(fieldName, value);
@@ -5047,7 +5030,6 @@ export class StatefulTransactionBuilder {
       categoryId: this.categoryId,
       derivedChunkOutputs: this.derivedChunkOutputs,
       allInputs: this.allInputs,
-      messageBusConvention: this.messageBusConvention,
       syncRefreshedCarrierMasters: (builder, carriers) => {
         this._syncRefreshedCarrierMasters(builder, carriers);
       },
@@ -5060,7 +5042,6 @@ export class StatefulTransactionBuilder {
       allInputs: this.allInputs,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       derivedChunkOutputs: this.derivedChunkOutputs,
-      messageBusConvention: this.messageBusConvention,
       valueChunkWriteCategorySelection: () => this._valueChunkWriteCategorySelection(),
       getLowLevelCallMasterInputIndex: (groupIndex) => this.getLowLevelCallMasterInputIndex(groupIndex),
       rememberJobEventsChunks: (categoryId, chunks) => {
@@ -5074,7 +5055,6 @@ export class StatefulTransactionBuilder {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
-      messageBusConvention: this.messageBusConvention,
       get builtReturnEventOutputIndices() {
         return self.builtReturnEventOutputIndices;
       },
@@ -7639,12 +7619,12 @@ export class StatefulTransactionBuilder {
     // The old `if (state.error)` was also a truthiness test where `!== undefined` is meant.
     //
     // Scope: this path is opt-in and default-off, and no hostile was constructed against it. The repair is
-    // inferred from field semantics that WERE measured, on the sibling decider in `message-bus/preflight.ts`.
+    // inferred from field semantics that WERE measured, on the sibling decider in `route/preflight.ts`.
     try {
       assertFinalizedTransactionCovenants(builder, transaction);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(reason.replace(/^messageBus: BCH-2026 preflight failed at /, ''));
+      throw new Error(reason.replace(/^route: BCH-2026 preflight failed at /, ''));
     }
   }
 

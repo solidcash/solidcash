@@ -14,7 +14,7 @@ import type { FunctionArgument } from '../Argument.js';
 import {
   CallGuardUndecidedError, ExternalCallTargetWrittenBeforeCallError, ListedCallNotMadeError, RawCallCalleeRequiredError,
 } from '../Errors.js';
-import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
+import { ExternalExpressionUnresolvedConditionError } from './result-evaluation-path.js';
 import { callGuardText } from './call-guard-text.js';
 import { connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex } from './deployment-registry.js';
 import { externalCallIterationIndices } from './external-call-iteration-domain.js';
@@ -98,7 +98,7 @@ export function isRepeatedTypedLoopCallsite(call: ExternalCallAbi): boolean {
 
 /** Refusal for a repeated typed loop callsite that the legacy builder cannot compose. */
 export function repeatedTypedLoopRefusal(call: ExternalCallAbi): Error {
-  return new Error(`messageBus: typed loop callsite ${call.callsiteId ?? '?'} requires atomic composition; `
+  return new Error(`typed loop callsite ${call.callsiteId ?? '?'} requires atomic composition; `
     + 'connect a signer before sending');
 }
 
@@ -165,19 +165,18 @@ function zeroTripSharedArrayLoop(
 }
 
 /**
- * The bus-compile predicate: `selector` names an eligible message-bus route handler of `artifact`. A direct
+ * The bus-compile predicate: `selector` names an eligible route route handler of `artifact`. A direct
  * compile publishes none, so its calls never reach the composer, the bus-row planner or the send-time promotion.
  */
 export function isBusCompiledEntry(
-  artifact: Pick<Artifact, 'messageBus'>, selector: string | undefined,
+  _artifact: Artifact, _selector: string | undefined,
 ): boolean {
-  return selector !== undefined && artifact.messageBus?.handlers.some((handler) => handler.eligible
-    && handler.selector.toLowerCase() === selector.toLowerCase()) === true;
+  return false;
 }
 
-/** A direct compile: `messageBus: false` stated, and not framed. Its repeated calls stay in the direct convention. */
+/** A direct compile: `route: false` stated, and not framed. Its repeated calls stay in the direct convention. */
 export function isDirectConventionArtifact(artifact: Pick<Artifact, 'compiler' | 'composition'>): boolean {
-  return artifact.compiler?.options?.messageBus === false && artifact.composition?.convention !== 'framed';
+  return artifact.composition?.convention !== 'framed';
 }
 
 /**
@@ -284,7 +283,7 @@ type ListedLowLevelCall = {
  * so no frame can say whether the loop turns, and at none the listed callee would run uncalled. A call whose edge the
  * function counts is left to its covenant: the builder lays a low-level call's edge only for a callee that reads its
  * contract caller (stb-materialize-caller-edge-outputs.ts), and the function counts the edges it pins, so the edge of a
- * call it skips fails that count. A delegatecall is a proxy's, a raw coin runs no function, and a message-bus route
+ * call it skips fails that count. A delegatecall is a proxy's, a raw coin runs no function, and a route route
  * binds each row it runs.
  */
 export async function refuseListedLowLevelCallsTheGuardSkips(
@@ -597,7 +596,7 @@ export async function expandResolveCreateBuilderExternalCalls(
   // proofs above did not run for it. A listed call the function makes only under a guard is decided here as a resolved
   // call's is. One whose guard reads false, or that no frame decides, is refused by name unless the function's own
   // covenant refuses a skipped call (it counts the caller edges it pins): its listed callee, co-spent, would run
-  // without being called. A message-bus route binds each row it runs instead. The published guard of a counted frame
+  // without being called. A route route binds each row it runs instead. The published guard of a counted frame
   // of a multi-call spend is left to planDirectCallBatches, which drops a frame its guard skips and refuses one it
   // cannot decide; it plans a fixed frame, or one under an unpublished guard, as made, so those are decided here.
   if (overrideExternalCalls && externalCalls && !isBusCompiledEntry(artifact, abiFunction?.selector)) {

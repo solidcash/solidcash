@@ -50,7 +50,6 @@ export function registerCreateBuilderBuilderState(
     oldDynamicChunkCounts: Map<string, number>;
     overrides: any;
     masterUtxo: { vout: number };
-    inactiveMessageBusEntrySlots: ReadonlySet<number> | readonly number[];
     entryDeleteSlots: ReadonlySet<number> | readonly number[];
     condSoftDeleteSlots: ReadonlySet<number> | readonly number[];
     entryNfts: readonly any[];
@@ -79,14 +78,12 @@ export function registerCreateBuilderBuilderState(
 ): void {
   const {
     builder, oldDynamicChunkCommitments, oldDynamicChunkCounts, overrides, masterUtxo,
-    inactiveMessageBusEntrySlots, entryDeleteSlots, condSoftDeleteSlots, entryNfts,
+    entryDeleteSlots, condSoftDeleteSlots, entryNfts,
     entryAbiFunction, batchTargetPlaceholders, exactBatchTargetSlots, sortedInserts,
     compilerRouteDelegateLayout, activeDynamicWrites, usesComposedDelegateDynamicTail,
     computedValueChunkRuns, onChainState, pendingEntryValueTails,
     transportedProductions, valueChunkMints, maxBhLocktime, functionName, timing,
   } = params;
-  const activeMessageBusEntryOperations = (params.activeMessageBusEntryOperations as Map<number, any> | undefined)
-    ?? new Map<number, any>();
   const dynamicChunkVars = (params.dynamicChunkVars as any[]) ?? [];
   const selectedDynamicRows = (params.selectedDynamicRows as any[] | undefined) ?? [];
   const sortedLoopCommitments = (params.sortedLoopCommitments as Map<string, any> | undefined)
@@ -110,11 +107,11 @@ export function registerCreateBuilderBuilderState(
   for (const [name, commitments] of oldDynamicChunkCommitments) {
     if (commitments.length > 0) builder.setChunkRawCommitments(name, commitments);
   }
-  if (overrides?.omitLocalFeeTail) builder._setMessageBusProbeMasterVout(masterUtxo.vout);
+  if (overrides?.omitLocalFeeTail) builder._setProbeMasterVout(masterUtxo.vout);
   // Apply every compiler-derived non-output entry before any probe materializes the builder. Delegate input
   // discovery below may call build() early; leaving alias/hard-delete slots until the end makes that probe encode
   // their placeholder keys as new entries even though the finalized transaction correctly omits them.
-  for (const slotIndex of new Set([...inactiveMessageBusEntrySlots, ...entryDeleteSlots])) {
+  for (const slotIndex of entryDeleteSlots) {
     builder.deleteEntry(slotIndex);
   }
   for (const slotIndex of condSoftDeleteSlots) {
@@ -148,20 +145,6 @@ export function registerCreateBuilderBuilderState(
     })) {
       builder.pinEntrySlot(slotIndex);
     }
-  }
-
-  // A kernel route publishes the union of every handler's entry effects, while this concrete envelope has a
-  // narrower per-slot operation set. A route-wide fixed-write placeholder can otherwise replace a selected
-  // read-only entry's exact input commitment during probe setup. Preserve the input commitment explicitly,
-  // after those placeholders have been installed, and keep it out of later trace derivation. The entry
-  // covenant verifies this equality directly. Selected writes/deletes remain unpinned for derivation.
-  for (const [slotIndex, operations] of activeMessageBusEntryOperations ?? []) {
-    if (!operations.includes('read') || operations.includes('write') || operations.includes('delete')) continue;
-    const entry = entryNfts.find((candidate: any) => candidate.slotIndex === slotIndex);
-    const commitment = entry?.exists ? entry.utxo?.token?.nft?.commitment : undefined;
-    if (!commitment) continue;
-    builder.setEntryRawCommitment(slotIndex, commitment);
-    builder.pinEntrySlot(slotIndex);
   }
 
   // vmap sorted-set insert: place P' (the predecessor's rewritten commitment at its entry slot) and NEW (the new

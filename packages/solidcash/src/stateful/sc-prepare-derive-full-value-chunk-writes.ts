@@ -142,8 +142,7 @@ export function prepareDeriveFullValueChunkWrites(
         && terminalValueChunkProducerClaim({
           rows: group.compilerRoute?.rowArguments ?? [],
           collectionIdentities: [write.collection, write.collectionSignature],
-          fixedChunkableWriteSelectors:
-          group.externalContract?.inner?.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
+          fixedChunkableWriteSelectors: undefined,
           executionLockingBytecode: group.externalContract?.inner?.lockingBytecode ?? '',
           stateOwnerCategoryId: group.valueChunkStateOwner.categoryId,
           stateOwnerLockingBytecode: group.valueChunkStateOwner.lockingBytecode,
@@ -158,8 +157,7 @@ export function prepareDeriveFullValueChunkWrites(
         const derived = matchingWrites.length === 1 && terminalValueChunkProducerClaim({
           rows: group.compilerRoute?.rowArguments ?? [],
           collectionIdentities: [matchingWrites[0]!.collection, matchingWrites[0]!.collectionSignature],
-          fixedChunkableWriteSelectors:
-            group.externalContract?.inner?.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
+          fixedChunkableWriteSelectors: undefined,
           executionLockingBytecode: group.externalContract?.inner?.lockingBytecode ?? '',
           stateOwnerCategoryId: group.valueChunkStateOwner.categoryId,
           stateOwnerLockingBytecode: group.valueChunkStateOwner.lockingBytecode,

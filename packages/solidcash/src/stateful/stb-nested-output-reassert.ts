@@ -57,7 +57,6 @@ export interface NestedOutputReassertHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly externalOutStateUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
   readonly pendingReturnEventOutputs: readonly NestedReassertPendingReturnEvent[];
@@ -200,7 +199,7 @@ export function stripSurplusEmptyCollectionEntriesForHost(
   // read as leftovers; counting them strips the trailing predecessor, a relinked head that looks empty.
   const fixedIndices = new Set<number>();
   const master = host.findMintingInputIndex(host.categoryId);
-  if (activeGroups.length === 0 && host.messageBusConvention === undefined && master >= 0) {
+  if (activeGroups.length === 0 && undefined === undefined && master >= 0) {
     for (const slot of host.blockLayout?.slots ?? []) {
       if (slot.kind === 'entry') fixedIndices.add(master + slot.offset);
     }
@@ -316,7 +315,7 @@ export function reassertNestedSameIndexMutables(
   const protectedCollections = selectProtectedLoopEntryCollections([
     ...host.externalCallUtxoGroups,
     ...host.lowLevelCallUtxoGroups,
-  ], host.messageBusConvention);
+  ], undefined);
   const protectedNames = new Set(protectedCollections.collections);
   for (let index = 0; index < host.allInputs.length; index++) {
     const plannedInsert = plannedInsertByPredecessor.get(index);

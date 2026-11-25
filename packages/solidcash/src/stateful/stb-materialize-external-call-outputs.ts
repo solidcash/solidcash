@@ -62,7 +62,6 @@ export interface MaterializeExternalCallOutputsHost {
   readonly categoryId: string;
   readonly composedParticipant: boolean;
   readonly builderOptions: TransactionBuilderOptions;
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly delegateEntriesAfterLowLevel: boolean;
   readonly delegateReturnEventAfterEvents: boolean;
@@ -711,8 +710,8 @@ export function materializeExternalCallOutputs(
               },
             });
           } else if (group.compilerRoute
-          && !isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)) {
-          // A message-bus route reserves the union of every handler's event slots. Slots not reached by
+          && !isCompilerDescribedMintingBandWriter(group, true, undefined)) {
+          // A route route reserves the union of every handler's event slots. Slots not reached by
           // this dispatch are ordinary balanced funding slots and the route covenant binds them by
           // preservation. Mirroring the input also works as the active-slot probe: its empty commitment
           // lets the trace expose the expected event blob, after which `eventOutputs` replaces this slot.

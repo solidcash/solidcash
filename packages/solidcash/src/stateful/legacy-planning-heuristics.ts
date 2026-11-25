@@ -1,7 +1,7 @@
 /**
  * Legacy planning heuristics isolated from the kernel builder path.
  *
- * Kernel artifacts (`messageBus.convention === 'kernel-row-loop'` or typed value-chunk /
+ * Kernel artifacts (`route.convention === 'kernel-row-loop'` or typed value-chunk /
  * state-transition descriptors) must never take these branches. Older plans without descriptors
  * may opt in explicitly via `permitsLegacyNamedValueChunkFallback`.
  */

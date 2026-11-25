@@ -178,11 +178,10 @@ The genesis transaction is assembled from the compiler's artifact metadata. Ever
 3. Mutable **vmap HEAD and entry NFTs** for verified mappings.
 4. Mutable **chunk NFTs** for dynamic strings, bytes, and eligible arrays.
 5. Constructor-created **event NFTs**, plain BCH transfers, and token-container outputs.
-6. Mutable **message-bus verifier NFTs** when the artifact has a composition route.
-7. A plain **satoshi-container output** when `initialBalance` is non-zero.
-8. The token premint and bearer supply that `nativeToken` asks for.
-9. Immutable **logical identity anchors** for signer/factory deployments.
-10. Change to the selected change address.
+6. A plain **satoshi-container output** when `initialBalance` is non-zero.
+7. The token premint and bearer supply that `nativeToken` asks for.
+8. Immutable **logical identity anchors** for signer/factory deployments.
+9. Change to the selected change address.
 
 A genesis mints no oracle coins: a contract that reads block data binds an
 [oracle pool](/docs/guides/block-oracles) (the `oraclePool` option, else the provider's). `oraclePool: 'new'` mints
@@ -201,7 +200,6 @@ The factory's trailing overrides object supports:
 | `initArgs` | positional constructor args | Arguments for the explicit `constructor(...)` block |
 | `initialBalance` | `0n` | Initial BCH in the satoshi container |
 | `threadCount` | `1` (framed: `12`) | Number of master thread NFTs created by genesis |
-| `messageBusVerificationInputCount` | `1` when the artifact has a bus route, else `0` | Independently spendable message-bus verifier instances |
 | `fee` | transaction-size derived | Explicit genesis transaction fee |
 | `addressType` | `p2sh32` | Address type; stateful contracts require P2SH32 |
 | `salt` | none | Bytes baked into the script for address separation or operation-density reserve |
@@ -232,17 +230,13 @@ that deployment gets no logical CREATE address, so `target` is the physical addr
 Treat custom NFT amounts as an advanced policy choice: every later transaction must still satisfy relay and covenant
 requirements.
 
-### Threads and verifier capacity
+### Threads
 
 `threadCount` creates multiple master NFTs. It does **not** clone one complete copy of every state variable per
 master. Thread discovery partitions the existing data NFTs across those masters, so design the state layout for
 independent partitions before enabling threads. Contracts can also change the master set through `split(n)` and
 `merge(n)` lifecycle functions. See [Contract Concurrency](/docs/guides/concurrency) and
 [Threading and State Management](/docs/sdk/threading).
-
-`messageBusVerificationInputCount` is a separate concurrency control. Each composed transaction consumes and
-recreates one verifier NFT; provisioning more instances permits more message-bus compositions to be in flight.
-Message-bus composition is experimental in 0.52.0; see [Message Bus](/docs/guides/message-bus).
 
 ## Exact-input deployment
 
@@ -460,7 +454,7 @@ A contract under the [framed convention](/docs/guides/framed-composition) (exper
 its children are deployed from the SDK, each as a genesis of its own with its own authhead.
 [A framed proxy](/docs/guides/framed-composition#proxies) whose initializer calls another contract leads its genesis
 with the proxy's authhead too. BCMR metadata for a category a contract creates inside a call (a `new C()` under
-the default direct convention, which runs as a `deployFrom`, and message-bus child deployments) is unsupported: that
+the default direct convention, which runs as a `deployFrom`) is unsupported: that
 category's identity output is the creating transaction's output 0, the factory's own participant, so do not rely on
 metadata published for it. See [CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
 

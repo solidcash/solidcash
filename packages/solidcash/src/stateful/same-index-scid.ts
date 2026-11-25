@@ -15,7 +15,7 @@ export function sameIndexScidIdentityInputIndices(inputs: readonly UnlockableUtx
     const artifact = owner.unlocker.contract.artifact;
     // Framed masters skip this scan, and callers/delegates admit a relocatable sender anchor.
     if (artifact.composition?.convention === 'framed' || artifact.delegateOnly === true
-      || 'messageBusConvention' in abi || abi.unsafeTier !== undefined
+      || 'routeConvention' in abi || abi.unsafeTier !== undefined
       || abi.modifiers?.includes('selfdestruct') || abi.modifiers?.includes('delegate')
       || (abi.externalCalls?.length ?? 0) > 0 || (abi.lowLevelCalls?.length ?? 0) > 0
       || (abi.libraryDelegateCalls?.length ?? 0) > 0) continue;

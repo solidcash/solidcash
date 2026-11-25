@@ -7,7 +7,7 @@ import { keccakComputeLockingBytecode, type AbiFunction } from '@solidcash/utils
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
+import { defaultInternalFunctionArg } from './internal-function-args.js';
 import type { KeccakLoopTrailingSuccessors } from './sc-resolve-stateful-keccak-loop.js';
 
 /** The callee contract, as its own loop resolver probes it. */

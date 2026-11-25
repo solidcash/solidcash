@@ -361,16 +361,7 @@ export function entryInsertLockRepairs(
   ));
   if (linearRepairs.length > 0) return linearRepairs;
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
-  // Exact compatibility fence for pre-kernel legacy-unroll artifacts which published no resource geometry.
-  if (legacyName === 'transferFrom' && artifact?.messageBus?.convention === 'legacy-unroll'
-    && layout === undefined && abiFunction?.entryAccesses === undefined) {
-    return [{
-      collection: '',
-      predecessorOffset: 2,
-      candidateInsertedOffsets: [4],
-      insertedSlot: '',
-    }];
-  }
+
   // Other descriptor-published functions: empty planned inserts must not invent coordinates.
   if (layout !== undefined || abiFunction?.entryAccesses !== undefined) return [];
   return [];

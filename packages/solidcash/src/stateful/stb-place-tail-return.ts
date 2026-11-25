@@ -37,7 +37,6 @@ export type PlaceTailReturnEvent = {
 export interface PlaceTailReturnHost {
   readonly externalCallUtxoGroups: ExternalCallUtxoGroup[];
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly builtReturnEventOutputIndices: Map<string, number>;
   readonly authenticatedViewReturnByGroup: Map<number, { categoryId: string; commitment: string }>;
@@ -67,7 +66,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
   const swapCategoryId = host.mintingOutputSwap?.categoryId
     ?? host.externalCallUtxoGroups.find((group) =>
       group.sharedGroupIndex === undefined
-      && isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention))?.categoryId;
+      && isCompilerDescribedMintingBandWriter(group, true, undefined))?.categoryId;
   if (!swapCategoryId) {
     host.writeViewTailsAfterWriterOccupancy(builder, returnOutputRefs);
     host.reassertInBlockWriterReturns(builder);

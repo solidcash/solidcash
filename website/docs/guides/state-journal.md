@@ -108,27 +108,16 @@ and verifies their own output/resource slots while the journal settles applicati
 This distinction matters when auditing code: changing `this.balance` twice can coalesce to one state output, but
 emitting the same event twice remains two distinct event outputs.
 
-## Journal semantics in the message bus
+## One journal per participant
 
-In a direct call, one function invocation owns the contract's journal. A message-bus transaction (experimental in
-0.52.0) can execute several logical rows for the same physical participant while spending that participant's master only once. Those
-rows share one participant-local pending view in authenticated call-manifest order:
-
-```text
-Token.transfer(A, B, 10)  -> balances[A] -= 10; balances[B] += 10
-Token.transfer(B, C, 4)   -> reads pending balances[B], then writes B and C
-flush                     -> one final authenticated Token vmap transition
-```
-
-Every participant still has its own journal. The message envelope authenticates cross-participant order, arguments,
-results, and settlement authority; it does not turn all contracts into shared memory. A graph with a future-result
-dependency, duplicate settlement authority, ambiguous key identity, or another effect the compiler cannot
-summarize is refused.
+In a direct call, one function invocation owns the contract's journal. A repeated call to one fixed target runs as
+frames of that callee's multi-call entry, one spend of its master with one call record per frame; each frame still
+settles one final authenticated transition.
 
 ## Atomic failure
 
 If any requirement fails, the transaction is invalid and none of its outputs exist. There is no partially flushed
-state. This is also true when a journal participates in a multi-contract [message-bus transaction](./message-bus.md).
+state.
 
 ## Builder derivation versus covenant enforcement
 

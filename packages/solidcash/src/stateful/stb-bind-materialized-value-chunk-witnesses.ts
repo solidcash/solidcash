@@ -32,7 +32,6 @@ export interface BindMaterializedValueChunkWitnessesHost {
   readonly categoryId: string;
   readonly derivedChunkOutputs: Map<number, DerivedChunkOutputObservation>;
   readonly allInputs: readonly UnlockableUtxo[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   syncRefreshedCarrierMasters(
     builder: TransactionBuilder,
     carriers: ReadonlySet<ExternalCallUtxoGroup>,
@@ -63,14 +62,11 @@ export function bindMaterializedValueChunkWitnesses(
       ? carrier.compilerRoute.rowArguments!.map((row) => row.handler)
       : [abiFunction];
     const activeWriteCollections = (abiFunction as AbiFunction & {
-      messageBusActiveWriteCollections?: readonly string[];
-    }).messageBusActiveWriteCollections;
+    });
     const chunkableCollections = [...new Set(activeFunctions.flatMap((activeFunction) => (
       activeFunction.entryAccesses ?? []
     ).flatMap((access) => {
-      if (!access.operations.includes('write')
-        || (activeWriteCollections !== undefined
-          && !activeWriteCollections.includes(access.collection))) return [];
+      if (!access.operations.includes('write')) return [];
       const collection = carrier.stateLayout.collections?.find((candidate) => (
         candidate.name === access.collection || candidate.signature === access.collection
       ));
@@ -186,7 +182,7 @@ export function bindMaterializedValueChunkWitnesses(
           const trailingBase = alias.blockLayout?.trailingBase ?? carrier.blockLayout?.trailingBase;
           const blockSize = alias.blockLayout?.blockSize ?? carrier.blockLayout?.blockSize;
           if (trailingBase !== undefined && blockSize !== undefined
-            && host.messageBusConvention === 'kernel-row-loop') {
+            && undefined === 'kernel-row-loop') {
             refreshCapturedValueChunkOutputBase(alias, scalarStart, {
               shiftPredOut: false,
               resolveAuthority: {
@@ -369,7 +365,7 @@ export function bindMaterializedValueChunkWitnesses(
         ? writes.length === 1 ? writes[0] : undefined
         : writes.find((candidate) => valueChunkWriteResourceIdentity(candidate) === selectedResourceIdentity);
       if (trailingBase !== undefined && blockSize !== undefined
-        && host.messageBusConvention === 'kernel-row-loop') {
+        && undefined === 'kernel-row-loop') {
         // Descriptors may already carry aggregate coordinates. Resolve the observed builder-local run,
         // not the old descriptor's absolute/provisional base, against the published local trailing band.
         const bandOffset = selectedStart - trailingBase;

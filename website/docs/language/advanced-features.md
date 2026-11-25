@@ -189,9 +189,9 @@ failing callee fails the whole transaction.
 
 :::caution Experimental
 A call that changes the callee's state is composed external state mutation, which is experimental in 0.52.0.
-Calling the same contract twice in one transaction, or a call cycle, needs the
-[message bus](/docs/guides/message-bus), which is also experimental. External state reads, `.outState` reads and
-`.staticcall()` are not affected.
+Calling the same fixed target twice in one transaction runs as frames of its multi-call entry; full re-entry, or a
+call cycle, needs [framed composition](/docs/guides/framed-composition). External state reads, `.outState` reads
+and `.staticcall()` are not affected.
 :::
 
 Typed returns, low-level calls, SDK target binding, and the authenticated return-event NFT protocol are covered in

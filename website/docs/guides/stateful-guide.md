@@ -204,9 +204,8 @@ console.log(result.contract.address);          // the new address
 
 The replacement keeps every existing state variable with the same name, type and position, and may append new
 ones, which start at their defaults. Its constructor body does not run. Values kept in chunk NFTs (long strings,
-bytes and arrays) do not migrate yet, and the SDK refuses an upgrade that would strand one. A message-bus upgrade
-route (experimental) still cannot carry state variables, and the compiler refuses it. When the address must stay
-the same, use a proxy instead. See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
+bytes and arrays) do not migrate yet, and the SDK refuses an upgrade that would strand one. When the address must
+stay the same, use a proxy instead. See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
 
 ## Step 7: Test
 

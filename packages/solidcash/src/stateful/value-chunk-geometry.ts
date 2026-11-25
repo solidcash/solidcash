@@ -251,10 +251,6 @@ export function isCompilerDescribedMintingBandWriter(
   // Kernel artifacts publish the resource authority used by layout planning. Missing entry effects in that
   // convention mean "not described", never permission to recover legacy geometry from an ABI name.
   if (ownerConvention === 'kernel-row-loop') return false;
-  if ([group.logicalArtifact, group.externalContract?.inner?.artifact]
-    .some((candidateArtifact) => candidateArtifact?.messageBus?.convention === 'kernel-row-loop')) {
-    return false;
-  }
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
   return requireWideWriter
     ? isMintingBandSwapFunction(legacyName)

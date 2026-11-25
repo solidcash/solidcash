@@ -9,7 +9,7 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -154,7 +154,7 @@ export function applyCreateBuilderPendingInputFills(params: {
       if (group.sharedGroupIndex !== undefined) continue;
       if (!isCompilerDescribedMintingBandWriter(
         group, true,
-        (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+        undefined,
       )) continue;
       const master = builder.findMintingInputIndex(group.categoryId);
       if (master < 0) continue;

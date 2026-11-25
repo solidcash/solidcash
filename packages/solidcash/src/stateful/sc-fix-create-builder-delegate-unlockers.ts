@@ -24,7 +24,7 @@ import {
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
 } from './mapping-key-lookup.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
   groupLayoutTrailingBase,
@@ -314,14 +314,6 @@ export async function fixCreateBuilderDelegateUnlockers(
         return value;
       };
       const encodedArgs: any[] = bFunc.inputs.map((inp, inpIndex) => {
-        if (inp.name === '__internal__messageBusOwnerBandInput') {
-          // A delegated route's owner band names the physical proxy state block, not its implementation
-          // executor. Resolve it from the finalized input layout just like __internal__proxyMasterIndex.
-          const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
-          return BigInt(proxyExternalGroup === undefined
-            ? groupProxyMasterIndices[groupLocalIdx] ?? masterInputIndex
-            : nestedMasterIndices[proxyExternalGroup] ?? masterInputIndex);
-        }
         if (/^__internal__externalReturnPreimage\d*$/.test(inp.name)) {
           const outputIndexName = inp.name.replace('externalReturnPreimage', 'externalReturnOutputIdx');
           const slot = externalReturnParamSlot(outputIndexName, (bFunc as AbiFunction).externalCalls);
@@ -820,7 +812,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           const tokenNested = lowLevelCall?.target?.kind === 'computed'
             ? computedStateWriterGroupIndex(
               externalCallUtxoGroups, nestedGroups,
-              (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+              undefined,
             ) : undefined;
           const nestedGroup = explicitTarget ?? (tokenNested !== undefined ? tokenNested
             : targetSlot >= 0 ? nestedGroups[targetSlot] : nestedGroups[callIndex]);

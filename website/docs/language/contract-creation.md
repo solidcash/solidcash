@@ -55,7 +55,7 @@ each section says where:
 - a call on the new child in the same function;
 - the folding of the child's constructor.
 
-Message-bus and framed creators keep the older genesis that this page describes.
+Framed creators keep the older genesis that this page describes.
 :::
 
 :::danger
@@ -92,8 +92,8 @@ computed salt, pass `childSalt` to `StatefulContract.deployFrom()`.
 
 A stateful child's address also commits to its category, which comes from the funding outpoint. A deployer `new`,
 the direct convention's `new` of a stateful child, refuses `salt`: the child's redeem script starts with its
-category pin, so its address already depends on its deployer coin. A message-bus or framed creator, for example one
-compiled with `messageBus: true`, takes a salt on a stateful child too.
+category pin, so its address already depends on its deployer coin. A framed creator takes a salt on a stateful
+child too.
 
 ### Funding the child with `value`
 
@@ -146,16 +146,15 @@ Through deployers each child's category is its own prep transaction's txid, so n
 `vout: 0`. The SDK learns from the factory's run how many children are created, in which order and with which
 arguments. It then builds one prep per child, as a chain, before the creation: from the connected signer, or from
 `prepFunding`. A creating call that creates a different number of children than `deployments` says is refused.
-Different child contracts in the branches of one direct function are refused; use a message-bus creator for that.
+Different child contracts in the branches of one direct function are refused; use a framed creator for that.
 
 ### Deploy and configure in one transaction
 
-A newly created child is an output, so it cannot also be spent as an input in the same BCH transaction. A
-message-bus or framed creator supports the common Solidity `new C(); c.initialize(...)` shape by **folding** a
-supported initializer into the child's genesis commitment. Under automatic selection a creator that calls its new
-child compiles on the message bus. A direct creator refuses any call on a child its deployer `new` creates in the
-same function, with `DeployedChildCallError`: pass the values as constructor arguments, which the constructor
-runs on chain, or call the child in a later transaction. The fold:
+A newly created child is an output, so it cannot also be spent as an input in the same BCH transaction. A framed
+creator supports the common Solidity `new C(); c.initialize(...)` shape by **folding** a supported initializer into
+the child's genesis commitment. A direct creator refuses any call on a child its deployer `new` creates in the same
+function, with `DeployedChildCallError`: pass the values as constructor arguments, which the constructor runs on
+chain, or call the child in a later transaction. The fold:
 
 ```solidity
 contract Child() {
@@ -214,8 +213,8 @@ make payments, take `value`, read block fields and make calls:
 
 See [Proof of birth](#proof-of-birth-deploying-through-deployc).
 
-A message-bus or framed factory does not run its child's constructor. It folds the constructor, state-variable
-initializers included, into its own covenant, which then verifies the child's first state. Constructor arguments,
+A framed factory does not run its child's constructor. It folds the constructor, state-variable initializers
+included, into its own covenant, which then verifies the child's first state. Constructor arguments,
 straight-line locals and writes fold, and so does a `require` over them, which the creating call enforces.
 
 A statement the fold cannot express is refused with `ChildGenesisFoldError`, naming the child and the statement, so a

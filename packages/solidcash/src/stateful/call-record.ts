@@ -14,7 +14,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { MixedCallRecordReaderError, MixedCompileModeCallError } from '../Errors.js';
-import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { materializeInternalFunctionArgument } from './internal-function-args.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 
 export const CALL_RECORD_DIGEST_BYTES = 31;

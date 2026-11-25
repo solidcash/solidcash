@@ -230,7 +230,7 @@ type DirectFunction = {
   entryAccesses?: readonly RouteEntryAccess[];
 };
 
-export type MessageBusRouteEntryActivity = {
+export type RouteEntryActivity = {
   inactiveSlotIndices: number[];
   activeOperations: ReadonlyMap<number, readonly string[]>;
   activeWriteCollections: string[];
@@ -248,11 +248,11 @@ const routeKeyName = (name: string): string => {
  * rows replace only the `_rN` coordinate; this keeps transaction planning independent of collection names and
  * of the order in which handlers happened to be published.
  */
-export function selectMessageBusRouteEntryActivity(
+export function selectRouteEntryActivity(
   routeEntryAccesses: readonly RouteEntryAccess[],
   reachedHandlers: readonly RouteHandler[],
   directFunctions: readonly DirectFunction[],
-): MessageBusRouteEntryActivity {
+): RouteEntryActivity {
   const activeOperations = new Map<number, readonly string[]>();
   reachedHandlers.forEach((handler, rowIndex) => {
     const selected = directFunctions.find((candidate) => (
@@ -262,7 +262,7 @@ export function selectMessageBusRouteEntryActivity(
     const physicalEntrySlots = handler.physicalEntrySlots ?? [];
     if (fixedEntryAccesses.length !== physicalEntrySlots.length) {
       throw new Error(
-        `message-bus handler '${handler.name}' is missing a complete physical entry projection `
+        `Route handler '${handler.name}' is missing a complete physical entry projection `
         + `(${physicalEntrySlots.length}/${fixedEntryAccesses.length})`,
       );
     }

@@ -47,9 +47,9 @@ solidc Large.scash --split size --size
 
 `--split size` is the size packer described on this page; it refuses the framed convention. `--split func` compiles
 one framed master per ABI entry (a `FunctionSplitBundle`) and requires `composition: 'framed'`, which the CLI sets
-for it; the framed convention is experimental (see [Framed Composition](/docs/guides/framed-composition)). An
-over-cap message-bus kernel route is outside function split. `--split size` and `--split func` cannot be combined
-with raw ASM or hex output. A bare `--split` is refused; the modes are `off`, `size`, and `func`.
+for it; the framed convention is experimental (see [Framed Composition](/docs/guides/framed-composition)).
+`--split size` and `--split func` cannot be combined with raw ASM or hex output. A bare `--split` is refused; the
+modes are `off`, `size`, and `func`.
 
 SolidHat also checks compiled artifacts against the active provider's input limit. When an ordinary stateful
 artifact exceeds that ceiling, its project compilation attempts to publish a `.split.json` bundle alongside the
@@ -92,8 +92,9 @@ closure. V1 does not execute facet A and then facet B against shared intermediat
 share a mutable call frame, and nested delegate calls are not enabled. If an atomic operation needs several steps,
 write one entry point whose complete closure fits one facet.
 
-This is separate from the [message bus](/docs/guides/message-bus). The bus composes multiple state-owning physical
-participants; a split bundle partitions one logical contract's code while retaining one root state owner.
+This is separate from [framed composition](/docs/guides/framed-composition): a split bundle partitions one logical
+contract's code while retaining one root state owner, whereas a framed contract runs its entries as self-recreating
+masters.
 
 ## Deploy and call
 

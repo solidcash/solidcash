@@ -69,7 +69,7 @@ inter-facet memory: it cannot make a second facet observe intermediate state.
 
 ## Inter-facet state interaction
 
-V1 has no runtime facet-to-facet edge and no message bus. A logical call selects
+V1 has no runtime facet-to-facet edge. A logical call selects
 exactly one facet, and that facet applies the whole state transition to `P`.
 Internal/private helpers and public-to-public internal calls are placed in the
 same facet closure. Independent functions that modify the same state are grouped
@@ -158,8 +158,7 @@ program, which is why the window reaches over the limit.
 - It repeats up to 3 times. It is kept only when a static bound keeps the control stack within the VM's 100.
 - A spend carries its program, so every byte removed takes 800 units off that input's operation-cost budget. That is
   why the pass runs only where size decides whether the contract can be spent.
-- Message-bus, framed, multi-call and sole-inline-entry programs are untouched, and so is a program far over the
-  limit.
+- Framed, multi-call and sole-inline-entry programs are untouched, and so is a program far over the limit.
 
 Measured: NativeUsdt's master 9,642 -> 9,108 B, its facet 9,298 -> 7,059 B, and the OZ native token
 9,976 -> 9,508 B. Both contracts' spends fit the 10,000-byte input again.
@@ -168,8 +167,7 @@ A contract that still does not fit cannot be deployed through the SDK. Every dep
 anything is broadcast, a lock whose redeem script plus its push prefix exceeds the provider's per-input limit, or
 whose script exceeds its stack-item limit, with `UnspendableContractError`. The paths are `StatefulContract.deploy`,
 `deployFrom`, `ContractFactory`, the `Deploy<C>` preps and creation, the framed deploys and `upgrade`. Coins sent to
-such a lock could never move. Under automatic message-bus selection, a bus build over the limit gives way to the direct
-build when that one fits.
+such a lock could never move.
 
 ## Current deliberate limits
 

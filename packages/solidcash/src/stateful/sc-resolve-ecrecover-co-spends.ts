@@ -18,10 +18,10 @@ import {
   computeSideCarStandIn,
   hasOutpoint,
 } from './stateful-abi-resolve.js';
-import type { GraphEcrecoverCall } from './sc-batch-raw.js';
+import type { GraphEcrecoverCall } from './route-runtime.js';
 
 // A neutral coin, P2SH32(OP_TRUE) with no token, for a slot no covenant reads, where the host has no coin of its own:
-// a probe that is never sent, or a message-bus graph whose composer funds such slots with this lock. Only a mock
+// a probe that is never sent, or a route graph whose composer funds such slots with this lock. Only a mock
 // provider can register it; a real network holds no such coin.
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const inertFunderUnlocker: Unlocker = {
@@ -61,7 +61,7 @@ export interface ResolveEcrecoverCoSpendsHost {
    * middle input of a two-covenant recovery, and each of the three slots of a recovery whose arguments recover no key.
    * The call's wallet fills it; a mock mints a neutral coin where the call has no signer. Undefined when the call has
    * none. Without this member, a host whose transaction is never sent (a probe) or whose composer funds the slot (a
-   * message-bus graph) takes the neutral P2SH32(OP_TRUE) coin.
+   * route graph) takes the neutral P2SH32(OP_TRUE) coin.
    */
   readonly takeMiddleCoin?: () => Promise<RecoverySlotCoin | undefined>;
 }

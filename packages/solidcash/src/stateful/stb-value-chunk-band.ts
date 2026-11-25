@@ -125,7 +125,7 @@ export function materializeValueChunkBand(
   builder: TransactionBuilder,
 ): void {
   const band = host.getChunkableValueWriteBand();
-  if (host.messageBusConvention === 'kernel-row-loop'
+  if (undefined === 'kernel-row-loop'
     && [...host.derivedChunkOutputs.values()].some((chunk) => chunk.resourceIdentity !== undefined)) {
     host.applyDerivedValueChunks(builder);
     return;
@@ -146,7 +146,7 @@ export function materializeValueChunkBand(
     host.externalCallUtxoGroups,
     (groupCategoryId) => host.findMintingInputIndex(groupCategoryId),
     band,
-    host.messageBusConvention,
+    undefined,
   );
   const tokenWriterPresent = repairOwner.status !== 'absent'
     || host.mintingOutputSwap !== undefined;

@@ -168,7 +168,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       const owner = seenEntries.get(outpoint);
       if (owner !== undefined) {
         throw new Error(
-          `External message-bus batch resource shape aliases entry slots ${owner} and ${slot.slotIndex}; `
+          `External route batch resource shape aliases entry slots ${owner} and ${slot.slotIndex}; `
           + 'this physical alias is not supported by the advertised route',
         );
       }
@@ -223,7 +223,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     if ((priorAbi?.outputs?.length ?? 0) > 0) {
       throw new Error(
         `Direct external calls to ${sharedPhysical.functionName} and ${callInfo.functionName} share one state owner `
-        + 'but both return values. Use messageBus.compose() to authenticate both logical invocations.',
+        + 'but both return values. Use route.compose() to authenticate both logical invocations.',
       );
     }
   }

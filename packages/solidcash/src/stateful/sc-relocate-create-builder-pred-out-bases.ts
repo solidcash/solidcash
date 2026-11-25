@@ -7,7 +7,7 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { legacyLiveValueChunkBandWidth } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import { mintingSwapShift } from './value-chunk-band-helpers.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -71,7 +71,7 @@ export function relocateCreateBuilderPredOutBases(params: {
     // pre-swap master (29) would still start at 33 and collide with that return.
     const publishLlcIndex = chunkableWriterGroupIndex(
       lowLevelCallUtxoGroups,
-      (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+      undefined,
     );
     if (publishLlcIndex >= 0) {
       const publishLlc = lowLevelCallUtxoGroups[publishLlcIndex];
@@ -85,7 +85,7 @@ export function relocateCreateBuilderPredOutBases(params: {
         if (group.sharedGroupIndex !== undefined) continue;
         if (!isCompilerDescribedMintingBandWriter(
           group, true,
-          (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+          undefined,
         )) continue;
         const tokenName = group.functionName ?? group.compilerRoute?.abiFunction.name;
         const start = nestedMasterIndices[groupIdx];

@@ -10,7 +10,7 @@ import type {
   ExternalResultConsumerAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { AuthenticatedProducerResults } from '../message-bus/authenticated-producer-results.js';
+import { AuthenticatedProducerResults } from './authenticated-producer-results.js';
 
 export function externalReturnsForCallsites(
   argSources: readonly ArgSource[] | undefined,

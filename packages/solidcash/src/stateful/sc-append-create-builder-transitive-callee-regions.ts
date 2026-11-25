@@ -95,7 +95,7 @@ export async function appendCreateBuilderTransitiveCalleeRegions(
     const contract = group.externalContract;
     const artifact = contract?.inner?.artifact as Artifact | undefined;
     const parentArtifact = parent?.externalContract?.inner?.artifact as Artifact | undefined;
-    // The ordinary convention only: a message-bus route carries its own callee layout.
+    // The ordinary convention only: a route route carries its own callee layout.
     if (meta === undefined || parent === undefined || artifact === undefined || parentArtifact === undefined
       || !isDirectConventionArtifact(artifact) || !isDirectConventionArtifact(parentArtifact)
       || group.compilerRoute !== undefined || parent.compilerRoute !== undefined) continue;

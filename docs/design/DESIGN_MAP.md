@@ -58,7 +58,7 @@ Three ideas shape the whole design:
    compiled contract in a local simulator, reads what the contract computed, and adjusts until the transaction is
    valid. It does not maintain a second implementation of the contract's logic.
 3. **Bitcoin Cash has no call instruction.** A "cross-contract call" is several inputs in one transaction, each
-   checking the others. SolidCash offers three conventions for arranging that, with different trade-offs.
+   checking the others. SolidCash offers two conventions for arranging that, with different trade-offs.
 
 ---
 
@@ -78,49 +78,46 @@ These are the decisions that most shape the project.
    mapping that treated "not revealed" as "empty" would let someone hide a balance or a used nonce. SolidCash
    stores mappings in a structure that proves a key is genuinely absent, not merely omitted.
 
-4. **Three composition styles with explicit trade-offs.** The simple direct style uses the fewest UTXOs. The
-   message bus handles repeated calls and cycles through a shared manifest. The framed style handles repeated
-   entry into one contract through self-recreating programs and validators. The compiler publishes which style it
-   used and fails rather than silently switching.
+4. **Two composition styles with explicit trade-offs.** The simple direct style uses the fewest UTXOs and runs
+   repeated calls to one fixed target as frames of that callee's multi-call entry. The framed style handles
+   repeated entry into one contract through self-recreating programs and validators. The compiler publishes which
+   style it used and fails rather than silently switching.
 
-5. **A shared message bus for complex transactions.** Many logical calls can be checked as one atomic
-   transaction. Every participant verifies the same description, so no coordinator or trusted server is needed.
-
-6. **Framed composition separates a contract's address from its code.** The address identifies the contract's
+5. **Framed composition separates a contract's address from its code.** The address identifies the contract's
    token category; the deployed programs carry the code. One generic validator checks the whole transaction, and
    derivation resumes from saved points instead of restarting.
 
-7. **State is managed as a journal.** During a function, reads see earlier writes, helpers share the same pending
+6. **State is managed as a journal.** During a function, reads see earlier writes, helpers share the same pending
    values, and the final result is written once. This is what makes multi-step updates and mapping changes
    practical.
 
-8. **Large values and expensive operations have dedicated mechanisms.** Values larger than one token commitment
+7. **Large values and expensive operations have dedicated mechanisms.** Values larger than one token commitment
    are split into chunks. Keccak hashing, public-key recovery, and shared libraries run in helper contracts that
    keep their own results, while the calling contract verifies the result.
 
-9. **Artifacts and builds are deterministic.** Values have one canonical encoding, artifacts have stable
+8. **Artifacts and builds are deterministic.** Values have one canonical encoding, artifacts have stable
    fingerprints, and compilation caches are keyed by source and compiler content. Reproducibility is a design
    requirement, not an accident.
 
-10. **Unsupported shapes fail with names.** When the compiler cannot prove a shape is safe, it reports a specific
-    refusal instead of compiling a weaker contract. It tries several increasingly conservative strategies before
-    giving up.
+9. **Unsupported shapes fail with names.** When the compiler cannot prove a shape is safe, it reports a specific
+   refusal instead of compiling a weaker contract. It tries several increasingly conservative strategies before
+   giving up.
 
-11. **Size and cost are treated as design constraints.** Bitcoin Cash limits script size and operation cost.
+10. **Size and cost are treated as design constraints.** Bitcoin Cash limits script size and operation cost.
     SolidCash plans around those limits with code splitting, deduplication, dense packing, and deliberate budget
     reserves.
 
-12. **The package layout respects load time and browser safety.** The browser never loads the Node-only compiler.
-    Stateful, message-bus, framed, oracle, and wallet-connect code live on separate entry points so applications
-    load only what they use.
+11. **The package layout respects load time and browser safety.** The browser never loads the Node-only compiler.
+    Stateful, framed, oracle, and wallet-connect code live on separate entry points so applications load only
+    what they use.
 
-13. **Solidity compatibility is a translation layer.** `evmCompat` lets real Solidity source compile, and matches
+12. **Solidity compatibility is a translation layer.** `evmCompat` lets real Solidity source compile, and matches
     Ethereum selectors, ABI words, and common storage idioms, while execution stays on Bitcoin Cash.
 
-14. **Security lives in the scripts.** The SDK proposes transactions; the contracts decide whether they are valid.
+13. **Security lives in the scripts.** The SDK proposes transactions; the contracts decide whether they are valid.
     The framed validator is checked against a second, independent implementation.
 
-15. **Tooling meets existing projects where they are.** SolidHat offers a Hardhat-shaped project environment,
+14. **Tooling meets existing projects where they are.** SolidHat offers a Hardhat-shaped project environment,
     TypeScript bindings, a project compiler with caching, and a migration path for existing Solidity projects.
 
 ---
@@ -151,32 +148,28 @@ The most important outputs are:
 - **The ABI.** How applications call the contract.
 - **The state layout.** Where each stored value lives and how it is encoded.
 - **The call and effect metadata.** What a function reads, writes, calls, emits, and transfers.
-- **Composition metadata.** Whether the contract uses the direct, message-bus, or framed convention, and what the
-  runtime must provide.
+- **Composition metadata.** Whether the contract uses the direct or framed convention, and what the runtime must
+  provide.
 
 ---
 
-## 4. The three ways to combine contracts
+## 4. The ways to combine contracts
 
 Bitcoin Cash evaluates a transaction as a flat set of inputs. Each input runs the script that locks it. A
 cross-contract call is therefore not a function call in the usual sense: it is two or more inputs in one
 transaction, each checking facts about the others.
 
-SolidCash offers three conventions.
+SolidCash offers two conventions.
 
 | Convention | Best suited to | Main trade-off |
 | --- | --- | --- |
-| **Direct** | Simple applications and independent contracts | The same contract cannot be entered twice in one transaction |
-| **Message bus** | Repeated calls, cycles, and multi-contract workflows | More compiler and runtime machinery; larger scripts |
+| **Direct** | Simple applications and independent contracts | The same contract cannot be entered twice in one transaction, except through its multi-call entry |
 | **Framed** | Calls that re-enter a contract already active in the transaction, and complex composition | Larger deployment footprint and a more involved runtime |
 
 **Direct** is the default. One contract is one script. A call is a co-spent input, and the caller checks the
-callee's address, selector, and arguments. This is the simplest model and the cheapest for ordinary use.
-
-**Message bus** gives several contracts one shared description of the transaction: who is calling whom, with what
-arguments, and what state changes result. Each participant checks the same description. This allows a contract to
-appear several times logically while its state is settled once. The cost is a larger route script and a more
-capable compiler.
+callee's address, selector, and arguments. This is the simplest model and the cheapest for ordinary use. Repeated
+calls to one fixed target run as frames of the callee's multi-call entry: one spend of its master settles one call
+record per frame.
 
 **Framed** compiles each contract into a program that recreates itself, plus validators that check a transcript
 of the whole composition. It can represent repeated entry into one contract, including a contract that is called
@@ -412,7 +405,7 @@ The mode does not create EVM behavior. These remain Bitcoin Cash rules in both m
 
 ## 8. The logical blocks
 
-The repository can be divided into twenty logical blocks. Each block has a clear responsibility and a small number
+The repository can be divided into nineteen logical blocks. Each block has a clear responsibility and a small number
 of interfaces to its neighbors.
 
 | ID | Block | What it owns |
@@ -423,7 +416,7 @@ of interfaces to its neighbors.
 | B04 | Compiler pipeline | Ordering the transformations that prepare a program for code generation |
 | B05 | Code generation and optimization | Bitcoin Script output, source maps, bytecode optimization |
 | B06 | Artifact model | The published description of a contract |
-| B07 | Composition in the compiler | Direct, message-bus, and framed compilation strategies |
+| B07 | Composition in the compiler | Direct and framed compilation strategies |
 | B08 | Splitting and size management | Fitting large contracts under script-size limits |
 | B09 | Shared protocol library | Canonical encodings and formats used by compiler and runtime |
 | B10 | Stateless SDK | Instantiating, calling, and spending simple contracts |
@@ -431,12 +424,11 @@ of interfaces to its neighbors.
 | B12 | Stateful SDK | Deploying, calling, reading, and listening to stateful contracts |
 | B13 | State storage and journal | Data tokens, entries, chunks, and final settlement |
 | B14 | Lifecycle, identity, and proxies | Deploy, upgrade, destroy, split, merge, logical identity |
-| B15 | Message-bus runtime | Planning and composing multi-contract transactions |
-| B16 | Framed runtime | Deploying, calling, reading, and proxying framed contracts |
-| B17 | Oracles and sidecars | Block data, hashing, key recovery, shared libraries |
-| B18 | Project tooling | SolidHat, Hardhat compatibility, project compilation, type generation |
-| B19 | Documentation and samples | Website, editor support, examples, benchmarks |
-| B20 | Verification and release | Tests, conformance suites, CI, regtest, release gates |
+| B15 | Framed runtime | Deploying, calling, reading, and proxying framed contracts |
+| B16 | Oracles and sidecars | Block data, hashing, key recovery, shared libraries |
+| B17 | Project tooling | SolidHat, Hardhat compatibility, project compilation, type generation |
+| B18 | Documentation and samples | Website, editor support, examples, benchmarks |
+| B19 | Verification and release | Tests, conformance suites, CI, regtest, release gates |
 
 ### B01 — Workspace and release
 
@@ -505,9 +497,8 @@ build a transaction; it reads the artifact.
 
 ### B07 — Composition in the compiler
 
-Compiles a contract for one of the three conventions. Direct entry points become ordinary functions. Message-bus
-entry points become handlers inside one shared dispatch script (the route). Framed entry points become
-self-recreating master programs with validators.
+Compiles a contract for one of the two conventions. Direct entry points become ordinary functions. Framed entry
+points become self-recreating master programs with validators.
 
 The compiler decides which entry points can participate, refuses shapes it cannot prove, and publishes the result.
 The choice is explicit and visible in the artifact.
@@ -532,7 +523,7 @@ The small package that both compiler and runtime depend on. It defines:
 - the type system;
 - the state encoding used on chain;
 - hashes, script utilities, and source-map helpers;
-- message-bus and framed wire formats;
+- the framed wire format;
 - optimization rules and bytecode outlining;
 - fingerprints and shared capability descriptions.
 
@@ -601,16 +592,7 @@ one address equals one script.
 Proxy support follows the OpenZeppelin model in spirit: a stable proxy holds the state and forwards calls to an
 implementation whose storage layout is compatible.
 
-### B15 — Message-bus runtime
-
-The runtime for the shared-manifest convention. It plans a graph of participants and calls, encodes the shared
-description, builds the physical transaction, resolves layout, combines resource requirements, and runs a final
-local simulation before sending.
-
-This is the multi-contract counterpart of auto-derivation: the graph and planning queue discover the shape,
-composition materializes it, and preflight checks it.
-
-### B16 — Framed runtime
+### B15 — Framed runtime
 
 The runtime for the framed convention. It covers deployment, calls, read-only calls, receipts, send ordering, and
 proxies.
@@ -622,7 +604,7 @@ consistent.
 Reads run as static frames and are evaluated locally without broadcasting. Sends whose resources overlap are
 ordered through a queue.
 
-### B17 — Oracles and sidecars
+### B16 — Oracles and sidecars
 
 Bitcoin Cash scripts cannot read the current block header or compute Keccak or public-key recovery directly.
 
@@ -635,7 +617,7 @@ Bitcoin Cash scripts cannot read the current block header or compute Keccak or p
 Each follows the same pattern: the compiler publishes a recipe, the SDK builds the helper, and the contract binds
 the arguments and reads the result.
 
-### B18 — Project tooling
+### B17 — Project tooling
 
 SolidHat is the recommended project environment. It provides a runtime shaped like Hardhat (a popular Ethereum
 development environment), a project compiler with caching, TypeScript bindings, network helpers, test matchers, a
@@ -643,7 +625,7 @@ migration path for existing Hardhat projects, and a project initializer.
 
 The goal is to let a team keep familiar workflows while compiling to Bitcoin Cash.
 
-### B19 — Documentation and samples
+### B18 — Documentation and samples
 
 The documentation website is the user-facing reference: language guide, SDK guides, compiler notes, and release
 information.
@@ -651,7 +633,7 @@ information.
 The repository also contains a VS Code extension, runnable examples, and benchmark corpora. The corpora are used
 to measure compatibility, size, and performance.
 
-### B20 — Verification and release
+### B19 — Verification and release
 
 The project uses unit tests, end-to-end tests, conformance suites, a regtest stack, corpus runs, and release gates.
 
@@ -678,8 +660,8 @@ Two boundaries matter:
 
 - **Browser safety.** The browser bundle must not load the Node-only compiler. A separate runtime entry point
   exposes only the framed runtime pieces an application needs.
-- **Load cost.** Stateful, message-bus, framed, oracle, and wallet-connect features are separate package entry
-  points. Importing the root package does not load those graphs.
+- **Load cost.** Stateful, framed, oracle, and wallet-connect features are separate package entry points.
+  Importing the root package does not load those graphs.
 
 ---
 
@@ -693,7 +675,7 @@ There is no coordinator, no trusted relayer, and no runtime component in the tru
 ### Fail closed
 
 Unsupported shapes become named refusals: an unknown composition convention, a split shard over budget, an
-ambiguous storage alias, a call shape the bus cannot represent, or a missing capability. The compiler tries
+ambiguous storage alias, a call shape composition cannot represent, or a missing capability. The compiler tries
 several strategies before refusing, but it does not silently emit a weaker contract.
 
 ### Determinism
@@ -704,8 +686,7 @@ source content and compiler content. This is what makes off-chain derivation rep
 ### Ordering and concurrency
 
 One state UTXO can be spent once. Composition therefore serializes where resources overlap and allows concurrency
-where they do not. The message bus uses a planning queue; framed sends use a resource queue; threads partition
-state to create real concurrency.
+where they do not. Framed sends use a resource queue; threads partition state to create real concurrency.
 
 ### Size and cost
 
@@ -715,8 +696,8 @@ splitting, deduplication, dense packing, chunking, and helper contracts. Size is
 
 ### Compatibility is fenced
 
-Solidity compatibility, legacy message-bus routes, legacy counters, and pre-merge artifacts are explicit,
-named compatibility paths. They are not widened by new features.
+Solidity compatibility, legacy counters, and pre-merge artifacts are explicit, named compatibility paths. They
+are not widened by new features.
 
 ---
 
@@ -747,7 +728,6 @@ named compatibility paths. They are not widened by new features.
 | Understand auto-derivation | `website/docs/sdk/auto-derivation.md`, `packages/solidcash/src/stateful/` |
 | Understand mappings | `website/docs/language/verified-mappings.md`, `packages/solidcash/src/stateful/SortedList.ts` |
 | Understand `evmCompat` | `website/docs/compiler/solidity-import-compat.md`, `website/docs/language/abi-encoding.md`, `SOLIDITY_COMPATIBILITY_0.14.0.md` |
-| Understand the message bus | `website/docs/guides/message-bus.md`, `packages/solidcash/src/message-bus/` |
 | Understand framed composition | `docs/framed/` and `packages/solidcash/src/framed/` |
 | Work on tooling | `packages/solidhat/`, `packages/testing/` |
 | Run and verify | package `vitest.config.ts` files, `scripts/`, `.github/workflows/` |
@@ -760,6 +740,6 @@ named compatibility paths. They are not widened by new features.
   per-input script limits and are exercised on a relaxed mock network.
 - Size splitting is shipped. The per-function split is specified and postponed.
 - Solidity compatibility covers a large, documented subset. Unsupported EVM behavior is rejected, not emulated.
-- Legacy message-bus routes, legacy counters, and pre-merge artifacts remain for compatibility.
+- Legacy counters and pre-merge artifacts remain for compatibility.
 - The root-level handoff documents describe past investigations. The source tree, current tests, and current
   artifacts are the authority.

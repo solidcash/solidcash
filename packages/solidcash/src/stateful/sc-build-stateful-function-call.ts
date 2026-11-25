@@ -5,7 +5,7 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { Op, type AbiFunction } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
+import type { RouteRuntimeCall } from './route-runtime.js';
 import { addressToLockScript } from '../utils.js';
 import { peekBuildId } from './buildSequence.js';
 import { getDataNftAddress, getEntryNftAddress } from './covenant-helpers.js';
@@ -30,15 +30,12 @@ export interface BuildStatefulFunctionCallHost {
     abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
     emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
     logicalIdentity?: ResolvedLogicalIdentity;
-    valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
   };
   functionName?: string;
   /** The master input's nSequence (`setSequence`); only the ordinary stateful builder carries it. */
   sequenceOverride?: number;
   parentContract?: StatefulContract;
   trySplitMergeBuild(): Promise<TransactionBuilder | undefined>;
-  /** The bus composition of a call whose graph runs as bus rows; undefined keeps the direct builder. */
-  busRowComposition(): Promise<TransactionBuilder | undefined>;
   applyOverrides(): Promise<StatefulTransactionBuilder>;
   selectedAbiFunction(): AbiFunction | undefined;
   recursivePreflightHasSignatures(): boolean;
@@ -58,14 +55,6 @@ export async function buildStatefulFunctionCall(
   if (splitMergeBuilder) {
     refuseSequence('split/merge');
     return splitMergeBuilder;
-  }
-  // A participant's compiler route is one row of a composition already planned; only a root call plans one.
-  if (!host.compilerRoute) {
-    const composed = await host.busRowComposition();
-    if (composed) {
-      refuseSequence('composed');
-      return composed;
-    }
   }
   const stb = await host.applyOverrides();
   const buildFinalized = (): TransactionBuilder => {
@@ -92,7 +81,7 @@ export async function buildStatefulFunctionCall(
     const composedBlockBase = stb.getComposedBlockBase();
     const compilerValueChunkWrites = resolveValueChunkWriteGeometry(
       stb.getValueChunkWriteDescriptors(),
-      host.compilerRoute?.valueChunkProductions?.map((production) => production.write) ?? [],
+      [],
       [...stb.getDerivedChunkOutputs()].map(([offset, chunk]) => ({
         offset: offset + composedBlockBase,
         resourceIdentity: chunk.resourceIdentity,
@@ -101,7 +90,7 @@ export async function buildStatefulFunctionCall(
     );
     const runtimeEvents = stb.getRuntimeLoopEventOutputs();
     if (runtimeEvents.length > 0) {
-      Object.defineProperty(built, '__messageBusRuntimeLoopEvents', {
+      Object.defineProperty(built, '__routeRuntimeLoopEvents', {
         configurable: false,
         enumerable: false,
         value: Object.freeze(runtimeEvents.map((event, eventIndex) => Object.freeze({
@@ -161,7 +150,7 @@ export async function buildStatefulFunctionCall(
       }
     }
     if (computedValueChunkSpanClaims.length > 0) {
-      Object.defineProperty(built, '__messageBusComputedValueChunkSpanClaims', {
+      Object.defineProperty(built, '__routeComputedValueChunkSpanClaims', {
         configurable: false,
         enumerable: false,
         value: Object.freeze(computedValueChunkSpanClaims),
@@ -222,7 +211,7 @@ export async function buildStatefulFunctionCall(
       }
       noteLock(stb.getValueChunkRedeemLock(), 'valueChunkRedeem');
       if (resourceLocks.size > 0) {
-        Object.defineProperty(built, '__messageBusResourceLocks', {
+        Object.defineProperty(built, '__routeResourceLocks', {
           configurable: false,
           enumerable: false,
           value: Object.freeze([...resourceLocks.entries()]),
@@ -230,7 +219,7 @@ export async function buildStatefulFunctionCall(
       }
     }
     if (computedValueChunks.length > 0) {
-      Object.defineProperty(built, '__messageBusComputedValueChunks', {
+      Object.defineProperty(built, '__routeComputedValueChunks', {
         configurable: false,
         enumerable: false,
         value: Object.freeze(computedValueChunks),
@@ -241,7 +230,7 @@ export async function buildStatefulFunctionCall(
   const builder = buildFinalized();
   if (stb.hasUnresolvedDeferredKeccakPreimages() || stb.hasUnresolvedDeferredEcrecoverArguments()) {
     const provider = builder.provider;
-    Object.defineProperty(builder, '__messageBusDeferredCompute', {
+    Object.defineProperty(builder, '__routeDeferredCompute', {
       configurable: false,
       enumerable: false,
       value: Object.freeze({
@@ -571,9 +560,7 @@ export async function buildStatefulFunctionCall(
                 const empty = items.filter((item) => item.length === 0).map((item) => item.index);
                 // Name the empty witnesses from the verifier program's own ABI so the missing values are
                 // identifiable without a second instrumentation round.
-                const declared = (host.parentContract?.inner.artifact.messageBus as {
-                  verifierProgram?: { inputs?: Array<{ name?: string }> };
-                } | undefined)?.verifierProgram?.inputs ?? [];
+                const declared: Array<{ name?: string }> = [];
                 // A candidate execution is not necessarily a VERIFIER input: the probe also runs the route and
                 // the executor. Labelling a route's pushes with the verifier ABI names invents witnesses the
                 // route never declared (measured: `localBatch` reported empty on an input whose calldata carries
@@ -999,10 +986,10 @@ export async function buildStatefulFunctionCall(
   });
   if (incompleteDynamicChunks.length > 0) {
     (builder as TransactionBuilder & {
-      __messageBusIncompleteDynamicChunks?: readonly {
+      __routeIncompleteDynamicChunks?: readonly {
         variable: string; resolved: number; total: number;
       }[];
-    }).__messageBusIncompleteDynamicChunks = Object.freeze(incompleteDynamicChunks);
+    }).__routeIncompleteDynamicChunks = Object.freeze(incompleteDynamicChunks);
   }
   if (host.recursivePreflightHasSignatures()) {
     throw new Error(

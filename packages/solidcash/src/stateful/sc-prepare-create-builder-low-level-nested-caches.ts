@@ -14,7 +14,7 @@ import {
   logicalIdentityBandKey,
   resolveLogicalIdentity,
 } from './logical-identity.js';
-import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
+import type { RouteRuntimeCall } from './route-runtime.js';
 import { selectKernelDelegateForwardingGroupIndex } from './KernelDelegateForwarding.js';
 import { SortedList } from './SortedList.js';
 import type { OnChainState } from './StateReader.js';
@@ -69,7 +69,7 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
   preparedAtomicNodeByExternalGroup: Map<number, number>;
   latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
   preparedChildProducerPath: (
-    parent: PreparedAtomicMessageBusCall | undefined,
+    parent: RouteRuntimeCall | undefined,
     source: Pick<Parameters<typeof deriveValueChunkProducerChildPath>[0],
     'sourceCallsiteId' | 'sourceLogicalIndex' | 'occurrenceIndex' | 'sourceEffectOrdinal'>,
   ) => ValueChunkProducerPathDisposition;
@@ -299,7 +299,7 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
       candidateIndexes,
     });
   };
-type PreparedAtomicNode = PreparedAtomicMessageBusCall & {
+type PreparedAtomicNode = RouteRuntimeCall & {
   parent: number | null;
   callsiteId?: number;
   active: boolean;
@@ -321,7 +321,7 @@ type PreparedAtomicNode = PreparedAtomicMessageBusCall & {
    */
   deriveRouteValueChunkProductions?: (
     rows: readonly any[],
-  ) => NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
+  ) => NonNullable<RouteRuntimeCall['valueChunkProductions']>;
 };
 let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
 const preparedAtomicNodeByExternalGroup = new Map<number, number>();

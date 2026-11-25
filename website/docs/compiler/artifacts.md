@@ -41,7 +41,7 @@ interface Artifact {
   delegateOnly?: boolean;          // a split-bundle facet
   delegateArtifact?: Artifact;
   invocationAnalysis?: InvocationAnalysisArtifact;
-  messageBus?: MessageBusArtifact;
+  callBatch?: { selector: string } | false;
   composition?: { convention: 'framed'; /* ... */ };
   refusedFunctions?: readonly PublishedRefusedEntry[];
   diagnostics?: readonly { severity: 'warning' | 'error'; code: string; message: string }[];
@@ -81,7 +81,7 @@ describe:
 - typed/low-level external calls and `outState` reads;
 - child deployments, delegate/library calls, and lifecycle modifiers;
 - blockhash, Keccak, and ecrecover sidecars; and
-- message-bus eligibility and handler effects.
+- multi-call frame eligibility (`callBatchRow`).
 
 Inputs whose names begin with `__internal__` are compiler witnesses. A normal SDK caller supplies only visible
 source parameters; transaction construction resolves the internal indices, proofs, bounds, and routed values.
@@ -163,13 +163,9 @@ co-spent proxy. It is intentionally a different script. See
 external calls, state/effects, recursion, and boundedness for splitting and atomic composition. Its presence is
 analysis, not permission to bypass a covenant.
 
-When eligible, `messageBus` publishes the route ABI, handler eligibility, verifier program, canonical envelope
-limits, and participant/row bounds consumed by `messageBus.compose()`. It also carries the admission stamp
-(`admittedHandlerIds`, `refusedHandlerIds`, `admissionSource`), the published `resourceBudgets`, and a concrete
-`deployability` certificate stating whether the measured route bytecode fits the 10,000-byte P2SH limit. Treat
-these as versioned wire metadata; see
-[Message Bus Artifact Reference](/docs/reference/message-bus-artifact). Message-bus composition is experimental in
-0.52.0.
+When a callee publishes its multi-call entry, `callBatch` carries that entry's selector and each ABI entry that can
+run as a frame is marked `callBatchRow: true`. `false` means the contract has such entries but left the entry out
+to stay under the per-input limit; the SDK then refuses a repeated or looped call that would need it.
 
 `externalLibraries` describes inline or co-spent libraries and compute sidecars, including branding, integrity
 hashes, ABI, result-NFT mode, and minimum instance capacity.

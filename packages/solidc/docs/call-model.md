@@ -235,8 +235,7 @@ stays the low-level call above. Its rules, set by the user's decisions (TARGET-5
 - The SDK refuses before building (`RawCallCalleeRequiredError`) a call it cannot lay out honestly: `no contract at
   the target`, `no matching function`, `callee fails`, `no record to read`, `plain send to a contract`, and `value
   to a co-spent callee` (the payment would land at the callee's master lock, which no contract can spend from).
-- In a direct build a low-level call beside a raw external call keeps its own pin; only a message-bus route
-  shares one.
+- In a direct build a low-level call beside a raw external call keeps its own pin.
 
 Before these rules, a raw call could claim `(true, "")` or `(false, "")` with nothing co-spent, and the expression
 form of a `{value:}` call had no transfer slot, so it paid nothing (OpenZeppelin's `Address.sendValue` included).
@@ -287,9 +286,8 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
   enforces EXACTLY ONE such co-spent input, fail-closed on 0 or >1 (`emitMsgSenderMintingVerification`), so
   `msg.sender` is always the genuine, unambiguous caller master - never a builder-chosen one of several
   co-spent minting masters. It proves IDENTITY (this master was co-spent), not framed AUTHORIZATION:
-  co-presence of a peer's master is not proof that peer initiated this call. For peer-mode caller-intent
-  authorization (the caller pre-commits to a specific callee), use the transcript's M4 binding - see
-  the website message-bus guide. Direct EOA calls take the `tx.origin` path (first native P2PKH input) instead.
+  co-presence of a peer's master is not proof that peer initiated this call. Direct EOA calls take the
+  `tx.origin` path (first native P2PKH input) instead.
 - **Script is sole arbiter:** unchecked == unconstrained.
 - **Genesis sender:** an entry that reads `msg.sender` and carries the genesis call resolves it to the
   child's master lock, never to `tx.origin`, when the tag is non-empty. The checks above make the child's
@@ -302,7 +300,7 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
   publishes `sha256` of the categories it created at offset 5 of its own unlocking. A child's constructor that
   reads `msg.sender` sees the creator, not the wallet that funded the transaction.
 - **What an unsound master costs its callers:** `recordSound` is false when any arm is an `unsafe`, `split`,
-  `merge` or `delegate` entry, a fallback, a message-bus route or a delegatecall forwarder. Such a master has
+  `merge` or `delegate` entry, a fallback or a delegatecall forwarder. Such a master has
   no deployer, its entries carry no genesis parameter, and no other contract's constructor can call it: the
   call would have no record to bind.
 

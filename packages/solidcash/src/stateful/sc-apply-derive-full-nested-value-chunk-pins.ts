@@ -32,7 +32,7 @@ import {
   appendEncodedArrayElement,
   concatenateEncodedArrays,
 } from './resource-fold-route.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import {
   extractAllRouteValueChunks,
   extractFailingP2sh32OutputPin,
@@ -269,9 +269,7 @@ export function applyDeriveFullNestedValueChunkPin(
   const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent'
   && permitsLegacyNamedValueChunkFallback(
     [llc, ...(proxyGroup ? [proxyGroup] : [])],
-    host.inner.artifact.messageBus?.convention
-      ?? (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention,
+    undefined,
   );
   const publishName = llc.functionName ?? llc.logicalFunctionName
   ?? llc.compilerRoute?.abiFunction?.name;
@@ -440,8 +438,8 @@ export function applyDeriveFullNestedValueChunkPin(
       ));
       if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
         [llc, ...(proxyGroup ? [proxyGroup] : [])],
-        (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
-          ?.messageBusConvention,
+        (llc.compilerRoute?.abiFunction as RouteRuntimeAbiFunction | undefined)
+          ?.routeConvention,
       )) {
       // Compatibility only for descriptor-free artifacts.
         rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
@@ -458,8 +456,8 @@ export function applyDeriveFullNestedValueChunkPin(
     ));
     if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
       [llc, ...(proxyGroup ? [proxyGroup] : [])],
-      (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention,
+      (llc.compilerRoute?.abiFunction as RouteRuntimeAbiFunction | undefined)
+        ?.routeConvention,
     )) {
     // Compatibility only for descriptor-free artifacts.
       rememberJobEventsLock(chunkCategory, redeemLock);

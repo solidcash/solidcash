@@ -17,11 +17,11 @@ import { keyToSlot } from './SortedList.js';
 import { LEGACY_JOB_EVENTS_COLLECTION_ALIASES } from './legacy-planning-heuristics.js';
 import {
   createExecutionContextLifecycle,
-} from '../message-bus/execution-context.js';
+} from './execution-context.js';
 import {
   createConstraintFixpointSession,
   type ConstraintFixpointSession,
-} from '../message-bus/constraint-fixpoint-session.js';
+} from './constraint-fixpoint-session.js';
 import {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerResourceClaim,
@@ -283,7 +283,7 @@ export class CompositionSettlementSession {
    * settle-time ExecutionContext: last admit-time ExecutionContext effect plans (layout/slot authority consumers).
    * Cleared with the session; written by compose-admit before settle.
    */
-  executionEffectPlans: readonly import('../message-bus/execution-context.js').ExecutionContextEffectPlan[] = [];
+  executionEffectPlans: readonly import('./execution-context.js').ExecutionContextEffectPlan[] = [];
 
   clear(categoryId?: string): void {
     if (categoryId) {
@@ -406,7 +406,7 @@ export function tryRecordActiveConstraintPass(
 ): boolean {
   if (session.getPhase() === 'finalized') return false;
   try {
-    session.runSpeculative((fixpoint) => {
+    session.runSpeculative((fixpoint: ConstraintFixpointSession) => {
       fixpoint.recordDomainPass(domain, stateKey, cycleMessage);
     });
     return true;

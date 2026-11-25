@@ -29,7 +29,6 @@ export interface DerivedValueChunkApplyHost {
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   findMintingInputIndex(categoryId: string): number;
@@ -51,11 +50,11 @@ export function applyDerivedValueChunks(
     host.externalCallUtxoGroups,
     (categoryId) => host.findMintingInputIndex(categoryId),
     band,
-    host.messageBusConvention,
+    undefined,
   );
   const tokenWriterPresent = repairOwner.status !== 'absent'
     || host.mintingOutputSwap !== undefined;
-  if (band && host.messageBusConvention !== 'kernel-row-loop'
+  if (band && undefined !== 'kernel-row-loop'
     && !tokenWriterPresent && host.derivedChunkOutputs.size > 0) {
     const keys = [...host.derivedChunkOutputs.entries()]
       .filter(([, chunk]) => !chunk.fixedIndex)

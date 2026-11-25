@@ -1,25 +1,34 @@
 import {
   encodePushdataValue,
-  KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
-  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
-  KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
-  MAX_MESSAGE_BUS_BLOB_BYTES,
   type Artifact,
-  type JournalSettlementIdentityAbi,
-  type KernelEntryJournalCapabilityScopeAbi,
-  type KernelJournalDispositionHandlerScopeAbi,
-  type KernelJournalDispositionStreamAbi,
-  type KernelJournalDispositionsAbi,
-  kernelJournalDispositionCommitmentMarker,
-  hasUniqueKernelJournalDispositionCommitment,
-  kernelJournalDispositionManifestDigest,
 } from '@solidcash/utils';
-export {
-  KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
-  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
-  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
-  KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
-} from '@solidcash/utils';
+/** Global v1 transport ceiling across all journal streams. */
+export const KERNEL_ENTRY_JOURNAL_MAX_RECORDS = 99;
+/** Compiler-owned ABI input name prefix for one journal record segment. */
+export const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
+/** Records carried by one segment input. */
+export const KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT = 3;
+/** Number of segment inputs the v1 transport needs for the global record ceiling. */
+export const KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS = Math.ceil(
+  KERNEL_ENTRY_JOURNAL_MAX_RECORDS / KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+);
+
+/** Explicit journal capability scope published for one handler's compact stream. */
+export interface KernelEntryJournalCapabilityScopeAbi {
+  handlerSelector: string;
+  journalAccessStreamIndex: number;
+}
+
+/** Settlement identity of one journal record, as published by the compiler. */
+export interface JournalSettlementIdentityAbi {
+  settlementRole: 'mutation-settlement' | 'carrier-only';
+  settlementOwnership: 'last-mutating-access' | 'none';
+  recordDispositionSource?: 'authenticated-carrier' | 'mutation-settlement';
+  accessStreamIndex: number;
+  recordOrdinalScope?: 'global-journal';
+  accessOrdinalSource: 'access-program-order';
+  recordOrdinalSources: readonly ['target-record-ordinal', 'predecessor-record-ordinal'];
+}
 import {
   SortedList,
   decodeEntryCommitment,
@@ -29,6 +38,9 @@ import {
   type JournaledMutationResult,
   type JournaledUpsert,
 } from './SortedList.js';
+
+/** Largest canonical journal segment the v1 transport carries in one stack item. */
+export const MAX_JOURNAL_SEGMENT_BYTES = 520;
 
 /** Canonical record tag, distinct from runtime event/BCH/FT/NFT effect tags 0x01..0x04. */
 export const KERNEL_ENTRY_JOURNAL_TAG = 0x05;
@@ -353,132 +365,6 @@ export function kernelEntryJournalReadCarrierCapabilityCovers(
     && scope.journalAccessStreamIndex === journalAccessStreamIndex) === true;
 }
 
-/**
- * Read the compiler's route-local clean-read carrier capability without inferring it from a kernel compilation.
- *
- * `messageBusKernel` is a code-generation preference, while this capability changes physical input/output
- * ownership. The SDK must therefore require an executable in-bytecode kernel route and an exact, versioned
- * compiler claim before it can turn a later read into a zero-input consumer. Older artifacts and legacy routes
- * deliberately return `undefined` here.
- */
-export function kernelEntryJournalReadCarrierCapabilityFromArtifact(
-  artifact: Pick<Artifact, 'messageBus'>,
-): KernelEntryJournalReadCarrierCapability | undefined {
-  const route = artifact.messageBus;
-  if (route?.convention !== 'kernel-row-loop' || route.available !== true || route.routeInBytecode !== true
-    || route.kernelEntryJournal?.version !== 1
-    || !route.atomicMessageBus?.protocolVersions?.includes(2)) return undefined;
-  const declarations = route.kernelEntryJournal.capabilities?.filter((candidate) =>
-    candidate.kind === 'internal-read-carrier') ?? [];
-  if (declarations.length !== 1) return undefined;
-  const [capability] = declarations;
-  if (capability?.version !== 1 || !hasCanonicalKernelEntryJournalReadCarrierScopes(capability.scopes)) {
-    return undefined;
-  }
-  return {
-    kind: 'internal-read-carrier', version: 1,
-    scopes: capability.scopes,
-  };
-}
-
-const hasExactKeys = (value: object, keys: readonly string[]): boolean => {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
-};
-
-/**
- * Validate the compiler's complete, ordered journal-disposition projection.
- *
- * This metadata is not authority by itself. The returned manifest is available only beside the released carrier
- * capability on an executable kernel route; the caller must additionally bind that artifact to its locally
- * authenticated batch envelope before changing physical ownership.
- */
-export function kernelJournalDispositionsFromArtifact(
-  artifact: Pick<Artifact, 'abi' | 'bytecode' | 'messageBus'>,
-): KernelJournalDispositionsAbi | undefined {
-  const route = artifact.messageBus;
-  const declaration = route?.kernelEntryJournal?.kernelJournalDispositions;
-  if (declaration === undefined) return undefined;
-  const capability = kernelEntryJournalReadCarrierCapabilityFromArtifact(artifact);
-  if (!capability) return undefined;
-  if (!declaration || typeof declaration !== 'object'
-    || !hasExactKeys(declaration, ['version', 'handlers']) || declaration.version !== 1
-    || !Array.isArray(declaration.handlers)) {
-    throw new Error('kernel journal disposition manifest has a non-canonical envelope');
-  }
-  const eligibleHandlers = route!.handlers.filter((handler) => handler.eligible);
-  if (declaration.handlers.length !== eligibleHandlers.length) {
-    throw new Error('kernel journal disposition manifest does not cover every eligible handler exactly once');
-  }
-  const carrierScopes: string[] = [];
-  const handlers = declaration.handlers.map((
-    scope: KernelJournalDispositionHandlerScopeAbi, handlerIndex: number,
-  ): KernelJournalDispositionHandlerScopeAbi => {
-    if (!scope || typeof scope !== 'object'
-      || !hasExactKeys(scope, ['selectorHex', 'completedDescriptorDigest', 'mode', 'streams'])
-      || !/^[0-9a-f]{8}$/.test(scope.selectorHex)
-      || !/^[0-9a-f]{64}$/.test(scope.completedDescriptorDigest)
-      || !['carrier', 'eager-journal', 'neutral'].includes(scope.mode)
-      || !Array.isArray(scope.streams)) {
-      throw new Error(`kernel journal disposition handler ${handlerIndex} is non-canonical`);
-    }
-    const publishedHandler = eligibleHandlers[handlerIndex];
-    const abiHandler = artifact.abi.find((handler) => handler.selector === scope.selectorHex);
-    if (publishedHandler?.selector !== scope.selectorHex || !abiHandler) {
-      throw new Error(`kernel journal disposition handler ${handlerIndex} is not the ordered eligible handler`);
-    }
-    const expectedOrdinals = (abiHandler.sortedUpsertLoopInfo ?? [])
-      .map((info) => info.journalAccessStreamIndex);
-    if (scope.streams.length !== expectedOrdinals.length) {
-      throw new Error(`kernel journal disposition handler ${scope.selectorHex} has incomplete stream coverage`);
-    }
-    const streams = scope.streams.map((stream: KernelJournalDispositionStreamAbi, streamIndex: number) => {
-      if (!stream || typeof stream !== 'object'
-        || !hasExactKeys(stream, ['journalAccessStreamIndex', 'descriptorDigest', 'disposition'])
-        || !Number.isSafeInteger(stream.journalAccessStreamIndex)
-        || stream.journalAccessStreamIndex !== expectedOrdinals[streamIndex]
-        || !/^[0-9a-f]{64}$/.test(stream.descriptorDigest)
-        || stream.disposition !== scope.mode
-        || stream.disposition === 'neutral') {
-        throw new Error(`kernel journal disposition handler ${scope.selectorHex} has a non-canonical stream`);
-      }
-      if (stream.disposition === 'carrier') {
-        carrierScopes.push(`${scope.selectorHex}:${stream.journalAccessStreamIndex}`);
-      }
-      return Object.freeze({ ...stream });
-    });
-    if ((scope.mode === 'neutral') !== (streams.length === 0)) {
-      throw new Error(`kernel journal disposition handler ${scope.selectorHex} has an incoherent mode`);
-    }
-    return Object.freeze({ ...scope, streams: Object.freeze(streams) });
-  });
-  if (new Set(handlers.map((scope) => scope.selectorHex)).size !== handlers.length) {
-    throw new Error('kernel journal disposition manifest repeats a handler selector');
-  }
-  const publishedCarrierScopes = capability.scopes!.map((scope) => (
-    `${scope.handlerSelector}:${scope.journalAccessStreamIndex}`
-  ));
-  if (carrierScopes.length !== publishedCarrierScopes.length
-    || carrierScopes.some((scope, index) => scope !== publishedCarrierScopes[index])) {
-    throw new Error('kernel journal disposition manifest disagrees with carrier capability scopes');
-  }
-  const manifest = Object.freeze({ version: 1, handlers: Object.freeze(handlers) }) as KernelJournalDispositionsAbi;
-  const commitment = route!.kernelEntryJournal!.kernelJournalDispositionCommitment;
-  const digest = kernelJournalDispositionManifestDigest(manifest);
-  const marker = kernelJournalDispositionCommitmentMarker(digest);
-  if (!commitment || typeof commitment !== 'object'
-    || !hasExactKeys(commitment, ['version', 'digest'])
-    || commitment.version !== 1 || commitment.digest !== digest || marker === undefined) {
-    throw new Error('kernel journal disposition manifest has no exact compiler commitment');
-  }
-  if (!hasUniqueKernelJournalDispositionCommitment(artifact.bytecode, digest)) {
-    throw new Error('kernel journal disposition manifest is not uniquely committed by route bytecode');
-  }
-  return manifest;
-}
-
-/** One source-ordered read access after collection-local ordinals have become route-global ordinals. */
 export interface KernelEntryJournalReadCarrierOccurrence {
   frameIndex: number;
   accessStreamIndex: number;
@@ -1600,7 +1486,7 @@ export function segmentKernelEntryJournalRecords(
   for (let offset = 0; offset < encodedRecords.length; offset += KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT) {
     const segment = encodedRecords.slice(offset, offset + KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)
       .map((record) => new Uint8Array(record));
-    if (encodedKernelEntryJournalSegmentLength(segment) > MAX_MESSAGE_BUS_BLOB_BYTES) {
+    if (encodedKernelEntryJournalSegmentLength(segment) > MAX_JOURNAL_SEGMENT_BYTES) {
       throw new Error('kernel entry journal segment exceeds the 520-byte BCH stack-item limit');
     }
     segments.push(segment);
@@ -1626,7 +1512,7 @@ export function validateKernelEntryJournalRecordSegments(
       || (index + 1 < segments.length && segment.length !== KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)) {
       throw new Error('kernel entry journal segments use a non-canonical record partition');
     }
-    if (encodedKernelEntryJournalSegmentLength(segment) > MAX_MESSAGE_BUS_BLOB_BYTES) {
+    if (encodedKernelEntryJournalSegmentLength(segment) > MAX_JOURNAL_SEGMENT_BYTES) {
       throw new Error('kernel entry journal segment exceeds the 520-byte BCH stack-item limit');
     }
   }

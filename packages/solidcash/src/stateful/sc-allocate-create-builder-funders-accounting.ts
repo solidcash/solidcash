@@ -15,7 +15,7 @@ import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   collidingParticipantGroupIndex,
@@ -190,7 +190,7 @@ export async function allocateCreateBuilderFunders(
       // A void entry's slot is its call record: the covenant steps its chunk coordinates down when no record runs.
       || (dynamicChunkInputs.length > 0 && (entryAbiFunction?.outputs?.length ?? 0) > 0)
       || trailingDisposalInputs.length > 0
-      || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
+      || ((entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
       || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true
       // A recovery loop reads iteration k's triple at blockSize + 3k.
@@ -216,8 +216,7 @@ export async function allocateCreateBuilderFunders(
     // reserved for that same slot stays unconsumed and is appended past the balanced
     // block. An empty slot still needs the pad: an inactive route, and trailing
     // geometry whose container was not loaded into the slot.
-    const inactiveSatoshiContainer = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
-      ?.messageBusActiveSatoshiContainer === false;
+    const inactiveSatoshiContainer = false;
     const containerOccupiesPublishedSlot = builder.hasLoadedSatoshiContainer();
     if ((trailingGeometryNeedsReturnSlot || inactiveSatoshiContainer)
       && !containerOccupiesPublishedSlot
@@ -308,11 +307,10 @@ export async function allocateCreateBuilderFunders(
     });
     timing?.('sender-delegate-scan');
     if (usesMsgSenderKey || usesTxOriginSender || delegateUsesMsgSender) neededFunders = Math.max(neededFunders, 1);
-    const activeMessageBusConvention =
-      (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention;
+    const routeConventionLocal = undefined;
     const predictedBandWidth = Math.max(
       0,
-      ...liveChunkSlotsByOwner(externalCallUtxoGroups, activeMessageBusConvention).values(),
+      ...liveChunkSlotsByOwner(externalCallUtxoGroups, routeConventionLocal).values(),
       ...externalCallUtxoGroups.map((group) => group.valueChunkOutputCount ?? 0),
       ...lowLevelCallUtxoGroups.map((group) => group.valueChunkOutputCount ?? 0),
     );
@@ -339,7 +337,7 @@ export async function allocateCreateBuilderFunders(
         externalCallUtxoGroups,
         (categoryId) => builder.findMintingInputIndex(categoryId),
         predictedDynamicBand,
-        activeMessageBusConvention,
+        routeConventionLocal,
       )
       : -1;
     const collidingParticipant = externalCallUtxoGroups[collidingParticipantIndex];
@@ -437,7 +435,7 @@ export async function allocateCreateBuilderFunders(
         // Atomic composition joins participant blocks before a canonical bare-P2PKH fee tail. Every structural
         // pad here (including output-only event slots) must use the OP_TRUE dummy covenant: a bare P2PKH pad
         // becomes authenticated tx.origin (first non-token input) and breaks `rowSubject == tx.origin` on the
-        // MessageBusVerifier when the fee tail is later. The complete composition's fee funder alone carries
+        // Verifier when the fee tail is later. The complete composition's fee funder alone carries
         // origin; signing dozens of wallet pads is also needlessly expensive.
         const layoutFunders: UnlockableUtxo[] = [];
         for (let i = 0; i < neededFunders; i++) {

@@ -48,7 +48,7 @@ export type ChunkableValueWriteGroup = {
 };
 
 /**
- * Old message-bus plans identified the chunkable writer by application ABI names because their artifacts did
+ * Old route plans identified the chunkable writer by application ABI names because their artifacts did
  * not publish resource descriptors. Keep that migration path out of the kernel convention: once an artifact
  * declares `kernel-row-loop`, missing descriptors mean "not described", never permission to guess from names.
  */
@@ -57,10 +57,7 @@ export function permitsLegacyNamedValueChunkFallback(
   ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
   if (ownerConvention === 'kernel-row-loop') return false;
-  return !groups.some((group) => {
-    const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact];
-    return artifacts.some((artifact) => artifact?.messageBus?.convention === 'kernel-row-loop');
-  });
+  return true;
 }
 
 /** Permit inferred event reconstruction only for descriptor-free pre-kernel plans. */
@@ -90,9 +87,7 @@ export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGr
   const activeFunctions = route?.rowArguments?.length
     ? route.rowArguments.map((row) => row.handler)
     : route?.abiFunction ? [route.abiFunction] : direct ? [direct] : [];
-  const activeWriteCollections = (route?.abiFunction as (AbiFunction & {
-    messageBusActiveWriteCollections?: readonly string[];
-  }) | undefined)?.messageBusActiveWriteCollections;
+  const activeWriteCollections = undefined;
   const collections = group.stateLayout?.collections ?? artifact?.stateLayout?.collections ?? [];
   const matches = new Set<string>();
   for (const handler of activeFunctions) {
@@ -100,10 +95,7 @@ export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGr
       const collection = collections.find((candidate) => (
         candidate.name === access.collection || candidate.signature === access.collection
       ));
-      const active = activeWriteCollections === undefined || activeWriteCollections.some((candidate) => (
-        candidate === access.collection || candidate === collection?.name || candidate === collection?.signature
-      ));
-      if (!access.operations.includes('write') || !active) continue;
+      if (!access.operations.includes('write')) continue;
       if (access.chunkableArrayValue === true || collection?.chunkableValue === true) {
         matches.add(collection?.name ?? access.collection);
       }
@@ -275,8 +267,8 @@ export function legacyPlannedChunkableValueWriteCollection(
   }
   if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
   const routeFunction = group.compilerRoute?.abiFunction;
-  if ((routeFunction as (AbiFunction & { messageBusConvention?: string }) | undefined)
-    ?.messageBusConvention === 'kernel-row-loop') return undefined;
+  if ((routeFunction as (AbiFunction & { routeConvention?: string }) | undefined)
+    ?.routeConvention === 'kernel-row-loop') return undefined;
   const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact]
     .filter((artifact, index, all): artifact is Artifact => artifact !== undefined
       && all.indexOf(artifact) === index);

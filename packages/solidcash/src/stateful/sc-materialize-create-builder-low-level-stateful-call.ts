@@ -289,9 +289,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     && ownerLock !== ''
     && implementationLock.toLowerCase() !== ownerLock.toLowerCase()
     && binToHex(logicalCreateLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase();
-  const routeAuthenticatesPublicSelf = callInfo.contract.inner.artifact.messageBus?.route.inputs.some(
-    (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
-  ) === true;
+  const routeAuthenticatesPublicSelf = false;
   const delegateSelfAddress = proxyFacade && logicalCreateLock !== undefined
     ? logicalCreateLock
     : routeAuthenticatesPublicSelf ? authenticatedSelfAddress : publicSelfAddress;

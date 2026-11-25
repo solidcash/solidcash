@@ -23,7 +23,7 @@ import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { parseCallRecord } from './call-record.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
-import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
+import { defaultInternalFunctionArg } from './internal-function-args.js';
 import { containsReturningExpression } from './sc-expand-resolve-create-builder-external-calls.js';
 import { extractExpectedOutputCommitmentFromTrace } from './trace-commitment-helpers.js';
 

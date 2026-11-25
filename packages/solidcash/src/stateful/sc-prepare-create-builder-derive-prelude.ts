@@ -20,7 +20,7 @@ import {
 } from './physical-return-layout.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
 import { tokenContainerKeyValue } from './sc-load-create-builder-token-containers.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 
@@ -92,8 +92,7 @@ export async function prepareCreateBuilderDerivePrelude(
   const tokenContainerTransferOps: Array<{
     type: 'transfer' | 'transferNft'; categoryId: string; outputSlot?: number;
   }> = [];
-  const runtimeTokenPlan = (abiFunction as MessageBusRuntimeAbiFunction | undefined)
-    ?.messageBusTokenContainerTransferPlan;
+  const runtimeTokenPlan = undefined;
   const directTokenPlan = runtimeTokenPlan === undefined
     ? tokenContainerAbiFunction?.tokenContainerTransferSites?.map((site) => ({
       args: tokenContainerArgs as readonly FunctionArgument[], handler: tokenContainerAbiFunction, site,

@@ -40,7 +40,7 @@ throws if its event commitments or locking bytecodes differ from the bounded obs
 cross-check, not part of a production or timing run.
 
 `SOLIDC_DEBUG_COMPUTED_VALUE_DISCOVERY=1` reports the computed values observed at executed chunk-count guards
-on the complete message-bus graph. The normal settlement path accepts a value only when its exact
+on the complete composition graph. The normal settlement path accepts a value only when its exact
 compiler-described collection/key lock and chunk count also appear in that VM frame. The switch only logs. Use
 it with one title; `SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT=<input index>` can narrow a diagnostic probe, but an isolated
 run is never a passing-test gate. Logging overhead makes the run unsuitable for cold timing. This switch does not
@@ -82,7 +82,7 @@ this observational probe does not alter validation or emitted bytecode.
 reports, not alternate settlement modes. They can log large transaction or witness summaries, so use one named
 test and capture only the needed records. Recheck any fix with all three switches unset.
 
-`SOLIDC_DEBUG_ROUTE=1` includes `collection-journal-message-bus-pool` records when routed handlers share a
+`SOLIDC_DEBUG_ROUTE=1` includes collection-journal pool records when routed handlers share a
 collection journal. Each record identifies handler mutation effects, normalized key identities, pooled locals,
 and runtime aliases. Use it to distinguish a missing write from an alias/key-lane mismatch without relying on
 application names. Metadata collection and logging are both disabled when the switch is unset; the switch does

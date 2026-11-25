@@ -24,15 +24,9 @@ import {
 import { legacyIsPublishJobEventName } from './legacy-job-event-helpers.js';
 
 /** Minimal runtime ABI narrowing used by writer/chunkable selection. */
-type MessageBusRuntimeAbiFunction = AbiFunction & {
-  messageBusActiveWriteCollections?: readonly string[];
-  messageBusActiveEntryRecipes?: ReadonlyMap<number, readonly {
-    rowIndex: number;
-    access: EntryAccessAbi;
-    args: FunctionArgument[];
-    inputs: AbiFunction['inputs'];
-  }[]>;
-  messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
+type RouteRuntimeAbiFunction = AbiFunction & {
+  routeActiveEntryRecipes?: ReadonlyMap<number, readonly { access: any; args: any; inputs: any }[]>;
+  routeActiveWriteCollections?: readonly string[];
 };
 
 export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
@@ -174,17 +168,14 @@ export function describeValueChunkWrites(
     && (group.compilerRoute.rowArguments?.length ?? 0) > 0
     ? group.compilerRoute.rowArguments!.map((row) => row.handler)
     : [abiFunction];
-  const activeWriteCollections = (abiFunction as MessageBusRuntimeAbiFunction)
-    .messageBusActiveWriteCollections;
+  const activeWriteCollections = undefined;
   const writes: ValueChunkWriteDescriptor[] = [];
   const appendWrite = (access: EntryAccessAbi, entryAccessSlot: number, routeSlot: number): void => {
     if (!access.operations.includes('write')) return;
     const collection = group.stateLayout.collections?.find((candidate) =>
       candidate.name === access.collection || candidate.signature === access.collection);
     if (!collection?.chunkableValue) return;
-    if (activeWriteCollections !== undefined && !activeWriteCollections.some((candidate) =>
-      candidate === access.collection || candidate === collection.name
-        || candidate === collection.signature)) return;
+
     const blockSlot = layout.slots.find((slot) =>
       slot.kind === 'entry' && slot.slotIndex === routeSlot)?.offset;
     if (blockSlot === undefined) return;
@@ -229,7 +220,7 @@ export function describeValueChunkWrites(
       writes.push(write);
     }
   };
-  const activeRecipes = (abiFunction as MessageBusRuntimeAbiFunction).messageBusActiveEntryRecipes;
+  const activeRecipes = (abiFunction as RouteRuntimeAbiFunction).routeActiveEntryRecipes;
   if (activeRecipes !== undefined && activeRecipes.size > 0) {
     for (const [routeSlot, recipes] of activeRecipes) {
       for (const recipe of recipes) {
@@ -250,8 +241,7 @@ export function chunkableValueWriteCollections(
   group: ExternalCallUtxoGroup,
   abiFunction: AbiFunction,
 ): string[] {
-  const activeWriteCollections = (abiFunction as MessageBusRuntimeAbiFunction)
-    .messageBusActiveWriteCollections;
+  const activeWriteCollections = undefined;
   const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
     && (group.compilerRoute.rowArguments?.length ?? 0) > 0
     ? group.compilerRoute.rowArguments!.map((row) => row.handler)
@@ -259,9 +249,7 @@ export function chunkableValueWriteCollections(
   return [...new Set(activeFunctions.flatMap((activeFunction) => (
     activeFunction.entryAccesses ?? []
   ).flatMap((access) => {
-    if (!access.operations.includes('write')
-      || (activeWriteCollections !== undefined
-        && !activeWriteCollections.includes(access.collection))) return [];
+    if (!access.operations.includes('write')) return [];
     const collection = group.stateLayout.collections?.find((candidate) =>
       candidate.name === access.collection || candidate.signature === access.collection);
     return access.chunkableArrayValue === true || collection?.chunkableValue === true

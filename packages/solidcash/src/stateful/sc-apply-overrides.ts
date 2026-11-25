@@ -13,8 +13,8 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
-import { loadFixedEffectEntries } from '../message-bus/fixed-effect-entries.js';
+import type { RouteRuntimeCall } from './route-runtime.js';
+import { loadFixedEffectEntries } from './fixed-effect-entries.js';
 import { addressToLockScript } from '../utils.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { autoWireLowLevelCalls, type AutoWireLowLevelCallsHost } from './sc-auto-wire-low-level-calls.js';
@@ -52,7 +52,7 @@ export interface ApplyOverridesHost {
     outputSlot: number;
     transfer: FixedBchTransferAbi;
     args: readonly FunctionArgument[];
-    handler: NonNullable<NonNullable<Artifact['messageBus']>['handlers']>[number];
+    handler: AbiFunction;
     executionArtifact: Artifact;
   }>;
   tokenContainerTransfers: Array<{
@@ -84,7 +84,7 @@ export interface ApplyOverridesHost {
     abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
     emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
     logicalIdentity?: ResolvedLogicalIdentity;
-    valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
+    valueChunkProductions?: NonNullable<RouteRuntimeCall['valueChunkProductions']>;
   };
   selectedAbiFunction(): AbiFunction | undefined;
   resolveLibrariesFromRegistry(): Promise<void>;
@@ -286,12 +286,12 @@ export async function applyOverrides(
 
   let effectiveTransfers = host.transfers;
   if (effectiveTransfers.length === 0 && host.compilerTransferRecipes.length > 0) {
-    const { materializeFixedBchTransfer } = await import('../message-bus/compose.js');
+    const { materializeFixedBchTransfer } = await import('./child-deployment-recipes.js');
     const materialized: typeof host.transfers = [];
     const authenticatedState = await host.parentContract!.getState();
     for (const plan of host.compilerTransferRecipes) {
       if (plan.transfer.condition === null) {
-        throw new Error(`messageBus: BCH transfer predicate in '${plan.handler.name}' is not canonical`);
+        throw new Error(`BCH transfer predicate in '${plan.handler.name}' is not canonical`);
       }
       const handlerAbi = plan.executionArtifact.abi.find((candidate) =>
         candidate.selector === plan.handler.selector || candidate.name === plan.handler.name);
@@ -442,7 +442,7 @@ export async function applyOverrides(
   // case, re-derive only when new context has been added and no manual .setState() was called.
   const vmErrored = !!(builder as any).__vmErrored;
   const transparentAtomicPromotion = ((builder as StatefulTransactionBuilder & {
-    __preparedAtomicCalls?: readonly PreparedAtomicMessageBusCall[];
+    __preparedAtomicCalls?: readonly RouteRuntimeCall[];
   }).__preparedAtomicCalls?.length ?? 0) > 0;
   const depositUnseen = host.containerDepositAmount > 0n || host.tokenContainerDeposits.length > 0;
   const shouldReDerive = (!derived || vmErrored || depositUnseen) && host.stateOverrides.length === 0;
@@ -618,7 +618,7 @@ export async function applyOverrides(
     builder.emitDetachedEvent(event.name, ...event.args);
   }
 
-  builder._restoreMessageBusProbeMasterOutpoint();
+  builder._restoreProbeMasterOutpoint();
   for (const deployment of host.childDeployments) {
     builder.setChildDeployment(deployment.slotOffset, deployment.genesisInput, deployment.outputs);
   }

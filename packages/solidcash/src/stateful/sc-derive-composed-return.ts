@@ -44,61 +44,6 @@ export async function deriveComposedReturnBlob(
   args: readonly FunctionArgument[],
   abiFunction: AbiFunction,
 ): Promise<Uint8Array | undefined> {
-  const artifact = contract.inner.artifact;
-  const edges = abiFunction.externalCalls ?? [];
-  const selector = abiFunction.selector;
-  const loopsOverCallee = edges.some(isRepeatedTypedLoopCallsite);
-  // A direct compile reads its repeated calls through the callee's multi-call spend, never the composer.
-  const routed = isBusCompiledEntry(artifact, selector);
-  // A framed contract reads through its own call handle; this composer does not compose framed masters.
-  if (artifact.composition?.convention === 'framed' || (edges.length < 2 && !loopsOverCallee)
-    || selector === undefined || !routed) {
-    return undefined;
-  }
-  const registry = (contract as unknown as { _externalRegistry: ReadonlyMap<string, unknown> })._externalRegistry;
-  const registeredOwners = new Set<string>();
-  const repeatsOwner = loopsOverCallee || edges.some((edge) => {
-    if (edge.occurrence === 'loop') return false;
-    const registered = registry.get(edge.interfaceName) as RegisteredOwner | undefined;
-    const owner = registered?.proxy ?? registered;
-    if (owner?.categoryId === undefined || owner.inner?.lockingBytecode === undefined) return false;
-    const key = ownerKey(owner as { categoryId: string; inner: { lockingBytecode: string } });
-    if (registeredOwners.has(key)) return true;
-    registeredOwners.add(key);
-    return false;
-  });
-  if (!repeatsOwner) return undefined;
-
-  const caller = signer ?? new Signer(READ_ONLY_CALLER_KEY, contract.inner.provider);
-  const stateCache = new Map<StatefulContract, Promise<Record<string, unknown>>>();
-  const stateOf = (participant: StatefulContract): Promise<Record<string, unknown>> => {
-    let pending = stateCache.get(participant);
-    if (!pending) {
-      pending = participant.getState() as Promise<Record<string, unknown>>;
-      stateCache.set(participant, pending);
-    }
-    return pending;
-  };
-  const { discoverInitialCallTopology } = await import('../message-bus/compose-result-topology.js');
-  const { calls } = await discoverInitialCallTopology({
-    contract,
-    functionName,
-    selector,
-    args: Object.freeze([...args]),
-    producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },
-  }, caller.getLockingBytecode(), stateOf);
-  // The registry only suggested the repeat; the discovered graph names the owners the source actually reaches.
-  if (!plansRepeatedBusRows(abiFunction, calls)) return undefined;
-  const { composeDiscoveredGraph } = await import('../message-bus/compose.js');
-  const { composedInvocationResults } = await import('../message-bus/compose-invocation-results.js');
-  const builder = await composeDiscoveredGraph({
-    preparedCalls: calls,
-    funder: { txid: '00'.repeat(32), vout: 0, satoshis: 100_000_000n, unlocker: caller.unlockP2PKH() },
-    changeAddress: caller.getAddress(),
-  }).build();
-  const rootResult = composedInvocationResults(builder)?.[0];
-  if (rootResult === undefined) {
-    throw new Error(`staticCall: the composed read of '${functionName}' published no result for its root call`);
-  }
-  return hexToBin(rootResult);
+  // A direct compile reads repeated calls through the callee's multi-call spend; it never composes a bus graph.
+  return undefined;
 }

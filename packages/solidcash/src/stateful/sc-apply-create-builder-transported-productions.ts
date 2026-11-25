@@ -91,9 +91,7 @@ export function applyCreateBuilderTransportedProductions(params: {
     const derived = terminalValueChunkProducerClaim({
       rows,
       collectionIdentities: [production.write.collection, production.write.collectionSignature],
-      fixedChunkableWriteSelectors:
-        (carrier?.externalContract.inner.artifact ?? ordinaryRoute!.artifact)
-          .messageBus?.fixedChunkableWritePolicy?.selectors,
+      fixedChunkableWriteSelectors: undefined,
       executionLockingBytecode: carrier?.externalContract.inner.lockingBytecode ?? ordinaryRoute!.lockingBytecode,
       stateOwnerCategoryId: production.stateOwner.categoryId,
       stateOwnerLockingBytecode: production.stateOwner.lockingBytecode,

@@ -15,7 +15,6 @@ import type {
 import { computeCollectionHash } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
-import { absoluteValueChunkOutputBaseFromResolve } from '../message-bus/layout-resolver.js';
 import {
   groupChunkableValueWriteCollections,
   permitsLegacyNamedValueChunkFallback,
@@ -110,18 +109,6 @@ export function refreshCapturedValueChunkOutputBase(
 ): boolean {
   if (!ownsCapturedValueChunkOutputBase(group)) return false;
   let absolute = outputBase;
-  if (options.resolveAuthority !== undefined) {
-    absolute = absoluteValueChunkOutputBaseFromResolve({
-      ...options.resolveAuthority,
-      valueChunkCollection: options.resolveAuthority.valueChunkCollection
-        ?? group.valueChunkWrites?.[0]?.collection,
-    });
-    if (absolute !== outputBase) {
-      throw new Error(
-        `layout-authority: valueChunkOutputBase ${outputBase} !== resolve ${absolute}`,
-      );
-    }
-  }
   group.valueChunkOutputBase = absolute;
   group.internalArgs = {
     ...group.internalArgs,
@@ -133,35 +120,6 @@ export function refreshCapturedValueChunkOutputBase(
   return true;
 }
 
-/**
- * Assign absolute valueChunkOutputBase from ResolvedLayout only (item 2 sole authority).
- * Prefer this over inventing publishedBase+local outside the resolver.
- */
-export function assignValueChunkOutputBaseFromResolve(
-  group: ExternalCallUtxoGroup,
-  resolveAuthority: {
-    publishedBase: number;
-    blockSize: number;
-    trailingBase: number;
-    trailingCapacity?: number;
-    valueChunkBandOffset?: number;
-    valueChunkCollection?: string;
-    valueChunkCount?: number;
-  },
-  options: { shiftPredOut?: boolean } = { shiftPredOut: false },
-): number {
-  const absolute = absoluteValueChunkOutputBaseFromResolve({
-    ...resolveAuthority,
-    valueChunkCollection: resolveAuthority.valueChunkCollection
-      ?? group.valueChunkWrites?.[0]?.collection,
-  });
-  refreshCapturedValueChunkOutputBase(group, absolute, {
-    ...options,
-    resolveAuthority: { ...resolveAuthority, valueChunkCollection: resolveAuthority.valueChunkCollection
-      ?? group.valueChunkWrites?.[0]?.collection },
-  });
-  return absolute;
-}
 
 export type ProtectedLoopEntryCollectionSelection =
   | { status: 'absent'; collections: readonly string[] }
@@ -309,7 +267,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   delegateBlockInfoOracle?: boolean;  // that reader is the delegated implementation, so its recreate rides its band
   /** Pool coins a function-pointer target finds itself, no block slot places: each is recreated at its own index. */
   unslottedPoolCoSpends?: UnlockableUtxo[];
-  /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph message-bus batch
+  /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph route batch
    * routes reserve a fixed row band, so active reads are sparse and the inactive slots must remain funders. */
   blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos?: UnlockableUtxo[]; // keccak256 compute side-cars (one per call) at keccakSideCar slots
@@ -419,7 +377,6 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   blockLayout?: FunctionBlockLayout;
   /** Convention of the ABI body currently driving this builder. Historical application-name fallbacks must
    * never run for a kernel-owned route, even if every nested group is legacy or descriptor-free. */
-  messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   /** Building one balanced participant of an atomic composition: its block is concatenated after others, so
    * absolute coordinates in route witnesses are not local output indices. */
   composedParticipant?: boolean;

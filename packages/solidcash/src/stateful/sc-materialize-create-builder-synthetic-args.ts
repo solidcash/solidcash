@@ -12,7 +12,7 @@ import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   defaultInternalFunctionArg,
   materializeInternalFunctionArgument,
-} from './kernel-journal-helpers.js';
+} from './internal-function-args.js';
 
 export type MaterializeCreateBuilderSyntheticArgsHost = {
   selectActiveRootDelegateGroup: () => number | undefined;
@@ -170,7 +170,7 @@ export function materializeCreateBuilderSyntheticArgs(
       }
       finalArgs[externalCallInputBasePosition] = BigInt(
         1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount
-        + (abiFunction.graphBlockhashOracle?.slotCount ?? 0) + iterationEntryInputs.length,
+        + (0) + iterationEntryInputs.length,
       );
     }
   }

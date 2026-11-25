@@ -329,12 +329,6 @@ export function resolveKernelDelegateExecution(
   if (!(fn.modifiers ?? []).includes('delegate')) {
     throw new Error('delegate forwarding payload selects a function that is not a delegate implementation');
   }
-  const handler = artifact.messageBus?.handlers.filter((candidate) =>
-    candidate.selector.toLowerCase() === selector) ?? [];
-  if (artifact.messageBus?.convention !== 'kernel-row-loop'
-    || handler.length !== 1 || handler[0]!.eligible !== true) {
-    throw new Error('delegate forwarding payload selects no unique eligible kernel implementation handler');
-  }
   const visibleInputs = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const args: FunctionArgument[] = [];

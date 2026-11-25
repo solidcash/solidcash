@@ -80,7 +80,7 @@ import type { RuntimeEffect } from './runtime-effect-stream-trace.js';
 import type { RuntimeLoopTransferTarget } from './sc-derive-full-phase2-apply-runtime-loop.js';
 import type { RuntimeLoopTransferOutput, TokenContainerInfo } from './external-call-utxo-group.js';
 import { evalComputedKey, keyArguments, visibleHandlerInputs } from './route-expression-key.js';
-import { vmapCounterPermutationSpec } from './sc-batch-raw.js';
+import { vmapCounterPermutationSpec } from './internal-function-args.js';
 import { callRecordDigest } from './call-record.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { registeredValueAddressLockingBytecode, registerDeployment } from './deployment-registry.js';
@@ -822,7 +822,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   const needsGenesisRecipeEvaluator = !!deployTarget.genesisState || (deployTarget.genesisEntries?.length ?? 0) > 0
     || (deployAbi.transfers?.length ?? 0) > 0;
   const genesisRecipeModule = needsGenesisRecipeEvaluator
-    ? await import('../message-bus/compose.js') : undefined;
+    ? await import('./child-deployment-recipes.js') : undefined;
   const evaluateGenesisRecipe = genesisRecipeModule?.evaluateChildDeploymentRecipe;
   const genesisInputTypes = deployAbi.inputs
     .filter((input) => !input.name.startsWith('__internal__'))
@@ -1204,7 +1204,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   if (useBatch) {
     const trailingBase = deployAbi.blockLayout?.trailingBase
       ?? deployAbi.blockLayout?.blockSize ?? 1;
-    // The message-bus path injects the shared trailing-width witness into the source parameters before route
+    // The route path injects the shared trailing-width witness into the source parameters before route
     // synthesis, so it precedes the per-batch slot witnesses in the ABI. A direct artifact appends it after them.
     // Insert at the ABI position rather than assuming either order.
     const trailingCountIndex = deployAbi.inputs

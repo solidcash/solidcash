@@ -48,7 +48,7 @@ containers hold BCH or another category's tokens. Each kind has its own covenant
 | Return-event NFT | `none` | An authenticated cross-contract or explicitly emitted return value | Created as an `OP_TRUE` output and disposable after use |
 | Token container | The held token's own (fungible amount, an optional NFT, or both) | Custody of a selected foreign CashToken category | Preserved, credited, or pays an authenticated token output |
 | Satoshi container | No token | Contract-controlled BCH | Preserved, credited, or pays an authenticated BCH output |
-| Oracle/compute side-car | varies | An oracle-pool coin (block data), keccak256, ecrecover, or message-bus support | Co-spent; a pool coin is recreated unchanged, a compute side-car normally with a new result |
+| Oracle/compute side-car | varies | An oracle-pool coin (block data), keccak256, or ecrecover | Co-spent; a pool coin is recreated unchanged, a compute side-car normally with a new result |
 
 These are implementation families, not source-level types. For example, assigning a long `string` still looks like
 one state assignment even though the transaction may rewrite several chunk NFTs.

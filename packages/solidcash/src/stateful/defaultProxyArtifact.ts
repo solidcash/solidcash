@@ -12,7 +12,7 @@ import type { Artifact } from '@solidcash/utils';
 //
 // `__proxyBlockSize` and `__proxyRouteBlockSize` are the compiler's proxy-block-distance roles: the forward pins its
 // delegate to `activeInputIndex + distance`, so the base the delegate derives is this proxy. The forwarded selector
-// picks the distance: SCB1 (the delegate runs its message-bus route) the route one, any other the direct one.
+// picks the distance: SCB1 (the delegate runs its route route) the route one, any other the direct one.
 // deployProxy passes the grafted `1 + dataNftCount` and the implementation's route block. Without them the delegate
 // index is an unbound witness and a delegate placed after another master's block would authorize that master.
 export const DEFAULT_PROXY_SOURCE = "pragma solidcash >=0.8.0;\ncontract SolidCashProxy(address implementation, bigint __proxyBlockSize, bigint __proxyRouteBlockSize) {\n  function __forward(bytes input) {\n    implementation.delegatecall(input);\n    require(input.length > 0);\n  }\n}\n";
@@ -127,7 +127,6 @@ export const defaultProxyArtifact: Artifact = {
       "enforceFinalRequire": true,
       "allowUnsafeOperations": false,
       "commitmentLimit": 128,
-      "messageBus": false
     }
   },
   "invocationAnalysis": {

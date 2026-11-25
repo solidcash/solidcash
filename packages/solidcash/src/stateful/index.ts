@@ -39,10 +39,6 @@ export {
   type RouteExpressionKeyRow,
   type SoftStateSnapshot,
 } from './StatefulContract.js';
-export {
-  readKernelExecutionPlans,
-  requireKernelExecutionPlanDigest,
-} from './KernelExecutionPlanReader.js';
 export { artifactAddressForm } from './solidityAbi.js';
 export {
   legacyLiveValueChunkBandWidth,
@@ -210,7 +206,6 @@ export {
   planKernelEntryJournalStreams, planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority, planKernelEntryJournalSettlementOutputSegments,
   planKernelEntryJournalPhysicalSettlement, planKernelEntryJournalOutputLayout,
-  kernelJournalDispositionsFromArtifact,
   resolveKernelEntryJournalDirtyFinalBodies,
   scheduleKernelEntryJournalOccurrences,
   validateKernelEntryJournalSettlementGroups,
@@ -235,9 +230,6 @@ export {
   type KernelEntryJournalExecutionStream, type KernelEntryJournalScheduledOccurrence,
 } from './KernelEntryJournal.js';
 export {
-  bindKernelLifecycleTransaction, planKernelLifecycleTopology,
-  type BoundKernelLifecycleTransaction, type KernelLifecycleTransactionFrame,
-  type KernelLifecycleTransactionPoint, type ResolvedKernelLifecycleSpan, type ResolvedKernelLifecycleTopology,
 } from './KernelLifecycleTopology.js';
 export {
   planKernelDelegateForwarding, resolveKernelDelegateExecution, resolveKernelDelegatePromotion,
@@ -258,8 +250,6 @@ export {
 } from './genesis-reservations.js';
 export {
   getDataNftAddress,
-  getMessageBusVerifierAddress,
-  getMessageBusVerifierLockingBytecode,
   getDataNftLockingBytecode,
   getEntryNftLockingBytecode,
   getEntryNftAddress,
@@ -272,7 +262,6 @@ export {
   getSatoshiContainerAddress,
   getContractState,
   createDataNftUnlocker,
-  createMessageBusVerifierUnlocker,
   createDestroyDataNftUnlocker,
   createReadOnlyDataNftUnlocker,
   createEntryNftUnlocker,

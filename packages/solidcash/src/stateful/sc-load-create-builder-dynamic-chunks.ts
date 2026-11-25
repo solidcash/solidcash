@@ -14,7 +14,7 @@ import {
   type StateLayout,
   type StateValue,
 } from '@solidcash/utils';
-import { vmapCounterPermutationSpec } from './sc-batch-raw.js';
+import { vmapCounterPermutationSpec } from './internal-function-args.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
 import { type FunctionArgument, eventValueOfSource } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
@@ -26,7 +26,7 @@ import {
   getValueChunkAddress,
   resolveCollectionSignature,
 } from './covenant-helpers.js';
-import { selectedMessageBusResourceMetadata } from './message-bus-resource-routing.js';
+import { selectedRouteResourceMetadata } from './route-resource-selection.js';
 import {
   RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
   runtimeLoopEventIterationValues,
@@ -34,7 +34,7 @@ import {
 } from './runtime-loop-event-domain.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { OnChainState } from './StateReader.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import type { RuntimeLoopTransferOutput } from './StatefulTransactionBuilder.js';
 
 export type LoadCreateBuilderDynamicChunksHost = {
@@ -415,17 +415,17 @@ export async function loadCreateBuilderDynamicChunks(
   const delegateRouteRows = delegateRouteGroup?.compilerRoute?.rowArguments;
   const selectedRowsFor = (
     source: AbiFunction | undefined,
-  ): MessageBusRuntimeAbiFunction['messageBusRowArguments'] => (
+  ): RouteRuntimeAbiFunction['routeRowArguments'] => (
     source !== undefined && source === delegateRouteAbi && delegateRouteRows !== undefined
       ? delegateRouteRows
-      : (source as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
+      : (source as RouteRuntimeAbiFunction | undefined)?.routeRowArguments
   );
   const entryRouteRows = selectedRowsFor(entryAbiFunction);
-  const selectedRouteLoopMetadata = selectedMessageBusResourceMetadata([
+  const selectedRouteLoopMetadata = selectedRouteResourceMetadata([
     ...(entryRouteRows ?? []),
     ...(delegateRouteRows ?? []),
   ]);
-  const selectedDelegateLoopMetadata = selectedMessageBusResourceMetadata(delegateRouteRows);
+  const selectedDelegateLoopMetadata = selectedRouteResourceMetadata(delegateRouteRows);
   // The route ABI publishes the union of all dispatchable handlers, not the writes of this envelope.
   // Registering an inactive collection here lets derivation seed a phantom NEW output, shifting every
   // subsequent dynamic chunk. Select each source independently so a direct caller's own loops survive
@@ -433,7 +433,7 @@ export async function loadCreateBuilderDynamicChunks(
   const entryLoopWrites = [...new Set([abiFunction, entryAbiFunction, delegateRouteAbi].flatMap((source) => {
     const rows = selectedRowsFor(source);
     return rows === undefined ? source?.entryLoopWrites ?? []
-      : selectedMessageBusResourceMetadata(rows).entryLoopWrites;
+      : selectedRouteResourceMetadata(rows).entryLoopWrites;
   }))];
   // Trailing vmap output indices are part of the covenant ABI. Fixed batches are assigned bases in
   // sortedBatchInfo order (first-access order), which can differ from state-layout declaration order. Preserve

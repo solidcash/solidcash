@@ -254,7 +254,7 @@ import { hexToBin } from '@bitauth/libauth';
 import { compileFileSplit } from '@solidcash/solidc';
 import { SplitContractBundle } from '@solidcash/solidcash/stateful';
 
-const split = compileFileSplit('TetherNativeToken.sol', { evmCompat: true, messageBus: false });
+const split = compileFileSplit('TetherNativeToken.sol', { evmCompat: true });
 const tokenCoin = /* a token-free coin of the treasury's at vout 0 */;
 const category = tokenCoin.txid; // X
 

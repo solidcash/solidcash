@@ -63,32 +63,10 @@ export interface CompilerOptions {
   /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
   suppressWarnings?: boolean;
   /**
-   * Internal. Speculative message-bus admission only needs the verifier program and eligible handler names.
-   * Skip compiling ordinary entry-point bodies on that throwaway pass; the binder second pass emits them.
-   */
-  __cheapAdmissionCodegen?: boolean;
-  /** Internal detached-verifier codegen mode; the compiler retries the compact form if this exceeds script size. */
-  __detachedVerifierUnrollDeepReplace?: boolean;
-  /**
    * Internal. compileFile / project compilation may memoize artifacts even when an importResolver is present.
    * compileString stays uncached unless SOLIDC_COMPILE_CACHE=1.
    */
   __artifactCache?: boolean;
-  /** Internal test-only: parse the generated message-bus route as source (print-and-parse oracle). */
-  __messageBusRouteParseOracle?: boolean;
-  /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
-  __messageBusVerifierProgram?: {
-    verifyFunctionId: number;
-    inputCount: number;
-    inputs: readonly AbiInput[];
-    functions: readonly { id: number; name: string; bytecode: string }[];
-    /** The verifier returns an authenticated uint16 lifecycle-code suffix. */
-    lifecycle?: true;
-    /** @deprecated Compatibility with pre-merge split artifacts. */
-    splitLifecycle?: true;
-    /** The verifier reads the one canonical envelope from the root route instead of its own unlocker. */
-    envelopeTransport?: 'root-route' | 'proxy-forward';
-  };
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
   // Treat a spending path that performs no require()/verification and changes no state as a hard error
@@ -148,17 +126,6 @@ export interface CompilerOptions {
   // block.chainid network constant, baked as a single byte (chainId & 0xff). Convention:
   // mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff). User-land; see docs/block-and-transaction-properties.md.
   chainId?: number;
-  /**
-   * Explicit production-semantics feature: capture message-bus owner onto alt-stack at DEFINE entry.
-   * When omitted, resolved from SOLIDC_OWNER_ALT_ANCHOR only via the solidc env registry; included in
-   * artifact/cache identity when enabled.
-   */
-  ownerAltAnchor?: boolean;
-  /**
-   * Explicit production-semantics feature: seed caller band names into the DEFINE frame model.
-   * When omitted, resolved from SOLIDC_HANDLER_BAND_MODEL; included in artifact/cache identity when enabled.
-   */
-  handlerBandModel?: boolean;
   // Brand a delegate library: its covenant verifies the co-spent proxy master's category == the library's
   // `__brand` ctor arg, so the library is spendable only alongside its owning consumer's master (rides one
   // master's serialization, zero marginal contention). See docs/library-contracts.md (3b contention).
@@ -188,55 +155,6 @@ export interface CompilerOptions {
    * pushdata struct frame (ScalarReplaceStructLocals). Default true. `false` is a measurement-only escape hatch.
    */
   scalarReplaceStructLocals?: boolean;
-  // Compiler-generated atomic composition route and write-back journal. Omitted selects automatically from
-  // source-level atomic call-graph edges; `true` opts out of that narrowing and requests a route for a
-  // graph-free contract, still falling back to direct-only when none can be built; `false` requests direct-only
-  // compilation and is rejected when semantic analysis finds a transaction shape that cannot be built without
-  // one shared message bus. The resolved value is what the artifact publishes.
-  messageBus?: boolean;
-  /** Opt in to V5 atomic manifests with a co-spent direct-only participant and no verifier NFT. */
-  messageBusDirectParticipant?: boolean;
-  // Optional compile-time surface for large compatibility projects. Direct ABI entry points remain unchanged;
-  // only these functions are cloned into the authenticated message-bus route. A legacy string selects every
-  // overload with that name; an exact reference selects only the entry point with both that name and selector.
-  // Omitted means all eligible entry points. This avoids cloning dozens of unrelated external handlers when one
-  // atomic DAG needs a few.
-  messageBusHandlers?: readonly (string | AbiFunctionReference)[];
-  /**
-   * Per-contract override of `messageBusHandlers`, keyed by contract name. A project whose participants need
-   * different atomic methods can select each contract's handlers separately; a contract with no entry falls back
-   * to `messageBusHandlers`. Selecting a subset also changes the route's shape, so a contract whose collection
-   * getters would otherwise claim the route can publish a scalar-only route for just its state reader.
-   */
-  messageBusHandlersByContract?: Readonly<Record<string, readonly (string | AbiFunctionReference)[]>>;
-  /**
-   * Per-contract opt-out of route synthesis, keyed by contract name. Only the listed contract skips the route;
-   * every other participant keeps its route. Use this for a participant whose direct entry points must keep the
-   * lowering they had before the project enabled `messageBus`.
-   */
-  messageBusByContract?: Readonly<Record<string, boolean>>;
-  // Compile an otherwise graph-free message-bus participant with the atomic graph envelope. Leaf participants
-  // still need per-row logical callers when one composed transaction reaches them from different parents.
-  // Omitted preserves the compact local-caller route used by standalone batching.
-  messageBusGraphContext?: boolean;
-  /**
-   * Authenticated physical entry-lane capacity for graph-context one-key pools and complete fixed-key tuples.
-   * Defaults to 8 for one-key graph pools and 2 for fixed tuples. Explicit values raise either capacity; fixed
-   * tuples retain a minimum of 2 lanes. Each extra lane adds a real entry proof and compilation/runtime cost.
-   * Must be an integer in [1, 99], the v1 journal's global record ceiling (other collections share this budget).
-   */
-  messageBusEntryPoolCapacity?: number;
-  /** Opt in to the root-route envelope carrier; omitted preserves verifier-local V1–4 transport. */
-  messageBusRootEnvelope?: boolean;
-  /** Opt in to the root proxy's authenticated forward payload as the canonical envelope carrier. */
-  messageBusProxyForwardEnvelope?: boolean;
-  /**
-   * Select the message-bus calling convention (`packages/solidc/docs/message-bus-kernel.md`).
-   * Omitted or `true` uses the kernel row loop. `false` is a temporary compatibility escape hatch for
-   * reproducing the historical clone/unroll route. Kernel-ineligible handlers publish `KERNEL_*` reasons;
-   * the resolved convention is published on `artifact.messageBus`.
-   */
-  messageBusKernel?: boolean;
   /**
    * Composition convention to compile for. `direct` (default) gives every entry point its own top-level function and
    * block layout. `framed` compiles each entry point as a master program that recreates itself unchanged, so one
@@ -730,44 +648,12 @@ export interface AbiFunction {
    * published evidence split into own-state versus other-effect causes.
    */
   writesState?: boolean;
-  /**
-   * A message-bus build runs this entry only through its route: its body leaves a looped call to the route, which
-   * binds it row by row. The entry's own body co-spends nothing for that call, so a direct spend of the entry's own
-   * selector may only run it with an empty loop; a direct run that enters the loop fails at the VM.
-   */
-  routeOnly?: boolean;
+
   /** The state-handler closure contains direct or mutual recursion. SDKs must
    * resource-preflight the concrete invocation before returning a builder. */
   recursiveStateHandler?: boolean;
-  /** Compiler-owned message-bus batch graph route: a fixed per-row band of authenticated blockhash oracle inputs. */
-  graphBlockhashOracle?: {
-    inputBaseParameter: '__internal__blockhashInputIndex';
-    rowCount: number;
-    readWidth: number;
-    slotCount: number;
-    reads: readonly {
-      row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
-    }[];
-  };
-  /** Compiler-owned owner-local effect frame for an unrolled message-bus route.
-   * Dispatch site `s` owns `[base + s * width, base + (s + 1) * width)` for each effect kind. */
-  graphEffectFrame?: {
-    sites: number;
-    eventBase: number;
-    eventWidth: number;
-    eventOffset?: number;
-    transferBase: number;
-    transferWidth: number;
-    transferOffset?: number;
-    tokenTransferBase: number;
-    tokenTransferWidth: number;
-    tokenTransferOffset?: number;
-    tokenNftTransfers: boolean;
-    deployBase?: number;
-    deployWidth?: number;
-    deployOffset?: number;
-    deployInputOffset?: number;
-  };
+
+
   entryAccesses?: readonly EntryAccessAbi[];
   /** Compiler proof that source-effect ordinals form one straight-line order. */
   sourceEffectOrder?: 'linear' | 'unsupported-flow';
@@ -997,47 +883,6 @@ export interface AbiFunction {
    * master + blockSize + 3k.
    */
   ecrecoverTrailingLoop?: boolean;
-}
-
-/**
- * One compiler-authenticated runtime-journal stream which may use a route-local
- * physical protocol. A handler selector and its compact access-stream ordinal
- * are both required: a route capability must never defer unrelated handler
- * rows merely because they share the same artifact.
- */
-export interface KernelEntryJournalCapabilityScopeAbi {
-  /** Canonical four-byte external handler selector, lowercase hex without 0x. */
-  handlerSelector: string;
-  /** Stable compiler-owned ordinal in that handler's journal-access vector. */
-  journalAccessStreamIndex: number;
-}
-
-/** Physical ownership selected by completed compiler descriptors for one kernel journal family. */
-export type KernelJournalDispositionAbi = 'carrier' | 'eager-journal' | 'neutral';
-
-/** One compiler-owned compact journal stream in its stable handler-local ordinal space. */
-export interface KernelJournalDispositionStreamAbi {
-  journalAccessStreamIndex: number;
-  /** Digest of the exact completed stream descriptor used by final code generation. */
-  descriptorDigest: string;
-  disposition: KernelJournalDispositionAbi;
-}
-
-/** Completed-descriptor disposition for one external handler. */
-export interface KernelJournalDispositionHandlerScopeAbi {
-  /** Canonical four-byte external handler selector, lowercase hex without 0x. */
-  selectorHex: string;
-  /** Digest of the complete final-codegen descriptor family for this handler. */
-  completedDescriptorDigest: string;
-  mode: KernelJournalDispositionAbi;
-  /** Ordered exactly as the handler's compact journal stream vector. */
-  streams: readonly KernelJournalDispositionStreamAbi[];
-}
-
-/** Versioned, ordered projection of the compiler's final-codegen journal ownership decision. */
-export interface KernelJournalDispositionsAbi {
-  version: 1;
-  handlers: readonly KernelJournalDispositionHandlerScopeAbi[];
 }
 
 export interface CollectionIterationAbi {
@@ -1965,114 +1810,10 @@ export interface InvocationAnalysisArtifact {
 }
 
 /**
- * Legacy message-bus batch blob limit and default for callers without an explicit published ceiling.
- *
- * The compiler compiles each route's selected bound (`require(batchBlob.length <= N)`) and republishes it as
- * `Artifact.messageBus.maximumBlobBytes`; the SDK graph generator enforces that same bound while framing
- * participant rows. Keep this shared legacy default for old/unrolled artifacts.
- *
- * This is the historical stack-item limit, not the BCH-2026 limit. Kernel routes publish and enforce the
- * active consensus profile's larger stack-item ceiling explicitly, including in their resource budgets and
- * deployability certificates. SDK encoding always follows the artifact's published maximumBlobBytes.
- */
-export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
-
-/**
  * Consensus P2SH redeem-script ceiling (BCH `maximumBytecodeLength`).
  * deployability certificate deployability certificates compare measured artifact bytecode against this limit.
  */
 export const P2SH_BYTECODE_LIMIT = 10_000;
-
-/**
- * published resource budgets: compiler-published multi-axis worst-case budgets on `messageBus.resourceBudgets`.
- * Compose authority prefers these over SDK hardcodes; kernel fails closed when absent.
- * published semantic-derivation ceiling: `maximumSemanticDerivationPasses` replaces undocumented effect-class heuristics.
- */
-export interface MessageBusResourceBudgets {
-  version: 1;
-  maximumRows: number;
-  maximumParticipants: number;
-  maximumBlobBytes: number;
-  maximumDynamicChunks: number;
-  maximumValueContinuationChunks: number;
-  maximumJournalRecords: number;
-  maximumEvents: number;
-  maximumTransfers: number;
-  maximumReturnCarriers: number;
-  maximumExternalEdges: number;
-  /** Upper bound on compose semantic discovery passes (usage = mutableClaimCount + 2). */
-  maximumSemanticDerivationPasses: number;
-}
-
-/**
- * deployability certificate: deployability / budget certificate published on `messageBus.deployability`.
- * Presence is always concrete: `asserted` (within P2SH) or `over-budget`.
- * Absence of the field means legacy / unstamped (the old `"not-asserted"` ambiguity).
- */
-export type DeployabilityStatus = 'asserted' | 'over-budget';
-
-export interface DeployabilityCertificate {
-  version: 1;
-  status: DeployabilityStatus;
-  p2shBytecodeLimit: typeof P2SH_BYTECODE_LIMIT;
-  measuredBytecodeBytes: number;
-  withinP2shLimit: boolean;
-  /** Message-bus budget axes mirrored from the artifact when known. */
-  budgets?: {
-    maximumRows: number;
-    maximumBlobBytes: number;
-    maximumParticipants?: number;
-  };
-}
-
-/** Build a concrete deployability certificate from measured redeem-script bytes. */
-export function buildDeployabilityCertificate(params: {
-  measuredBytecodeBytes: number;
-  maximumRows?: number;
-  maximumBlobBytes?: number;
-  maximumParticipants?: number;
-}): DeployabilityCertificate {
-  const withinP2shLimit = params.measuredBytecodeBytes <= P2SH_BYTECODE_LIMIT;
-  return {
-    version: 1,
-    status: withinP2shLimit ? 'asserted' : 'over-budget',
-    p2shBytecodeLimit: P2SH_BYTECODE_LIMIT,
-    measuredBytecodeBytes: params.measuredBytecodeBytes,
-    withinP2shLimit,
-    ...(params.maximumRows !== undefined && {
-      budgets: {
-        maximumRows: params.maximumRows,
-        maximumBlobBytes: params.maximumBlobBytes ?? MAX_MESSAGE_BUS_BLOB_BYTES,
-        ...(params.maximumParticipants !== undefined
-          && { maximumParticipants: params.maximumParticipants }),
-      },
-    }),
-  };
-}
-
-/**
- * Fail closed unless the certificate is present and `asserted` (within P2SH).
- * Over-budget and missing certificates both refuse deployability claims.
- */
-export function assertDeployabilityCertificate(
-  certificate: DeployabilityCertificate | undefined,
-): asserts certificate is DeployabilityCertificate {
-  if (certificate === undefined) {
-    throw new Error('deployability: certificate missing (legacy not-asserted)');
-  }
-  if (certificate.version !== 1) {
-    throw new Error(`deployability: unsupported certificate version ${String(certificate.version)}`);
-  }
-  if (!certificate.withinP2shLimit || certificate.status === 'over-budget') {
-    throw new Error(
-      'deployability: over P2SH budget '
-        + `(${certificate.measuredBytecodeBytes} > ${certificate.p2shBytecodeLimit})`,
-    );
-  }
-  if (certificate.status !== 'asserted') {
-    throw new Error(`deployability: status '${String(certificate.status)}' is not asserted`);
-  }
-}
 
 /**
  * The entry witness naming the input index of the contract that reads its call record (`Artifact.callRecordReader`):
@@ -2088,66 +1829,6 @@ export function callConsumesResult(call: Pick<ExternalCallAbi, 'hasReturnValues'
 
 /** The reader a record names when no contract reads it. Its two bytes, `01 80`, are no input index's. */
 export const CALL_RECORD_NO_READER = -1n;
-
-/**
- * Shared wire ABI for bounded kernel entry-journal transport. Each opaque `bytes` slot contains a canonical
- * encoded bytes[] vector. A maximum-size record is 150 bytes plus its two-byte element frame, so three records
- * stay below BCH's 520-byte item ceiling while four may not. Segment membership is ordinal-based and therefore
- * remains stable when a clean record acquires a longer dirty value tail. The 99-record limit is an explicit
- * global transport/indexing ceiling across all streams, aligned as a deliberate v1 budget with the reviewed
- * one-stream access ceiling. Finalized transactions remain subject to independent BCH size and cost limits.
- */
-export const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
-export const KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT = 3;
-export const KERNEL_ENTRY_JOURNAL_MAX_RECORDS = 99;
-export const KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS = Math.ceil(
-  KERNEL_ENTRY_JOURNAL_MAX_RECORDS / KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
-);
-
-/** Shared wire constants for the atomic single-transaction message bus. */
-export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
-export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
-// This is a wire-format bound, not an independent production policy: finalized-byte and VM preflight are the
-// authoritative network admission gates. Keeping a smaller arbitrary ceiling rejects otherwise valid graphs
-// before those exact checks (and makes the limit depend on how many authenticated resource rows a contract uses).
-export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 0xffff;
-
-/** Build concrete published resource budgets resource budgets from route/capability ceilings. */
-export function buildMessageBusResourceBudgets(params: {
-  maximumRows: number;
-  maximumBlobBytes?: number;
-  maximumParticipants?: number;
-  /** Route trailing capacity, when known — raises dyn/value ceilings. */
-  trailingCapacity?: number;
-}): MessageBusResourceBudgets {
-  const dynCeiling = Math.max(256, params.trailingCapacity ?? 0);
-  const rowCeiling = Math.max(1, params.maximumRows);
-  const journalCeiling = 256;
-  const eventCeiling = Math.max(rowCeiling * 4, 32);
-  const transferCeiling = Math.max(rowCeiling * 4, 32);
-  const returnCeiling = Math.max(rowCeiling, 8);
-  const externalEdgeCeiling = 64;
-  // The compose lattice may discover one mutable claim for every independently published resource axis, then
-  // requires one assembly pass and one confirmation pass. Publish that aggregate worst case rather than a
-  // smaller per-axis constant: a valid graph can remain within every individual budget while their sum exceeds
-  // any one axis (for example, a resource-heavy graph with 315 claims and 256 journal records).
-  const semanticDerivationCeiling = dynCeiling + dynCeiling + journalCeiling
-    + eventCeiling + transferCeiling + returnCeiling + externalEdgeCeiling + 2;
-  return {
-    version: 1,
-    maximumRows: rowCeiling,
-    maximumParticipants: params.maximumParticipants ?? ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
-    maximumBlobBytes: params.maximumBlobBytes ?? MAX_MESSAGE_BUS_BLOB_BYTES,
-    maximumDynamicChunks: dynCeiling,
-    maximumValueContinuationChunks: dynCeiling,
-    maximumJournalRecords: journalCeiling,
-    maximumEvents: eventCeiling,
-    maximumTransfers: transferCeiling,
-    maximumReturnCarriers: returnCeiling,
-    maximumExternalEdges: externalEdgeCeiling,
-    maximumSemanticDerivationPasses: semanticDerivationCeiling,
-  };
-}
 
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
@@ -2608,329 +2289,6 @@ export interface Artifact {
       };
     }[];
   };
-  messageBus?: {
-    version: 1;
-    selector: '53434231';
-    /** False when this artifact carries verifier capability metadata for another co-spent executable route. */
-    routeInBytecode?: boolean;
-    /**
-     * Resolved dispatch of the published route. `kernel-row-loop` only when compiled with
-     * `messageBusKernel: true` and every dispatched handler is kernel-shaped.
-     */
-    convention?: 'legacy-unroll' | 'kernel-row-loop';
-    /** False when every handler was refused and the published route is a non-executable stub. */
-    available?: boolean;
-    /**
-     * Admission stamp: analysis-admitted handler names stamped after speculative admission.
-     * Independent of live `handlers[].eligible` mutation — dropping the compiler stamp drops this field.
-     */
-    admittedHandlerIds?: readonly string[];
-    /** Admission stamp: analysis-refused handler names (from attribution spans when present). */
-    refusedHandlerIds?: readonly string[];
-    /**
-     * Admission stamp provenance: how `admittedHandlerIds` was produced.
-     * - `attribution-spans` — analyzer/span authority (kernel required; non-tautological vs published)
-     * - `legacy-eligibility` — non-kernel path copied published eligible ids (explicit; never silent unset)
-     * `published-fallback` is retired — missing span analysis fails closed on kernel.
-     */
-    admissionSource?: 'attribution-spans' | 'legacy-eligibility';
-    minimumRows?: number;
-    maximumRows: number;
-    maximumBlobBytes: number;
-    /**
-     * Compiler-published multi-axis worst-case resource budgets.
-     * Kernel compose fails closed when this field is absent.
-     */
-    resourceBudgets?: MessageBusResourceBudgets;
-    /**
-     * Concrete deployability / budget certificate.
-     * Compiler stamps from measured bytecode vs `P2SH_BYTECODE_LIMIT`.
-     * `asserted` = within limit; `over-budget` = measured over limit.
-     * Field absence = legacy unstamped (former `"not-asserted"` ambiguity).
-     */
-    deployability?: DeployabilityCertificate;
-    /**
-     * Explicit capability schema with absence semantics for optional kernel fields.
-     * Consumers must resolve via `resolveKernelCapability` / `assertKernelCapabilityStatus`
-     * rather than treating field `undefined` as legacy/unsupported/inactive/incomplete.
-     */
-    capabilitySchema?: import('./kernel-capability-schema.js').KernelCapabilitySchema;
-    /**
-     * Published KernelExecutionPlan digests committed into route bytecode.
-     * Each entry's `digest` must appear as a unique SCKP push/drop marker in `artifact.bytecode`.
-     * Readers must gate on `kernelPlanVersion` via `assertReadableKernelExecutionPlans`.
-     */
-    kernelExecutionPlans?: {
-      version: 1;
-      plans: readonly {
-        handlerId: string;
-        kernelPlanVersion: number;
-        digest: string;
-        handlerName?: string;
-      }[];
-    };
-    /**
-     * Token-container co-layout: non-overlapping span proof for dynamic-bytes + `tokens[category]` co-layout.
-     * Present when route geometry reserves `tokenContainer` slots beside trailing dyn capacity.
-     */
-    tokenContainerCoLayout?: import('./token-container-co-layout.js').TokenContainerCoLayoutProof;
-    /** Direct chunkable whole-entry writes. Handler-local continuation pins require the aggregate `maximumRows`
-     * bound, except for the explicit subset proved to settle through the shared route cache. The covenant
-     * enforces the bound; SDK encoders mirror it for deterministic preflight diagnostics. */
-    fixedChunkableWritePolicy?: {
-      version: 1;
-      maximumRows: 1;
-      selectors: readonly string[];
-      /** Subset whose completed lowering shares one pending value per resource across all route rows and
-       * flushes only at route exit. These selectors do not consume the handler-local occurrence bound. */
-      pooledSelectors?: readonly string[];
-    };
-    /** Compiler-published admission and message-envelope contract for atomic composition. */
-    atomicMessageBus?: {
-      domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
-      /** Atomic callManifest wire versions accepted by this artifact's verifier program. */
-      protocolVersions?: readonly (1 | 2 | 3 | 4 | 5)[];
-      /** Physical carrier for the canonical frame authenticated by every participant binder. */
-      messageEnvelope: {
-        region: 'participant-verifiers';
-        canonicalInput: 'final-participant-verifier';
-        unlockingPush: 0;
-      } | {
-        region: 'root-route';
-        canonicalInput: 'root-participant-master';
-        unlockingPush: 1;
-      } | {
-        region: 'proxy-forward';
-        canonicalInput: 'root-proxy-master';
-        unlockingPush: 1;
-      };
-      maximumParticipants: typeof ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS;
-      maximumRows: typeof ATOMIC_MESSAGE_BUS_MAX_ROWS;
-    };
-    /**
-     * Versioned route-local entry-journal capabilities. These describe code executed inside the participant's
-     * kernel route, rather than the atomic call-manifest wire format advertised above. A consumer must treat an
-     * absent capability as unsupported; in particular, a kernel convention alone never authorizes omitting a
-     * physical entry input.
-     */
-    kernelEntryJournal?: {
-      version: 1;
-      /**
-       * Exact completed-descriptor ownership for every admitted handler. Presence alone grants no SDK authority:
-       * carrier behavior additionally requires the released route capability and authenticated local route.
-       */
-      kernelJournalDispositions?: KernelJournalDispositionsAbi;
-      /** Digest committed by one tagged push/drop in the executable route bytecode. */
-      kernelJournalDispositionCommitment?: { version: 1; digest: string };
-      capabilities?: readonly {
-        /** The route creates and later consumes its reserved clean-read carrier marker (0x0511). */
-        kind: 'internal-read-carrier';
-        /** Version of the route-local marker, first-authentication, and final-flush protocol. */
-        version: 1;
-        /**
-         * Exact handler/access-stream pairs to which this physical protocol applies.
-         * Omission is not a wildcard: consumers must fail closed rather than
-         * globally deferring all runtime journal rows in the artifact.
-         */
-        scopes?: readonly KernelEntryJournalCapabilityScopeAbi[];
-      }[];
-    };
-    /** Compiler-emitted OP_INVOKE program moved into genesis-deployed verifier covenants. */
-    verifierProgram?: {
-      verifyFunctionId: number;
-      inputCount: number;
-      inputs: readonly AbiInput[];
-      functions: readonly { id: number; name: string; bytecode: string }[];
-      /** The verifier returns an authenticated uint16 lifecycle-code suffix. */
-      lifecycle?: true;
-      /** @deprecated Compatibility with pre-merge split artifacts. */
-      splitLifecycle?: true;
-      /** The verifier reads the one canonical envelope from the root route instead of its own unlocker. */
-      envelopeTransport?: 'root-route' | 'proxy-forward';
-    };
-    /**
-     * Published resource-fold plans: published multi-row chunkable fold plans. Compose fills leading/complete witnesses via
-     * `foldChunkableResource` using this plan as authority for step kind / initial source / witness names
-     * (runtime still supplies ordered row elements; rediscovery is legacy fallback when this field is absent).
-     */
-    resourceFoldPlans?: readonly {
-      collection: string;
-      collectionSignature?: string;
-      initialSource: 'empty' | 'prior-commitment' | 'leading-witness';
-      leadingWitness?: string;
-      completeWitness?: string;
-      /** Transition kind for every runtime-selected step against this collection. */
-      stepKind: 'push' | 'assign' | 'update';
-      /**
-       * path-effect activation: compiler-published per-effect fold activations (fixed-chunkable ECE).
-       * SDK instantiate fills missing step activations from this schedule.
-       */
-      activationSchedule?: {
-        version: 1;
-        effects: readonly {
-          effectOrdinal: number;
-          activation?: ExternalCallExpression;
-        }[];
-      };
-    }[];
-    route: AbiFunction;
-    handlers: {
-      name: string;
-      selector: string;
-      inputs: AbiInput[];
-      outputs?: AbiOutput[];
-      /** Tuple-wide result representation produced by this exact handler. */
-      resultEncoding?: ExternalResultEncoding;
-      usesMsgValue?: boolean;
-      emits?: readonly EmitAbi[];
-      runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
-      runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
-      tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
-      tokenContainerTransferSites?: readonly TokenContainerTransferSiteAbi[];
-      /** Per selected handler call, the visible parameter feeding keccak256 or null for a computed preimage. */
-      keccakPreimageParams?: readonly (string | null)[];
-      /** Explicit for every newly compiled handler, so an inactive recovery sibling is distinguishable from
-       * an older artifact which did not publish handler-local compute metadata. */
-      ecrecoverCompute?: boolean;
-      ecrecoverArgParams?: readonly (readonly (string | null)[])[];
-      /** One entry per transitive recovery call, including `false` for native/P2PKH projections. */
-      ecrecoverEvmFlags?: readonly boolean[];
-      computeSideCarRecipes?: ComputeSideCarRecipesAbi;
-      transfers?: readonly FixedBchTransferAbi[];
-      /** Exact singular delegate-forwarding frame. Topology only; an ineligible handler remains refused. */
-      delegateForwarding?: DelegateForwardingAbi;
-      /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
-      childDeployments?: readonly ChildDeploymentSiteAbi[];
-      /**
-       * path-effect activation: multi-effect path-effect schedule for this handler (state writes / events / transfers /
-       * child-deploy recipes with structured activations). Beyond child-deploy-only typed effect IR child-deploy-only IR.
-       */
-      pathEffectSchedule?: {
-        version: 1;
-        effects: readonly {
-          ordinal: number;
-          kind: string;
-          resultType: string;
-          activation?: string | {
-            kind: string;
-            name?: string;
-            inputIndex?: number;
-            of?: unknown;
-            left?: unknown;
-            right?: unknown;
-          };
-        }[];
-      };
-      /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
-       * only a canonical fixed-field suffix in the final existing data NFT. */
-      lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
-      /** Participant-local lifecycle planning metadata. Authenticated split/merge/selfdestruct handlers may
-       * consume this topology; write/effect/collection-bearing lifecycle rows remain fenced from kernel admission. */
-      lifecycleTopology?: {
-        version: 2;
-        kind: 'split' | 'merge' | 'selfdestruct';
-        coordinate: 'participant';
-        /** Exact transaction-wide census for the participant's minting NFT category. */
-        categoryCensus: {
-          tokenCategory: 'participant';
-          nftCapability: 'minting';
-          inputCount: { source: 'fixed'; value: number }
-          | { source: 'parameter'; parameterIndex: number; addend: number };
-          outputCount: { source: 'fixed'; value: number }
-          | { source: 'parameter'; parameterIndex: number; addend: number };
-        };
-        /**
-         * Fixed master+dataNft prefix beside the minting lifecycle tail.
-         * `preserve` = read-bearing split/merge; `consume` = fixed-scalar selfdestruct.
-         */
-        resourcePrefix?: {
-          dataNftCount: number;
-          mode: 'preserve' | 'consume';
-          nftIndices: readonly number[];
-        };
-        inputSpans: readonly {
-          mode: 'preserve' | 'consume';
-          offset: number;
-          count: { source: 'fixed'; value: number }
-          | { source: 'parameter'; parameterIndex: number; addend: number };
-          identity: {
-            lockingBytecode: 'participant';
-            tokenCategory: 'participant';
-            nftCapability: 'minting';
-            nftCommitment: 'preserve' | 'unconstrained';
-            tokenAmount: 'preserve' | 'nondecrease' | 'unconstrained';
-            satoshis: 'preserve' | 'reclaim';
-          };
-        }[];
-        outputSpans: readonly {
-          mode: 'preserve' | 'create';
-          offset: number;
-          count: { source: 'fixed'; value: number }
-          | { source: 'parameter'; parameterIndex: number; addend: number };
-          identity: {
-            lockingBytecode: 'participant';
-            tokenCategory: 'participant';
-            nftCapability: 'minting';
-            nftCommitment: 'preserve' | 'empty';
-            tokenAmount: 'preserve' | 'nondecrease' | 'zero';
-            satoshis: 'preserve' | 'funded';
-          };
-        }[];
-      };
-      /** The selected handler's compiler-resolved call closure can execute CHECKSIG/CHECKMULTISIG. */
-      usesTransactionSignature?: boolean;
-      /** Transaction-signature witnesses whose hash type is covenanted by the generated route. */
-      transactionSignaturePolicy?: {
-        hashType: 'all';
-        parameterIndices: readonly number[];
-        /** Exact OP_INVOKE body covered by signatures whose check executes in an internal/private helper. */
-        coveredBytecodes?: readonly { parameterIndex: number; leafIndex: number; bytecode: string }[];
-      };
-      eligible: boolean;
-      /** Stable index of this eligible handler in the route's eligible dispatch set; witness names use it. */
-      witnessOrdinal?: number;
-      rejectionReason?: string;
-      rejectionCode?:
-      | 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'
-      | 'MESSAGE_BUS_FUTURE_RESULT_DEPENDENCY'
-      | 'MESSAGE_BUS_EXTERNAL_RECURSION_UNBOUNDED'
-      | 'MESSAGE_BUS_DUPLICATE_SETTLEMENT_AUTHORITY'
-      | 'MESSAGE_BUS_FOREIGN_INTERMEDIATE_STATE_READ'
-      | 'MESSAGE_BUS_STACK_CONTEXT_UNPRESERVABLE'
-      | 'MESSAGE_BUS_EFFECT_UNSUMMARIZABLE';
-      rejectionContext?: {
-        handlerId?: number;
-        functionName: string;
-        reason: string;
-        sourceLocation?: { line: number; column: number };
-        callChain?: readonly string[];
-      };
-      /** OP_INVOKE body covered by CHECKSIG when this handler is called from message-bus batch. */
-      signatureBytecode?: string;
-      batchKeyWitnesses?: {
-        routeInput: string;
-        inputIndex: number;
-        source?: 'argument' | 'msgSender' | 'expression';
-        expressionLabel?: string;
-        perRow?: boolean;
-        /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
-        swappable?: boolean;
-        /** Opaque compiler identity shared by every component of one fixed collection-key tuple. */
-        entryTupleGroup?: number;
-        /** Component ordinal within the complete tuple. */
-        keyComponentIndex?: number;
-        /** Corresponding component in the fixed alternate physical tuple lane. */
-        alternateRouteInput?: string;
-        /** Fixed physical key pool, selected by complete tuple identity when entryTupleGroup is present. */
-        keyPool?: readonly string[];
-      }[];
-      /** Route entry-slot ordinals which can be consumed by this selected handler. Used by composers to leave
-       * every other union-route entry coordinate as an inactive balanced slot. */
-      physicalEntrySlots?: readonly number[];
-      /** Fixed physical route-slot choices aligned one-to-one with the handler's direct entry accesses. */
-      physicalEntrySlotAlternatives?: readonly (readonly number[])[];
-    }[];
-  };
   diagnostics?: readonly {
     severity: 'warning' | 'error';
     code: string;
@@ -3071,7 +2429,6 @@ export interface FunctionSplitBundle {
   shards: readonly FunctionSplitShard[];
   internalCuts: readonly FunctionSplitInternalCut[];
   loaders: readonly FunctionSplitLoader[];
-  messageBus: { available: false };
 }
 
 /** How a published occurrence bound reads back, with the unknown legs made explicit. */

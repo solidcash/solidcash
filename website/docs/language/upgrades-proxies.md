@@ -91,10 +91,6 @@ entry address, which the same kind of hidden witness names. Guard it with the sa
 it chooses that replacement. It must be externally callable and cannot be combined with `pure`, `view`, `unsafe`,
 `upgrade`, `selfdestruct`, or `delegate`. A contract without mapping or array entries does not need one.
 
-A message-bus upgrade route (experimental) appends inside the existing data NFTs at the old lock instead, so the
-compiler refuses an `upgrade` function that joins such a route in a contract with state variables
-(`UpgradeStrandsBoundStateError`).
-
 ### State and identity after migration
 
 A native upgrade sends one transaction per mapping or array entry, then the upgrade itself. The upgrade

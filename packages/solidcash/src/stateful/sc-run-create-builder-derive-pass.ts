@@ -11,7 +11,7 @@ import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import { resolveKernelValueChunkResourceLanes } from './kernel-value-chunk-lanes.js';
 import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import type { AssembledWitnessBag } from './sc-rebind-create-builder-assembled-witnesses.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { dropSkippedConditionalInserts } from './conditional-sorted-activity.js';
@@ -265,18 +265,15 @@ export async function runCreateBuilderDerivePass(
     // The route ABI owns one continuation coordinate. Derivation executes this participant in an isolated
     // transaction, so its witness must remain participant-local until every dynamic resource has converged.
     // Only the finalized graph transaction uses the compiler-published absolute block coordinate.
-    const graphOwnsValueChunkWitness = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
-      ?.messageBusGraphExecution === true;
+    const graphOwnsValueChunkWitness = (entryAbiFunction as RouteRuntimeAbiFunction | undefined)
+      ?.routeGraphExecution === true;
     const hasExactComputedValueChunkLane = computedValueChunkRuns.length > 0
     && computedValueChunkRuns.every((run) => run.slot?.length === 32);
     const valueChunkWitnessGroups = !graphOwnsValueChunkWitness || !hasExactComputedValueChunkLane ? [] : [
       ...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups(),
     ].filter((group) => {
       const witness = valueChunkOutputWitnessCarrier(builder, group);
-      const convention = (witness?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention
-      ?? witness?.carrier.logicalArtifact?.messageBus?.convention
-      ?? witness?.carrier.externalContract?.inner.artifact.messageBus?.convention;
+      const convention = undefined;
       return witness !== undefined
       && convention === 'kernel-row-loop'
       && writesChunkableValue(witness.carrier, witness.abiFunction);
@@ -358,7 +355,7 @@ export async function runCreateBuilderDerivePass(
       ? (persistedValueChunkWriteState(describedPersistedWrite)?.width ?? 0)
       : (describedPersistedWrites.length === 0 && permitsLegacyNamedValueChunkFallback(
         [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()],
-        (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+        undefined,
       ) ? readyPersistedCompatibilityValueChunkWidth(builder.getSelectedPersistedValueChunkCategory()) : 0);
     const layoutRevisionBeforeDerive = builder.getDynamicLayoutRevision();
     const firstDeriveStarted = Date.now();

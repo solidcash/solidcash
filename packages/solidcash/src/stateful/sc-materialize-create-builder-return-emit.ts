@@ -15,8 +15,8 @@ import {
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
-import { AuthenticatedProducerResults } from '../message-bus/authenticated-producer-results.js';
-import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
+import { AuthenticatedProducerResults } from './authenticated-producer-results.js';
+import type { RouteRuntimeCall } from './route-runtime.js';
 
 export type MaterializeCreateBuilderReturnEmitHost = {
   readonly categoryId: string;
@@ -51,7 +51,7 @@ export function selectPreparedAtomicReturnSeed(
  * explicitly prepared results retain the composer's strict producer-result comparison.
  */
 export function discoveredReturnFollowsParticipantWrite(
-  nodes: readonly (Pick<PreparedAtomicMessageBusCall,
+  nodes: readonly (Pick<RouteRuntimeCall,
   'contract' | 'functionName' | 'selector' | 'executionArtifact'> & {
     parent?: number | null;
     active?: boolean;
@@ -81,7 +81,7 @@ export function discoveredReturnFollowsParticipantWrite(
       return false;
     }
     const artifact = prior.executionArtifact ?? prior.contract.inner.artifact;
-    const entry = artifact.abi.find((candidate) => candidate.name === prior.functionName
+    const entry = artifact.abi.find((candidate: any) => candidate.name === prior.functionName
       && (prior.selector === undefined || candidate.selector?.toLowerCase() === prior.selector.toLowerCase()));
     // An interface ABI can omit effect metadata and even its concrete selector. Only an exact read-only proof
     // certifies the isolated result against a preceding call; an absent entry is not proof of purity.

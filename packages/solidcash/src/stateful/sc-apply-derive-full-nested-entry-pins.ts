@@ -23,7 +23,7 @@ import {
   extractFailingP2sh32OutputPin,
   lastExtractedComputedValue,
 } from './route-value-chunk-helpers.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlot } from './SortedList.js';
 import {
   sameDerivedChunkOutputObservation,
@@ -86,11 +86,7 @@ export function applyDeriveFullNestedEntryPins(
     const entryCollections = nestedEntryAbi
       ? chunkableValueWriteCollections(llc, nestedEntryAbi)
       : [];
-    const convention = host.inner.artifact.messageBus?.convention
-      ?? (nestedEntryAbi as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention
-      ?? llc.logicalArtifact?.messageBus?.convention
-      ?? llc.externalContract?.inner.artifact.messageBus?.convention;
+    const convention = undefined;
     const legacyGroups = [llc, proxyGroup].filter((group): group is ExternalCallUtxoGroup => group !== undefined);
     const entryCollection = resolveChunkableEntryCollection({
       writes: valueChunkWrites,
@@ -112,9 +108,7 @@ export function applyDeriveFullNestedEntryPins(
     )?.physicalEntrySlots?.[0]
     ?? (llc.compilerRoute as { physicalEntrySlots?: number[] } | undefined)
       ?.physicalEntrySlots?.[0]
-    ?? (llc.externalContract?.inner.artifact.messageBus?.handlers?.find(
-      (handler: { name?: string }) => handler.name === llc.functionName,
-    ) as { physicalEntrySlots?: number[] } | undefined)?.physicalEntrySlots?.[0];
+    ;
     // The covenant addresses its entry output as INPUTINDEX + the published block-slot offset of that
     // entry (see emitEntryOutputIndex). `blockSize` is the coordinate just PAST the block, so using it
     // as an offset names a trailing slice instead of the entry slot whenever the block carries any slot

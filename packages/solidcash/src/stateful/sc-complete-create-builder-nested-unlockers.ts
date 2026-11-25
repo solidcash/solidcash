@@ -22,7 +22,7 @@ import { callNamesNoReader } from './call-record.js';
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
 } from './mapping-key-lookup.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
   groupLayoutTrailingBase,
@@ -268,7 +268,7 @@ export async function completeCreateBuilderNestedUnlockers(
         '__internal__graphCallers', '__internal__graphCompletionPositions',
         '__internal__graphSettlementTable'].includes(input.name)) {
         // This unlocker exists only for ordinary graph discovery. If the completed graph requires atomic
-        // execution, send() rebuilds it from PreparedAtomicMessageBusCall and the composer supplies the
+        // execution, send() rebuilds it from RouteRuntimeCall and the composer supplies the
         // finalized verifier/manifest values. Preserve the compiler route's typed provisional values here
         // so discovery cannot silently fall back to a direct handler outside OP_INVOKE.
         const provisional = child.compilerRoute?.internalArgs?.[input.name];
@@ -437,7 +437,7 @@ export async function completeCreateBuilderNestedUnlockers(
         const computedTarget = lowLevelCall?.target?.kind === 'computed'
           ? computedStateWriterGroupIndex(
             externalCallUtxoGroups, nestedGroups,
-            (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+            undefined,
           )
           : undefined;
         const nestedGroupIndex = explicitTarget ?? computedTarget

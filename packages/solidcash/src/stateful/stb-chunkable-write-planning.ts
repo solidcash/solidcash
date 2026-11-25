@@ -34,7 +34,6 @@ import {
 export interface ChunkableWritePlanningHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly composedParticipant: boolean;
   getLowLevelCallMasterInputIndex(index: number): number;
   getExternalCallMasterInputIndex(index: number): number;
@@ -60,7 +59,7 @@ export function permitsLegacyNamedValueChunkFallbackForGroups(host: ChunkableWri
   return permitsLegacyNamedValueChunkFallback([
     ...host.externalCallUtxoGroups,
     ...host.lowLevelCallUtxoGroups,
-  ], host.messageBusConvention);
+  ], undefined);
 }
 
 export function chunkableValueWriteExecution(

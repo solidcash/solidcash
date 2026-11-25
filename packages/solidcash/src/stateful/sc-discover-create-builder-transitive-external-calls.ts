@@ -118,7 +118,7 @@ export async function resolveTransitiveExternalContract(
   return deployment?.contract as TransitiveExternalContract | undefined;
 }
 
-/** A callee that advertises a message-bus route can execute several returning methods from one spend. */
+/** A callee that advertises a route route can execute several returning methods from one spend. */
 export type SharedMethodBatchBuilder = (
   shared: ExternalCallUtxoGroup,
   next: ExternalCallUtxoGroup,
@@ -244,7 +244,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       // a skip: co-spent on a guess, C would run without being called whenever the guard is false, and a C that reads
       // no msg.sender would settle it. B counts the caller edges it pins, so a call that carries one (a typed call
       // under a guard the compiler could not publish) is kept: B's own covenant refuses the edge the build laid for a
-      // call B skips. A message-bus route binds each row it runs instead.
+      // call B skips. A route route binds each row it runs instead.
       if (reach !== 'reached' && !directGroup.compilerRoute
         && (directGroup.callMode === 'delegatecall' || !callCountsCallerEdge(bEc, bAbiFunc, cContract))) {
         const callee = cContract.inner.artifact.contractName;
@@ -393,7 +393,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       };
       // The same rule a direct callsite applies: two distinct methods that both return cannot execute from one
       // master input unless an authenticated batch route executes both rows. A callee that advertises a
-      // message-bus route can batch them: the shared physical input runs both selectors in order, and every
+      // route route can batch them: the shared physical input runs both selectors in order, and every
       // logical group keeps its own row's return event.
       if (sharedPhysical !== undefined && (cAbiFunction.outputs?.length ?? 0) > 0
         && sharedPhysical.functionName !== cFunctionName) {
@@ -406,7 +406,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
           if (route === undefined) {
             throw new Error(
               `Transitive external calls to ${sharedPhysical.functionName} and ${cFunctionName} share one state `
-              + 'owner but both return values. Use messageBus.compose() to authenticate both logical invocations.',
+              + 'owner but both return values. Use route.compose() to authenticate both logical invocations.',
             );
           }
           sharedPhysical.compilerRoute = route;

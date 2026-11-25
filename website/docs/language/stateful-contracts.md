@@ -427,8 +427,7 @@ below apply to the containers of the pragma's own kind.
   its value there, and the SDK passes it by. A composer can spend it in the container's place, which leaves two funded
   coins but moves no value out of the contract's locks.
 - Either pragma is refused in a [framed](/docs/guides/framed-composition) contract, through an `upgrade` function and a
-  function that delegatecalls, and `pragma satoshicontainer single` through a BCH transfer in a runtime loop. The
-  contract gets no message-bus route.
+  function that delegatecalls, and `pragma satoshicontainer single` through a BCH transfer in a runtime loop.
 
 ## Partial Struct Field Updates
 

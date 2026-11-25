@@ -7,7 +7,7 @@ import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/tran
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import {
   assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder,
-} from '../message-bus/preflight.js';
+} from '../finalization.js';
 import { signExternallySignedInputs } from './sc-send-raw-builder.js';
 import type {
   MergeOptions, MergeResult, SplitOptions, SplitResult,

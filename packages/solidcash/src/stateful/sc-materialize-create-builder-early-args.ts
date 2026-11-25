@@ -9,7 +9,7 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { materializeInternalFunctionArgument } from './internal-function-args.js';
 
 /** Minimal stateful call shape needed for delegated return-ABI discovery. */
 export type CreateBuilderEarlyArgsStatefulCall = {

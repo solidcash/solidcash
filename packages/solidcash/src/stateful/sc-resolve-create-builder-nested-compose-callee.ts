@@ -10,7 +10,7 @@ import type {
   ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
+import { projectHandlerArguments } from './handler-arguments.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   connectedContractMatchesExactAddress,
@@ -345,7 +345,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
   const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
       returnSources,
-      projectMessageBusHandlerArguments(
+      projectHandlerArguments(
         callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
         delegateVisibleArgs,
       ),
@@ -358,7 +358,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
     : nestedExpressionReturns;
   const graphNestedArgs = preparedAtomicNodes
     ? host.resolveExternalArgs(
-      nestedSources, projectMessageBusHandlerArguments(
+      nestedSources, projectHandlerArguments(
         callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
         delegateVisibleArgs,
       ), callInfoContract.inner.artifact, onChainState.state,

@@ -9,11 +9,8 @@ import {
   type SortedUpsertLoopAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
-import {
-  vmapCounterPermutationSpec,
-  type VmapCounterPermutationSpec,
-} from './sc-batch-raw.js';
+import { defaultInternalFunctionArg } from './internal-function-args.js';
+import { vmapCounterPermutationSpec, type VmapCounterPermutationSpec } from './internal-function-args.js';
 import { bytesToSlotValue, keyToSlotMulti } from './SortedList.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
 

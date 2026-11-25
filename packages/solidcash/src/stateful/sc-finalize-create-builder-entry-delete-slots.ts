@@ -34,7 +34,7 @@ export function finalizeCreateBuilderEntryDeleteSlots(
     entryAccesses: readonly any[] | undefined;
     entryAccessForSlot: (slotIndex: number) => any;
     entryOperations: (slotIndex: number) => readonly string[];
-    runtimeMessageBusAliasSkipSlots: Iterable<number> | Set<number>;
+    aliasSkipSlots: Iterable<number> | Set<number>;
     abiFunction: AbiFunction | undefined;
     stateLayout: any;
     [key: string]: any;
@@ -43,13 +43,13 @@ export function finalizeCreateBuilderEntryDeleteSlots(
   let { entryNfts } = params;
   const {
     entryAccesses, entryAccessForSlot, entryOperations,
-    runtimeMessageBusAliasSkipSlots, abiFunction, stateLayout,
+    aliasSkipSlots: aliasSkipInput, abiFunction, stateLayout,
   } = params;
 
   // Alias-conditional writes (swap-remove of the LAST key): a write slot whose runtime key equals the aliasing
   // delete slot's key backs the SAME entry NFT. Co-spending it at two input offsets is invalid; the covenant
   // gates the write off, so fund this slot (no co-spend, no output) - the delete slot owns the entry.
-  const aliasSkipSlots = new Set<number>(runtimeMessageBusAliasSkipSlots);
+  const aliasSkipSlots = new Set<number>(aliasSkipInput);
   if (entryAccesses) {
     for (const e of entryNfts) {
       if (aliasSkipSlots.has(e.slotIndex)) {

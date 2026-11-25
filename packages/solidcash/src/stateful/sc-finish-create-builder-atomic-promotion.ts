@@ -35,7 +35,7 @@ export function finishCreateBuilderAtomicPromotion(params: {
   // writes to the same owner cannot both consume its one master UTXO, regardless of whether the logical callers
   // are equal. Collapsing them into the legacy first-call block can also discard the later call's entry layout.
   // Preserve the compiler-authored call tree on the finished builder so send() can promote this one operation
-  // to the atomic message-bus composer, which journals all calls through the owner's canonical route.
+  // to the atomic route composer, which journals all calls through the owner's canonical route.
   if (preparedAtomicNodes?.length) {
     const children = new Map<number, number[]>();
     preparedAtomicNodes.forEach((node, index) => {
@@ -87,21 +87,9 @@ export function finishCreateBuilderAtomicPromotion(params: {
       throw new Error(`${rootArtifact.contractName}.${functionName}() reaches one state owner more than once `
         + 'through the calls its callees make. A direct compile runs repeated calls only through a callee\'s '
         + 'multi-call entry, for the calls a caller makes itself, and is never composed on the '
-        + 'message bus.');
+        + 'route.');
     }
-    const unrouteableNodes = orderedNodes.flatMap((node) => {
-      const artifact = node.executionArtifact ?? node.contract.inner.artifact;
-      if (node.selector === undefined) return [node];
-      const selector = node.selector.toLowerCase();
-      const routed = artifact.messageBus?.handlers.some((handler: any) =>
-        handler.selector.toLowerCase() === selector && handler.eligible) === true;
-      const rootAllowsDirect = (preparedAtomicNodes![0].executionArtifact
-      ?? preparedAtomicNodes![0].contract.inner.artifact).compiler?.options?.messageBusDirectParticipant === true;
-      const direct = artifact.messageBus === undefined
-      && artifact.compiler?.options?.messageBusDirectParticipant === true
-      && rootAllowsDirect && node.parent !== null;
-      return routed || direct ? [] : [node];
-    });
+    const unrouteableNodes = orderedNodes;
     const completeGraph = orderedNodes.length === preparedAtomicNodes.filter((node) => node.active).length;
     const allRoutesEligible = completeGraph && unrouteableNodes.length === 0;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -124,9 +112,6 @@ export function finishCreateBuilderAtomicPromotion(params: {
           provisionalResult: node.provisionalResultCommitment
             ? binToHex(node.provisionalResultCommitment) : undefined,
           valueChunkProductionCount: node.valueChunkProductions?.length ?? 0,
-          route: (node.executionArtifact ?? node.contract.inner.artifact).messageBus?.handlers.find(
-            (handler: any) => handler.name === node.functionName,
-          )?.eligible,
         })),
         callerSets: [...callerSets].map(([owner, callers]) => [owner, [...callers]]),
         ownerInvocationCounts: [...ownerInvocationCounts],
@@ -134,14 +119,14 @@ export function finishCreateBuilderAtomicPromotion(params: {
     }
     if (requiresAtomicPromotion && !allRoutesEligible) {
       if (!completeGraph) {
-        throw new Error('messageBus: repeated-owner calls require an acyclic, complete prepared graph');
+        throw new Error('route: repeated-owner calls require an acyclic, complete prepared graph');
       }
       const directOnly = unrouteableNodes.map((node) => {
         const artifact = node.executionArtifact ?? node.contract.inner.artifact;
         return `${artifact.contractName}.${node.functionName}`;
       });
       throw new Error(
-        'messageBus: repeated-owner calls require atomic composition, but the prepared graph contains '
+        'route: repeated-owner calls require atomic composition, but the prepared graph contains '
       + `direct-only participant${directOnly.length === 1 ? '' : 's'}: ${directOnly.join(', ')}. `
       + 'This direct/kernel graph lacks the explicit V5 authority or an eligible direct-call shape.',
       );

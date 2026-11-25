@@ -53,7 +53,7 @@ export function resolveCreateBuilderEntryAbi(
       if (abiFunction.lowLevelCalls[i].callMode !== 'delegatecall') continue;
       const ci = resolvedCalls[i];
       if (ci?.type !== 'stateful' || !ci.contract) continue;
-      // Compiler-owned message-bus routes are intentionally removed from the public artifact ABI. The exact
+      // Compiler-owned route routes are intentionally removed from the public artifact ABI. The exact
       // route survives on the delegate call descriptor, so prefer it here; looking only in `artifact.abi`
       // silently reduced every route entry slot to a generic funding placeholder.
       const implFn = ci.compilerRoute?.abiFunction

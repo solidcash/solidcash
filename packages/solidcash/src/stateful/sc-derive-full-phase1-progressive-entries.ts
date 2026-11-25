@@ -28,7 +28,7 @@ import {
 } from './route-probe-progress.js';
 import { entryAccessAt } from './route-expression-key.js';
 import { deriveRouteValueChunks } from './route-value-chunk-helpers.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
 import {
@@ -115,10 +115,7 @@ export function deriveFullPhase1ProgressiveEntries(
     // Probe progress is resource-based, not setter-based. A long value is recovered as one complete run;
     // physical output replacement must never extend its own convergence budget.
     const valueChunkWritesForProbe = group.valueChunkWrites ?? describeValueChunkWrites(group);
-    const routeConvention = (physicalExternalCallFunction(group) as MessageBusRuntimeAbiFunction | undefined)
-      ?.messageBusConvention
-      ?? group.logicalArtifact?.messageBus?.convention
-      ?? group.externalContract?.inner.artifact.messageBus?.convention;
+    const routeConvention = undefined;
     const routeProbeObservations: RouteProbeObservationHistory = new Map();
     const routeProbeTransactions = new Set<string>();
     const routeProbePassLimit = progressiveRouteProbePassLimit(

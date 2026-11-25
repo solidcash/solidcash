@@ -105,15 +105,7 @@ export function encodeStructArgument(
 export function usesLegacyJobEventCompatibility(
   artifact: Artifact, type: string, structs: Artifact['structs'],
 ): boolean {
-  if (artifact.messageBus?.convention !== 'legacy-unroll') return false;
-  const name = type.endsWith('[]') ? type.slice(0, -2) : type;
-  if (name !== 'JobEventData') return false;
-  const definition = structs?.find((candidate) => candidate.name === name);
-  return definition?.fields.length === 4
-    && definition.fields[0].name === 'type_' && definition.fields[0].type === 'uint8'
-    && definition.fields[1].name === 'address_' && definition.fields[1].type === 'bytes'
-    && definition.fields[2].name === 'data_' && definition.fields[2].type === 'bytes'
-    && definition.fields[3].name === 'timestamp_' && definition.fields[3].type === 'uint32';
+  return false;
 }
 
 

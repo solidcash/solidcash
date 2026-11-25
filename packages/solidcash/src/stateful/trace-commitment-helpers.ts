@@ -431,7 +431,7 @@ export function isDynamicChunkCommitmentAtIndex(commitment: string, index: numbe
 export function extractPendingReturnCommitment(
   fullTrace: AuthenticationProgramStateCommon[], expectedPushes = 1, expectedTypes?: readonly string[],
 ): string | undefined {
-  // A message-bus route returns one `bytes` value whose payload is the concatenated encoding of each logical
+  // A route route returns one `bytes` value whose payload is the concatenated encoding of each logical
   // handler result. The return-event commitment therefore wraps that inner result vector in one outer bytes
   // push; the opcode-count checks below intentionally inspect the unwrapped inner vector.
   const asRouteReturn = (inner: Uint8Array): string =>
@@ -500,7 +500,7 @@ export function extractPendingReturnCommitment(
     }
   }
 
-  // Progressive message-bus execution can expose an aggregate prefix before a later row is evaluated. Use that
+  // Progressive route execution can expose an aggregate prefix before a later row is evaluated. Use that
   // authenticated canonical prefix as the next probe seed. Boolean gates are optimistically seeded true: if the
   // real row is false, the subsequent output comparison exposes and replaces this candidate; if it is true, the
   // route advances to the next return/event verification instead of aborting while decoding a short placeholder.

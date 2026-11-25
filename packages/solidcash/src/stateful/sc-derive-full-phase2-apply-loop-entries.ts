@@ -102,7 +102,7 @@ export function deriveFullPhase2ApplyLoopEntries(
         ? { min: Math.min(...segmentedOutputIndices), max: Math.max(...segmentedOutputIndices) + 1 }
         : { min: loopOffset, max: loopMax };
       // The compiler is authoritative for the precise collection covenant used by a synthesized
-      // message-bus handler. Recover the bytecode from its tight OUTPUTBYTECODE equality before reading
+      // route handler. Recover the bytecode from its tight OUTPUTBYTECODE equality before reading
       // commitments; proxy routes can graft a loop slot whose signature is not reconstructible from the
       // outer contract's state layout alone.
       const derivedBytecodes = segmentedOutputIndices

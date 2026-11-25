@@ -15,7 +15,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
-import { visitExternalExpressionEvaluationPath } from '../message-bus/result-evaluation-path.js';
+import { visitExternalExpressionEvaluationPath } from './result-evaluation-path.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
 import {
@@ -190,7 +190,7 @@ export async function resolveExternalExpressionReturns(
         }
         return Array.from({ length: array.bound }, () => value(array.elementType, ancestors));
       }
-      const struct = structs?.find((candidate) => candidate.name === type);
+      const struct = structs?.find((candidate: any) => candidate.name === type);
       if (struct) {
         if (ancestors.has(type)) throw new Error(`Circular provisional producer result type '${type}'.`);
         const next = new Set(ancestors).add(type);
@@ -223,7 +223,7 @@ export async function resolveExternalExpressionReturns(
       if (payload && matchingDeploymentsBySolidityAddressPayload(host.inner.provider, payload).length > 1) {
         return undefined;
       }
-      return connected.find((candidate) => connectedContractMatchesAddress(candidate, target)) as StatefulContract | {
+      return connected.find((candidate: any) => connectedContractMatchesAddress(candidate, target)) as StatefulContract | {
         forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
       } | undefined;
     }
@@ -292,7 +292,7 @@ export async function resolveExternalExpressionReturns(
       // the callee's own ABI. Binding the wrong callee here would silently redirect the probe's co-spend.
       const rawFunctionName = ec.interfaceName === '__raw__'
         ? ec.rawFunctionName ?? (child.inner.artifact.abi as readonly AbiFunction[])
-          .find((candidate) => ec.rawSelector !== undefined
+          .find((candidate: any) => ec.rawSelector !== undefined
             && candidate.selector?.toLowerCase() === ec.rawSelector.toLowerCase())?.name
         : undefined;
       if (ec.interfaceName === '__raw__' && rawFunctionName === undefined) return undefined;
@@ -441,7 +441,7 @@ export async function resolveExternalExpressionReturns(
         ? (rawTarget as unknown as { implementation: StatefulContract }).implementation
         : isStatefulContract(rawTarget) ? rawTarget : undefined;
       const rawFunction = rawExecutionTarget
-        ? (rawExecutionTarget.inner.artifact.abi as readonly AbiFunction[]).find((candidate) =>
+        ? (rawExecutionTarget.inner.artifact.abi as readonly AbiFunction[]).find((candidate: any) =>
           producer.rawFunctionName !== undefined
             ? candidate.name === producer.rawFunctionName
             : producer.rawSelector !== undefined && candidate.selector === producer.rawSelector)

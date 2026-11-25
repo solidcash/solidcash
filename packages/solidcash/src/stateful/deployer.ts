@@ -43,7 +43,7 @@ import { assertSpendableCode, assertSpendableContract } from './spendable-code.j
 /** A12: a deployment that asks for more than the deployer produces takes today's genesis instead. */
 export type DeployerFallbackCase =
   | 'initial-state' | 'identity-anchors' | 'native-token' | 'block-oracle' | 'extra-outputs-own-category'
-  | 'salt' | 'address-type' | 'thread-count' | 'message-bus-verifiers' | 'master-amount'
+  | 'salt' | 'address-type' | 'thread-count' | 'master-amount'
   | 'data-nft-amount' | 'funder-not-p2pkh' | 'metadata-probe' | 'oracle-pool'
   | `unsupported-option:${string}`;
 
@@ -57,7 +57,6 @@ export interface DeployerPathOptions {
   salt?: unknown;
   addressType?: string;
   threadCount?: number;
-  messageBusVerificationInputCount?: number;
   masterAmount?: bigint;
   dataNftAmount?: bigint;
   funder?: Unlocker;
@@ -79,7 +78,6 @@ export function deployerFallbackCase(
   if (options.salt !== undefined) return 'salt';
   if (options.addressType !== undefined && options.addressType !== 'p2sh32') return 'address-type';
   if (options.threadCount !== undefined && options.threadCount > 1) return 'thread-count';
-  if ((options.messageBusVerificationInputCount ?? 0) > 0) return 'message-bus-verifiers';
   if (options.masterAmount !== undefined && options.masterAmount !== 1200n) return 'master-amount';
   if (options.dataNftAmount !== undefined && options.dataNftAmount !== 1200n) return 'data-nft-amount';
   if (options.funder !== undefined && !isP2pkhLock(options.funder.generateLockingBytecode())) {
@@ -2501,13 +2499,6 @@ export function buildDeployerUnlocking(options: BuildDeployerUnlockingOptions): 
  */
 export function assertDeployerCallee(calleeName: string, callee: Artifact, functionName: string): void {
   const fn = callee.abi.find((entry) => entry.name === functionName);
-  // A message-bus build is never record-sound, whatever its arms (A7): its option is the one in the way.
-  if (callee.recordSound !== true && callee.messageBus !== undefined) {
-    throw new DeployerCalleeError(
-      calleeName, functionName,
-      'the callee is a message-bus build, which a constructor cannot call; compile it with messageBus: false',
-    );
-  }
   if (callee.recordSound !== true) {
     throw new DeployerCalleeError(
       calleeName, functionName,

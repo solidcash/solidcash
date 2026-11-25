@@ -14,7 +14,7 @@ import {
   bytesToSlotValue,
   keyToSlotMulti,
 } from './SortedList.js';
-import { vmapCounterPermutationSpec } from './sc-batch-raw.js';
+import { vmapCounterPermutationSpec } from './internal-function-args.js';
 
 const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 

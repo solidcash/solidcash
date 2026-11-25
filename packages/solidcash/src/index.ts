@@ -1,5 +1,5 @@
-// The stateless SDK surface. Stateful contracts, the message bus, framed composition, HD signers, block oracles,
-// loop-call helpers and walletconnect live on subpaths (solidcash/stateful, solidcash/message-bus, solidcash/framed,
+// The stateless SDK surface. Stateful contracts, the route, framed composition, HD signers, block oracles,
+// loop-call helpers and walletconnect live on subpaths (solidcash/stateful, solidcash/route, solidcash/framed,
 // solidcash/hdsigner, solidcash/oracle, solidcash/loop-call, solidcash/walletconnect) so importing the package root
 // does not evaluate those graphs.
 

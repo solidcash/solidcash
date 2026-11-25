@@ -37,7 +37,6 @@ import type {
 export interface GetChunkableValueWriteBandHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly allInputs: readonly UnlockableUtxo[];
   readonly composedParticipant: boolean;
@@ -102,10 +101,10 @@ export function getChunkableValueWriteBand(
   const plannedWidth = Math.max(
     0,
     liveChunkWidthForGroup(
-      host.externalCallUtxoGroups, publishExternalIndex, host.messageBusConvention,
+      host.externalCallUtxoGroups, publishExternalIndex, undefined,
     ),
     ...selected.externalIndices.map((index) => liveChunkWidthForGroup(
-      host.externalCallUtxoGroups, index, host.messageBusConvention,
+      host.externalCallUtxoGroups, index, undefined,
     )),
     ...(publishLlcIndex >= 0
       ? [host.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
@@ -124,7 +123,7 @@ export function getChunkableValueWriteBand(
       selectedGroups,
       permitsLegacyNamedValueChunkFallback([
         ...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups,
-      ], host.messageBusConvention),
+      ], undefined),
     );
   const valueChunkEntryCount = activeCollection === undefined ? 0 : new Set(
     host.getLoopEntryCommitments(activeCollection)
@@ -157,7 +156,7 @@ export function getChunkableValueWriteBand(
   const forcedStart = host.forcedChunkableValueWriteBandStart;
   const publishImpl = host.chunkableValueWriteInputIndex();
   const tokenWriter = host.externalCallUtxoGroups.find((group) =>
-    isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention));
+    isCompilerDescribedMintingBandWriter(group, true, undefined));
   const tokenMaster = tokenWriter?.categoryId
     ? host.findMintingInputIndex(tokenWriter.categoryId) : -1;
   const keepAtLayout = shouldKeepPersistAtLayoutBase({

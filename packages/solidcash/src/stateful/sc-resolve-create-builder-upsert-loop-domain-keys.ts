@@ -20,7 +20,7 @@ import {
   keyToSlotMulti,
 } from './SortedList.js';
 import { evalComputedKey, visibleHandlerInputs } from './route-expression-key.js';
-import { vmapCounterPermutationSpec } from './sc-batch-raw.js';
+import { vmapCounterPermutationSpec } from './internal-function-args.js';
 
 export type ResolveCreateBuilderUpsertLoopDomainKeysHost = {
   readonly categoryId: string;

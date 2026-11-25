@@ -169,10 +169,8 @@ so the SDK needs no compiler at runtime). To regenerate after a compiler change,
 back into the file (keep the `/* eslint-disable */` header). The bytecode is layout-independent, so it does not
 depend on any specific implementation. Its second and third constructor inputs, `bigint __proxyBlockSize` and
 `bigint __proxyRouteBlockSize`, are the implementation-specific values: `deployProxy` passes the grafted block
-(`1 + dataNftCount`) and the implementation's message-bus route block (`messageBus.route.blockLayout.blockSize`, or
-the grafted block when its bytecode carries no route). The forward requires its delegate to sit exactly one of
-them from its own input, the route one when the forwarded selector is `SCB1` and the grafted one otherwise, so the
-base the delegate derives is this proxy for a direct call and for a route call alike.
+(`1 + dataNftCount`) for both. The forward requires its delegate to sit exactly that distance from its own input,
+so the base the delegate derives is this proxy.
 
 **Apply no manual edit afterwards.** The file used to carry one - the conservation above, hand-relaxed to
 `out >= in` so a delegate could mint entry nodes - and it was applied to the `bytecode` field only, leaving

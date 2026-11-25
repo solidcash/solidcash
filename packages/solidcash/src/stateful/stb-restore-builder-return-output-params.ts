@@ -26,7 +26,6 @@ export interface BuilderReturnOutputParamsSnapshot {
 export interface RestoreBuilderReturnOutputParamsHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   builtReturnEventOutputIndices: Map<string, number>;
   derivedChunkOutputs: Map<number, DerivedChunkOutputObservation>;
   setDerivedChunkOutput(outputIndex: number, chunk: DerivedChunkOutputObservation): boolean;
@@ -101,7 +100,7 @@ export function restoreBuilderReturnOutputParams(
         && candidate.resourcePart === observation.resourcePart
       ));
       if (prior && !sameDerivedChunkOutputObservation(prior[1], observation)) {
-        if (host.messageBusConvention === 'kernel-row-loop') {
+        if (undefined === 'kernel-row-loop') {
           throw new Error(
             `Conflicting authenticated observation for value-chunk resource '${observation.resourceIdentity}'`,
           );

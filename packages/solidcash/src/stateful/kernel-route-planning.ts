@@ -1,14 +1,14 @@
 /**
- * Kernel delegate, kernel entry-journal and message-bus route planning helpers.
+ * Kernel delegate, kernel entry-journal and route route planning helpers.
  *
- * Extracted from `StatefulContract.ts`: these are pure, artifact-driven planners for the kernel and message-bus
+ * Extracted from `StatefulContract.ts`: these are pure, artifact-driven planners for the kernel and route
  * calling conventions, kept here so the core stateful class no longer carries the whole plugin surface. The class
  * re-exports them for the public `@solidcash/solidcash/stateful` barrel.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  type AbiFunction, type AbiInput, type Artifact, type EntryAccessAbi, type KernelJournalDispositionsAbi,
+  type AbiFunction, type AbiInput, type Artifact, type EntryAccessAbi,
   type TokenContainerTransferSiteAbi,
 } from '@solidcash/utils';
 import { type FunctionArgument } from '../Argument.js';
@@ -417,66 +417,6 @@ export interface KernelJournalEagerOutputOccurrence {
   offset: number;
 }
 
-export interface AuthenticatedKernelJournalDispositionPlan {
-  deferRuntimeJournalMaterialization: boolean;
-  eagerOutputPlan: Array<{ eagerOutputOrdinal: number; collection: string; offset: number }>;
-}
-
-/**
- * Consume only explicit compiler dispositions for one selected handler chain.
- *
- * Collection metadata and runtime intent shape never select ownership here. They provide physical locations only
- * after an authenticated `eager-journal` stream has selected them. Carrier and eager streams cannot coexist in
- * one chain until the route publishes and verifies a cross-mode cursor/isolation protocol.
- */
-export function planAuthenticatedKernelJournalDispositionChain(
-  manifest: KernelJournalDispositionsAbi,
-  selectedHandlers: readonly SelectedKernelJournalHandler[],
-  eagerOutputs: readonly KernelJournalEagerOutputOccurrence[],
-): AuthenticatedKernelJournalDispositionPlan {
-  const selectedScopes = selectedHandlers.map((handler, handlerIndex) => {
-    const selector = handler.selector;
-    if (!selector || !/^[0-9a-f]{8}$/.test(selector)) {
-      throw new Error(`kernel journal selected handler ${handlerIndex} has no canonical selector`);
-    }
-    const scope = manifest.handlers.find((candidate) => candidate.selectorHex === selector);
-    if (!scope) throw new Error(`kernel journal disposition manifest has no selected handler ${selector}`);
-    const ordinals = (handler.sortedUpsertLoopInfo ?? []).map((info) => info.journalAccessStreamIndex);
-    if (ordinals.length !== scope.streams.length
-      || ordinals.some((ordinal, index) => ordinal !== scope.streams[index]?.journalAccessStreamIndex)) {
-      throw new Error(`kernel journal disposition handler ${selector} disagrees with selected stream metadata`);
-    }
-    return scope;
-  });
-  const modes = new Set(selectedScopes.map((scope) => scope.mode));
-  if (modes.has('carrier') && modes.has('eager-journal')) {
-    throw new Error('kernel journal selected handler chain mixes carrier and eager-journal dispositions');
-  }
-  const selectedEagerStreams = new Set(selectedScopes.flatMap((scope) => scope.streams
-    .filter((stream) => stream.disposition === 'eager-journal')
-    .map((stream) => `${scope.selectorHex}:${stream.journalAccessStreamIndex}`)));
-  const locations = new Set<string>();
-  const eagerOutputPlan = eagerOutputs.map((output, eagerOutputOrdinal) => {
-    const stream = `${output.handlerSelector}:${output.journalAccessStreamIndex}`;
-    if (!selectedEagerStreams.has(stream)) {
-      throw new Error(`kernel journal eager output ${eagerOutputOrdinal} has no selected eager-journal stream`);
-    }
-    if (!output.collection || !Number.isSafeInteger(output.offset) || output.offset < 0) {
-      throw new Error(`kernel journal eager output ${eagerOutputOrdinal} has an invalid physical location`);
-    }
-    const location = `${output.collection}\0${output.offset}`;
-    if (locations.has(location)) {
-      throw new Error(`kernel journal eager output plan repeats physical location ${output.collection}[${output.offset}]`);
-    }
-    locations.add(location);
-    return { eagerOutputOrdinal, collection: output.collection, offset: output.offset };
-  });
-  if (!modes.has('eager-journal') && eagerOutputPlan.length > 0) {
-    throw new Error('kernel journal non-eager handler chain cannot publish eager outputs');
-  }
-  return { deferRuntimeJournalMaterialization: modes.has('carrier'), eagerOutputPlan };
-}
-
 /** Bind SDK-only row arguments to the selector sequence already authenticated by the batch envelope. */
 export function assertKernelReadCarrierAuthenticatedRows(
   carrierMode: boolean,
@@ -503,80 +443,6 @@ export type GraphEcrecoverCall = readonly [
   FunctionArgument | undefined, FunctionArgument | undefined,
   FunctionArgument | undefined, FunctionArgument | undefined,
 ];
-
-export type MessageBusRuntimeAbiFunction = AbiFunction & {
-  /** Published convention of the route from which this runtime ABI was narrowed. */
-  messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
-  graphBlockhashSelections?: GraphBlockhashSelection[];
-  graphEcrecoverCalls?: GraphEcrecoverCall[];
-  /** Operations selected for each fixed route entry slot in this concrete envelope. Runtime-only route narrowing. */
-  messageBusActiveEntryOperations?: ReadonlyMap<number, readonly string[]>;
-  /** Direct handler recipes selected for each route entry lane. */
-  messageBusActiveEntryRecipes?: ReadonlyMap<number, readonly {
-    rowIndex: number;
-    access: EntryAccessAbi;
-    args: FunctionArgument[];
-    inputs: AbiFunction['inputs'];
-  }[]>;
-  /** Collections written by the handlers selected in this concrete envelope. Runtime-only route narrowing. */
-  messageBusActiveWriteCollections?: readonly string[];
-  /** Typed rows selected in this concrete envelope. Runtime-only; used for exact computed-value planning. */
-  messageBusRowArguments?: readonly RouteExpressionKeyRow[];
-  /** Direct preimages selected from authenticated message-bus rows. */
-  messageBusKeccakPreimages?: readonly (Uint8Array | null)[];
-  /** Fixed token effects selected by a concrete envelope, retaining sparse graph-frame coordinates. */
-  messageBusTokenContainerTransferPlan?: readonly {
-    args: readonly FunctionArgument[];
-    handler: AbiFunction;
-    site: TokenContainerTransferSiteAbi;
-    outputSlot: number;
-  }[];
-  /** The atomic composer owns this route's absolute input layout. Runtime-only; never serialized in artifacts. */
-  messageBusGraphExecution?: true;
-};
-
-/** Runtime resources selected by a concrete message-bus envelope. The published route ABI describes the
- * bounded union of every eligible handler, while mutating transaction resources follow only authenticated rows. */
-export function selectedMessageBusResourceMetadata(
-  rows: readonly { handler: AbiFunction }[] | undefined,
-): {
-    entryLoopWrites: readonly string[];
-    entryLoopWriteSignatures: Readonly<Record<string, string>>;
-    loopCollections: readonly string[];
-    dynamicReads: readonly string[];
-    dynamicWrites: readonly string[];
-  } {
-  const entryLoopWrites = new Set<string>();
-  const entryLoopWriteSignatures: Record<string, string> = {};
-  const loopCollections = new Set<string>();
-  const dynamicReads = new Set<string>();
-  const dynamicWrites = new Set<string>();
-  for (const { handler } of rows ?? []) {
-    for (const collection of handler.entryLoopWrites ?? []) {
-      entryLoopWrites.add(collection);
-      loopCollections.add(collection);
-    }
-    for (const collection of handler.sortedInsertLoops ?? []) loopCollections.add(collection);
-    for (const info of handler.sortedInsertLoopInfo ?? []) loopCollections.add(info.collection);
-    for (const info of handler.sortedUpsertLoopInfo ?? []) loopCollections.add(info.collection);
-    for (const variable of handler.dynamicReads ?? []) dynamicReads.add(variable);
-    for (const variable of handler.dynamicWrites ?? []) dynamicWrites.add(variable);
-    for (const [collection, signature] of Object.entries(handler.entryLoopWriteSignatures ?? {})) {
-      const previous = entryLoopWriteSignatures[collection];
-      if (previous !== undefined && previous !== signature) {
-        throw new Error(`Selected message-bus handlers disagree on collection signature for '${collection}'`);
-      }
-      entryLoopWriteSignatures[collection] = signature;
-    }
-  }
-  return {
-    entryLoopWrites: [...entryLoopWrites],
-    entryLoopWriteSignatures,
-    loopCollections: [...loopCollections],
-    dynamicReads: [...dynamicReads],
-    dynamicWrites: [...dynamicWrites],
-  };
-}
 
 /** Move route-owned dynamic inputs from executor-relative provisional slots to the state owner's published
  * trailing band. The displaced balanced funders retain the provisional positions, preserving total block width. */
@@ -608,7 +474,7 @@ export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown 
 }
 
 /** A compiler route needs the physical entry ABI only when an actual wrapper entry point carries it. Synthetic
- * routes live exclusively in message-bus metadata, so the absence of a same-named physical ABI is not a wrapper. */
+ * routes live exclusively in route metadata, so the absence of a same-named physical ABI is not a wrapper. */
 export function compilerRouteUsesPhysicalWrapper(
   compilerRouteSelector: Uint8Array | undefined,
   physicalAbiFunction: AbiFunction | undefined,

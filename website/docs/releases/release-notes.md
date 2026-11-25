@@ -119,7 +119,7 @@ when a required transaction shape cannot be produced.
 - :sparkles: Allow custom `SolidCashErrorListener` to be passed to the compiler.
 - :bug: Fix missing location data in tuple assignment errors.
 - :sparkles: Default message-bus routes use the kernel row loop (`OP_DEFINE` handlers, one wrapper). Unsupported
-  handlers fail closed with `KERNEL_*`. This is an experimental profile; see the [message bus guide](/docs/guides/message-bus).
+  handlers fail closed with `KERNEL_*`. This is an experimental profile.
 - :sparkles: Kernel message-bus routes admit batches up to the BCH-2026 stack-item ceiling (10,000 bytes, 255 rows)
   instead of the legacy 520-byte envelope; legacy unrolled routes keep the smaller ceiling.
 - :sparkles: Message-bus artifacts publish an admission stamp (`admittedHandlerIds`/`refusedHandlerIds`/

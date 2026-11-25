@@ -63,7 +63,7 @@ export function resolveCreateBuilderMasterAndDataNfts(
     }));
   }
   // Atomic local VM probes run before the canonical verifier region is assembled. An output index of
-  // 0xffffffff cannot identify a real UTXO, so generated message-bus code may bypass only its final binding
+  // 0xffffffff cannot identify a real UTXO, so generated route code may bypass only its final binding
   // check during these probes; the real outpoint is restored before the participant block leaves this builder.
   const derivationMasterUtxo = overrides?.omitLocalFeeTail
     ? { ...masterUtxo, vout: 0xffffffff }

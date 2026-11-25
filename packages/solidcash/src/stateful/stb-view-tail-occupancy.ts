@@ -39,7 +39,6 @@ export type ViewTailReturnEvent = {
 export interface ViewTailOccupancyHost {
   readonly allInputs: readonly UnlockableUtxo[];
   readonly externalCallUtxoGroups: ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly derivedChunkOutputs: ReadonlyMap<number, unknown>;
   readonly builtReturnEventOutputIndices: Map<string, number>;
@@ -77,7 +76,7 @@ export function writeViewTailsAfterWriterOccupancy(
       ? builder.outputs.length - suffixChunkCountForPack - 1
       : Math.max(0, host.allInputs.length - 1),
     tokenWriterPresent: host.externalCallUtxoGroups.some((group) =>
-      isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)),
+      isCompilerDescribedMintingBandWriter(group, true, undefined)),
   };
   const planned = packTailReturnPlacements(
     host.externalCallUtxoGroups,

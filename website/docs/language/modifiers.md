@@ -229,10 +229,6 @@ not run. State moves as follows:
 - Values kept in chunk NFTs (dynamic `string`, `bytes` and array state, large mapping values) do not migrate yet;
   the SDK refuses an upgrade that would strand one.
 
-An upgrade routed through the message bus (experimental) still refuses a contract that keeps state variables
-(`UpgradeStrandsBoundStateError`). See
-[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies#contracts-that-keep-state).
-
 ### `migrateRecords`
 
 Marks the entry that moves mapping and array entries to the replacement bytecode during an upgrade. Declare one

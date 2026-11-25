@@ -21,7 +21,6 @@ export interface SetDerivedChunkOutputHost {
   readonly allInputs: readonly UnlockableUtxo[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly derivedChunkOutputs: Map<number, DerivedChunkOutputObservation>;
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   valueChunkWriteCategorySelection(): ValueChunkWriteCategorySelection;
   getLowLevelCallMasterInputIndex(groupIndex: number): number;
   rememberJobEventsChunks(
@@ -153,7 +152,7 @@ export function setDerivedChunkOutput(
   if (!ownedChunk.fixedIndex && valueChunkPin && ownedChunk.commitment.length >= 3
     && ownedChunk.commitment !== '00' && !isEmptyValueChunkCommitment(ownedChunk.commitment)) {
     const categoryId = resolvedCategoryId;
-    if (host.messageBusConvention !== 'kernel-row-loop' || ownedChunk.resourceIdentity === undefined) {
+    if (undefined !== 'kernel-row-loop' || ownedChunk.resourceIdentity === undefined) {
       host.rememberJobEventsChunks(categoryId, [
         ...host.derivedChunkOutputs.values(),
       ].filter((entry) => (entry.categoryId ?? host.categoryId) === categoryId

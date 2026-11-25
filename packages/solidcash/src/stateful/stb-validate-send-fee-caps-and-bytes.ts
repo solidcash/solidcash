@@ -10,7 +10,7 @@ import {
   assertFinalizedTransactionBytes,
   finalizedByteGateOptionsForProvider,
   inputSubjectsOfBuilder,
-} from '../message-bus/preflight.js';
+} from '../finalization.js';
 
 export interface ValidateSendFeeCapsAndBytesHost {
   readonly funderUtxos: readonly unknown[];

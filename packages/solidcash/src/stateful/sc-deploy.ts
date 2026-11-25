@@ -8,9 +8,7 @@ import {
   buildChunkCommitment,
   buildEventNftCovenantScript,
   buildInitialStateCommitments,
-  buildMessageBusVerifierCovenantScript,
   computeEventNameHash,
-  messageBusVerifierCommitment,
   splitValueIntoChunks,
   type Artifact,
 } from '@solidcash/utils';
@@ -274,15 +272,6 @@ export async function deployStatefulContract<T extends Artifact>(
   if (threadCount < 1 || !Number.isInteger(threadCount)) {
     throw new Error(`threadCount must be a positive integer, got ${threadCount}`);
   }
-  const messageBusVerificationInputCount = options.messageBusVerificationInputCount
-    ?? (artifact.messageBus?.verifierProgram ? 1 : 0);
-  if (!Number.isSafeInteger(messageBusVerificationInputCount)
-    || messageBusVerificationInputCount < 0 || messageBusVerificationInputCount > 0xffff) {
-    throw new Error(
-      `messageBusVerificationInputCount must be an unsigned 16-bit integer, got ${messageBusVerificationInputCount}`,
-    );
-  }
-
   // Output 0 is the category's authhead contract, never a master: every call spends a master.
   const funderLock = options.funder.generateLockingBytecode();
   const identity = planGenesisIdentity({
@@ -318,13 +307,12 @@ export async function deployStatefulContract<T extends Artifact>(
   const totalEventNft = dataNftAmount * BigInt(emitCount);
   const totalDynamicNft = dataNftAmount
     * BigInt(dynamicInitialChunks.length + unresolvedDynamicWriteNames.length);
-  const totalMessageBusVerifiers = dataNftAmount * BigInt(messageBusVerificationInputCount);
   const identityAnchors = options.identityAnchors ?? [];
   const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
   const totalReserve = (prepared.reserveOutput?.amount ?? 0n) + (prepared.bearerOutput?.amount ?? 0n);
   const totalRequired = totalMaster + totalDataNft + totalEntryNft
     + totalEventNft + totalDynamicNft
-    + totalMessageBusVerifiers + totalIdentity + initialBalance + tokenContainerTotal + leadingTotal + totalReserve
+    + totalIdentity + initialBalance + tokenContainerTotal + leadingTotal + totalReserve
     + estimatedFee;
   const changeAmount = inputTotal - totalRequired;
 
@@ -550,42 +538,6 @@ export async function deployStatefulContract<T extends Artifact>(
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment } },
     });
-  }
-
-  // Composition verifier pool. All instances share the category-branded covenant address and use their
-  // commitment ordinal as a stable identity. A composed transaction consumes one instance and recreates it at
-  // the same input/output index, so N instances permit N independently in-flight root compositions.
-  if (messageBusVerificationInputCount > 0) {
-    const verifierProgram = artifact.messageBus?.verifierProgram;
-    if (!verifierProgram) {
-      throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
-    }
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_VERIFIER_LIMIT === '1') {
-      // eslint-disable-next-line no-console
-      console.error('verifier-limit', {
-        contract: artifact.contractName,
-        maximumInputBytes: options.provider.consensusLimits?.maximumInputBytes,
-        hasLimits: !!options.provider.consensusLimits,
-        providerCtor: options.provider.constructor?.name,
-      });
-    }
-    const verifierAddress = scriptToLockingBytecode(
-      buildMessageBusVerifierCovenantScript(
-        verifierProgram, options.provider.consensusLimits?.maximumInputBytes ?? 10_000,
-      ), 'p2sh32',
-    );
-    for (let instance = 0; instance < messageBusVerificationInputCount; instance++) {
-      builder.addOutput({
-        to: verifierAddress,
-        amount: dataNftAmount,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: binToHex(messageBusVerifierCommitment(instance)) },
-        },
-      });
-    }
   }
 
   // Satoshi container output (if initialBalance > 0)

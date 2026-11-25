@@ -104,7 +104,7 @@ export function reassertNestedEmitEvents(
     && permitsLegacyValueChunkEventReconstruction(
       [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups],
       hasChunkableValueWriteMetadata(host),
-      host.messageBusConvention,
+      undefined,
     );
   if (eventSelection.status === 'absent' && !legacyEventFallback) return;
   const publishFn = chunkableValueWriteAbi(host);

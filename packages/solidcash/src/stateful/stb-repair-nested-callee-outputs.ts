@@ -57,7 +57,6 @@ export interface RepairNestedCalleeOutputsHost {
   readonly allInputs: readonly UnlockableUtxo[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly compilerRouteDelegateBlock: boolean;
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly builderOptions: TransactionBuilderOptions;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly delegateDynamicChunksAtSuffix: boolean;
@@ -220,7 +219,7 @@ export function repairNestedCalleeOutputs(
   }> = [];
   const permitsLegacyNestedDelegateEventRepair = permitsLegacyDelegateEventRepair([
     ...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups,
-  ], host.compilerRouteDelegateBlock, host.messageBusConvention);
+  ], host.compilerRouteDelegateBlock, undefined);
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
     // Compiler-owned delegate routes materialize every declared event and entry inside their balanced frame.
     // The legacy nested-delegate repair below is only for layouts without that physical ownership boundary.

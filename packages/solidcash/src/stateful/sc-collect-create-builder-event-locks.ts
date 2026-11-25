@@ -12,13 +12,13 @@ import {
 } from '@solidcash/utils';
 import { scriptToLockingBytecode } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 
 export type CollectCreateBuilderEventLocksHost = {
   readonly categoryId: string;
   readonly inner: {
     addressType: any;
-    artifact: { events?: readonly any[]; messageBus?: { maximumRows?: number } };
+    artifact: { events?: readonly any[] };
   };
 };
 
@@ -59,10 +59,10 @@ export function collectCreateBuilderEventLocks(
   // band per row (`rowIndex * width + emitIndex`). Without them the frame materializes no event output at all -
   // and a probed handler's own event check can never pass, so its return value can never be derived.
   {
-    const routeRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments;
+    const routeRows = (entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.routeRowArguments;
     const routeEventSlots = (entryAbiFunction?.blockLayout?.slots ?? [])
       .filter((slot) => slot.kind === 'event');
-    const maximumRows = host.inner.artifact.messageBus?.maximumRows ?? 0;
+    const maximumRows = 0;
     const routeEventWidth = maximumRows > 0 && routeEventSlots.length % maximumRows === 0
       ? routeEventSlots.length / maximumRows : 0;
     const known = new Set(emitInfos.map((emitInfo) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`));
@@ -84,10 +84,10 @@ export function collectCreateBuilderEventLocks(
       entryAbiFunction: entryAbiFunction?.name,
       abiEmits: (abiFunction?.emits ?? []).map((emitInfo) => emitInfo.eventSignature),
       entryEmits: (entryAbiFunction?.emits ?? []).map((emitInfo) => emitInfo.eventSignature),
-      routeRows: (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusRowArguments?.map((row) => ({
+      routeRows: (entryAbiFunction as RouteRuntimeAbiFunction | undefined)
+        ?.routeRowArguments?.map((row: any) => ({
           handler: row.handler.name,
-          emits: (row.handler.emits ?? []).map((emitInfo) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`),
+          emits: (row.handler.emits ?? []).map((emitInfo: any) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`),
         })),
       eventSlots: (entryAbiFunction?.blockLayout?.slots ?? [])
         .filter((slot) => slot.kind === 'event').map((slot) => slot.offset),
@@ -112,7 +112,7 @@ export function collectCreateBuilderEventLocks(
   const runtimeEventMetadataSources = [
     abiFunction,
     entryAbiFunction,
-    ...(entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
+    ...(entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.routeRowArguments
       ?.map((row) => row.handler) ?? [],
     ...lowLevelCallUtxoGroups.flatMap((group) => [
       group.compilerRoute?.abiFunction,

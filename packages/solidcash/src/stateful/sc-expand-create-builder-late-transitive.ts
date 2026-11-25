@@ -13,8 +13,8 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
-import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
-import { MessageBusDiagnosticError } from '../message-bus/diagnostics.js';
+import { projectHandlerArguments } from './handler-arguments.js';
+import { RouteDiagnosticError } from './route-diagnostics.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';
 import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
@@ -133,7 +133,7 @@ export async function expandCreateBuilderLateTransitive(
     let index: number | null | undefined = atomicIndex ?? groupIndex;
     let depth = atomicIndex === undefined ? 1 : 0;
     while (index !== undefined && index !== null && index >= 0) {
-      if (seen.has(index)) throw new MessageBusDiagnosticError(
+      if (seen.has(index)) throw new RouteDiagnosticError(
         'L3_RECURSIVE_CLOSURE', 'late call preparation contains a cyclic parent chain', {},
       );
       seen.add(index);
@@ -159,9 +159,7 @@ export async function expandCreateBuilderLateTransitive(
     const parentCallerIdentity = Object.freeze({
       categoryId: parentContract.categoryId,
       lockingBytecode: ordinarySelfIdentity ? binToHex(ordinarySelfIdentity.unlocker.generateLockingBytecode())
-        : logicalParentArtifact.messageBus?.route.inputs.some(
-          (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
-        ) ? binToHex(addressToLockScript(parentContract.target)) : parentContract.inner.lockingBytecode,
+        : parentContract.inner.lockingBytecode,
     });
     const parentOutgoingSelfAddress = hexToBin(parentCallerIdentity.lockingBytecode);
     // Expressions inside this invocation observe its incoming caller, not its own outgoing identity
@@ -174,7 +172,7 @@ export async function expandCreateBuilderLateTransitive(
     const parentFn = (logicalParentArtifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === logicalParentFunctionName);
     if (!parentFn?.externalCalls?.length) return;
-    const graphParentArgs = projectMessageBusHandlerArguments(
+    const graphParentArgs = projectHandlerArguments(
       logicalParentArtifact, parentFn.name, parentFn.selector, graphParentArgsRaw,
     );
     const graphPlanningResults = createGraphPlanningProducerResultContext();
@@ -362,7 +360,7 @@ export async function expandCreateBuilderLateTransitive(
       const proxyCallee = 'implementation' in registeredCallee ? registeredCallee : undefined;
       const callee = (proxyCallee?.proxy ?? registeredCallee) as any;
       // Under predicates the compiler could not write down, no frame can decide whether the parent makes this call.
-      // A message-bus route binds the rows it runs instead.
+      // A route route binds the rows it runs instead.
       if (nested.conditionUnpublished === true && nested.condition === undefined && !parent.compilerRoute) {
         const executing = (proxyCallee?.implementation ?? callee) as { inner?: { artifact?: { contractName?: string } } };
         throw undecidedLateCall(nested, executing.inner?.artifact?.contractName ?? nested.interfaceName);
@@ -431,7 +429,7 @@ export async function expandCreateBuilderLateTransitive(
         callee.categoryId, selectedFn.name,
       );
       const childDepth = expansionDepths[parentGroupIndex] + 1;
-      if (childDepth > MAX_LATE_TRANSITIVE_DEPTH) throw new MessageBusDiagnosticError(
+      if (childDepth > MAX_LATE_TRANSITIVE_DEPTH) throw new RouteDiagnosticError(
         'L3_GRAPH_DEPTH_LIMIT',
         `late call preparation would append depth ${childDepth}, exceeding the deployed `
           + `${MAX_LATE_TRANSITIVE_DEPTH}-depth bound`,

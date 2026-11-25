@@ -494,7 +494,7 @@ export function canShareIdempotentCounterLoopSettlement(params: {
 }
 
 /**
- * Select the message-bus row that owns an expression-keyed entry slot.
+ * Select the route row that owns an expression-keyed entry slot.
  * Later rows decode the same `rowArgs` label shape; matching is by collection + handler arity,
  * then an optional `_rN` hint, then the handler's own expression label.
  */

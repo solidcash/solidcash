@@ -16,7 +16,7 @@ import {
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import { directCallBatchUnlocker } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
+import { defaultInternalFunctionArg } from './internal-function-args.js';
 import { externalReturnParamSlot } from './physical-external-call.js';
 import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
@@ -350,7 +350,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           (slot) => slot.kind === 'blockhashOracle',
         )?.offset;
         if (firstOracleOffset === undefined) {
-          throw new Error('External message-bus batch graph blockhash plan has no physical oracle band');
+          throw new Error('External route batch graph blockhash plan has no physical oracle band');
         }
         bFinalArgs.push(BigInt(masterInputIndex + firstOracleOffset));
         const firstOracle = group.blockInputs?.[firstOracleOffset];
@@ -494,48 +494,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...bFinalArgs)
         : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
 
-    // The external participant's absolute group base is known only here. Resolve its selected message-bus
-    // rows now, place active oracle co-spends at their exact row-band offsets, and leave every inactive slot as the
-    // already-created funder. Computed n values are recovered from B's own covenant trace at B's real index.
-    if (group.graphBlockhashSelections?.length) {
-      if (!group.blockInputs || !group.blockLayout) {
-        throw new Error('External message-bus batch graph blockhash route has no balanced participant block');
-      }
-      const firstOracleOffset = group.blockLayout.slots.find(
-        (slot) => slot.kind === 'blockhashOracle',
-      )?.offset;
-      const plan = group.compilerRoute?.abiFunction.graphBlockhashOracle;
-      if (firstOracleOffset === undefined || !plan) {
-        throw new Error('External message-bus batch graph blockhash metadata/layout mismatch');
-      }
-      const absoluteBase = masterInputIndex + firstOracleOffset;
-      const bSc = group.externalContract as any;
-      const pool: string | undefined = group.externalContract.inner.oraclePool;
-      if (pool === undefined) {
-        throw new Error(`${group.externalContract.inner.name} reads blockhash(n), and binds no oracle pool`);
-      }
-      const prior: Array<{
-        slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output;
-      }> = [];
-      for (const selection of group.graphBlockhashSelections) {
-        const n = host.isComputedBlockhashKey(selection.readKey)
-          ? await host.extractGraphBlockhashRead(bSc,
-            group.masterUtxo as Utxo, bMasterUnlocker, group.dataNftUtxos,
-            prior, absoluteBase, selection.slotOrdinal, plan.slotCount, masterInputIndex,
-          )
-          : host.paramBlockhashN(bSc, selection.readKey, selection.rowArgs, selection.handler);
-        if (n === null) throw new Error(`blockhash: could not resolve external message-bus batch read "${selection.readKey}"`);
-        const coSpend = await resolveBlockhashCoSpend(host.provider, pool, n, prior.map(({ utxo }) => utxo));
-        if (!coSpend) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
-        const physicalOffset = firstOracleOffset + selection.slotOrdinal;
-        group.blockInputs[physicalOffset] = { ...coSpend.utxo, unlocker: coSpend.unlocker };
-        prior.push({
-          slotOrdinal: selection.slotOrdinal, utxo: coSpend.utxo, unlocker: coSpend.unlocker,
-          recreate: coSpend.recreateOutput,
-        });
-        host.noteBhLocktime(coSpend.locktime);
-      }
-    }
+
     if (group.compilerRoute && routeArgIndex !== routeArgs.length) {
       throw new Error(
         `Compiler route '${group.functionName}' supplied ${routeArgs.length} visible arguments, `

@@ -45,8 +45,8 @@ export type OrchestrateCreateBuilderNestedComposeCallsiteHost = {
   readonly externalRegistry: Map<string, any>;
   resolveExternalArgs: (...args: any[]) => any;
   resolveExternalExpressionReturns: (...args: any[]) => Promise<any>;
-  buildRepeatedExternalBatch: (...args: any[]) => any;
-  replaceRepeatedExternalBatchRow: (...args: any[]) => any;
+  buildRepeatedExternalBatch?: (...args: any[]) => any;
+  replaceRepeatedExternalBatchRow?: (...args: any[]) => any;
   encodeStoredElementSource: (...args: any[]) => any;
   encodeStoredValueSource: (...args: any[]) => any;
   nestedIdentity: (address: string) => Promise<any>;
@@ -239,7 +239,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     const callee = resolvedCallee as any;
     const plannedRoute = await planCreateBuilderNestedComposeRouteImpl(
       {
-        buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a),
+        buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch?.(...a),
         resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
         externalReturnsForCallsites,
         selectProxyForwardInput,
@@ -596,9 +596,9 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         {
           resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
           buildRepeatedExternalBatch: (...a: any[]) =>
-            host.buildRepeatedExternalBatch(...a),
+            host.buildRepeatedExternalBatch?.(...a),
           replaceRepeatedExternalBatchRow: (...a: any[]) =>
-            host.replaceRepeatedExternalBatchRow(...a),
+            host.replaceRepeatedExternalBatchRow?.(...a),
           describeValueChunkWrites,
           preparedChildProducerPath,
         },

@@ -93,7 +93,7 @@ export function selectEvmScalarReturnCommitment(
   return undefined;
 }
 
-/** Validate the canonical outer bytes field used by message-bus Solidity return channels. */
+/** Validate the canonical outer bytes field used by route Solidity return channels. */
 export function isCanonicalEvmScalarReturnBlob(
   candidate: Uint8Array, expectedTypes: readonly string[],
 ): boolean {
@@ -381,7 +381,7 @@ export function probeRequireMessage(
       if (requirement?.message) return requirement.message;
     }
   }
-  // Generated message-bus routes have their own instruction coordinates, so an original function-body IP cannot
+  // Generated route routes have their own instruction coordinates, so an original function-body IP cannot
   // be recovered from the route failure. Attribute only when every represented logical function publishes the
   // same single reason; ambiguity deliberately stays unattributed.
   const messages = new Set<string>();

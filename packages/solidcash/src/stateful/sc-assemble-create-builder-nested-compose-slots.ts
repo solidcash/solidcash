@@ -25,7 +25,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
+import type { RouteRuntimeCall } from './route-runtime.js';
 import { addressToLockScript } from '../utils.js';
 import { artifactOraclePool, poolInfoCoSpend, readPoolTimestamp } from '../oracle/pool/reader.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
@@ -42,10 +42,10 @@ import {
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
 import {
-  selectedMessageBusResourceMetadata,
+  selectedRouteResourceMetadata,
   anchorRoutedDynamicResourcesAtOwner,
   rebaseRoutedBatchProofOffsets,
-} from './message-bus-resource-routing.js';
+} from './route-resource-selection.js';
 import {
   concatenateEncodedArrays,
   deriveChunkableArrayValueChannels,
@@ -57,7 +57,7 @@ import {
   resolvePreparedProducerEntry,
   resolveRouteRowExpressionKey,
 } from './route-expression-key.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { RouteRuntimeAbiFunction } from './route-runtime.js';
 import {
   SortedList, getCachedSortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
 } from './SortedList.js';
@@ -364,7 +364,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               if (selectedFn.modifiers?.includes('delegate')) {
                 const sender = host.signer ?? host.logicalNonceSigner;
                 if (!sender) throw new Error(
-                  'A delegated message-bus route requires a connected signer to resolve msg.sender',
+                  'A delegated route route requires a connected signer to resolve msg.sender',
                 );
                 return addressToLockScript(sender.getAddress());
               }
@@ -403,7 +403,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             const encodedName = source.paramName
               ?? ('expressionLabel' in source ? source.expressionLabel : undefined)
               ?? access.keyParams[keyIndex];
-            // Fixed message-bus routes reserve one witness lane per possible row. Only the handler
+            // Fixed route routes reserve one witness lane per possible row. Only the handler
             // selected in that row may consume its lane. The unused ABI witnesses are canonical
             // zeroes, and resolving all of them against the sorted list can select the same
             // predecessor repeatedly; the later input de-duplication then keeps an inactive lane
@@ -648,7 +648,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
     // selects a handler which does not touch those variables. Materialize the old chunks in the same
     // order as a direct call: read-only variables in ABI order, followed by written variables in state
     // declaration order. Inactive union writes are preservation spends, not write-authorized spends.
-    const selectedResources = selectedMessageBusResourceMetadata(childCompilerRoute?.rowArguments);
+    const selectedResources = selectedRouteResourceMetadata(childCompilerRoute?.rowArguments);
     const routeDynamicWrites = selectedFn?.dynamicWrites ?? [];
     const routeDynamicNames = [
       ...(selectedFn?.dynamicReads ?? []).filter((name) => !routeDynamicWrites.includes(name)),
@@ -705,7 +705,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         dynamicChunkOffset += 1;
       }
     }
-    // A fixed message-bus route executes each compiled batch journal even when the selected rows do
+    // A fixed route route executes each compiled batch journal even when the selected rows do
     // not mutate that collection. Those inactive journals preserve their canonical zero-key entry;
     // they still require the real key hash and an authenticated proof rather than all-zero vmap fields.
     const activeSortedBatches = selectedFn?.sortedBatchInfo ?? [];
@@ -790,7 +790,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         const internalArgs: Record<string, FunctionArgument> = {};
         const producerClaims: ValueChunkProducerResourceClaim[] = [];
         const productions: Array<NonNullable<
-        PreparedAtomicMessageBusCall['valueChunkProductions']
+        RouteRuntimeCall['valueChunkProductions']
         >[number]> = [];
         let producerStateOwner: { categoryId: string; lockingBytecode: string } | undefined;
         const effectiveRowArguments = rowArguments ?? discoveredProducerRows?.map((row, index, rows) => (
@@ -853,7 +853,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 structs,
                 timestamp: legacyTimestamp,
                 legacyJobEventCompatibility: legacyCompatibility,
-                resolveElement: (row, rowAccess, elementType) => host.encodeStoredElementSource(
+                resolveElement: (row: any, rowAccess: any, elementType: any) => host.encodeStoredElementSource(
                   rowAccess, elementType, [...row.args], row.handler, sharedLogicalArtifact,
                   recipeState,
                 ),
@@ -1020,8 +1020,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 collectionIdentities: [
                   access.collection, collection.name, collection.signature,
                 ],
-                fixedChunkableWriteSelectors: (proxyCallee?.implementation.inner.artifact
-                  ?? callee.inner.artifact).messageBus?.fixedChunkableWritePolicy?.selectors,
+                fixedChunkableWriteSelectors: undefined,
                 executionLockingBytecode: proxyCallee?.implementation.inner.lockingBytecode
                   ?? callee.inner.lockingBytecode,
                 stateOwnerCategoryId: stateOwner.categoryId,
@@ -1080,7 +1079,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 logicalArtifact: sharedLogicalArtifact,
                 externalContract: { inner: { artifact: sharedLogicalArtifact } },
               }],
-              (selectedFn as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+              undefined,
             )) {
               stageJobEventsValue(callee.categoryId, nextValue);
             }

@@ -98,8 +98,7 @@ For a stateful typed call, the generated covenants bind at least these propertie
    than its function declares, checks each argument it names against the callee's unlocking, inside a loop over a
    parameter array, computed targets or a state array (a table of function pointers too) as well. An interface that
    declares a single function checks no selector there, so give such a callee an interface naming its other
-   functions when the function matters. Under `messageBus: false` a call into a forwarding proxy is refused when it
-   checks arguments, or in a loop a selector; the message bus binds it.
+   functions when the function matters.
 4. The caller and callee replacement outputs obey their respective state covenants.
 5. A typed return comes from the callee's call record: a category-bound return-event output that names the call it
    answers, the only one of its kind the callee admits in the transaction.
@@ -404,38 +403,26 @@ one; a target held only as a plain `address` it cannot see.
 
 Inside a callee, `msg.sender` is the calling contract's address: the locking bytecode of its master, which the
 callee checks is co-spent in the same transaction. When no contract calls the function, `msg.sender` is
-`tx.origin`, the locking bytecode of the first P2PKH input that holds no tokens. A message-bus row's `msg.sender` is
-the caller recorded in the bus manifest.
+`tx.origin`, the locking bytecode of the first P2PKH input that holds no tokens.
 
 The value comes from the transaction's inputs, which the transaction builder chooses, not from a call frame.
-Co-presence of another contract in a transaction is not by itself caller authorization; generated call bindings or
-the message bus transcript establish the call edge. Authorize with `checkSig`, `checkMultiSig`, or
-`checkDataSig` rather than with `msg.sender` alone.
+Co-presence of another contract in a transaction is not by itself caller authorization; generated call bindings
+establish the call edge. Authorize with `checkSig`, `checkMultiSig`, or `checkDataSig` rather than with
+`msg.sender` alone.
 
-## Repeated calls and the message bus
+## Repeated calls to one contract
 
-A UTXO can appear as an input only once. If an invocation graph calls the same physical contract repeatedly, a
-naive layout cannot spend its master once per logical call. Eligible contracts therefore receive a compiler-owned
-message-bus route. The bus executes multiple logical rows against one participant journal and settles one final
-replacement state atomically. Message-bus composition is experimental in this release.
+A UTXO can appear as an input only once, so an invocation graph that calls the same physical contract repeatedly
+cannot spend its master once per logical call. A function may call one fixed target several times, or in a loop:
+the calls run as frames of the callee's multi-call entry, in one spend of its master, each bound to its own call
+record. The callee carries that entry when it is compiled with `callBatch: true`, or in a multi-contract compile
+whose caller repeats calls to it; simple contracts stay without it. A frame is a call to a function that writes at
+most fixed state fields and takes no value, events, token effects, mapping writes or calls of its own. A repeated
+or looped call that does not fit a frame is refused at compile time.
 
-Use [Atomic Calls with the Message Bus](/docs/guides/message-bus) for graph composition, participant limits, and
-diagnostics. Direct calls remain the simpler path when every physical participant is used once. The framed
-convention (`composition: 'framed'`) is a separate, also experimental, composition model; see
-[Framed Composition](/docs/guides/framed-composition).
-
-Under `messageBus: false`, a function may call one fixed target several times, or in a loop, without the bus: the
-calls run as frames of the callee's multi-call entry, in one spend of its master, each bound to its own call record.
-The callee carries that entry when it is compiled with `callBatch: true`, or in a multi-contract compile whose caller
-repeats calls to it; simple contracts stay without it. A frame is a call to a function that writes at most fixed state
-fields and takes no value, events, token effects, mapping writes or calls of its own. Any other repeated or looped
-call to one target is refused there with `MESSAGE_BUS_REQUIRED`; the automatic mode routes it through the bus.
-
-A message-bus build binds a looped call to a fixed target only on its route, row by row, so it runs that entry only
-through the route: the ABI entry is `routeOnly`, and a direct spend of the entry's own selector runs only with an
-empty loop (no callee) - a direct run that enters the loop is rejected, since the entry body co-spends no callee.
-When the route does not serve the entry, the automatic mode compiles the contract direct instead, where the loop
-runs as frames or is refused, and `messageBus: true` refuses it with `ROUTE_ONLY_ENTRY_UNSERVED`.
+Direct calls remain the simpler path when every physical participant is used once. The framed convention
+(`composition: 'framed'`) is a separate composition model for repeated entry into a contract already active in the
+transaction; see [Framed Composition](/docs/guides/framed-composition).
 
 ## Practical limits
 

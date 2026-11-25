@@ -9,7 +9,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { evaluateFixedEffectPredicate } from '../message-bus/message-bus.js';
+import { evaluateFixedEffectPredicate } from './fixed-effect-predicate.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 
 export interface SeedOwnerCurrentStateHost {

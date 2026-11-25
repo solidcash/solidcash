@@ -57,9 +57,7 @@ export function buildParticipantProbeProgram(
     if (!changed) continue;
     const selector = unlocker.abiFunction.selector;
     if (selector === undefined) throw new Error('Participant probe route is missing its selector');
-    const localUnlocker = unlocker.contract.createCompilerRouteUnlocker(
-      unlocker.abiFunction, hexToBin(selector),
-    )(...params);
+    const localUnlocker = unlocker.contract.unlockerFor(unlocker.abiFunction)(...params);
     program.transaction.inputs[inputIndex].unlockingBytecode = localUnlocker.generateUnlockingBytecode({
       ...program, inputIndex,
     });

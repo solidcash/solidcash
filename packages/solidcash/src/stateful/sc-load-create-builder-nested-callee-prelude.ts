@@ -9,15 +9,14 @@ import type {
   StateLayout,
   StateValue,
 } from '@solidcash/utils';
+import { selectGraphBlockhashReads } from './route-runtime.js';
 import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE, parseChunkCommitment } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import { callBatchFrameLayout } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import {
-  selectGraphBlockhashReads,
-} from './sc-batch-raw.js';
+import { vmapCounterPermutationSpec } from './internal-function-args.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
 import { isDirectConventionArtifact } from './sc-expand-resolve-create-builder-external-calls.js';
 import type { OnChainState } from './StateReader.js';

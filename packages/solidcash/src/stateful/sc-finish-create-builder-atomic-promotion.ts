@@ -8,10 +8,7 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
-import {
-  isBusCompiledEntry,
-  isDirectConventionArtifact,
-} from './sc-expand-resolve-create-builder-external-calls.js';
+import { isDirectConventionArtifact } from './sc-expand-resolve-create-builder-external-calls.js';
 import {
   canonicalValueChunkProducerPathContext,
   type ValueChunkProducerPathDisposition,
@@ -79,11 +76,9 @@ export function finishCreateBuilderAtomicPromotion(params: {
       callerSets.set(owner, callers);
     }
     const requiresAtomicPromotion = [...ownerInvocationCounts.values()].some((count) => count > 1);
-    // A direct compile keeps the direct convention: it is never promoted to the bus at send.
     const rootNode = preparedAtomicNodes[0];
     const rootArtifact = rootNode?.executionArtifact ?? rootNode?.contract.inner.artifact;
-    if (requiresAtomicPromotion && rootArtifact !== undefined && isDirectConventionArtifact(rootArtifact)
-      && !isBusCompiledEntry(rootArtifact, rootNode.selector)) {
+    if (requiresAtomicPromotion && rootArtifact !== undefined && isDirectConventionArtifact(rootArtifact)) {
       throw new Error(`${rootArtifact.contractName}.${functionName}() reaches one state owner more than once `
         + 'through the calls its callees make. A direct compile runs repeated calls only through a callee\'s '
         + 'multi-call entry, for the calls a caller makes itself, and is never composed on the '

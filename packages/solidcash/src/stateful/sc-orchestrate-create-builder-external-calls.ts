@@ -596,8 +596,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       }
       // A raw call's `{value:}` pays the call's target address, the co-spent callee's master lock, where the coin is
       // stuck, and the callee reads msg.value from its satoshi container, which the payment never reaches. Refuse it
-      // before a layout is planned. A route participant settles its value edge in its route; a send of that one
-      // refuses the master-lock output itself.
+      // before a layout is planned.
       if (callInfo && ec.interfaceName === '__raw__' && ec.callValueEffect === true
       ) {
         const callee = callInfo.externalContract.inner.artifact.contractName;

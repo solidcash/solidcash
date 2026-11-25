@@ -820,7 +820,7 @@ const BODY_VARIABLE_PREFIX = 'body_';
 const generateDefinedFunctionBodyScripts = (contract: Contract): WalletTemplate['scripts'] =>
   Object.fromEntries(Object.keys(contract.artifact.functionBodies ?? {}).flatMap((selector) => {
     const abiFunction = contract.artifact.abi.find((candidate) => candidate.selector === selector);
-    // The call-batch entry (SCB1) has a defined body and source map but no public ABI entry. The main
+    // The multi-call entry (0x53434442) has a defined body and source map but no public ABI entry. The main
     // debug script references these bodies too, so every referenced definition needs a template script.
     if (!contract.artifact.debug?.functionDebug?.[selector]) return [];
     return [[getDefinedFunctionBodyLockScriptName(contract.artifact.contractName, selector), {

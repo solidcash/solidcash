@@ -338,7 +338,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               if (selectedFn.modifiers?.includes('delegate')) {
                 const sender = host.signer ?? host.logicalNonceSigner;
                 if (!sender) throw new Error(
-                  'A delegated route route requires a connected signer to resolve msg.sender',
+                  'A delegated call requires a connected signer to resolve msg.sender',
                 );
                 return addressToLockScript(sender.getAddress());
               }
@@ -649,9 +649,8 @@ export async function assembleCreateBuilderNestedComposeSlots(
         dynamicChunkOffset += 1;
       }
     }
-    // A fixed route route executes each compiled batch journal even when the selected rows do
-    // not mutate that collection. Those inactive journals preserve their canonical zero-key entry;
-    // they still require the real key hash and an authenticated proof rather than all-zero vmap fields.
+    // An inactive batch journal preserves its canonical zero-key entry; it still requires the real key hash and
+    // an authenticated proof rather than all-zero vmap fields.
     const activeSortedBatches = selectedFn?.sortedBatchInfo ?? [];
     const allBatchSlots = new Set((selectedFn?.sortedBatchInfo ?? [])
       .flatMap((batch) => batch.slotIndices));

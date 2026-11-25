@@ -431,7 +431,7 @@ export function isDynamicChunkCommitmentAtIndex(commitment: string, index: numbe
 export function extractPendingReturnCommitment(
   fullTrace: AuthenticationProgramStateCommon[], expectedPushes = 1, expectedTypes?: readonly string[],
 ): string | undefined {
-  // A route route returns one `bytes` value whose payload is the concatenated encoding of each logical
+  // A route returns one `bytes` value whose payload is the concatenated encoding of each logical
   // handler result. The return-event commitment therefore wraps that inner result vector in one outer bytes
   // push; the opcode-count checks below intentionally inspect the unwrapped inner vector.
   const asRouteReturn = (inner: Uint8Array): string =>

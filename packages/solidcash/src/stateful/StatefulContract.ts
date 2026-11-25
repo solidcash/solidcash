@@ -6606,8 +6606,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && typeof (arg as { address?: unknown }).address === 'string'
         ? (arg as { address: string }).address : arg;
       if (typeof addressArg !== 'string') return addressArg;
-      // The registry distinguishes a plain contract's execution lock from a journal participant's authenticated
-      // public CREATE identity. Use that same value for ABI arguments and genesis state, so both paths agree.
+      // The registry distinguishes a plain contract's execution lock from the authenticated public CREATE identity
+      // of a contract that has one. Use that same value for ABI arguments and genesis state, so both paths agree.
       // An external-call target takes the same treatment: the covenant compares addresses as values, and a raw
       // CashAddress string left in the frame reaches it as UTF-8 text instead of a lock.
       const registered = registeredValueAddressLockingBytecode(this.inner.provider, addressArg);

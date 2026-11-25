@@ -339,7 +339,7 @@ export async function completeCreateBuilderNestedUnlockers(
         const call = childFn.externalCalls?.[slot];
         const nestedGroupIndex = childNestedGroupIndexForSlot(slot);
         // Pin the selector on the physical co-spend. Shared logical calls inherit the first group's proxy
-        // delegate, and a batched delegate unlocks with the call-batch selector (`SCB1`), not a row selector.
+        // delegate.
         const selected = physicalExternalCallSelectorHex(
           externalCallUtxoGroups, lowLevelCallUtxoGroups, nestedGroupIndex,
         );

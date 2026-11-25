@@ -112,9 +112,9 @@ export function scaledEmitOutputIndex(
 
 export function emitDestinationIndices(host: ScaledPreserveEmitHost): number[] {
   // `blockLayout` is the builder's effective physical layout. It can be a
-  // compiler-selected route route rather than the public entry ABI,
-  // so its root event frame is authoritative even when the executing
-  // delegate implementation declares no events of its own.
+  // delegate execution layout rather than the public entry ABI's, so its
+  // root event frame is authoritative even when the executing delegate
+  // implementation declares no events of its own.
   const dests = (host.blockLayout?.slots ?? [])
     .filter((slot) => slot.kind === 'event')
     .map((slot) => slot.offset);

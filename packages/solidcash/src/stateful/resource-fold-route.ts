@@ -672,19 +672,10 @@ export function evaluateFoldActivation(
   return false;
 }
 
-
 export type FoldActivationEnvResolveOptions = {
   participantIndex?: number;
   nestedScopeId?: number;
 };
-
-/** Direct compilation selects no route rows, so a row activation environment has no effects to evaluate. */
-export function foldActivationEnvironmentFromRouteRow(
-  _row: RouteExpressionKeyRow,
-  _options?: FoldActivationEnvResolveOptions,
-): FoldActivationEnvironment {
-  return {};
-}
 
 /** Direct compilation selects no route rows, so every row resolves to an empty activation environment. */
 export function createFoldRowActivationEnvResolver(

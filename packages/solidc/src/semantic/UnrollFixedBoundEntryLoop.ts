@@ -45,7 +45,6 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { AddressType, MappingType, ArrayType, type Type } from '@solidcash/utils';
 import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
-import { type PointerTableExpansionMap, recordPointerTableExpansion } from './PointerTableBound.js';
 
 const MAX_UNROLL = 64;
 
@@ -57,8 +56,8 @@ const MAX_UNROLL = 64;
  * by EntryWriteInLoopError, because one fixed entry slot can't hold N runtime entries). Distinct constant-index
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
- * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, a contract
- * instantiation, or an indirect external function-pointer call (else unrolling is needless). With `effects`, a
+ * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call or a contract
+ * instantiation (else unrolling is needless). With `effects`, a
  * payment, send, token transfer or event in the body fires it too: each such site has one output register, which
  * every turn of a rolled loop would fill, so each unrolled turn takes a site of its own, pinned and counted as a
  * hand-written one is, and a branch whose predicate the turn's literal decides keeps only the arm it takes. A body
@@ -88,8 +87,6 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private effectfulFunctionNames = new Set<string>();
 
   constructor(
-    private readonly indirectCallsOnly = false,
-    private readonly expansions?: PointerTableExpansionMap,
     // A fixed loop whose body makes an effect unrolls (see the class comment).
     private readonly effects = false,
   ) {
@@ -132,8 +129,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const prevName = this.currentFunction;
     this.currentFunction = node.name;
     const mutationScan = this.collectMutatedNames(node.body);
-    // The indirect-calls-only pass expands only pointer-table loops, so it skips every other function.
-    if ((this.indirectCallsOnly && !mutationScan.hasIndirectCall) || !mutationScan.hasCandidateLoop) {
+    if (!mutationScan.hasCandidateLoop) {
       this.currentFunction = prevName;
       return node;
     }
@@ -158,19 +154,12 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // size can never be stale (sound regardless of control flow / scoping). Length-PRESERVING ops are deliberately
   // excluded so they don't over-block the fold: an element write `arr[i]=v` (ArrayAssignNode) and an element
   // delete `delete arr[i]` (ArrayDeleteNode) keep the length, so `new T[](1); a[0]=v;` stays foldable.
-  private collectMutatedNames(body: Node | undefined): {
-    names: Set<string>; hasCandidateLoop: boolean; hasIndirectCall: boolean;
-  } {
+  private collectMutatedNames(body: Node | undefined): { names: Set<string>; hasCandidateLoop: boolean } {
     const names = new Set<string>();
     let hasCandidateLoop = false;
-    let hasIndirectCall = false;
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof WhileNode) hasCandidateLoop = true;
-      if (n instanceof IndirectCallNode
-        || (n instanceof MethodCallNode && (n.selectorArrayVar !== undefined || n.pointerTableBroadcast))) {
-        hasIndirectCall = true;
-      }
       if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) names.add(n.identifier.name);
       // A tuple assignment rebinds every non-skip slot. `(a, b) = (b, a)` swaps whole array values, so a
       // `new T[](N)` size recorded for `a` would otherwise stay trusted while `a` now holds b's array.
@@ -187,7 +176,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
     };
     walk(body);
-    return { names, hasCandidateLoop, hasIndirectCall };
+    return { names, hasCandidateLoop };
   }
 
   visitBlock(node: BlockNode): Node {
@@ -275,30 +264,17 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Static break/continue replay below preserves their source target;
     // returns and runtime-selected escapes remain rolled.
-    // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly mode.
-    // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
-    // WHOLE table after the loop, and unrolling it into N single-element callsites changes the direct ABI
-    // (per-element selector and master-index witnesses) that shipped broadcast callers use.
+    // A function-pointer loop is no unroll trigger: `fns[i](v)` in a loop is the ordinary broadcast idiom, whose
+    // covenant reads and verifies the WHOLE table after the loop, and unrolling it into N single-element callsites
+    // changes the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
     // A payment, send, token transfer or event (`effects` only) has the same need: its site owns one output
     // register, so each turn must become a site of its own. A call to a function that makes one would still share
     // that function's site between the turns, so such a body stays rolled and the generator's guard refuses it.
-    const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     const hasMappingWrite = this.hasMappingWrite(bodyStmts);
-    const effectSites = this.effects && !this.indirectCallsOnly && this.hasEffect(bodyStmts)
-      && !this.callsEffectfulFunction(bodyStmts);
-    if (this.indirectCallsOnly ? !hasIndirectCall
-      : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
-        && !this.hasChildDeployment(bodyStmts) && !effectSites)) return undefined;
+    const effectSites = this.effects && this.hasEffect(bodyStmts) && !this.callsEffectfulFunction(bodyStmts);
+    if (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
+      && !this.hasChildDeployment(bodyStmts) && !effectSites) return undefined;
     const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
-    // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
-    // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
-    if (hasIndirectCall
-      && this.countNodes(bodyStmts, (n) => n instanceof IndirectCallNode
-        || (n instanceof MethodCallNode && (n.selectorArrayVar !== undefined || n.pointerTableBroadcast))) === 1) {
-      recordPointerTableExpansion(
-        this.expansions, this.currentFunction, { count: values.length, guarded: false },
-      );
-    }
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
     // across the N copies (Solidity block scoping). A single iteration is inlined into the enclosing block, so its

@@ -75,9 +75,8 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
   }
 
   /**
-   * Recognize BoringBatchable's self-delegate loop. One active BCH owner UTXO cannot be co-spent repeatedly;
-   * the artifact marks this ABI surface so the SDK can map it to the ordered local route route, which executes
-   * all rows over one pre/post journal. Until that mapping is available, the direct selector fails closed.
+   * Recognize BoringBatchable's self-delegate loop. One active BCH owner UTXO cannot be co-spent repeatedly, so
+   * the artifact marks this ABI surface and the direct selector fails closed.
    */
   private lowerCanonicalSelfBatch(fn: FunctionDefinitionNode): boolean {
     if (fn.name !== 'batch' || fn.parameters.length !== 2

@@ -416,48 +416,6 @@ export interface CustomModifierInvocation {
   location: Location;
 }
 
-/**
- * Lossless, typed source snapshot for a locally constructed mapping-key vector.
- *
- * This deliberately remains compiler-internal: a later descriptor lowering projects the replayable subset into
- * the SDK ABI. Keeping the complete source program here means that lowering/inlining cannot manufacture a
- * provenance proof after the fact. `sourceFunctionIdentity`, rather than a local variable spelling, is the
- * durable key shared by all physical route clones of the source function.
- */
-
-/**
- * Compiler-only execution coordinate.  It intentionally contains neither source spellings nor source locations:
- * statement paths give the source execution nesting and preorder gives a deterministic tie-breaker inside a
- * statement.  It is retained solely to bind a future journal witness protocol to the source program which was
- * actually analysed before lowering.
- */
-export interface KernelJournalStreamExecutionCoordinate {
-  readonly statementPath: readonly number[];
-  readonly preorder: number;
-}
-
-/**
- * One exact locally-constructed-vector data-flow edge discovered before compiler admission.
- *
- * This is deliberately not an ABI and must never influence route selection.  In particular, it lets later
- * carrier work distinguish one allocation feeding one producer write and one mapping-key consumer from a
- * merely similar lowered array expression, without using a local variable name as an identity.
- */
-export interface KernelJournalStreamPlanEdge {
-  readonly allocationOrdinal: number;
-  readonly allocation: KernelJournalStreamExecutionCoordinate;
-  readonly producerLoop: KernelJournalStreamExecutionCoordinate;
-  readonly producerWrite: KernelJournalStreamExecutionCoordinate;
-  readonly consumerLoop: KernelJournalStreamExecutionCoordinate;
-  readonly consumerWrite: KernelJournalStreamExecutionCoordinate;
-  readonly consumerKeyComponent: number;
-}
-
-export interface KernelJournalStreamPlan {
-  readonly version: 1;
-  readonly edges: readonly KernelJournalStreamPlanEdge[];
-}
-
 export class FunctionDefinitionNode extends Node implements Named {
   /** A framed entry's top-level state writes, as its frame's own facts state them (`framedStateWrites`). */
   framedStateWrites?: readonly { readonly name: string; readonly value: ExternalCallExpression }[];
@@ -821,14 +779,6 @@ export class FunctionDefinitionNode extends Node implements Named {
    * admission must retain this marker across speculative clones and refuse the generic tail-loop representation.
    * The name still says read; a write-only shape sets it too, because that loop also has no per-frame key witness. */
   unloweredVaryingRecursiveMappingRead?: boolean;
-  /** An indirect internal call may reach a journal-context ABI without a statically complete target set. The
-   * journal must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */
-  kernelJournalContextUnsafeCall?: boolean;
-  /** A source entry reaches an internal effect helper which closes over a contract constructor parameter.
-   * External-call lowering appends a physical settlement frame to that helper, but the constructor-captured
-   * value has no source-row slot from which that frame can be rebuilt. Compiler admission records this before
-   * graph lowering so the handler remains a deterministic JOURNAL_LAYOUT refusal rather than reaching type/codegen
-   * with a source-arity helper call. */
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
@@ -1063,11 +1013,6 @@ export class ParameterNode extends Node implements Named, Typed {
   // reference (a delegate-library forwarded arg `L.f(x)`, or a branded library's `__brand` ctor arg). The
   // unused-variable warning must skip it.
   syntheticallyUsed = false;
-  /**
-   * Physical journal-journal context copied from a callee solely to keep an internal OP_INVOKE chain's frame
-   * uniform. This operand belongs to the generated route, not to the source entry point's published ABI.
-   */
-  kernelJournalForwardedContext = false;
   /** A contract parameter of a deployer `create`: part of C's redeem arguments A (A4.2), not a constructor arg. */
   deployerContractParameter = false;
 
@@ -1487,8 +1432,6 @@ export class CatchClauseNode extends Node {
 
 export class DoWhileNode extends StatementNode {
   forLoopUpdateCount: number = 0;
-  /** Retains source-loop provenance across early journal lowering and pristine binder recompilation. */
-  sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
 
@@ -1508,8 +1451,6 @@ export class WhileNode extends StatementNode {
   // Number of trailing block statements that form a desugared for-loop update (see AstBuilder.visitForStatement).
   // Used by BreakContinueTransformation so `continue` still runs the update.
   forLoopUpdateCount: number = 0;
-  /** Retains source-loop provenance across early journal lowering and pristine binder recompilation. */
-  sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
   /**

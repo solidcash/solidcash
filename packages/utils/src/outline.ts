@@ -132,9 +132,8 @@ const pushedNumber = (element: Script[number]): number | undefined => {
  * admitting shorter spans, which is the same failure mode this floor already existed to hold back.
  *
  * Later compiler/SDK derivation changes made 10 pass the vmap and runtime regressions again. Solidc now probes
- * 12 through 10 for ordinary contracts and keeps a narrower window only when its measured whole-script result is smaller;
- * route contracts retain 12 because their exact active-bytecode resource model is separately pinned.
- * Keeping 12 as this API's default preserves conservative behavior for direct utility callers.
+ * 12 through 10 for ordinary contracts and keeps a narrower window only when its measured whole-script result is
+ * smaller. Keeping 12 as this API's default preserves conservative behavior for direct utility callers.
  */
 export const MINIMUM_WINDOW_ELEMENTS = 12;
 // Smallest single data push seeded as a candidate in its own right. A site costs an id push plus OP_INVOKE, so

@@ -126,7 +126,6 @@ import {
   SelfdestructStatementNode,
   UncheckedNode,
   type CallOptions,
-  type GraphEffectFrame,
   exactArrayLength,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -263,8 +262,6 @@ import {
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 
-const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
-const KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS = 33;
 import { reachableFreeFunctionsInSource } from './PruneUnreachableFreeFunctions.js';
 import { reachableContractFunctions } from './PruneUnreachableMsgDataMethods.js';
 import { emitCompilerWarning } from '../warnings.js';
@@ -2446,12 +2443,6 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitParameter(node: ParameterNode): Node {
-    const journalSegmentSuffix = node.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)
-      ? node.name.slice(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX.length)
-      : undefined;
-    const compilerOwnedJournalSegment = journalSegmentSuffix !== undefined
-      && /^(0|[1-9][0-9]*)$/.test(journalSegmentSuffix)
-      && Number(journalSegmentSuffix) < KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS;
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || node.name.startsWith('__internal__vmapCounterOld_')
       || node.name.startsWith('__internal__vmapCounterValue_')
@@ -2464,7 +2455,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.name.startsWith('__internal__valueWitness_')
       || node.name.startsWith('__internal__leadingPushValue_')
       || node.name.startsWith('__internal__collectionIter')
-      || compilerOwnedJournalSegment
       || (node.name === '__internal__msgSenderAnchorIdx'
         && (node.syntheticallyUsed || generatedOriginOf(node.location) !== undefined))
       || [
@@ -2487,8 +2477,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__upgradeStateSuffix',
         '__internal__blockhashInputIndex',
         '__internal__blockhashRowOffset',
-        '__internal__kernelJournalAccessStreams',
-        '__internal__kernelJournalRecords',
         '__internal__vmapBatchTrailingCount',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
@@ -19852,36 +19840,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.data = this.visit(node.data) as ExpressionNode;
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
-    const lowered = this.lowerVoidRawCallToGraphEdge(node);
-    if (!lowered) return node;
-    // This rewrite happens while the enclosing body is already being visited. Visit the newly created graph
-    // expression now so the active body survey sees an external edge; the later external-call pre-scan is gated
-    // by that survey and otherwise leaves the sentinel slot index on this compiler-created node.
-    lowered.expression = this.visit(lowered.expression!) as ExpressionNode;
-    return lowered;
-  }
-
-  /**
-   * X18: on the route route, lower a VOID `addr.call(payload);` / `addr.staticcall(payload);` to the same
-   * opaque `__raw__` graph edge the RETURNING spelling already uses, with no result binding.
-   *
-   * The two spellings of one callsite were represented differently: the returning form became a `__raw__`
-   * external-call slot (a callManifest row), the void form stayed a `LowLevelCallStatementNode` whose co-spend is
-   * a `lowLevelCall` block slot. A graph emission handler shares the hidden route's PHYSICAL block layout, which
-   * reserves no such slot for it, so the void form reached code generation and leaked the internal
-   * `Block slot not found: lowLevelCall[0]`.
-   *
-   * The rewrite runs during the body visit, before every pre-scan, so the callsite is counted as an external
-   * call rather than a low-level call from the start. Gated on route graph mode: the direct route keeps
-   * its fire-and-forget block-slot form, whose co-spend the SDK supplies via `.withExternalCall()`.
-   *
-   * Only the shapes `LowLevelCallShapes` admits are lowered: option-free `call`/`staticcall`, plus a regular
-   * call carrying an authenticated value transfer and an optional inert gas hint. A different call option, a
-   * `delegatecall` (a delegate participant edge with its own authority argument), or a non-address receiver is
-   * left alone for its own diagnostic.
-   */
-  private lowerVoidRawCallToGraphEdge(_node: LowLevelCallStatementNode): MethodCallStatementNode | undefined {
-    return undefined;
+    return node;
   }
 
   /**
@@ -19930,7 +19889,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // A payload naming a function that declares a result is lowered too: only the raw external call reads its
     // callee's record, where the low-level form would answer with no result read. A framed body lowers such a call
     // to a typed call of its own.
-    if (!this.payloadNamesReturningFunction(node.data)) return undefined;
+    if (this.compilerOptions.composition === 'framed' || !this.payloadNamesReturningFunction(node.data)) {
+      return undefined;
+    }
     if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
     const valueCall = node.callMode === 'call'
       && node.callOptions?.value !== undefined
@@ -20018,93 +19979,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? ['state variables in data NFTs'] : []),
     ];
     if (records.length > 0) throw new UpgradeStrandsBoundStateError(upgrade, upgrade.name, records);
-  }
-
-  /**
-   * SEC-7. Refuse a routed graph emission handler whose effect the route has no frame for.
-   *
-   * `this.tokens[c].transfer(..)` never reaches InlineStoragePointerCalls' refusal, and not because it is the
-   * wrong node kind: for this shape route synthesis runs AFTER lowering, so that pass never sees the clone at
-   * all. The clone is therefore never flattened and its edges stay bound (2 recomputations, measured) - but the
-   * route reserves no tokenContainer input slot and no tcTransfer outputs, so the transfer the handler states
-   * simply does not happen. Measured on the same contract: the DIRECT entry point's block goes from [master] to
-   * [master, tokenContainer, tcTransfer] when the transfer is added, while the ROUTE's block stays
-   * [master, dataNft] either way. Same function, two entries, and the SPENDER picks which one - so this is not
-   * merely lossy, it is spender-selected effect omission, and a counterparty called in the same graph advances
-   * its state as though the payment happened.
-   *
-   * X29's per-site output frames cannot express it: a token container is a CO-SPENT INPUT bound to a category
-   * parameter's stack identity, one for the whole route rather than one per dispatch site, and route synthesis
-   * deliberately keeps token handlers off the clone path for that reason. So this fails closed here, where the
-   * clone and its accesses are both visible whichever order synthesis ran in.
-   */
-
-  /**
-   * X29. Is every entry in this handler's `transferInfos` one the per-site frames actually settle?
-   *
-   * `collectTransferStatements` also records a `{value:}` CALL OPTION as a transfer. E2 admits exactly the
-   * singular raw-call value option in graph mode: its authenticated external-call node publishes the recipient
-   * and amount, and the same per-site frame settles its transfer output. An admitted stateful child deployment
-   * likewise publishes its derived recipient and typed amount recipe in child-deployment metadata. Typed options
-   * and every other option remain outside this count and therefore retain the fail-closed mixed-effect rule below.
-   */
-
-  /**
-   * X29. Plan the owner-local effect frames the route batch route owes its effect-carrying graph emission handlers.
-   *
-   * SEC-5/SEC-6: a graph emission handler must stay behind OP_INVOKE, because only then does the route
-   * recompute its outgoing edges and compare them against the authenticated callManifest. Flattening it makes
-   * an aggregate body the current function at code generation and every edge generates unbound. But a handler carrying
-   * an `emit` or a `transfer` produces OUTPUTS, and outputs are addressed through a block layout that only an
-   * ENTRY POINT has - so the un-flattened handler had nowhere to put them and the effect was silently dropped.
-   *
-   * The route owns the block, so the route reserves the slots. The handler is ONE shared subroutine invoked
-   * once per dispatch site, so a compile-time output index cannot distinguish the sites: each site gets a
-   * consecutive frame `[base + site * width, ... + width)` and the site ordinal rides to the subroutine as
-   * hidden context (GenerateTargetTraversal). Sites that dispatch DIFFERENT handlers share a frame ordinal on
-   * purpose - one row reaches exactly one handler, so their frames are mutually exclusive.
-   */
-
-  /**
-   * Runtime row-loop clones settle trailing vmap upserts (`m[xs[i]] = v`) inside OP_INVOKE. Those writes index
-   * outputs from the route's `blockSize`, so the clone must share the route layout rather than the 1-slot
-   * default an internal function would otherwise compile against. Source entry points keep their own layout
-   * for direct calls. Distinct key identities on one collection stay distinct physical slots.
-   */
-
-  /**
-   * Re-derive a shared graph-effect frame's cached block-layout offsets after the route's layout is recomputed.
-   *
-   * Codegen addresses effect sites through these offsets (`emitLoopRowEffectSlotIndex` /
-   * `emitGraphEffectSlotIndex` read `frame.eventOffset`), while the SDK materializes the SAME outputs from the
-   * published layout. A stale offset therefore makes the program verify against an output the SDK never
-   * materialized. A kind the refreshed layout does not carry KEEPS its cached offset: the frame is shared with
-   * handlers compiled against a layout that did carry it, and an unconditional overwrite left those sites
-   * addressing slot `-1`.
-   */
-  private refreshGraphEffectFrameOffsets(frame: GraphEffectFrame, route: FunctionDefinitionNode): void {
-    const layout = route.blockLayout;
-    if (!layout) return;
-    const offsetOf = (
-      kind: 'event' | 'transfer' | 'tcTransfer' | 'ecrecoverSideCar' | 'deploy', slotIndex: number,
-    ): number | undefined =>
-      layout.slots.find((slot) => slot.kind === kind && slot.slotIndex === slotIndex)?.offset;
-    const eventOffset = offsetOf('event', frame.eventBase);
-    if (eventOffset !== undefined) frame.eventOffset = eventOffset;
-    const transferOffset = offsetOf('transfer', frame.transferBase);
-    if (transferOffset !== undefined) frame.transferOffset = transferOffset;
-    const tokenTransferOffset = offsetOf('tcTransfer', frame.tokenTransferBase);
-    if (tokenTransferOffset !== undefined) frame.tokenTransferOffset = tokenTransferOffset;
-    const ecrecoverOffset = offsetOf('ecrecoverSideCar', frame.ecrecoverBase ?? 0);
-    if (ecrecoverOffset !== undefined) frame.ecrecoverOffset = ecrecoverOffset;
-    const deployOffset = offsetOf('deploy', frame.deployBase ?? 0);
-    if (deployOffset !== undefined) {
-      frame.deployOffset = deployOffset;
-      frame.deployInputOffset = deployOffset - layout.slots
-        .filter((slot) => slot.offset < deployOffset
-          && ['transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'deployDataNft'].includes(slot.kind))
-        .length;
-    }
   }
 
   /** Whether `body` writes the local or parameter `name`: assigns it or an element of it, pushes, pops or deletes. */

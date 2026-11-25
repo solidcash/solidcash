@@ -56,9 +56,8 @@ import AstTraversal from '../ast/AstTraversal.js';
  * redirected to a fresh local `__dlcache_V` (state-array write statements become local array statements;
  * index reads / `.length` / bare reads are MappingAccess/Identifier nodes that resolve to the local by name
  * after the rename). A cache read `V` is prepended and a flush `V = __dlcache_V` appended. The flush is
- * gated on `__dlcache_dirty_V`: a route route also invokes handlers that write V through the journal,
- * and an unconditional flush of the untouched snapshot publishes that pre-call blob over the handler's
- * update. Runs before semantic analysis so the renamed accesses resolve as a local array.
+ * gated on `__dlcache_dirty_V`, so a body that never wrote V publishes no write. Runs before semantic analysis so
+ * the renamed accesses resolve as a local array.
  */
 const PREFIX = '__dlcache_';
 

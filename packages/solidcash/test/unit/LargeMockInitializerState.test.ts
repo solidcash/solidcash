@@ -4,7 +4,7 @@ import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { deriveLargeMockInitializerState } from '../../src/stateful/upgrades.js';
 
 describe('large mock initializer legacy fence', () => {
-  const provider = new MockNetworkProvider({ consensus: { maximumInputBytes: 1_000_000 } });
+  const provider = new MockNetworkProvider({ consensusLimits: { maximumInputBytes: 1_000_000 } });
   const legacy = {
     bytecode: 'OP_0 '.repeat(100_001).trim(),
     abi: [{ name: 'initialize', inputs: [{ name: 'counter_', type: 'int' }] }],

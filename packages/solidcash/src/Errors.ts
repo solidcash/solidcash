@@ -126,6 +126,21 @@ export class ListedCallNotMadeError extends Error {
   }
 }
 
+/**
+ * A low-level call a loop may make more than once (`perTurn`) takes one `withCall()` callee per turn, each a run of its
+ * own. The SDK refuses a listing it cannot lay out that way, naming why.
+ */
+export class LowLevelCallTurnsError extends Error {
+  constructor(
+    /** The calling function, `Contract.function`. */
+    public readonly caller: string,
+    public readonly reason: string,
+  ) {
+    super(`${caller}'s low-level call in a loop takes one withCall() callee per turn, each a run of its own: ${reason}.`);
+    this.name = 'LowLevelCallTurnsError';
+  }
+}
+
 export class UndefinedInputError extends Error {
   constructor() {
     super('Input is undefined');

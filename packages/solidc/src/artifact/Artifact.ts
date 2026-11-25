@@ -4390,6 +4390,7 @@ function buildFunctionAbiMetadata(
         ...(lc.dataParamIndex !== undefined && { dataParamIndex: lc.dataParamIndex }),
         ...(lc.occurrence !== undefined && { occurrence: lc.occurrence }),
         ...(lc.maximumOccurrences !== undefined && { maximumOccurrences: lc.maximumOccurrences }),
+        ...(lc.perTurn === true && { perTurn: true as const }),
         ...(lc.condition !== undefined && { condition: lc.condition }),
         // Always published, `computed` included, so a row that carries NO `target` identifies an artifact
         // compiled before the field existed. Absent is read as unknown, never as an unconstrained target.

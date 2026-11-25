@@ -648,6 +648,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     dataParamIndex?: number;
     occurrence?: 'once' | 'conditional' | 'loop';
     maximumOccurrences?: number;
+    /** A `call` a loop may make more than once, each turn binding its own callee run (ABI `perTurn`). */
+    perTurn?: true;
     /** Serialized lexical predicates guarding a `conditional` callsite, in the external-call expression vocabulary. */
     condition?: ExternalCallExpression;
     // Solidity-compat call/staticcall sites: the target and payload as an opaque `__raw__` call serializes its

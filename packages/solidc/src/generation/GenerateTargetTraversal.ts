@@ -131,6 +131,8 @@ import {
   type AddressForm,
   type DeployerAbi,
   CALL_RECORD_READER_INPUT,
+  lowLevelCallTurnInputsInput,
+  lowLevelCallTurnRecordBaseInput,
 } from '@solidcash/utils';
 import {
   validateDefineEmission,
@@ -460,6 +462,8 @@ const CONDITIONAL_DELETE_ACTIVITY = '(conditional delete)';
 type CompatWordKind = { kind: 'uint' | 'int' | 'address' | 'dynamic' } | { kind: 'bytes'; size: number };
 /** A Solidity-compat call payload's arguments: EVM words, or one SolidCash push per argument. */
 type CompatCallArguments = { format: 'evm'; words: CompatWordKind[] } | { format: 'pushdata'; numeric: boolean[] };
+/** Where a compat call's digest goes: its edge witness (F1), or the record cursor of a per-turn call. */
+type CompatCallDigestSink = string | { record: string };
 
 /** The secp256k1 group order; the EVM's `ecrecover` refuses an `r` or `s` outside [1, n). */
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
@@ -12157,6 +12161,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack(this.loopIndexCursorName(slot));
       }
     }
+    // A per-turn low-level call claims its turns' callee inputs in increasing order from -1 as well.
+    for (const callIndex of this.isDefineSubTraversal || !node.isEntryPoint ? [] : this.lowLevelTurnLists(node)) {
+      this.emit(encodeInt(-1n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(this.lowLevelTurnFloorName(callIndex));
+    }
     // A call whose target or runtime selector the body can change after the call is bound to the value where the call
     // runs. Its register starts empty; the call site fills it and the checks after the body read it.
     ({ targets: this.callSiteTargets, selectors: this.callSiteSelectors } = this.collectCallSiteTargets(node));
@@ -12210,6 +12219,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (!this.isDefineSubTraversal && node.isEntryPoint) {
       this.emitLeftCallArgumentListsSpent({ location: node.body.location, positionHint: PositionHint.END });
+      this.emitLowLevelTurnListsSpent(node, { location: node.body.location, positionHint: PositionHint.END });
     }
     this.emitRepeatedSortedUpsertLoopCensuses(node);
     // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle
@@ -32888,9 +32898,118 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const callInputParam = this.lowLevelCallCount === 1
       ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
+    if (this.currentFunction.lowLevelCalls?.[callIndex]?.perTurn === true) {
+      this.emitLowLevelCallTurn(data, callIndex, locationData, target, callInputParam);
+      return;
+    }
+    this.emitLowLevelCallCheck(data, callIndex, locationData, target, callInputParam);
+  }
+
+  /**
+   * One turn of a low-level call a loop may make more than once: this turn's callee is the next input its list names,
+   * above the one the last turn took, so each turn binds a run of its own. It is checked as a single call's callee is.
+   * A caller that keeps state then takes the run that names this input as its reader, as a single raw call does
+   * (P-2), and reads the record that run settles at the record base plus the turn: a carrier of that callee's
+   * category, whose digest a visible payload's check has bound to the payload. An empty literal payload co-spends no
+   * callee. Leaves one item, as the single call's check does.
+   */
+  private emitLowLevelCallTurn(
+    data: ExpressionNode, callIndex: number, loc: SingleLocationData, target: ExpressionNode | undefined,
+    callInputParam: string,
+  ): void {
+    const inputs = lowLevelCallTurnInputsInput(callIndex);
+    if (this.isEmptyLiteralPayload(data)) {
+      this.emit(Op.OP_0, loc);
+      return;
+    }
+    if (this.getStackIndex(inputs, true) < 0 || this.getStackIndex(this.lowLevelTurnFloorName(callIndex), true) < 0) {
+      // A body its callers inlined is still compiled, for its diagnostics only: it fails if it ever runs.
+      if (!this.isUnemittedDefine) throw new Error(`Per-turn low-level call ${callIndex} has no input list in scope`);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      this.emit(Op.OP_0, loc);
+      return;
+    }
+    this.emitPickAt(this.getStackIndex(inputs), loc);           // [.., list]
+    this.emitPushdataDecode(PrimitiveType.BIGINT, loc);         // [.., idx, rest]
+    this.emitReplace(this.getStackIndex(inputs) + 2, this.currentFunction);
+    this.pushToStack(callInputParam);                           // [.., idx]
+    const floor = this.lowLevelTurnFloorName(callIndex);
+    this.emitPickAt(this.getStackIndex(callInputParam), loc);
+    this.emitPickAt(this.getStackIndex(floor) + 1, loc);
+    this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);                               // a run no earlier turn took
+    this.emitPickAt(this.getStackIndex(callInputParam), loc);
+    this.pushToStack('(llc_turn_input)');
+    this.emitReplace(this.getStackIndex(floor), this.currentFunction);
+    this.popFromStack();
+    const records = lowLevelCallTurnRecordBaseInput(callIndex);
+    const readsRecord = this.getStackIndex(records, true) >= 0;
+    // A visible compat payload's digest names the reader; an opaque payload's run is pinned to it instead.
+    const digested = readsRecord && this.compilerOptions.evmCompat && target !== undefined && !this.framedMaster
+      && this.isVisibleCompatEncodePayload(data);
+    this.emitLowLevelCallCheck(data, callIndex, loc, target, callInputParam, readsRecord ? records : undefined);
+    if (readsRecord) {
+      this.emitPickAt(this.getStackIndex(callInputParam) + 1, loc); // [.., idx, x, idx]
+      if (!digested) this.emitRawCalleeReaderPin(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);                                // [.., idx, x, category]
+      this.emitPickAt(this.getStackIndex(records) + 2, loc);    // [.., idx, x, category, record]
+      this.emitLoopCallRecordCarrierChecks(loc);                // [.., idx, x, record]
+      this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(this.getStackIndex(records) + 2, this.currentFunction); // the next turn's record
+    }
+    if (this.getStackIndex(callInputParam) !== 0) throw new Error(`Per-turn low-level call ${callIndex} left its input`);
+    this.emit(Op.OP_NIP, loc);                                  // [.., x]
+    this.removeFromStack(0);
+  }
+
+  /** The tracked floor of a per-turn low-level call: the callee input its last turn took, -1 before any. */
+  private lowLevelTurnFloorName(callIndex: number): string {
+    return `(low-level call ${callIndex} turn floor)`;
+  }
+
+  /** The per-turn low-level calls of `node` that take a list of their turns' callee inputs. */
+  private lowLevelTurnLists(node: FunctionDefinitionNode): number[] {
+    return (node.lowLevelCalls ?? []).flatMap((call, index) => (call.perTurn === true
+      && this.getStackIndex(lowLevelCallTurnInputsInput(index), true) >= 0 ? [index] : []));
+  }
+
+  /**
+   * `[..]` -> `[..]`: once the body has run, each per-turn call's list is spent to its end, so every callee it names
+   * answered a turn the run made, and a byte past the last turn's element cannot change the transaction's id. The
+   * floors go with the lists.
+   */
+  private emitLowLevelTurnListsSpent(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    for (const callIndex of this.lowLevelTurnLists(node)) {
+      const list = this.getStackIndex(lowLevelCallTurnInputsInput(callIndex));
+      this.emitRollAt(list, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.removeFromStack(list);
+      const floor = this.getStackIndex(this.lowLevelTurnFloorName(callIndex), true);
+      if (floor < 0) continue;
+      this.emitRollAt(floor, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(floor);
+    }
+  }
+
+  /**
+   * The single-call check of a low-level call's callee at `callInputParam`. `record`, for a per-turn call in a caller
+   * that keeps state, names the record cursor a visible payload's digest is read against.
+   */
+  private emitLowLevelCallCheck(
+    data: ExpressionNode,
+    callIndex: number,
+    locationData: SingleLocationData,
+    target: ExpressionNode | undefined,
+    callInputParam: string,
+    record?: string,
+  ): void {
     if (this.compilerOptions.evmCompat && target !== undefined && !this.framedMaster
       && !this.isEmptyLiteralPayload(data) && this.getStackIndex(callInputParam, true) >= 0) {
-      this.emitCompatLowLevelCallPin(data, target, callInputParam, callIndex, locationData);
+      this.emitCompatLowLevelCallPin(data, target, callInputParam, callIndex, locationData, record);
       return;
     }
     // Visit the target and the payload FIRST while the tracked stack is in a known
@@ -33097,6 +33216,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.data,
     ]);
     const addrParam = this.getAddressParamFromTarget(target);
+    if (this.currentFunction.lowLevelCalls?.[node.callIndex]?.perTurn === true) {
+      this.emitTurnCallValue(node, loc, target, addrParam);
+      return;
+    }
     if (addrParam) {
       node.callOptions.value = this.emitValueTransfer(
         node.valueTransferIndex, node.callOptions.value, addrParam, loc, node,
@@ -33108,6 +33231,51 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.refuseUnpaidCallValue(node, 'to a target the call site holds as no single value');
     }
+  }
+
+  /**
+   * The `{value: v}` of a per-turn call: the loop holds one payment register pair for the call, checked once after the
+   * body, so a turn paying a value fills the pair only while it is still empty and a turn paying none leaves it. A
+   * second paying turn fails rather than overwrite the first, whose output would then pay nothing for it.
+   */
+  private emitTurnCallValue(
+    node: LowLevelCallNode | LowLevelCallStatementNode, loc: SingleLocationData, target: ExpressionNode,
+    addrParam: string | undefined,
+  ): void {
+    const lbName = `__internal__transfer_lb_${node.valueTransferIndex}`;
+    const amtName = `__internal__transfer_amt_${node.valueTransferIndex}`;
+    if (!this.preAllocatedTransfers.has(node.valueTransferIndex) || this.getStackIndex(lbName, true) < 0) {
+      throw new SolidcDiagnosticError(
+        'LOW_LEVEL_CALL_IN_LOOP',
+        `Function '${this.currentFunction.name}' pays {value:} from low-level call ${node.callIndex} in a loop that `
+        + 'reserves no payment for it, so a turn\'s payment would bind no output. Pay from a `for` or `while` loop.',
+        { functionName: this.currentFunction.name, callIndex: node.callIndex },
+      );
+    }
+    if (addrParam !== undefined) {
+      this.emitPickAt(this.getStackIndex(addrParam), loc);
+      this.pushToStack('(turn_value_recipient)');
+    } else if (target !== node.targetExpression || this.readsAddressAgain(target)) {
+      this.visit(cloneNode(target) as ExpressionNode);
+    } else {
+      this.refuseUnpaidCallValue(node, 'to a target the call site holds as no single value');
+    }
+    this.emitSolidityValueRecipientLockingBytecode(loc);    // [.., lock]
+    node.callOptions!.value = this.visit(node.callOptions!.value!) as ExpressionNode; // [.., lock, v]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitRegistersStillEmpty([lbName, amtName], loc);
+    this.emitPickAt(1, loc);
+    this.pushToStack('(turn_value_lock)');
+    this.emitReplace(this.getStackIndex(lbName), node);
+    this.popFromStack();
+    this.emitPickAt(0, loc);
+    this.pushToStack('(turn_value_amount)');
+    this.emitReplace(this.getStackIndex(amtName), node);
+    this.popFromStack();
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.popFromStack(2);
   }
 
   /** An address expression a call site can read a second time: names, literals, msg.sender, state reads. */
@@ -33162,9 +33330,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     callInputParam: string,
     callIndex: number,
     locationData: SingleLocationData,
+    record?: string,
   ): void {
     const binding = this.compatCallArguments(data, locationData);
-    const edge = this.compatCallEdgeWitness(data, `__internal__lowLevelCallEdgeOutputIdx${callIndex}`);
+    // A per-turn call's visible payload digests into the record its callee settled; a single call's, into its edge.
+    const edge: CompatCallDigestSink | undefined = record !== undefined
+      ? (this.isVisibleCompatEncodePayload(data) ? { record } : undefined)
+      : this.compatCallEdgeWitness(data, `__internal__lowLevelCallEdgeOutputIdx${callIndex}`);
     // Evaluate both expressions while the tracked stack is exact, then leave them untracked on the real stack.
     this.visit(data);
     this.visit(target);
@@ -33179,7 +33351,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitCompatTargetIdentity(locationData);             // [data, idx]
     // 2+3. Function and arguments against the co-spent callee at idx.
     this.emitCompatCalleeSelectorAndArgs(binding, edge, locationData); // [data, idx] -> []
-    if (edge !== undefined) this.emitCountPinnedEdge(edge, data, locationData);
+    if (typeof edge === 'string') this.emitCountPinnedEdge(edge, data, locationData);
     this.emit(Op.OP_0, locationData);                        // dummy remainder
   }
 
@@ -33193,7 +33365,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * emitCompatCallArgumentBinding binds the visible arguments.
    */
   private emitCompatCalleeSelectorAndArgs(
-    binding: CompatCallArguments | undefined, edge: string | undefined, loc: SingleLocationData,
+    binding: CompatCallArguments | undefined, edge: CompatCallDigestSink | undefined, loc: SingleLocationData,
   ): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_INPUTBYTECODE, loc);                     // [data, idx, ubc]
@@ -33226,11 +33398,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * F1 for a compat call: pins this contract's edge record over the method `data` names and the callee's bound pushes,
-   * as the callee digests its own run. `data` sits `dataDepth` from the top, argument i at i. Stack-neutral.
+   * as the callee digests its own run. A per-turn call's sink is its record cursor instead: the record its callee
+   * settled there must carry that digest, which names this input as its reader. `data` sits `dataDepth` from the
+   * top, argument i at i. Stack-neutral.
    */
   private emitCompatCallEdge(
-    dataDepth: number, numeric: readonly boolean[], edge: string, loc: SingleLocationData,
+    dataDepth: number, numeric: readonly boolean[], edge: CompatCallDigestSink, loc: SingleLocationData,
   ): void {
+    this.emitCompatCallDigest(dataDepth, numeric, loc);      // [.., digest]
+    if (typeof edge !== 'string') {
+      this.emitPickTrackedFromBottom(edge.record, loc);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                     // [..]
+      return;
+    }
+    this.emit(new Uint8Array([CALL_EDGE_FORM]), loc);
+    this.emit(Op.OP_CAT, loc);                               // [.., record]
+    this.emitPickTrackedFromBottom(edge, loc);
+    this.emitEdgeCarrierPin(loc);                            // [..]
+  }
+
+  /** `[..] -> [.., digest]`: the call record digest of the method `data` names, this input's and the pushes'. */
+  private emitCompatCallDigest(dataDepth: number, numeric: readonly boolean[], loc: SingleLocationData): void {
     this.emit(encodeInt(BigInt(dataDepth)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(4n), loc);
@@ -33250,10 +33442,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitCallRecordArgumentInline(loc);                // [.., preimage']
     });
     this.emitCallRecordDigestOfPreimage(loc);
-    this.emit(new Uint8Array([CALL_EDGE_FORM]), loc);
-    this.emit(Op.OP_CAT, loc);                               // [.., record]
-    this.emitPickTrackedFromBottom(edge, loc);
-    this.emitEdgeCarrierPin(loc);                            // [..]
   }
 
   /**
@@ -33394,7 +33582,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * argument matches it byte for byte. [data, idx] -> [data]
    */
   private emitCompatCallArgumentBinding(
-    binding: CompatCallArguments, edge: string | undefined, loc: SingleLocationData,
+    binding: CompatCallArguments, edge: CompatCallDigestSink | undefined, loc: SingleLocationData,
   ): void {
     const count = binding.format === 'evm' ? binding.words.length : binding.numeric.length;
     // [.., word] -> [.., n]: a big-endian word as a minimal unsigned VM number.

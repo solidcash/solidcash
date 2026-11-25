@@ -262,7 +262,7 @@ import {
   type FunctionBlockLayout, type BlockLayoutSlot, resolveLibraries, type ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, type LocationI,
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES, libraryDefinedIds,
-  ORACLE_POOL_PARAMETER, CALL_RECORD_READER_INPUT,
+  ORACLE_POOL_PARAMETER, CALL_RECORD_READER_INPUT, lowLevelCallTurnInputsInput, lowLevelCallTurnRecordBaseInput,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -5686,21 +5686,32 @@ export default class SymbolTableTraversal extends AstTraversal {
             condition: callsiteShapes[index].condition,
           }),
         }));
-        // The direct convention pins each low-level call's callee as one co-spent input (`__internal__callInputIndex`),
-        // which every turn of a loop reads, so one run of the callee would answer each turn of a `call`. A message-bus
-        // route refuses such a call too (LowLevelCallShapes), a framed body binds each frame, and a staticcall reads.
-        const looped = this.compilerOptions.messageBus === true || this.compilerOptions.composition === 'framed'
-          || node.graphEmissionHandler || node.messageBusRoute ? -1
-          : node.lowLevelCalls.findIndex((call) => call.callMode === 'call' && call.occurrence === 'loop'
-            && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1));
-        if (looped >= 0) {
-          throw new SolidcDiagnosticError(
-            'LOW_LEVEL_CALL_IN_LOOP',
-            `Function '${node.name}' makes low-level call ${looped} in a loop that may turn more than once. Its callee `
-            + 'is one co-spent input, so one run of it would answer every turn. Hoist the call out of the loop, or '
-            + 'make it a typed interface call.',
-            { functionName: node.name, callIndex: looped },
-          );
+        // A `call` a loop may make more than once binds each turn's own callee run (perTurn): the turn's callee input
+        // comes from a witness list, strictly increasing, and a caller that keeps state reads each turn's record.
+        // A message-bus route refuses such a call (LowLevelCallShapes), a framed body binds each frame, and a
+        // staticcall reads. Only an entry takes the witnesses; elsewhere the call stays refused.
+        const silentCalls = this.lowLevelCallsWithEmptyPayload(node);
+        const directLowLevel = !(this.compilerOptions.messageBus === true || this.compilerOptions.composition === 'framed'
+          || node.graphEmissionHandler || node.messageBusRoute);
+        const delegatecalls = node.lowLevelCalls.some((call) => call.callMode === 'delegatecall');
+        for (let i = 0; directLowLevel && i < lowLevelCallCount; i++) {
+          const call = node.lowLevelCalls[i];
+          if (call.callMode !== 'call' || call.occurrence !== 'loop'
+            || (call.maximumOccurrences !== undefined && call.maximumOccurrences <= 1)) continue;
+          const reason = !node.isEntryPoint ? 'only an entry point takes the witnesses that bind each turn\'s callee'
+            : delegatecalls ? 'a function that delegatecalls settles no state of its own to bind the turns to'
+              : this.compilerOptions.messageBusDirectParticipant === true
+                ? 'a message-bus direct participant admits no witness beside its call index' : undefined;
+          if (reason !== undefined) {
+            throw new SolidcDiagnosticError(
+              'LOW_LEVEL_CALL_IN_LOOP',
+              `Function '${node.name}' makes low-level call ${i} in a loop that may turn more than once, and ${reason}, `
+              + 'so one run of its callee would answer every turn. Make the call from an entry point, hoist it out of '
+              + 'the loop, or make it a typed interface call.',
+              { functionName: node.name, callIndex: i },
+            );
+          }
+          call.perTurn = true;
         }
         // A Solidity-compat call/staticcall site pins its co-spent callee to the call's target (see
         // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.
@@ -5713,7 +5724,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           && this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
           && this.compilerOptions.messageBusDirectParticipant !== true
           && !node.lowLevelCalls.some((call) => call.callMode === 'delegatecall');
-        const silentCalls = this.lowLevelCallsWithEmptyPayload(node);
         for (let i = 0; attestsCalls && i < lowLevelCallCount; i++) {
           if (node.lowLevelCalls[i].occurrence !== 'once' || silentCalls.has(i)) continue;
           const paramName = `__internal__lowLevelCallEdgeOutputIdx${i}`;
@@ -5726,14 +5736,32 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(param);
         }
 
+        // A per-turn call takes its turns' callee inputs as a list, and in a caller that keeps state the output of
+        // its first turn's record. An empty literal payload co-spends no callee, so it takes neither.
+        for (let i = 0; i < lowLevelCallCount; i++) {
+          if (node.lowLevelCalls[i].perTurn !== true || silentCalls.has(i)) continue;
+          const witnesses: [string, Type][] = [[lowLevelCallTurnInputsInput(i), new BytesType()]];
+          if (this.isStatefulContract) witnesses.push([lowLevelCallTurnRecordBaseInput(i), PrimitiveType.BIGINT]);
+          for (const [paramName, type] of witnesses) {
+            const param = new ParameterNode(type, paramName);
+            param.location = node.location;
+            param.syntheticallyUsed = true;
+            node.parameters.push(param);
+            this.symbolTables[0].set(Symbol.variable(param));
+            this.symbolTables[0].get(paramName)?.references.push({ name: paramName } as IdentifierNode);
+            this.pushToStack(param);
+          }
+        }
+
         // Inject _callInputIndex for every non-delegatecall low-level call.
         // Stateful contracts previously pinned the callee to a fixed block-layout slot, but a multi-UTXO
         // callee (SafeERC20.transferFrom with balances/allowances entries) expands past that slot and
         // collides with the caller's trailing region (dynamic chunks, vmap batch preds). A runtime index
         // lets the SDK place the full callee band AFTER trailing resources, matching externalCallInputBase.
-        // Skip delegatecall (proxy uses its own delegate-input witness / block slot).
+        // Skip delegatecall (proxy uses its own delegate-input witness / block slot), and a per-turn call, which
+        // reads its turns' inputs from its list.
         for (let i = 0; i < lowLevelCallCount; i++) {
-          if (node.lowLevelCalls![i].callMode === 'delegatecall') continue;
+          if (node.lowLevelCalls![i].callMode === 'delegatecall' || node.lowLevelCalls![i].perTurn === true) continue;
           const paramName = lowLevelCallCount === 1 ? '__internal__callInputIndex' : `__internal__callInputIndex${i}`;
           const param = new ParameterNode(PrimitiveType.BIGINT, paramName);
           param.location = node.location;

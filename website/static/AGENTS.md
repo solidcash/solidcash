@@ -1035,8 +1035,10 @@ target.staticcall(payload);                           // low-level read-only; de
   runtime selector, or to `msg.sender` (`CALL_VALUE_UNBOUND`, at compile time). The SDK refuses one to a function
   that takes no value or is compiled with the message bus, one below the dust threshold of the callee's container,
   and one whose callee sends the value on (`CallValueUnpayableError`).
-- A low-level call a loop may make more than once (run-time turns, or an array of targets) is refused
-  (`LOW_LEVEL_CALL_IN_LOOP`): one callee run would answer every turn.
+- A low-level `call` a loop may make more than once (run-time turns, or an array of targets) binds each turn to a
+  callee run of its own: list one callee per turn with `.withCall()`, in turn order. A contract with state also reads
+  the record each turn's callee run settles. A `{value:}` on it pays from one turn per transaction. Outside an entry
+  point, or in a function that delegatecalls, it is refused (`LOW_LEVEL_CALL_IN_LOOP`).
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when
   no contract calls it. It is derived from the transaction's inputs, not a call frame: authorize with `checkSig`.
 

@@ -26,6 +26,8 @@ export interface MaterializeLowLevelCallOutputsHost {
   readonly externalCallDerivedRecords: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly childDeploymentOutputs: ReadonlyMap<number, readonly Output[]>;
   readonly builderOptions: TransactionBuilderOptions;
+  /** The record a per-turn low-level call's turn reads from this group's run, or none (low-level-call-turns.ts). */
+  turnRecord?(group: ExternalCallUtxoGroup): string | undefined;
 }
 
 /**
@@ -145,4 +147,26 @@ export function materializeLowLevelCallOutputs(
       offset += outputs?.length ?? 1;
     }
   }
+
+  // A per-turn call's records follow, one per turn in turn order, so turn k's sits at the first one's index plus k.
+  for (const group of host.lowLevelCallUtxoGroups) {
+    const commitment = group.lowLevelCallTurn === undefined ? undefined : host.turnRecord?.(group);
+    if (commitment === undefined) continue;
+    builder.addOutput({
+      to: Uint8Array.of(0x51),
+      amount: LOW_LEVEL_TURN_RECORD_SATOSHIS,
+      token: { amount: 0n, category: group.categoryId, nft: { capability: 'none', commitment } },
+    });
+  }
+}
+
+/** A per-turn record carrier's value: above dust, within the 1,200 satoshis a caller admits. */
+const LOW_LEVEL_TURN_RECORD_SATOSHIS = 1000n;
+
+/** Whether `output` is the record carrier of `group`'s run: an `OP_TRUE` coin of its category with no capability. */
+export function isLowLevelTurnRecord(output: Output | undefined, group: Pick<ExternalCallUtxoGroup, 'categoryId'>): boolean {
+  const to = output?.to;
+  return to instanceof Uint8Array && to.length === 1 && to[0] === 0x51
+    && output!.token?.nft?.capability === 'none'
+    && output!.token.category.toLowerCase() === group.categoryId.toLowerCase();
 }

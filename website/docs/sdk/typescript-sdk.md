@@ -138,7 +138,7 @@ The stateful exports also include:
 - `ThreadManager` and `ThreadHandle` for partitioned masters;
 - event parsing/query helpers and the ethers-flavored event facade;
 - external contract registration and result-event calls;
-- multi-call batches (`sc.batch`) and composed external state mutation, both experimental;
+- composed external state mutation (experimental);
 - lifecycle helpers for child deployment, upgrades and proxies, split/merge, and destruction (custom proxies and
   `upgrades.upgradeProxy` are experimental);
 - oracle pool genesis, keeper and co-spend helpers.

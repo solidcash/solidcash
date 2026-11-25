@@ -228,17 +228,11 @@ Other pending-call methods:
 | `.emitReturn()` | Publish the return value in a return-event output that off-chain readers can decode |
 | `.buildUnsigned()` | Return the covenant transaction without funding or signatures, for an external wallet to complete |
 
-### Batching calls (experimental)
+### Repeated calls
 
-```typescript
-await counter.batch([
-    { function: 'add', args: [1n] },
-    { function: 'add', args: [2n] },
-]).send();
-```
-
-`sc.batch()` runs several public functions of one contract against one master input through the callee's multi-call
-entry. It works only when the artifact publishes `callBatch` and the named entries are `callBatchRow`.
+A caller that calls one contract several times in a function runs those calls as frames of the callee's multi-call
+entry, in one spend of its master; the SDK builds them from the caller's call. See
+[Repeated calls to one contract](/docs/language/cross-contract-calls#repeated-calls-to-one-contract).
 
 ## Reading State
 

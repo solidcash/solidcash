@@ -1040,10 +1040,6 @@ target.staticcall(payload);                           // low-level read-only; de
   `callBatch: true`, or in one `compileStringMulti` / `compileFileMulti` with its caller. A frame writes at most fixed
   state fields: value, events, token effects, mapping writes and nested calls stay refused.
 
-```ts
-await counter.batch([{ function: 'add', args: [1n] }, { function: 'add', args: [2n] }]).send();   // one contract
-```
-
 ### Concurrency: Split, Merge and Threads
 
 One master UTXO serializes every call to a stateful contract. Threads are extra master minting NFTs of the same
@@ -1145,7 +1141,7 @@ await StatefulContract.split({ ... });  await StatefulContract.merge({ ... });
   becomes the CashToken category). `destroy` returns `{ txs, totalReclaimed, leftBehind }`.
 - Child deploys: `await factory.call.createChild(args).deploy(options)` after `factory.registerChild(childArtifact)`,
   or via `ContractBundle.from(compileFileMulti(file), { provider, signer })`. `upgrade` needs the `upgrade` modifier.
-- Experimental: `sc.batch([...])` and cross-contract state mutation wired through `externals`.
+- Experimental: cross-contract state mutation wired through `externals`.
 
 ### Providers, signers, debugging
 

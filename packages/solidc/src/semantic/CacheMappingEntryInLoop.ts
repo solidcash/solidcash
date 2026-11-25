@@ -62,8 +62,8 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
-  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
-} from './KernelEntryActivation.js';
+  argumentConditionActivation, booleanArgumentIndices, stableArgumentIndices,
+} from './ArgumentConditionActivation.js';
 import { blockEndsWithReturn, holdsReturn } from './EarlyReturnTransformation.js';
 
 const PREFIX = '__vmapcache_';
@@ -707,7 +707,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   /**
    * `callsCloseSegments` holds under the framed composition, whose calls each close a segment. `composesAliases`
-   * holds when no message-bus route can clone a body after this pass: only then is a composed mapping left uncached.
+   * holds when no compiler-route route can clone a body after this pass: only then is a composed mapping left uncached.
    */
   constructor(
     private routeSnapshotKeysOnly = false, private callsCloseSegments = false, private composesAliases = false,
@@ -756,13 +756,13 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
    * assignComposeAliasPriors) rather than caches: two or more entries of keys that are not distinct literals, each
    * written once by a whole-value statement of the body itself before any return. A cache would read every entry
    * before any is written, so a write could not reach the read of an entry its key aliases. Only under
-   * `composesAliases`: a message-bus route cloned from the body after this pass never composes and keeps the cache.
+   * `composesAliases`: a compiler-route route cloned from the body after this pass never composes and keeps the cache.
    * A chunkable value never composes either.
    */
   private composedMappings(fn: FunctionDefinitionNode, constructor: boolean): Set<string> {
     const composed = new Set<string>();
     if (!this.composesAliases || this.routeSnapshotKeysOnly || this.callsCloseSegments || constructor
-      || fn.messageBusRoute || fn.name.startsWith('__message_bus_') || fn.modifiers.includes(FunctionModifier.DELEGATE)
+      || fn.routeMetaRoute || fn.name.startsWith('__message_bus_') || fn.modifiers.includes(FunctionModifier.DELEGATE)
       || !(fn.body instanceof BlockNode)) return composed;
     const statements = fn.body.statements ?? [];
     for (const [mapping, info] of this.scalarMappings) {
@@ -901,7 +901,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (lastWrite >= 0 && calling.slice(lastWrite + 1).some(Boolean)) closings.set(item, statements[lastWrite]!);
       }
     }
-    // DS-6 (closeBeforeGuardedDelete). Under the message bus a route cloned from this body stages no alias write, so
+    // DS-6 (closeBeforeGuardedDelete). Under the compiler route a route cloned from this body stages no alias write, so
     // the body keeps its end flush here and CloseDirectEntryCaches moves it in the direct body once routes are cloned.
     const writeOnly = new Set<(typeof prepared)[number]>();
     if (this.composesAliases && !this.callsCloseSegments && !this.routeSnapshotKeysOnly) {
@@ -1274,7 +1274,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     if (this.callsCloseSegments || !fn.isEntryPoint || e.inLoop || e.mutationCount !== 1
       || e.fromModifier !== undefined || e.keys.length !== 1 || key?.kind !== 'id'
       || this.scalarMappings.get(e.mapping)?.depth !== 1 || !isChunkableValueType(e.valueType)) return false;
-    const stable = stableKernelArgumentIndices(fn);
+    const stable = stableArgumentIndices(fn);
     const argument = (name: string): boolean => fn.parameters[stable.get(name) ?? -1]?.name === name;
     const variables = new Set([...this.stateVariableNames, ...declaredNames(fn)]);
     if (!argument(key.name) || reaches(fn.body, (node) => node instanceof ReturnNode || mayCall(node, variables))) {
@@ -1313,8 +1313,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     entry: { mapping: string; keys: KeyKind[]; mutationCount: number; inLoop: boolean },
   ): { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } } | undefined {
     if (entry.inLoop || entry.mutationCount === 0 || !this.scalarMappings.has(entry.mapping)) return undefined;
-    const argumentIndices = stableKernelArgumentIndices(fn);
-    const booleanArguments = kernelBooleanArgumentIndices(fn);
+    const argumentIndices = stableArgumentIndices(fn);
+    const booleanArguments = booleanArgumentIndices(fn);
     const mutations: Array<{ guard: ExternalCallExpression; value?: ExpressionNode }> = [];
     let mutationCount = 0;
     let unsupported = false;
@@ -1325,7 +1325,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
     const scan = (node: Node, guard?: ExternalCallExpression, representable = true): void => {
       if (node instanceof BranchNode) {
-        const condition = kernelArgumentConditionActivation(node.condition, argumentIndices, booleanArguments);
+        const condition = argumentConditionActivation(node.condition, argumentIndices, booleanArguments);
         const supported = representable && condition !== undefined;
         scan(node.ifBlock, supported ? combine(guard, condition!) : undefined, supported);
         if (node.elseBlock) scan(node.elseBlock, supported ? combine(guard, {
@@ -1642,7 +1642,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (scope.declaredInLoop.has(key.name) || scope.reassigned.has(key.name)) { keyUsable = false; break; }
         if (!scope.assigned.has(key.name)) continue;
         // The route-snapshot instance runs before kernel route synthesis, where a handler's collection accesses are
-        // the ones the message-bus covenant and the SDK's argument derivation both read by name. An anchored local
+        // the ones the compiler-route covenant and the SDK's argument derivation both read by name. An anchored local
         // there changes that shape, so the anchored form stays with the ordinary pipeline; kernel handlers keep
         // their established snapshot-key caching.
         if (this.routeSnapshotKeysOnly) { keyUsable = false; break; }
@@ -1829,7 +1829,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   /**
    * A write-back may drop its dirty guard where nothing replays or moves it as the guarded flush: not in a framed
-   * body, whose write activation reads the flag; not under the message bus, whose routes clone the body and whose
+   * body, whose write activation reads the flag; not under the compiler route, whose routes clone the body and whose
    * CloseDirectEntryCaches moves the flush (`composesAliases` holds only without it); not for a guarded kernel
    * activation.
    */
@@ -1923,7 +1923,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 }
 
 /**
- * DS-6 under the message bus: each direct entry body's read-modify-write caches take the placement
+ * DS-6 under the compiler route: each direct entry body's read-modify-write caches take the placement
  * `closeBeforeGuardedDelete` gives, once route synthesis has cloned the bodies. A route and its handler clones compile
  * without alias staging, so a flush moved before the delete there would skip the write where the keys meet and the
  * delete does not run: they keep the end flush, as does an entry a route invokes itself and a cache also flushed before
@@ -1945,7 +1945,7 @@ export class CloseDirectEntryCaches extends AstTraversal {
       && !(col.innermostValueType instanceof ArrayType) && !(col.innermostValueType instanceof StructType)
       && !isChunkableValueType(col.innermostValueType)).map((col) => col.name));
     if (scalars.size === 0) return node;
-    const routed = (fn: FunctionDefinitionNode): boolean => fn.messageBusRoute === true
+    const routed = (fn: FunctionDefinitionNode): boolean => fn.routeMetaRoute === true
       || fn.name.startsWith('__message_bus');
     const flushes = (statement: StatementNode): boolean => scalars.has(cacheFlush(statement)?.write.name ?? '');
     const direct = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]

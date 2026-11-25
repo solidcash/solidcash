@@ -21,8 +21,6 @@ describe('stateful late-materialization fees', () => {
       }
     }`, {
       forceStateful: true,
-      messageBus: true,
-      messageBusKernel: true,
       maximumInputBytes: 1_000_000,
     });
     const inner = new Contract(artifact, [], { provider });

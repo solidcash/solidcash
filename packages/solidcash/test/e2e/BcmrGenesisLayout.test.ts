@@ -139,7 +139,7 @@ describe('the registry snapshot (5.2)', () => {
 
 describe('a token of the contract\'s own category (6.2)', () => {
   it('checks a premint of the contract category against the category the contract keys its container by', async () => {
-    const artifact = compileFile(TOKEN, { messageBus: false });
+    const artifact = compileFile(TOKEN, {});
     const provider = new MockNetworkProvider();
     const alice = await signerWithCoins(provider);
     const funding = await genesisCoin(alice);

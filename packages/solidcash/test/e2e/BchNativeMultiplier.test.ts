@@ -21,7 +21,7 @@ const source = new URL('../fixture/bch_native_multiplier_token.scash', import.me
 // CashToken base unit backs 100 ERC20 ledger units.
 describe('BchNativeMultiplier', () => {
   it('compiles the scaled boundary with a write-once immutable multiplier', () => {
-    const artifact = compileFile(source, { messageBus: false });
+    const artifact = compileFile(source, {});
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
     // The scale layer adds the % / / conversion and the immutable read to wrap and
     // unwrap through BchNative's scale hook; it stays well inside the P2SH32
@@ -58,7 +58,7 @@ describe('BchNativeMultiplier', () => {
   });
 
   it('scales wrap and unwrap: 500 ledger units bridge 5 native CashTokens', async () => {
-    const artifact = compileFile(source, { messageBus: false });
+    const artifact = compileFile(source, {});
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
     const inner = new Contract(artifact, [], { provider });
@@ -102,7 +102,7 @@ describe('BchNativeMultiplier', () => {
   });
 
   it('rejects boundary amounts that are not an exact multiple of the multiplier', async () => {
-    const artifact = compileFile(source, { messageBus: false });
+    const artifact = compileFile(source, {});
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
     const inner = new Contract(artifact, [], { provider });

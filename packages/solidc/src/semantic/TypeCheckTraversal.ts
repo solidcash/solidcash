@@ -317,7 +317,7 @@ export default class TypeCheckTraversal extends AstTraversal {
    * it does under the direct convention; the framed convention drops the route's bodies before code generation.
    */
   private callSiteParameterTypes(fn: FunctionDefinitionNode): Type[] {
-    const derivesBatch = this.framedComposition && this.currentFunction?.messageBusRoute !== true;
+    const derivesBatch = this.framedComposition && this.currentFunction?.routeMetaRoute !== true;
     return fn.parameters
       .filter((parameter) => parameter.name !== '__internal__msgSenderCategory'
         && parameter.name !== '__internal__msgSenderAnchorIdx'
@@ -2079,7 +2079,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       );
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
-        this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true
+        this.currentFunction.routeMetaRoute === true || this.currentFunction.graphEmissionHandler === true
           || this.currentFunction.name.startsWith('__message_bus')
           || node.resolvedFunction.name.startsWith('__message_bus')
           || node.resolvedFunction.parameters.some((parameter) =>
@@ -2109,7 +2109,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       );
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
-        this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true
+        this.currentFunction.routeMetaRoute === true || this.currentFunction.graphEmissionHandler === true
           || this.currentFunction.name.startsWith('__message_bus')
           || node.resolvedFunction.name.startsWith('__message_bus')
           || node.resolvedFunction.parameters.some((parameter) =>
@@ -4053,9 +4053,9 @@ function expectParameters(node: NodeWithParameters, actual: Type[], expected: Ty
 }
 
 function stripGeneratedLogicalSenderArgument(
-  node: FunctionCallNode, expected: Type[], inMessageBusRoute: boolean,
+  node: FunctionCallNode, expected: Type[], inRouteMetaRoute: boolean,
 ): void {
-  if ((!inMessageBusRoute && !generatedOriginOf(node.location) && !generatedOriginOf(node.identifier.location))
+  if ((!inRouteMetaRoute && !generatedOriginOf(node.location) && !generatedOriginOf(node.identifier.location))
     || node.parameters.length !== expected.length + 1) return;
   const matches = node.parameters.flatMap((parameter, index) => {
     const type = parameter.type;

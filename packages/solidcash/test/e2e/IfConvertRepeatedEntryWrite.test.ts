@@ -80,7 +80,7 @@ describe('if/else entry writes: an arm that writes one entry twice', () => {
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);
-      expect(sha(body, { messageBus: false }), body).toBe(hash);
+      expect(sha(body, {}), body).toBe(hash);
     }
     // The merged arms compile as the predicated write the source could spell itself.
     expect(sha('k = k + 1; bool cc = c; m[k] = cc ? a : 5;', {}))
@@ -133,7 +133,7 @@ describe('if entry writes: the condition runs once, each arm in its own order', 
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);
-      expect(sha(body, { messageBus: false }), body).toBe(hash);
+      expect(sha(body, {}), body).toBe(hash);
     }
     expect(sha('k = k + 1; bool cc = c; n[k] = cc ? 3 : 2; m[k] = cc ? 4 : 1;', {}))
       .toBe(sha('k = k + 1; if (c) { n[k] = 3; m[k] = 4; } else { m[k] = 1; n[k] = 2; }', {}));

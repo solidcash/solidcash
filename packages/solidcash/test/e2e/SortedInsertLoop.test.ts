@@ -154,7 +154,7 @@ describe('vmap diff-key insert-in-loop (SDK progressive derivation)', () => {
         require(this.w[jobId][worker]);
       }
     }`;
-    const art = compileString(NSRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const art = compileString(NSRC, { forceStateful: true});
     const infos = art.abi.find((f) => f.name === 'publish')?.sortedUpsertLoopInfo ?? [];
     expect(infos.some((info) => info.collection === 'w'
       && info.fixedKeySources?.some((source) => source.kind === 'expression'
@@ -181,7 +181,7 @@ describe('vmap diff-key insert-in-loop (SDK progressive derivation)', () => {
         require(this.jobs.length == 1);
       }
     }`;
-    const art = compileString(NSRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const art = compileString(NSRC, { forceStateful: true});
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
     const { contract } = await StatefulContract.deploy(art, [], {
@@ -206,7 +206,7 @@ describe('vmap diff-key insert-in-loop (SDK progressive derivation)', () => {
         require(this.w[jobId][worker]);
       }
     }`;
-    const art = compileString(NSRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const art = compileString(NSRC, { forceStateful: true});
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
     const { contract } = await StatefulContract.deploy(art, [], {
@@ -240,7 +240,7 @@ describe('vmap diff-key insert-in-loop (SDK progressive derivation)', () => {
         require(this.w[jobId][worker]);
       }
     }`;
-    const art = compileString(NSRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const art = compileString(NSRC, { forceStateful: true});
     expect(art.abi.find((f) => f.name === 'publish')?.dynamicWrites).toEqual(['jobs']);
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);

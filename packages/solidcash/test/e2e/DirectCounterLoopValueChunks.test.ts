@@ -21,7 +21,7 @@ contract CounterLoopChunkedValues() {
   }
 }`;
 
-const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 } as const;
+const KERNEL = { forceStateful: true, maximumInputBytes: 1_000_000 } as const;
 
 describe('a direct counter-loop call that grows a value past the inline limit', () => {
   it('settles the value chunks and reads the grown values back', async () => {

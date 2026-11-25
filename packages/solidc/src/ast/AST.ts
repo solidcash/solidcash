@@ -384,7 +384,7 @@ export interface TokenContainerAccessInfo {
   readsOutput?: boolean;      // the body reads the output side of the amount (`this.outState.tokens[c]`)
 }
 
-// X29. Owner-local effect frames an message-bus batch route reserves on behalf of an effect-carrying graph emission handler
+// X29. Owner-local effect frames an compiler-route batch route reserves on behalf of an effect-carrying graph emission handler
 // it invokes behind OP_INVOKE. Dispatch site `s` owns `[base + s * width, base + s * width + width)` of each
 // kind; the site ordinal rides to the shared subroutine as hidden context.
 export interface GraphEffectFrame {
@@ -424,7 +424,7 @@ export interface CustomModifierInvocation {
  * provenance proof after the fact. `sourceFunctionIdentity`, rather than a local variable spelling, is the
  * durable key shared by all physical route clones of the source function.
  */
-export interface MessageBusConstructedKeyVectorProofProgram {
+export interface RouteMetaConstructedKeyVectorProofProgram {
   version: 1;
   sourceFunctionIdentity: string;
   sourceFunctionSignature: string;
@@ -547,41 +547,41 @@ export class FunctionDefinitionNode extends Node implements Named {
   entryAccesses?: EntryAccessInfo[];
   /** Whether shared source-effect ordinals are complete for this straight-line handler. */
   sourceEffectOrder?: 'linear' | 'unsupported-flow';
-  /** Compiler-owned message-bus handler mapping from its function-local entry
+  /** Compiler-owned compiler-route handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
-  messageBusPhysicalEntrySlots?: number[];
+  routeMetaPhysicalEntrySlots?: number[];
   /** Route-slot projection for compiler-owned entry witness parameters. A lowered clone can intentionally own
    * no fixed entry slots while still forwarding the source handler's local witness ABI. */
-  messageBusPhysicalEntryArgumentSlots?: number[];
-  /** Fixed route-slot choices for each function-local entry. The first slot is messageBusPhysicalEntrySlots[i];
+  routeMetaPhysicalEntryArgumentSlots?: number[];
+  /** Fixed route-slot choices for each function-local entry. The first slot is routeMetaPhysicalEntrySlots[i];
    * later slots are compiler-authenticated tuple alternatives, never maximum-row copies. */
-  messageBusPhysicalEntrySlotAlternatives?: number[][];
+  routeMetaPhysicalEntrySlotAlternatives?: number[][];
   /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
-  messageBusRouteDynamicResources?: string[];
+  routeMetaRouteDynamicResources?: string[];
   /** Route-wide read-only chunk runs preserved before streamed effects; an empty list is authoritative. */
-  messageBusRouteReadOnlyDynamicResources?: string[];
-  /** Authenticated participant-master offset used by message-bus handler code generation. */
-  messageBusOwnerInputOffset?: number;
+  routeMetaRouteReadOnlyDynamicResources?: string[];
+  /** Authenticated participant-master offset used by compiler-route handler code generation. */
+  routeMetaOwnerInputOffset?: number;
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
-  messageBusUpgradeRoute?: boolean;
+  routeMetaUpgradeRoute?: boolean;
   /**
    * Route synthesis pushed this clone's owner operand as the call's LAST argument, so at body entry it is the top
    * item (depth 0) and can be captured without depending on any frame-model position.
    */
-  messageBusOwnerIsLastArgument?: boolean;
-  /** Set on compiler-cloned message-bus handlers; identifies the source handler the clone was made from. */
-  messageBusCloneSourceKey?: string;
+  routeMetaOwnerIsLastArgument?: boolean;
+  /** Set on compiler-cloned compiler-route handlers; identifies the source handler the clone was made from. */
+  routeMetaCloneSourceKey?: string;
   /**
-   * Set on every compiler-cloned message-bus handler, whatever its name. The route owns the clone's collection
+   * Set on every compiler-cloned compiler-route handler, whatever its name. The route owns the clone's collection
    * topology, so the clone's sorted records take the scalar path and carry no batch witnesses (ROUTE-SKIP-1).
    */
   ownRecordsScalarOnly?: boolean;
   /**
-   * The message-bus route's declared input names, in push order. A route handler shares the caller's stack, so these
+   * The compiler-route route's declared input names, in push order. A route handler shares the caller's stack, so these
    * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
    * makes a deep read address the item the runtime actually has there.
    */
-  messageBusCallerBandNames?: string[];
+  routeMetaCallerBandNames?: string[];
   /**
    * This OP_DEFINE body captured its authenticated participant owner into the ALT STACK at entry.
    *
@@ -590,19 +590,19 @@ export class FunctionDefinitionNode extends Node implements Named {
    * from the TOP is exact at entry (the caller pushes the argument vector last), so the value is read once there
    * and re-read from the alt stack, whose depth no main-stack push can shift.
    */
-  messageBusOwnerAltAnchor?: boolean;
+  routeMetaOwnerAltAnchor?: boolean;
   /** The exact named-call closure can execute CHECKSIG/CHECKMULTISIG (excluding data signatures). */
-  messageBusUsesTransactionSignature?: boolean;
+  routeMetaUsesTransactionSignature?: boolean;
   /** Direct scalar or one-dimensional signature-array parameters constrained to SIGHASH_ALL by the route. */
-  messageBusAllOutputSignatureParameters?: number[];
+  routeMetaAllOutputSignatureParameters?: number[];
   /** Exact OP_INVOKE signing body per detached root parameter and signature leaf. */
-  messageBusSignatureCoveredFunctionKeys?: Record<number, Record<number, string>>;
+  routeMetaSignatureCoveredFunctionKeys?: Record<number, Record<number, string>>;
   /** Compiler-owned row clone kept as a stable OP_INVOKE signing body on delegate routes. */
-  messageBusDetachedSignatureHandler?: boolean;
+  routeMetaDetachedSignatureHandler?: boolean;
   /** Stable KTS1 identity captured before journal lowering appends physical value-threading parameters. */
-  messageBusSignatureIdentity?: string;
-  /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
-  messageBusHandlerManagedEntrySlots?: number[];
+  routeMetaSignatureIdentity?: string;
+  /** Physical route entry slots whose transition covenant is emitted by a compiler-route handler subroutine. */
+  routeMetaHandlerManagedEntrySlots?: number[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];
   /** Number of statically allocated token-transfer output coordinates after branch alternatives share indices. */
   tokenContainerTransferSiteCount?: number;
@@ -801,45 +801,45 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   /** A locally constructed key array has a loop-carried resize/read schedule the bounded replay pass cannot
    * represent. Kernel admission refuses only this handler rather than letting later route synthesis fail. */
-  messageBusUnboundedConstructedArray?: boolean;
+  routeMetaUnboundedConstructedArray?: boolean;
   /** Pre-admission saw the narrow local-vector shape; final kernel admission still requires emitted provenance. */
-  messageBusConstructedKeyVectorCandidate?: boolean;
+  routeMetaConstructedKeyVectorCandidate?: boolean;
   /**
    * Normalized compiler-owned vector proof programs ready for artifact publication. Raw AST provenance is never
    * serialized here: an unsupported expression leaves this absent and preserves the KERNEL_LAYOUT fence.
    */
-  messageBusConstructedKeyVectorDescriptors?: readonly ConstructedKeyVectorV1Abi[];
+  routeMetaConstructedKeyVectorDescriptors?: readonly ConstructedKeyVectorV1Abi[];
   /** Stable source-level identity used to attach pre-lowering constructed-key proof programs. */
-  messageBusSourceFunctionIdentity?: string;
+  routeMetaSourceFunctionIdentity?: string;
   /** Source snapshots indexed exclusively by stable source-function identity. */
-  messageBusConstructedKeyVectorProofPrograms?: Map<string, MessageBusConstructedKeyVectorProofProgram>;
+  routeMetaConstructedKeyVectorProofPrograms?: Map<string, RouteMetaConstructedKeyVectorProofProgram>;
   /** Internal pre-admission source-flow plan. Never serialized and never an admission capability. */
-  messageBusKernelJournalStreamPlan?: KernelJournalStreamPlan;
+  routeMetaKernelJournalStreamPlan?: KernelJournalStreamPlan;
   /** Immutable first-pass read-carrier discovery; source names and locations never cross into this record. */
-  messageBusKernelReadCarrierDiscovery?: KernelReadCarrierDiscoveryPlan;
+  routeMetaKernelReadCarrierDiscovery?: KernelReadCarrierDiscoveryPlan;
   /** Exact source ABI arity captured before any physical/compiler-owned operands are appended. */
-  messageBusKernelReadCarrierSourceParameterCount?: number;
+  routeMetaKernelReadCarrierSourceParameterCount?: number;
   /** Explicit roles for carrier operands. Authorization never infers authority from reserved-name prefixes. */
-  messageBusKernelReadCarrierSyntheticParameterRoles?: Map<string, KernelReadCarrierSyntheticParameterRole>;
+  routeMetaKernelReadCarrierSyntheticParameterRoles?: Map<string, KernelReadCarrierSyntheticParameterRole>;
   /** Completed-descriptor validation of the discovery. Still compiler-private while the release gate is false. */
-  messageBusKernelReadCarrierAuthorization?: KernelReadCarrierAuthorization;
+  routeMetaKernelReadCarrierAuthorization?: KernelReadCarrierAuthorization;
   /**
    * Stable source selector carried by compiler-generated physical clones. This is compiler-private identity:
    * clone names and locations are never authorization, and the value is useful only beside the binder's exact
    * completed-descriptor scope.
    */
-  messageBusKernelReadCarrierSourceSelectorHex?: string;
+  routeMetaKernelReadCarrierSourceSelectorHex?: string;
   /** Stable selector carried by every generated kernel handler clone for disposition authorization. */
-  messageBusKernelJournalDispositionSelectorHex?: string;
+  routeMetaKernelJournalDispositionSelectorHex?: string;
   /** Exact completed-descriptor families owned by this generated aggregate route. Compiler-private. */
-  messageBusKernelReadCarrierRouteScopes?: readonly {
+  routeMetaKernelReadCarrierRouteScopes?: readonly {
     selectorHex: string;
     completedDescriptorDigest: string;
     streamDescriptorDigests: readonly string[];
   }[];
 
   /** Ordered compiler-private disposition manifest owned by this generated aggregate route. */
-  messageBusKernelJournalDispositions?: readonly {
+  routeMetaKernelJournalDispositions?: readonly {
     selectorHex: string;
     completedDescriptorDigest: string;
     mode: 'carrier' | 'eager-journal' | 'neutral';
@@ -851,12 +851,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   }[];
 
   /** Digest emitted only by the authenticated aggregate route as the SCJD v1 bytecode marker. */
-  messageBusKernelJournalDispositionCommitmentDigest?: string;
+  routeMetaKernelJournalDispositionCommitmentDigest?: string;
 
   /** Names-free affine recursive mapping-frame proof; metadata only, never an admission capability. */
-  messageBusAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
+  routeMetaAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
   /** Idempotence marker for the pre-admission constructed-array replay normalization. */
-  messageBusConstructedArrayKeysNormalized?: boolean;
+  routeMetaConstructedArrayKeysNormalized?: boolean;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;
@@ -943,11 +943,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Pooled kernel key lanes chosen at one handler call. The decoded row argument is matched to these lane
    * witnesses with a linear compare, instead of cloning the handler for every combination of pools. */
   collectionJournalLinearKeyPools?: Array<{ argumentName: string; lanes: string[] }>;
-  // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
+  // Compiler-only compiler-route batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
-  messageBusRoute?: boolean;
+  routeMetaRoute?: boolean;
   /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
-  messageBusVerifierLock?: Uint8Array;
+  routeMetaVerifierLock?: Uint8Array;
   /**
    * Bound route, graph and proxy ones included: one route-local row counter per handler whose row may rewrite
    * records in the participant block, which its selector branch increments. `bandStates`: the dynamic state whose
@@ -956,44 +956,44 @@ export class FunctionDefinitionNode extends Node implements Named {
    * (route entry slots, stamped once the handler's physical lanes are known) it may rewrite. Empty when no handler
    * claims any; absent where the C3 record pin keeps the whole block to the census.
    */
-  messageBusRecordClaims?: Array<{
+  routeMetaRecordClaims?: Array<{
     flag: string; bandStates?: readonly string[]; bandCollections?: readonly string[];
     collections?: readonly string[]; lanes?: readonly number[];
   }>;
 
-  /** Eligible handler of a bound route: its row counter in `messageBusRecordClaims`. */
-  messageBusRecordClaimFlag?: string;
-  /** Resolved route dispatch. Stamped at synthesis; published as `artifact.messageBus.convention`. */
-  messageBusDispatch?: 'legacy-unroll' | 'kernel-row-loop';
-  messageBusMaximumRows?: number;
-  /** Compiler-owned message-bus batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
-  messageBusBlockhashReadWidth?: number;
-  messageBusBlockhashReads?: {
+  /** Eligible handler of a bound route: its row counter in `routeMetaRecordClaims`. */
+  routeMetaRecordClaimFlag?: string;
+  /** Resolved route dispatch. Stamped at synthesis; published as `artifact.routeMeta.convention`. */
+  routeMetaDispatch?: 'legacy-unroll' | 'kernel-row-loop';
+  routeMetaMaximumRows?: number;
+  /** Compiler-owned compiler-route batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
+  routeMetaBlockhashReadWidth?: number;
+  routeMetaBlockhashReads?: {
     row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
   }[];
 
-  messageBusEligible?: boolean;
-  messageBusRejectionReason?: string;
+  routeMetaEligible?: boolean;
+  routeMetaRejectionReason?: string;
   /** Kernel route: this handler's emits settle as records on its runtime effect stream, not in event windows. */
-  messageBusEventStream?: true;
+  routeMetaEventStream?: true;
   /** A stream emit can pass one commitment, so every record of the stream is chunked (head, then continuations). */
-  messageBusEventStreamChunked?: true;
+  routeMetaEventStreamChunked?: true;
   /** Stable index of this eligible handler in the route's eligible dispatch set, the ordinal witness names use.
    * Published on the handler so the SDK never re-derives the filtered-list ordering. */
-  messageBusWitnessOrdinal?: number;
+  routeMetaWitnessOrdinal?: number;
   /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
-  messageBusDispatched?: boolean;
+  routeMetaDispatched?: boolean;
   /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param
    * activated). The generated participant route authenticates that at most one row from the complete marked
    * selector family executes, so its body is the unique terminal continuation producer. This is an occurrence
    * bound, not permission to chain mutations unless completed lowering additionally proves route pooling. */
-  messageBusFixedChunkableWriteMaxRows?: 1;
+  routeMetaFixedChunkableWriteMaxRows?: 1;
   /** Completed collection-journal lowering proved every access to these resources shares the route cache. */
-  messageBusPooledChunkableWrite?: true;
+  routeMetaPooledChunkableWrite?: true;
   /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
-  messageBusFixedChunkableWriteEffectOrdinal?: number;
+  routeMetaFixedChunkableWriteEffectOrdinal?: number;
   /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
-  messageBusFixedChunkableResources?: Array<{
+  routeMetaFixedChunkableResources?: Array<{
     collection: string;
     effectOrdinal: number;
     activation?: ExternalCallExpression;
@@ -1003,15 +1003,15 @@ export class FunctionDefinitionNode extends Node implements Named {
    * bool-param activated with empty else). Kernel route lowering threads the typed pending array through every
    * selected OP_INVOKE row and flushes it exactly once, so repeated same-key rows compose without intermediate
    * continuation outputs. */
-  messageBusPooledChunkableArrayPush?: true;
+  routeMetaPooledChunkableArrayPush?: true;
   /** Optional bool-param activation for the pooled chunkable array push (path-effect activation fold schedule publish). */
-  messageBusPooledChunkableArrayPushActivation?: ExternalCallExpression;
+  routeMetaPooledChunkableArrayPushActivation?: ExternalCallExpression;
   /** Mutation effect ordinal for the pooled chunkable array push when activation is published. */
-  messageBusPooledChunkableArrayPushEffectOrdinal?: number;
+  routeMetaPooledChunkableArrayPushEffectOrdinal?: number;
   // Release 4 collection rows bind source argument positions to hidden
   // physical-route key witnesses. The SDK derives these from canonical rows;
   // the route compares decoded row arguments before any handler executes.
-  messageBusKeyWitnesses?: {
+  routeMetaKeyWitnesses?: {
     routeInput: string;
     inputIndex: number;
     source?: 'argument' | 'msgSender' | 'expression';
@@ -1029,7 +1029,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     keyPool?: string[];
   }[];
 
-  /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */
+  /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local compiler-route journal. */
   nativeSelfBatchDispatcher?: boolean;
 
   /** Codegen: this entry's return carrier is the record of the direct call it answers. */
@@ -1069,7 +1069,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Exact signatures of collections whose split facet authenticates complete input and output cardinality.
    * The root excludes only these addresses from its otherwise-strict mutable-NFT conservation. */
   splitDelegateCensusedCollectionSignatures?: string[];
-  /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
+  /** Block-local delegate covenants reserved by an compiler-route batch graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;
   isReceive: boolean = false;
@@ -1090,7 +1090,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   usesMsgData?: boolean;
   usesMsgValue?: boolean;
   /**
-   * Compiler-owned message-bus batch clone whose one supported tail external call is verified against the authenticated
+   * Compiler-owned compiler-route batch clone whose one supported tail external call is verified against the authenticated
    * participant emission frame instead of performing ordinary physical-call settlement.
    */
   graphEmissionHandler?: boolean;
@@ -1273,7 +1273,7 @@ export class StateVariableNode extends Node implements Named, Typed {
 
 export abstract class StatementNode extends Node {
   /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
-  messageBusFixedChunkableWriteGuard?: string;
+  routeMetaFixedChunkableWriteGuard?: string;
   /**
    * Set by the parser on the statements it lowers a state initialiser into (the variable or collection named):
    * A4.1's `ctor-construction-order` tells a contract's initialisers from its constructor body by it.
@@ -1822,10 +1822,10 @@ export abstract class ExpressionNode extends Node {
   // The counter-loop lowering has proved this is the same-key old-value read of a compact `+`/`-` mapping
   // transition. Its value comes from the authenticated runtime journal entry; route admission must not reserve
   // an additional fixed-key witness for the loop-local identity.
-  messageBusRuntimeLoopTransitionRead?: boolean;
+  routeMetaRuntimeLoopTransitionRead?: boolean;
   // A runtime-sized local-array key reconstructed from dominating writes. LowerVMapCounterLoops may treat this
   // expression as counter-derived without broadening that rule to arbitrary source array reads.
-  messageBusDeterministicArrayKey?: boolean;
+  routeMetaDeterministicArrayKey?: boolean;
   // One of several builds of a read-modify-write's key that might have a side effect (BindLvalueKeyEffects).
   lvalueKey?: LvalueKeyTag;
 }
@@ -1948,21 +1948,21 @@ export class MappingAssignNode extends StatementNode implements Named {
   // A counter-loop general RMW (`m[i] = f(m[i], ...)`) replaces the same-entry read in `expression` with this
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.
-  messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  routeMetaRuntimeOldValueWitness?: ArrayAccessNode;
   /** The old-value witness contains only taken source-path occurrences, in source order. */
-  messageBusRuntimeOldValueWitnessDomain?: 'selected-source';
+  routeMetaRuntimeOldValueWitnessDomain?: 'selected-source';
   /** Source-order replay recipe for a counter-loop mapping-array mutation operand. */
-  messageBusRuntimeMutationValueExpression?: ExpressionNode;
+  routeMetaRuntimeMutationValueExpression?: ExpressionNode;
   /** Source-order replay recipe for a counter-loop mapping-array element index. */
-  messageBusRuntimeMutationIndexExpression?: ExpressionNode;
+  routeMetaRuntimeMutationIndexExpression?: ExpressionNode;
   /** Set only after LowerVMapCounterLoops successfully publishes this write's authenticated journal stream. */
-  messageBusJournalTransport?: { collection: string; varyingArrayParam: string };
+  routeMetaJournalTransport?: { collection: string; varyingArrayParam: string };
   /** A collection journal's flush: it runs exactly where bit `bit` of the route-local dirty word `word` is set. */
   journalDirtyBit?: { word: string; bit: number };
   /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
-  messageBusRuntimeReadOnly?: boolean;
+  routeMetaRuntimeReadOnly?: boolean;
   /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */
-  messageBusRuntimeValueTrace?: {
+  routeMetaRuntimeValueTrace?: {
     witnessParam: string;
     local: string;
     initial: ExpressionNode;
@@ -2106,7 +2106,7 @@ export class FunctionCallNode extends ExpressionNode {
   // A lexical function-pointer variable/parameter may shadow a same-named contract function. Symbol resolution
   // marks that exceptional call so type checking does not consult the contract-wide overload map.
   lexicalIndirectCall?: boolean;
-  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the message-bus batch route body.
+  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the compiler-route batch route body.
   // The handler is one shared OP_INVOKE subroutine, so its event / transfer OUTPUT indices cannot be compile-time
   // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
   // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
@@ -2116,7 +2116,7 @@ export class FunctionCallNode extends ExpressionNode {
   // Compiler-generated legacy-unroll route: every mutually exclusive handler call emitted for one logical row
   // carries that row's stable ordinal. Graph-effect planning uses it instead of counting each handler's calls
   // independently (different handler kinds in distinct rows can both be the Nth call of their kind).
-  messageBusDispatchRow?: number;
+  routeMetaDispatchRow?: number;
   /** Stable first recovery-effect ordinal contributed by this source call within its defining function.
    * A call to a helper contributes the helper's complete formal recovery sequence at this position. */
   recoveryEffectOrdinal?: number;
@@ -2442,7 +2442,7 @@ export class ArrayAssignNode extends StatementNode implements Named {
   sourceEffectOrdinal?: number;
   arrayType?: ArrayType;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
-  messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  routeMetaRuntimeOldValueWitness?: ArrayAccessNode;
   /** SDK-only post-write keys proven before this bare mapping assignment is lowered. */
   postWriteKeyExpressions?: ExpressionNode[];
   /** Collections read by this key before any source mutation. */
@@ -3098,7 +3098,7 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   resolvedCallee?: { name: string; parameterTypes: Type[]; stateMutability?: string };
   /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
   resultArrayOutput?: number;
-  /** Ordered row identity within one inferred repeated-callee message-bus batch. */
+  /** Ordered row identity within one inferred repeated-callee compiler-route batch. */
   externalBatchLogicalIndex?: number;
   /** Function-local program point shared with mapping-write effects. */
   sourceEffectOrdinal?: number;
@@ -3377,7 +3377,7 @@ export interface ExternalCallSlot {
   // normal checks. See emitExternalCallVerification.
   fnPtrCall?: boolean;
   // Release 5 repeated-callee grouping: several straight-line logical calls
-  // share this one physical callee block and are bound to its message-bus batch blob.
+  // share this one physical callee block and are bound to its compiler-route batch blob.
   batchInvocations?: {
     selector: Uint8Array;
     parameters: ExpressionNode[];
@@ -3471,7 +3471,7 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
-  // Set by the table lowerings for a broadcast call outside a message-bus graph: the called element's selector,
+  // Set by the table lowerings for a broadcast call outside a compiler-route graph: the called element's selector,
   // `bytes4(sel[i])`, which its record's digest names; threaded to the external call slot in semantic analysis.
   loopRecordSelector?: ExpressionNode;
   // Set by LowerStaticLowLevelCalls for a framed low-level call it lowered to this typed call; threaded to the

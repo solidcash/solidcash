@@ -62,7 +62,7 @@ async function expectUnspent({ alice, funding, token }: Coins): Promise<void> {
 }
 
 describe('a token whose contract answers IERC20Metadata in bytes32', () => {
-  const artifact = compileFile(PADDED, { messageBus: false });
+  const artifact = compileFile(PADDED, {});
 
   it('reads a bytes32 name and symbol, matches a stated symbol in any case, and warns about 18 decimals', async () => {
     const provider = new MockNetworkProvider();
@@ -118,7 +118,7 @@ describe('a token whose contract answers IERC20Metadata in bytes32', () => {
 });
 
 describe('a token whose views the probe cannot read', () => {
-  const artifact = compileFile(SILENT, { messageBus: false });
+  const artifact = compileFile(SILENT, {});
 
   it('requires the options to state each field whose view the probe could not read', async () => {
     const provider = new MockNetworkProvider();
@@ -158,7 +158,7 @@ describe('a token whose views the probe cannot read', () => {
 });
 
 describe('a token without IERC20Metadata', () => {
-  const artifact = compileFile(MINIMAL, { messageBus: false });
+  const artifact = compileFile(MINIMAL, {});
 
   it('refuses a native scale that is not a power of ten, though no decimals() is read', async () => {
     const provider = new MockNetworkProvider();
@@ -217,7 +217,7 @@ describe('a token without IERC20Metadata', () => {
 });
 
 describe('a token a wallet funds', () => {
-  const artifact = compileFile(PADDED, { messageBus: false });
+  const artifact = compileFile(PADDED, {});
 
   it('asks the wallet once, for the genesis it broadcasts: the probe that reads the contract signs nothing', async () => {
     const provider = new MockNetworkProvider();

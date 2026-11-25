@@ -39,8 +39,8 @@ import { Location } from '../ast/Location.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
-  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
-} from './KernelEntryActivation.js';
+  argumentConditionActivation, booleanArgumentIndices, stableArgumentIndices,
+} from './ArgumentConditionActivation.js';
 
 /** Semantic back-references, which are not executable children of the node that holds them. */
 const BACK_REFERENCES = new Set(['type', 'symbolTable', 'location', 'resolvedFunction', 'functionReference',
@@ -161,8 +161,8 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       survey.visit(node.body);
       this.singletonMutations = new Set([...survey.counts].filter(([, count]) => count === 1).map(([name]) => name));
     }
-    this.stableArgumentIndices = stableKernelArgumentIndices(node);
-    this.booleanArgumentIndices = kernelBooleanArgumentIndices(node);
+    this.stableArgumentIndices = stableArgumentIndices(node);
+    this.booleanArgumentIndices = booleanArgumentIndices(node);
     const result = super.visitFunctionDefinition(node);
     this.stableArgumentIndices = previousIndices;
     this.booleanArgumentIndices = previousBooleanIndices;
@@ -171,7 +171,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
   }
 
   private isReplayableKernelCondition(expression: ExpressionNode): boolean {
-    return kernelArgumentConditionActivation(
+    return argumentConditionActivation(
       expression, this.stableArgumentIndices, this.booleanArgumentIndices,
     ) !== undefined;
   }

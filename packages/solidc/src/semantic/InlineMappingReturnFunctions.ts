@@ -80,7 +80,7 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
   private isCandidate(fn: FunctionDefinitionNode): boolean {
     // A graph or detached-signature handler is a physical OP_INVOKE body. Its invocation owns hidden protocol
     // context which cannot follow mapping-pointer side effects spliced into the enclosing route.
-    return !fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler
+    return !fn.graphEmissionHandler && !fn.routeMetaDetachedSignatureHandler
       && fn.returnTypes.length === 1 && fn.returnTypes[0] instanceof MappingType && !!fn.body;
   }
 

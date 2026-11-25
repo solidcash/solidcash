@@ -119,15 +119,13 @@ describe('sorted mapping proof-input coordinate', () => {
     const provider = createTestProvider();
     const kernel = {
       forceStateful: true,
-      messageBus: true,
-      messageBusKernel: true,
       suppressWarnings: true,
     } as const;
     const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
 contract Callee() {
   int count;
   function bump() public { this.count = this.count + 1; require(true); }
-}`, { ...kernel, evmCompat: false, messageBusGraphContext: true });
+}`, { ...kernel, evmCompat: false});
     const hostArtifact = compileString(`pragma solidcash >=0.8.0;
 interface ICallee { function bump() external; }
 contract Host() {

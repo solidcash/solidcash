@@ -117,7 +117,7 @@ function recordOutput(artifact: Artifact, field: string, values: Record<string, 
 }
 
 function compile(members: string): Artifact {
-  return compileString(`${P} contract C { ${members} }`, { messageBus: true });
+  return compileString(`${P} contract C { ${members} }`, {});
 }
 
 function verdict(spend: Spend): true | string {

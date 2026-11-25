@@ -15,7 +15,7 @@ describe('windowed (paginated) sorted-mapping iteration', () => {
           require(sum >= 0);
         }
       }
-    `, { messageBus: false, suppressWarnings: true });
+    `, { suppressWarnings: true });
 
     const page = artifact.abi.find((f) => f.name === 'page')!;
     expect(page).toBeDefined();
@@ -40,6 +40,6 @@ describe('windowed (paginated) sorted-mapping iteration', () => {
           require(true);
         }
       }
-    `, { messageBus: false, suppressWarnings: true })).toThrow(/bytes32 state variable/);
+    `, { suppressWarnings: true })).toThrow(/bytes32 state variable/);
   });
 });

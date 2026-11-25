@@ -8,7 +8,7 @@ import {
   abiTypeString, type ChildDeploymentValueRecipe, type FixedBchTransferAbi, type ExternalResultConsumerAbi,
   canonicalSelectorType, isEvmNotationScalarType,
   type ComputeSideCarRecipesAbi,
-  ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature, type ExternalCallOrdinalAbi,
+  computeErrorSignature, computeEventSignature, type ExternalCallOrdinalAbi,
   CALL_RECORD_READER_INPUT,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -1274,7 +1274,6 @@ const externalCallIterationDomainLists = (
       const callOrdinal = (call as { callOrdinal?: ExternalCallOrdinalAbi }).callOrdinal;
       const maximumIterations = fixedForMaximum(counter, loop)
       ?? loop.compilerAuthenticatedMaximumIterations
-      ?? (compilerOptions.messageBusKernel === true ? ATOMIC_MESSAGE_BUS_MAX_ROWS : undefined)
       ?? (callOrdinal !== undefined && 'counted' in callOrdinal ? CALL_BATCH_MAXIMUM_FRAMES : undefined);
       if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) break;
       // A serialized state read after any write in this handler would use the SDK's pre-call snapshot, not
@@ -3579,14 +3578,14 @@ function buildFunctionAbiMetadata(
   // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
   // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
   // mutable placeholder and its handler covenant correctly rejects the missing entry-NFT output.
-  const routeEntryLoopWrites = func.messageBusRoute
+  const routeEntryLoopWrites = func.routeMetaRoute
     ? [...new Set([
       ...(func.entryLoopWrites ?? []),
       ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)
         .flatMap((candidate) => candidate.entryLoopWrites ?? []),
     ])]
     : func.entryLoopWrites;
-  const loopSignatureFunctions = func.messageBusRoute
+  const loopSignatureFunctions = func.routeMetaRoute
     ? [func, ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)]
     : [func];
   const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
@@ -4047,13 +4046,13 @@ function buildFunctionAbiMetadata(
     ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
-    ...(func.messageBusConstructedKeyVectorDescriptors?.length && {
+    ...(func.routeMetaConstructedKeyVectorDescriptors?.length && {
       // Descriptors have already crossed the narrow typed proof-program boundary. Copy the outer list so later
       // compiler lowering cannot mutate published metadata; no AST node or source-local identity escapes.
-      constructedKeyVectors: func.messageBusConstructedKeyVectorDescriptors.map((descriptor) => ({ ...descriptor })),
+      constructedKeyVectors: func.routeMetaConstructedKeyVectorDescriptors.map((descriptor) => ({ ...descriptor })),
     }),
-    ...(func.messageBusAffineRecursiveFrameDescriptors?.length && {
-      affineRecursiveFrames: func.messageBusAffineRecursiveFrameDescriptors.map((descriptor) => ({
+    ...(func.routeMetaAffineRecursiveFrameDescriptors?.length && {
+      affineRecursiveFrames: func.routeMetaAffineRecursiveFrameDescriptors.map((descriptor) => ({
         ...descriptor,
         parameterProgressions: descriptor.parameterProgressions.map((progression) => ({ ...progression })),
         accesses: descriptor.accesses.map((access) => ({ ...access, key: [...access.key] })),
@@ -4141,16 +4140,16 @@ function buildFunctionAbiMetadata(
         }),
         ...(ea.arrayMutation !== undefined && { arrayMutation: ea.arrayMutation }),
         ...((() => {
-          const pooledActivation = func.messageBusPooledChunkableArrayPush === true
+          const pooledActivation = func.routeMetaPooledChunkableArrayPush === true
             && ea.arrayMutation === 'push'
-            && func.messageBusPooledChunkableArrayPushActivation !== undefined
-            && (func.messageBusPooledChunkableArrayPushEffectOrdinal === undefined
-              || (ea.mutationEffectOrdinals?.includes(func.messageBusPooledChunkableArrayPushEffectOrdinal)
+            && func.routeMetaPooledChunkableArrayPushActivation !== undefined
+            && (func.routeMetaPooledChunkableArrayPushEffectOrdinal === undefined
+              || (ea.mutationEffectOrdinals?.includes(func.routeMetaPooledChunkableArrayPushEffectOrdinal)
                 ?? false))
-            ? func.messageBusPooledChunkableArrayPushActivation
+            ? func.routeMetaPooledChunkableArrayPushActivation
             : undefined;
           const stamped = ea.activation
-            ?? func.messageBusFixedChunkableResources?.find((resource) =>
+            ?? func.routeMetaFixedChunkableResources?.find((resource) =>
               resource.collection === ea.collection
               && (ea.mutationEffectOrdinals?.includes(resource.effectOrdinal) ?? false))
               ?.activation
@@ -4236,9 +4235,6 @@ function buildFunctionAbiMetadata(
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
           ? ec.resultArrayOutput ?? ec.sourceCallNode?.resultArrayOutput
             ?? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
-        if (ec.callerIdentity === undefined && compilerOptions.messageBusKernel === true) {
-          throw new Error(`Kernel callsite ${func.name}:${ec.slotIndex} lacks caller identity metadata`);
-        }
         return {
           callsiteId: ec.slotIndex,
           ...(compilerOptions.composition !== 'framed' && ec.readonlyReturnBindingSelector !== undefined && {
@@ -4565,13 +4561,13 @@ function buildFunctionAbiMetadata(
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
     ...(func.usesBlockOracle && { usesBlockOracle: true }),
     ...(func.indirectPoolReads && { indirectPoolReads: { ...func.indirectPoolReads } }),
-    ...(func.messageBusBlockhashReadWidth && func.messageBusBlockhashReads && {
+    ...(func.routeMetaBlockhashReadWidth && func.routeMetaBlockhashReads && {
       graphBlockhashOracle: {
         inputBaseParameter: '__internal__blockhashInputIndex' as const,
-        rowCount: func.messageBusMaximumRows!,
-        readWidth: func.messageBusBlockhashReadWidth,
-        slotCount: func.messageBusMaximumRows! * func.messageBusBlockhashReadWidth,
-        reads: [...func.messageBusBlockhashReads],
+        rowCount: func.routeMetaMaximumRows!,
+        readWidth: func.routeMetaBlockhashReadWidth,
+        slotCount: func.routeMetaMaximumRows! * func.routeMetaBlockhashReadWidth,
+        reads: [...func.routeMetaBlockhashReads],
       },
     }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
@@ -4763,7 +4759,7 @@ export function generateArtifact(
       })),
       // The compiler-generated route always carries its aggregate vector in one compact outer bytes field.
       // Individual handler rows independently publish EVM or compact result encodings inside that carrier.
-      resultEncoding: func.messageBusRoute
+      resultEncoding: func.routeMetaRoute
         ? 'compact-pushdata-v1' : externalResultEncoding(func.returnTypes, compilerOptions),
     }),
     ...(func.settlesCallRecord === true && { callRecord: true }),
@@ -5099,17 +5095,11 @@ export function generateArtifact(
         allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
         ...(compilerOptions.tagSingletonDataNfts === true && { tagSingletonDataNfts: true }),
-        messageBus: compilerOptions.messageBus,
         // Published only when the source chose it: omitting it follows the mode, which `resolveAddressForm`
         // re-derives on the artifact, so an artifact that names no form reads back the one its compile used
         // without every artifact gaining a field. The SDK's value emulation reads it back through
         // `artifactAddressForm`, so an explicit 'bytecode' compile is not mistaken for the 'hash' default.
         ...(compilerOptions.addressForm !== undefined && { addressForm: compilerOptions.addressForm }),
-        ...(compilerOptions.messageBus && compilerOptions.messageBusKernel !== undefined
-          && { messageBusKernel: compilerOptions.messageBusKernel }),
-        ...(compilerOptions.messageBusEntryPoolCapacity !== undefined
-          && { messageBusEntryPoolCapacity: compilerOptions.messageBusEntryPoolCapacity }),
-        ...(compilerOptions.messageBusDirectParticipant === true && { messageBusDirectParticipant: true }),
         ...(compilerOptions.sourceMap === false && { sourceMap: false }),
       },
     },

@@ -549,7 +549,7 @@ export default class LowerMemoryModel extends AstTraversal {
       && !fn.modifiers.includes(FunctionModifier.EXTERNAL);
     if (vis !== 'internal' && vis !== 'private' && !freeInternal && !(entry && vis === 'public')) return false;
     // A graph handler's external-call manifest is authenticated at its OP_INVOKE boundary. Inlining that
-    // compiler-owned body into the message-bus row loop changes the current codegen function to the route,
+    // compiler-owned body into the compiler-route row loop changes the current codegen function to the route,
     // whose layout intentionally owns no per-handler external-return slots. Besides making returning calls
     // unbound, flattening would bypass recomputation of every outgoing graph row. Reference-typed arguments
     // do not weaken that boundary: keep the handler as a subroutine and lower its memory values in its own body.
@@ -557,7 +557,7 @@ export default class LowerMemoryModel extends AstTraversal {
     // Collection-pool clones likewise carry a compiler-owned pending-value exit. A decoded array argument is
     // an isolated ABI value, not a user memory alias requiring pass-by-reference inlining; flattening the clone
     // would reopen persisted entries beside the route cache and lose sequential read/write semantics.
-    if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler || fn.forceCollectionJournalPool) return false;
+    if (fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler || fn.forceCollectionJournalPool) return false;
     if (fn.customModifiers.length !== 0 || !fn.body) return false;
     if (!fn.parameters.some((p) => this.isPassByRefType(p.type, free))) return false;
     if (this.bodyHas(fn.body, (n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;

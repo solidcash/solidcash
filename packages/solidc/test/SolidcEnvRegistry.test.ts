@@ -50,15 +50,11 @@ describe('solidc env registry', () => {
     try {
       const baseline = compileString(SOURCE, {
         forceStateful: true,
-        messageBus: true,
-        messageBusKernel: true,
         suppressWarnings: true,
       });
       env.SOLIDC_TOTALLY_UNKNOWN_FLAG = '1';
       const withUnknown = compileString(SOURCE, {
         forceStateful: true,
-        messageBus: true,
-        messageBusKernel: true,
         suppressWarnings: true,
       });
       expect(withUnknown.bytecode).toEqual(baseline.bytecode);
@@ -97,14 +93,10 @@ describe('solidc env registry', () => {
   it('explicit CompilerOptions.ownerAltAnchor is identity-bearing vs default', () => {
     const baseline = compileString(SOURCE, {
       forceStateful: true,
-      messageBus: true,
-      messageBusKernel: true,
       suppressWarnings: true,
     });
     const featured = compileString(SOURCE, {
       forceStateful: true,
-      messageBus: true,
-      messageBusKernel: true,
       suppressWarnings: true,
       ownerAltAnchor: true,
     });
@@ -178,8 +170,6 @@ describe('solidc env registry', () => {
         env.SOLIDC_NO_OPTIMISE = '1';
         const artifact = compileString(SOURCE, {
           forceStateful: true,
-          messageBus: true,
-          messageBusKernel: true,
           suppressWarnings: true,
         });
         expect(artifact.bytecode.length).toBeGreaterThan(0);
@@ -237,8 +227,6 @@ describe('solidc env registry', () => {
         env.SOLIDC_TOTALLY_UNKNOWN_FLAG = '1';
         expect(() => compileString(SOURCE, {
           forceStateful: true,
-          messageBus: true,
-          messageBusKernel: true,
           suppressWarnings: true,
         })).toThrow(/unknown SOLIDC_\* keys refused in strict mode/);
       } finally {
@@ -257,8 +245,6 @@ describe('solidc env registry', () => {
         delete env.SOLIDC_STRICT_UNKNOWN_ENV;
         const artifact = compileString(SOURCE, {
           forceStateful: true,
-          messageBus: true,
-          messageBusKernel: true,
           suppressWarnings: true,
         });
         expect(artifact.bytecode.length).toBeGreaterThan(0);

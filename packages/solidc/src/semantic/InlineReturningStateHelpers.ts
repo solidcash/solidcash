@@ -511,7 +511,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // the state-touching criteria (its call SITES stay subroutine calls, matching prior behavior).
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
-      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
+      if (fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler) continue;
       if (((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStoragePtr(fn))
         && !(fn.name.startsWith('__message_bus_entry_') && this.ownsRuntimeMappingLoop(fn))) {
         this.inlinedFns.add(fn.name);
@@ -525,7 +525,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // that checks a transaction signature, which must run in the calling entry point's body.
     const calledByName = this.calledNames;
     for (const fn of node.functions) {
-      if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
+      if (!fn.graphEmissionHandler && !fn.routeMetaDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && !(fn.name.startsWith('__message_bus_entry_') && this.ownsRuntimeMappingLoop(fn))
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
@@ -639,7 +639,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (!(fn.name.startsWith('__message_bus_entry_') || fn.name.startsWith('__message_bus_handler_')
         || fn.name.startsWith('__message_bus_resource_'))) continue;
-      if (fn.messageBusDetachedSignatureHandler || fn.graphEmissionHandler
+      if (fn.routeMetaDetachedSignatureHandler || fn.graphEmissionHandler
         || this.transitivelyContainsExternalCall(fn)
         || this.transitivelyContainsLowLevelCall(fn)) {
         this.inlinedFns.delete(fn.name);
@@ -726,7 +726,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
    * statement before the tail, as in a token's `if (failTransfers) return false; ... emit Transfer(..);
    * return true;`. Such a helper touches its own entry and emits, so it must inline (an OP_INVOKE subroutine has no
    * caller block layout and would drop the event), yet `eligibleShape` sees two returns and leaves it behind. That
-   * is what kept a fee-on-transfer test token's message-bus route from being synthesized at all: route generation
+   * is what kept a fee-on-transfer test token's compiler-route route from being synthesized at all: route generation
    * refused the retained helper, every rung failed, and the artifact fell back to direct-only.
    *
    * Rewrite every top-level `if (c) return a;` and the tail `return b;` into one assignment to a result temp, with
@@ -880,7 +880,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     let returns = 0;
     for (const n of this.nodesOf(fn)) if (n instanceof ReturnNode) returns += 1;
     if (!isSourceReturn(last)) {
-      // A message-bus route clone can be taken from a body snapshot made before NamedReturnTransformation
+      // A compiler-route route clone can be taken from a body snapshot made before NamedReturnTransformation
       // appended the implicit named-return tail. Solidity returns the named values on fall-through, so such a
       // body is still a single-return helper; `inlineCall` reads the named locals directly. Without this the
       // clone stays behind OP_INVOKE and code generation refuses its event (X118, `_mintFee` -> `_mint`).
@@ -1378,7 +1378,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
   // Writes an entry of a sorted collection, which co-spends that entry's slots the way a read does; its batch
   // witnesses are the writing function's own parameters, which a call cannot pass.
-  // A function that calls itself is the recursion lowering's to serve, and a message-bus handler owns its
+  // A function that calls itself is the recursion lowering's to serve, and a compiler-route handler owns its
   // collection topology, so neither is an inliner's.
   private writesSortedEntry(fn: FunctionDefinitionNode): boolean {
     if (fn.name.startsWith('__message_bus_')) return false;

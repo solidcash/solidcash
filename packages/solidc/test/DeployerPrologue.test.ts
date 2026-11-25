@@ -38,7 +38,7 @@ function compile(source: string): Artifact {
   const warn = console.warn;
   console.warn = () => {};
   try {
-    return compileString(`${P} ${source}`, { deployer: true, messageBus: false } as never) as Artifact;
+    return compileString(`${P} ${source}`, { deployer: true} as never) as Artifact;
   } finally {
     console.warn = warn;
   }
@@ -291,7 +291,7 @@ describe('A4.1 ctor-collection-shape: a collection written at birth', () => {
       const warn = console.warn;
       console.warn = () => {};
       try {
-        const artifact = compileString(`${P} ${source}`, { deployer: true, messageBus: false } as never) as Artifact;
+        const artifact = compileString(`${P} ${source}`, { deployer: true} as never) as Artifact;
         expect((artifact as { deployerUnsupported?: string }).deployerUnsupported).toBeUndefined();
         expect(artifact.deployer?.collectionRows.map((row) => [row.collection, row.appendSites]))
           .toEqual([[source.includes('bal') ? 'bal' : 'm', 1]]);
@@ -312,7 +312,7 @@ describe('A4.1: a constructor that both reads the satoshi balance and may send',
     const warn = console.warn;
     console.warn = () => {};
     try {
-      return (compileString(`${P} ${source}`, { deployer: true, messageBus: false } as never) as { deployerUnsupported?: string }).deployerUnsupported;
+      return (compileString(`${P} ${source}`, { deployer: true} as never) as { deployerUnsupported?: string }).deployerUnsupported;
     } finally {
       console.warn = warn;
     }
@@ -362,7 +362,7 @@ describe('B7.4 (O1): the sweep arm is the template', () => {
       '74009dc4519d00d10087', // no age
     ]) {
       expect(() => compileString(`${P} contract C { int n; constructor() { n = 1; } }`,
-        { deployer: true, messageBus: false, __deployerTestBox: { sweepBody } } as never)).toThrow(/O1's template/);
+        { deployer: true, __deployerTestBox: { sweepBody } } as never)).toThrow(/O1's template/);
     }
   });
 });

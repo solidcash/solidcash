@@ -56,8 +56,6 @@
     "test:application-regtest": "node scripts/release-application-regtest.mjs",
     "test:generated-project-smoke": "node scripts/release-generated-project-smoke.mjs",
     "test:security-conformance": "node scripts/release-security-conformance.mjs",
-    "test:kernel-beta": "node scripts/kernel-beta-gate.mjs",
-    "test:kernel-beta:local": "node scripts/kernel-beta-gate.mjs --tests-only --allow-dirty",
     "check:source-tree": "node scripts/check-source-tree.mjs",
     "check:doc-citations": "node scripts/check-doc-citations.mjs",
     "lint": "lerna run lint --ignore solidcash-examples && yarn workspace testing-suite lint",

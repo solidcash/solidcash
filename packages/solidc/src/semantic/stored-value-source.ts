@@ -70,7 +70,7 @@ export function publishStoredValueSources(contract: ContractNode, fileStructs: S
 function publishFunctionSources(
   contract: ContractNode, fn: FunctionDefinitionNode, fileStructs: StructDefinitionNode[],
 ): void {
-  if (!fn.entryAccesses?.length || fn.messageBusRoute) return;
+  if (!fn.entryAccesses?.length || fn.routeMetaRoute) return;
   for (const access of fn.entryAccesses) delete access.storedValueSource;
   const nodes = [...syntaxNodes(fn.body)];
   const structs = new Map([...fileStructs, ...contract.structDefinitions].map((struct) => [struct.name, struct]));

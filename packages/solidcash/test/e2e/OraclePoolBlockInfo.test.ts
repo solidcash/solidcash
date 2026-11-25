@@ -196,7 +196,7 @@ describe('oracle pool block-info reads by direct contracts', () => {
 
   it('an external call\'s arguments read block.number and block.timestamp from the coin the body slices', async () => {
     const { provider, signer } = await chain();
-    const options = { evmCompat: true, forceStateful: true, messageBus: false } as const;
+    const options = { evmCompat: true, forceStateful: true} as const;
     const recorder = await getContractFactory(compileString(RECORDER, options), signer).deploy() as any;
     const forwarder = await getContractFactory(compileString(FORWARDER, options), signer)
       .deploy(recorder.address) as any;
@@ -208,7 +208,7 @@ describe('oracle pool block-info reads by direct contracts', () => {
 
   it('a guard that reads block.number decides whether its external call runs', async () => {
     const { signer } = await chain();
-    const options = { evmCompat: true, forceStateful: true, messageBus: false } as const;
+    const options = { evmCompat: true, forceStateful: true} as const;
     const recorder = await getContractFactory(compileString(RECORDER, options), signer).deploy() as any;
     const guarded = await getContractFactory(compileString(GUARDED, options), signer)
       .deploy(recorder.address) as any;

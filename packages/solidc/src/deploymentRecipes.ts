@@ -41,10 +41,13 @@ import { GlobalFunction } from './ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import { containsStatefulOperation } from './semantic/EnsureFinalRequireTraversal.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
-import {
-  allowsPreFinalIntrinsicTypes,
-  type FinalizedTypedEffectIrOptions,
-} from './finalized-typed-effect-ir.js';
+/** Whether undeclared intrinsic result types may be inferred while building a deployment recipe. */
+export interface FinalizedTypedEffectIrOptions {
+  requireFinalizedTypes?: boolean;
+}
+
+const allowsPreFinalIntrinsicTypes = (options: FinalizedTypedEffectIrOptions): boolean =>
+  options.requireFinalizedTypes !== true;
 
 /**
  * finalized typed effect IR: analysis-scoped typed-effect policy. Kernel admission defaults to requiring finalized types

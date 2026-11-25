@@ -35,7 +35,7 @@ function settleDirect(artifact: Artifact, args: readonly bigint[]): boolean {
 
 const P = 'pragma solidcash ^0.52.0;';
 const compile = (params: string, body: string): Artifact =>
-  compileString(`${P} contract C { function f(${params}) ${body} }`, { messageBus: false });
+  compileString(`${P} contract C { function f(${params}) ${body} }`, {});
 
 describe('unsigned relational comparisons', () => {
   it('refuses a uint8 cap for a top-half value, and admits the value itself', () => {

@@ -292,14 +292,14 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     // The lowered block ends in a return; it must splice into the function body so the return sits at the tail
     // (a nested block would hide it from the terminal-return codegen and duplicate the trailing covenant).
     const yul = compileString('contract C() { function f(uint a) returns (uint) { assembly { mstore(0, a) return(0, 32) } } }',
-      { evmCompat: true, messageBus: false });
+      { evmCompat: true});
     const hand = compileString('contract C() { function f(uint a) returns (uint) { return a; } }', {
-      evmCompat: true, messageBus: false,
+      evmCompat: true,
     });
     expect(yul.bytecode).toBe(hand.bytecode);
     const unreachable = compileString('contract C() { function f(uint a) returns (uint) {'
       + ' assembly { mstore(0, a) return(0, 32) } return 5; } }', {
-      evmCompat: true, messageBus: false,
+      evmCompat: true,
     });
     expect(unreachable.bytecode).toBe(hand.bytecode);
   });
@@ -308,9 +308,9 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     // The dead `pc()` would leave the block unlowered, and the dead require would run, if either were kept.
     const yul = compileString('contract C() { function f(uint a) returns (uint) {'
       + ' assembly { mstore(0, a) return(0, 32) let x := pc() } require(a > 1); } }',
-    { evmCompat: true, messageBus: false });
+    { evmCompat: true});
     const hand = compileString('contract C() { function f(uint a) returns (uint) { return a; } }', {
-      evmCompat: true, messageBus: false,
+      evmCompat: true,
     });
     expect(yul.bytecode).toBe(hand.bytecode);
   });
@@ -363,9 +363,9 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
   it('lowers an empty `let x` and multi-var `let y, z` to zero-initialized words', () => {
     // `let x` == `let x := 0`; multi-var `let y, z` declares both, each 0. Byte-identical to explicit 0-inits.
     const asm = compileString('contract C() { function f() returns (uint a, uint b) { assembly { let x let y, z a := x b := z } } }',
-      { evmCompat: true, messageBus: false });
+      { evmCompat: true});
     const hand = compileString('contract C() { function f() returns (uint a, uint b) { uint x = 0; uint y = 0; uint z = 0; a = x; b = z; } }',
-      { evmCompat: true, messageBus: false });
+      { evmCompat: true});
     expect(asm.bytecode).toBe(hand.bytecode);
   });
 
@@ -509,12 +509,12 @@ describe('Yul memory (constant-offset scratch)', () => {
     const yul = compileString(
       'contract C(){function f(bytes32 a,bytes32 b)returns(bytes32 value){'
       + 'assembly{mstore(0,a) mstore(0x20,b) value:=keccak256(0,0x40)}}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     const direct = compileString(
       'contract C(){function f(bytes32 a,bytes32 b)returns(bytes32 value){'
       + 'value=keccak256(bytes.concat(bytes32(a),bytes32(b)));}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -533,11 +533,11 @@ describe('Yul memory (constant-offset scratch)', () => {
     const yul = compileString(
       'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){'
       + 'assembly{r:=mload(add(buf,32)) s:=mload(add(buf,64))}}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     const direct = compileString(
       'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){r=bytes32(buf.slice(0,32));s=bytes32(buf.slice(32,64));}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -554,7 +554,7 @@ describe('Yul memory (constant-offset scratch)', () => {
     // sig[64], so it must fold to a 1-byte slice, not a bytes32 read.
     const yul = compileString(
       'contract C(){function f(bytes65 sig)returns(uint8 v){assembly{v:=byte(0,mload(add(sig,96)))}}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     const asm = bytecodeToAsm(hexToBin(yul.debug.bytecode));
     // `byte` is a uint256 Yul operation, so its width-normalization need not be byte-identical to a source-level
@@ -691,11 +691,11 @@ describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)',
   it('mload(<bytes memory var>) == the value byte length', () => {
     const yul = compileString(
       'contract C(){function f(bytes buf)returns(uint256 n){assembly{n:=mload(buf)}}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     const direct = compileString(
       'contract C(){function f(bytes buf)returns(uint256 n){n=uint256(buf.length);}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -703,11 +703,11 @@ describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)',
   it('extcodesize(addr) == addr.code.length', () => {
     const yul = compileString(
       'contract C(){function f(address a)returns(uint256 s){assembly{s:=extcodesize(a)}}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     const direct = compileString(
       'contract C(){function f(address a)returns(uint256 s){s=uint256(a.code.length);}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -721,14 +721,14 @@ describe('Yul packed storage slots', () => {
   it('sload(0) combines packed sub-word vars (uint256(a) + uint256(b)*2^128 + ...)', () => {
     const yul = compileString(
       'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){assembly{w:=sload(0)}}}',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     // Yul arithmetic is unchecked; `bigint` factors keep the source's sum unchecked too.
     const direct = compileString(
       'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){'
       + `w=uint256(this.a)+uint256(this.b)*bigint(${POW(128)})+uint256(this.c)*bigint(${POW(192)})`
       + `+uint256(this.d)*bigint(${POW(224)});}}`,
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true},
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });

@@ -6,7 +6,7 @@ import { compileString } from '../src/index.js';
 // case; no dist import and no re-implementation.
 
 const compile = (src: string): ReturnType<typeof compileString> =>
-  compileString(src, { messageBus: false, enforceFinalRequire: false });
+  compileString(src, { enforceFinalRequire: false });
 
 describe('native validator enforcement (Tier 2)', () => {
   it('T2-1 rejects a derived contract calling an ancestor private function', () => {

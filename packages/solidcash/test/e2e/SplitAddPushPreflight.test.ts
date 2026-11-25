@@ -34,7 +34,7 @@ contract Chef {
 
 describe('split add push preflight (censused dynamic-array chunks)', () => {
   it('settles the poolInfo.push chunk without the input-0 OP_VERIFY', async () => {
-    const compiled = compileStringSplit(SRC, { forceSplit: true, messageBus: true, evmCompat: true });
+    const compiled = compileStringSplit(SRC, { forceSplit: true, evmCompat: true });
     const provider = createTestProvider();
     const signer = new Signer(alicePriv, provider);
     const funding = [];

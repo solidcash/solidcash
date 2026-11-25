@@ -24,11 +24,10 @@ contract Relay(address target) {
   }
 }`;
 const artifacts = compileStringMulti(source, {
-  forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
-  messageBusGraphContext: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+  forceStateful: true, evmCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
 });
 const nativeSink = compileStringMulti(source, {
-  forceStateful: true, messageBus: false, evmCompat: true, suppressWarnings: true,
+  forceStateful: true, evmCompat: true, suppressWarnings: true,
 }).Sink;
 const identity = new Uint8Array(20).fill(0x42);
 const nativeLock = hexToBin(`76a914${binToHex(identity)}88ac`);

@@ -8,7 +8,7 @@ import { createTestProvider, getSigners } from '../test-util.js';
 // needs the callee's whole block, not only its master and data records. The callee runs as a direct external group,
 // so its entries, event and record are co-spent and derived as a typed call's are, while the caller's compat pin reads
 // it at its call-input witness and attests its edge. Its msg.sender is the caller a typed call presents.
-const OPTIONS = { evmCompat: true, forceStateful: true, messageBus: false } as any;
+const OPTIONS = { evmCompat: true, forceStateful: true} as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 
 const COIN = `

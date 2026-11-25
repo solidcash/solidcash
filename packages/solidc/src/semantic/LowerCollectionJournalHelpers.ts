@@ -54,12 +54,19 @@ import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
-  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
-} from './KernelEntryActivation.js';
+  argumentConditionActivation, booleanArgumentIndices, stableArgumentIndices,
+} from './ArgumentConditionActivation.js';
 import {
   ArrayType, IntType, MappingType, type Type,
 } from '@solidcash/utils';
-import { throwKernelCatalogDiagnostic } from '../kernel-admission-catalog.js';
+import { SolidcDiagnosticError } from '../Errors.js';
+
+/** Fail closed with a stable diagnostic code for an invariant the lowering relies on. */
+const throwKernelCatalogDiagnostic = (
+  code: string, message: string, detail: Readonly<Record<string, unknown>> = {},
+): never => {
+  throw new SolidcDiagnosticError(code as never, message, detail);
+};
 
 interface Candidate {
   fn: FunctionDefinitionNode;
@@ -216,13 +223,13 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private journalAccessActivations(fn: FunctionDefinitionNode): ReadonlyMap<Node, ExternalCallExpression> {
     const activations = new Map<Node, ExternalCallExpression>();
     if (!this.enablePooledDynamicArrays || !fn.body) return activations;
-    const argumentsByName = stableKernelArgumentIndices(fn);
-    const booleanArguments = kernelBooleanArgumentIndices(fn);
+    const argumentsByName = stableArgumentIndices(fn);
+    const booleanArguments = booleanArgumentIndices(fn);
     const combine = (outer: ExternalCallExpression | undefined, inner: ExternalCallExpression): ExternalCallExpression =>
       outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
     const scan = (node: Node, activation?: ExternalCallExpression, representable = true): void => {
       if (node instanceof BranchNode) {
-        const condition = kernelArgumentConditionActivation(node.condition, argumentsByName, booleanArguments);
+        const condition = argumentConditionActivation(node.condition, argumentsByName, booleanArguments);
         const supported = representable && condition !== undefined;
         scan(node.ifBlock, supported ? combine(activation, condition!) : undefined, supported);
         if (node.elseBlock) scan(node.elseBlock, supported ? combine(activation, {
@@ -312,7 +319,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
       return targets;
     };
-    const routes = node.functions.filter((fn) => fn.messageBusRoute).map((fn) => ({
+    const routes = node.functions.filter((fn) => fn.routeMetaRoute).map((fn) => ({
       fn, raw: rawCollections(fn), callees: callees(fn), pooled: new Set<FunctionDefinitionNode>(),
     }));
     const dynamicArrays = new Map(node.stateVariables.filter((state) =>
@@ -411,7 +418,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.walk(fn.body, (candidate) => {
         if (candidate instanceof EmitStatementNode) emitsEvent = true;
       });
-      // A message-bus graph clone does not emit directly from the OP_INVOKE frame: code generation projects its
+      // A compiler-route graph clone does not emit directly from the OP_INVOKE frame: code generation projects its
       // event into the authenticated route-owned effect frame. It can therefore share the value-threaded
       // collection-journal exit. Ordinary internal helpers still have no such projection and retain X118's gate.
       if (emitsEvent && !fn.graphEmissionHandler) continue;
@@ -615,7 +622,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
-      console.error('collection-journal-message-bus-candidates', JSON.stringify({
+      console.error('collection-journal-compiler-route-candidates', JSON.stringify({
         contract: node.name,
         candidates: [...this.candidates.keys()],
         multiCandidates: [...this.multiCandidates.entries()].map(([key, candidate]) => ({
@@ -766,13 +773,13 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       for (const target of route.callees) inspect(target);
       const discharged = new Set<string>();
       for (const source of node.functions) {
-        const selector = source.messageBusKernelJournalDispositionSelectorHex;
-        if (!source.isEntryPoint || source.messageBusFixedChunkableWriteMaxRows !== 1
-          || !selector || !source.messageBusFixedChunkableResources?.length) continue;
-        const resources = new Set(source.messageBusFixedChunkableResources.map((resource) => resource.collection));
+        const selector = source.routeMetaKernelJournalDispositionSelectorHex;
+        if (!source.isEntryPoint || source.routeMetaFixedChunkableWriteMaxRows !== 1
+          || !selector || !source.routeMetaFixedChunkableResources?.length) continue;
+        const resources = new Set(source.routeMetaFixedChunkableResources.map((resource) => resource.collection));
         if ([...resources].some((name) => unpooled.has(name))) continue;
         const variants = [...route.callees].filter((fn) =>
-          fn.messageBusKernelJournalDispositionSelectorHex === selector);
+          fn.routeMetaKernelJournalDispositionSelectorHex === selector);
         if (variants.length === 0 || variants.some((fn) => {
           const candidate = [...this.threadedMultis].find((entry) => entry.fn === fn);
           return !route.pooled.has(fn) || !candidate || fn.collectionJournal !== true
@@ -782,21 +789,21 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         // Do not publish a capability unless this exact route contains its compiler-stamped guard.
         let guarded = false;
         this.walk(route.fn.body, (child) => {
-          if (child instanceof RequireNode && child.messageBusFixedChunkableWriteGuard === selector) guarded = true;
+          if (child instanceof RequireNode && child.routeMetaFixedChunkableWriteGuard === selector) guarded = true;
         });
         if (!guarded) continue;
-        source.messageBusPooledChunkableWrite = true;
+        source.routeMetaPooledChunkableWrite = true;
         discharged.add(selector);
       }
       if (discharged.size === 0) continue;
       this.walk(route.fn.body, (child) => {
         if (!(child instanceof BlockNode)) return;
         child.statements = child.statements?.filter((statement) =>
-          !discharged.has(statement.messageBusFixedChunkableWriteGuard ?? ''));
+          !discharged.has(statement.routeMetaFixedChunkableWriteGuard ?? ''));
       });
       let remainingGuard = false;
       this.walk(route.fn.body, (child) => {
-        if (child instanceof RequireNode && child.messageBusFixedChunkableWriteGuard) remainingGuard = true;
+        if (child instanceof RequireNode && child.routeMetaFixedChunkableWriteGuard) remainingGuard = true;
       });
       if (!remainingGuard) route.fn.body.statements = route.fn.body.statements?.filter((statement) =>
         !(statement instanceof VariableDefinitionNode && statement.name === '__message_bus_fixed_chunkable_write_count'));
@@ -811,7 +818,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   /**
    * Resolve a journal candidate for a call. Candidates are registered by name AND arity, but arity MUTATES:
-   * semantic analysis appends synthetic parameters after registration, and a compiler-generated message-bus
+   * semantic analysis appends synthetic parameters after registration, and a compiler-generated compiler-route
    * route writes some of those synthetics at the call site itself. The exact key then misses on both sides -
    * the callee keeps a leading `__cj_` parameter its call site never supplies. Fall back to the name when it
    * identifies exactly one candidate; an overloaded name keeps the strict arity match.
@@ -1232,7 +1239,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         { gate: 'journal-function-scope-missing', handler: target.fn.name },
       );
     }
-    const callLocals = cache.calls.get(call);
+    const callLocals = cache!.calls.get(call);
     if (!callLocals) {
       throwKernelCatalogDiagnostic(
         'KERNEL_INTERNAL_DEFECT',
@@ -1250,13 +1257,13 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           { gate: 'journal-dynamic-cache-missing', handler: target.fn.name, state: entry.state },
         );
       }
-      return dynamicCache;
+      return dynamicCache!;
     });
     const invoked = this.at(new FunctionCallNode(
       this.at(new IdentifierNode(call.identifier.name), call),
       [
         ...dynamicLocals.map(({ name }) => this.at(new IdentifierNode(name), call)),
-        ...callLocals.map(({ local, runtimeValueName }) =>
+        ...callLocals!.map(({ local, runtimeValueName }) =>
           this.at(new IdentifierNode(runtimeValueName ?? local.name), call)),
         ...originalArgs,
       ],
@@ -1278,7 +1285,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     };
     const runtimeDeclarations: StatementNode[] = [];
     const runtimeSelections: StatementNode[] = [];
-    for (const binding of callLocals) {
+    for (const binding of callLocals!) {
       const { runtimeAliases, runtimeOwnerName, runtimeValueName } = binding;
       if (!runtimeAliases?.length || !runtimeOwnerName || !runtimeValueName) continue;
       const linearArgument = binding.local.keyIdentity.some((identity) =>
@@ -1346,7 +1353,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       runtimeSelections.push(...(selection.statements ?? []));
     }
     const ordinaryBindings = new Map<string, ActiveMultiCacheBinding[]>();
-    for (const binding of callLocals) {
+    for (const binding of callLocals!) {
       if (binding.runtimeValueName) continue;
       const group = ordinaryBindings.get(binding.local.name) ?? [];
       group.push(binding);
@@ -1364,10 +1371,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }) : [];
     // A void pooled handler touching one entry still returns a single journal value, not a one-element tuple.
     let capture: StatementNode;
-    if (dynamicLocals.length === 0 && callLocals.length === 1 && resultElements.length === 0) {
+    if (dynamicLocals.length === 0 && callLocals!.length === 1 && resultElements.length === 0) {
       capture = this.at(new AssignNode(
         this.at(new IdentifierNode(
-          callLocals[0].runtimeValueName ?? callLocals[0].local.name,
+          callLocals![0].runtimeValueName ?? callLocals![0].local.name,
         ), call), invoked,
       ), call);
     } else {
@@ -1376,7 +1383,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           ...dynamicLocals.map(({ entry, name }) => ({
             name, type: entry.valueType, existing: true,
           })),
-          ...callLocals.map(({ entry, local, mutates, runtimeValueName }) => ({
+          ...callLocals!.map(({ entry, local, mutates, runtimeValueName }) => ({
             name: runtimeValueName ?? local.name, type: entry.valueType, existing: true,
             // A read-only helper returns the cache solely because every pooled helper shares one physical tuple
             // convention. Its value is provably unchanged, so discard that tuple field instead of rotating it
@@ -1391,7 +1398,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       ), call);
     }
     const ordinaryDirtyBindings = new Map<string, ActiveMultiCacheBinding[]>();
-    for (const binding of callLocals) {
+    for (const binding of callLocals!) {
       if (!binding.mutates || binding.runtimeValueName) continue;
       const group = ordinaryDirtyBindings.get(binding.local.name) ?? [];
       group.push(binding);
@@ -1406,7 +1413,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         this.at(new BlockNode([mark]), call),
       ), call);
     });
-    const runtimeDirties = callLocals.flatMap((binding): StatementNode[] => {
+    const runtimeDirties = callLocals!.flatMap((binding): StatementNode[] => {
       if (!binding.mutates || !binding.runtimeValueName || !binding.runtimeOwnerName) return [];
       const owners = [...new Map([
         binding.local, ...(binding.runtimeAliases ?? []),
@@ -1475,7 +1482,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         return cloneNode(call.parameters[parameterIndex]) as ExpressionNode;
       });
       const identitiesFor = (keys: ExpressionNode[]): string[] => keys.map((key) => {
-        const identity = this.canonicalCacheKey(key, wrapperParameters);
+        const identity = this.canonicalCacheKey(key, wrapperParameters)!;
         if (identity === undefined) {
           throwKernelCatalogDiagnostic(
             'KERNEL_LAYOUT',
@@ -1571,7 +1578,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           } : {}),
         };
       });
-      for (const binding of callLocals) {
+      for (const binding of callLocals!) {
         const lanes = binding.runtimeAliases ?? [];
         const laneBacked = lanes.length > 0 && lanes.every((alias) => alias.keyIdentity.every((identity) =>
           identity.startsWith('parameter:__message_bus_key_')));
@@ -1580,12 +1587,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           binding.local.mutates = false;
         }
       }
-      cache.calls.set(call, callLocals);
+      cache!.calls.set(call, callLocals);
       if (debugRoute) {
         debugCalls.push({
           target: target.fn.name,
           runtimeAliases: target.fn.collectionJournalRuntimeAliases === true,
-          bindings: callLocals.map((binding) => ({
+          bindings: callLocals!.map((binding) => ({
             local: binding.local.name,
             keys: binding.local.keyIdentity,
             aliases: (binding.runtimeAliases ?? []).map((alias) => alias.name),
@@ -1594,7 +1601,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
     }
     if (debugRoute && caches.size > 0) {
-      console.error('collection-journal-message-bus-pool', JSON.stringify({
+      console.error('collection-journal-compiler-route-pool', JSON.stringify({
         calls: debugCalls,
         pools: [...caches.entries()].map(([key, cache]) => ({
           key: key.name,

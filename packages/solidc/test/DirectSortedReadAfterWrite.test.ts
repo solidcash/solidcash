@@ -284,7 +284,7 @@ const SERVED: readonly Served[] = [
 describe('a direct body that reads a mapping entry after writing it', () => {
   for (const shape of SERVED) {
     it(`reads ${shape.name}: the EVM's value is accepted, the other refused`, () => {
-      const artifact = compileString(`${PRAGMA} contract Probe {${shape.members} }`, { messageBus: false });
+      const artifact = compileString(`${PRAGMA} contract Probe {${shape.members} }`, {});
       expect(settle(artifact, shape, shape.right)).toBe(true);
       expect(settle(artifact, shape, shape.wrong)).toContain('Program failed an OP_VERIFY operation');
     });
@@ -298,7 +298,7 @@ const readOf = (entry: string, shape: string): string => `a read of \`${entry}\`
 function refusal(members: string): string | undefined {
   try {
     compileString(`${PRAGMA} contract Refused {${LOGS} mapping(uint => uint) totals;${members} }`,
-      { messageBus: false });
+      {});
     return undefined;
   } catch (error) {
     if (error instanceof DirectStaleReadError) return error.message;
@@ -380,7 +380,7 @@ describe('the entry cache beside a local named like a collection', () => {
   it('leaves the local array its own element writes', () => {
     const artifact = compileString(`${PRAGMA} contract Shadowed { uint[8] scores; function f(int i, int e) {`
       + ' int[] scores = new int[](4); scores[i] = 1; scores[i] = scores[i] + 1; require(scores[i] == e); }'
-      + ' function g(uint id, uint v) { this.scores[id] = v; require(true); } }', { messageBus: false });
+      + ' function g(uint id, uint v) { this.scores[id] = v; require(true); } }', {});
     expect(artifact.abi.find((entry) => entry.name === 'f')?.entryAccesses ?? []).toEqual([]);
   });
 });

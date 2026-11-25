@@ -694,7 +694,7 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
   it('ecrecoverEvm: the zero address for recovery id 30 between two signers, who match ethers', async () => {
     const g0 = await goodSigner('stateful-loop-evm-0'), g2 = await goodSigner('stateful-loop-evm-2');
     const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never));
     await call([g0.h, g0.h, g2.h], [g0.v, 30n, g2.v], [g0.r, g0.r, g2.r], [g0.s, g0.s, g2.s], 3n);
     const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
@@ -709,7 +709,7 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
       { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
     const g = await goodSigner('stateful-loop-evm-range');
     const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never));
     await call([g.h, g.h, g.h], [g.v, g.v, g.v], [g.r, g.r, leWord(0n)], [leWord(order), g.s, g.s], 3n);
     const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
@@ -733,7 +733,7 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
     while (power(x ** 3n + 7n, (prime - 1n) / 2n) === 1n) x += 1n;
     const g = await goodSigner('stateful-loop-evm-off-curve');
     const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never));
     await call([g.h, g.h, g.h], [27n, g.v, 0n], [leWord(x), g.r, g.r], [g.s, g.s, g.s], 3n);
     const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
@@ -756,7 +756,7 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
     expect(point.x < order).toBe(true);
     const g = await goodSigner('stateful-loop-evm-infinity');
     const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never));
     await call([g.h, leWord(z), g.h], [g.v, 27n + (point.y & 1n), 0n], [g.r, leWord(point.x), g.r],
       [g.s, leWord(s), g.s], 3n);
@@ -769,7 +769,7 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
   it('ecrecoverP2pkh: the empty bytecode for recovery ids 0 and 29 around a signer, whose P2PKH lock matches', async () => {
     const g = await goodSigner('stateful-loop-p2pkh');
     const { contract, call } = await deployed(compileString(source('ecrecoverP2pkh'), {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never));
     await call([g.h, g.h, g.h], [0n, g.v, 29n], [g.r, g.r, g.r], [g.s, g.s, g.s], 3n);
     const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };

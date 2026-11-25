@@ -23,9 +23,12 @@ import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { canonicalizeUpsertKeyExpression } from '../generation/upsertKeySources.js';
+
+/** Compiler-owned journal record segment prefix and capacity. */
+const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
+const KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS = 33;
 import {
   AddressType, ArrayType, BytesType, FixedType, FunctionType, IntType, PrimitiveType, StructType, type Type,
-  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
 } from '@solidcash/utils';
 import {
   isFunctionEntryInvariantMappingKey, VMAP_KEY_SNAPSHOT_PREFIX,
@@ -353,7 +356,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       let changed = false;
       const existing = new Set(caller.parameters.map((parameter) => parameter.name));
       const ownerIndex = caller.parameters.findIndex(
-        (parameter) => parameter.name === '__internal__messageBusOwnerInput',
+        (parameter) => parameter.name === '__internal__routeMetaOwnerInput',
       );
       let insertionIndex = ownerIndex < 0 ? caller.parameters.length : ownerIndex;
       for (const parameter of callee.parameters.filter(contextParameter)) {
@@ -408,8 +411,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       name: string,
       role: 'counter-permutation' | 'old-values-witness',
     ): void => {
-      if (!node.messageBusKernelReadCarrierDiscovery) return;
-      (node.messageBusKernelReadCarrierSyntheticParameterRoles ??= new Map()).set(name, role);
+      if (!node.routeMetaKernelReadCarrierDiscovery) return;
+      (node.routeMetaKernelReadCarrierSyntheticParameterRoles ??= new Map()).set(name, role);
     };
     // The compiler invokes this pass both before speculative admission and, when needed, before final codegen.
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
@@ -1173,7 +1176,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       return write.keys.findIndex((key) => containsIdentifier(key, logical));
     };
     const hasObservableEffect = (x: Node): boolean => this.hasObservableEffect(x);
-    // The message-bus effect frame has one fixed window per OUTER message row. Reaching the same emit/transfer
+    // The compiler-route effect frame has one fixed window per OUTER message row. Reaching the same emit/transfer
     // site N times in this inner runtime loop would therefore address one slot N times, while the SDK can only
     // materialize the statically declared site once. Typed external calls are different: their call manifest
     // already carries a runtime occurrence loop, so leave those in source order. Ordinary explicitly-pure
@@ -2316,8 +2319,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       for (const write of keyed) {
         if (!(write instanceof MappingAssignNode)
           || (!write.arrayPush && !write.arrayPop && write.arrayIndex === undefined)) continue;
-        if (!write.arrayPop) write.messageBusRuntimeMutationValueExpression = cloneNode(write.expression);
-        if (write.arrayIndex) write.messageBusRuntimeMutationIndexExpression = cloneNode(write.arrayIndex);
+        if (!write.arrayPop) write.routeMetaRuntimeMutationValueExpression = cloneNode(write.expression);
+        if (write.arrayIndex) write.routeMetaRuntimeMutationIndexExpression = cloneNode(write.arrayIndex);
       }
       // Collapse an exhaustive top-level local assignment join into the exact value produced for this source
       // iteration. The original branch remains in the executable body; this expression is metadata used wherever
@@ -4475,9 +4478,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 );
                 synthetic.location = candidate.location ?? destination.location;
                 synthetic.collection = sourceCollection;
-                synthetic.messageBusRuntimeReadOnly = true;
+                synthetic.routeMetaRuntimeReadOnly = true;
                 const authenticatedRead = cloneNode(witnessRead) as ArrayAccessNode;
-                synthetic.messageBusRuntimeOldValueWitness = authenticatedRead;
+                synthetic.routeMetaRuntimeOldValueWitness = authenticatedRead;
                 plan = {
                   destination,
                   consumer: destination,
@@ -4563,10 +4566,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 );
                 synthetic.location = candidate.location ?? requirement.location;
                 synthetic.collection = sourceCollection;
-                synthetic.messageBusRuntimeReadOnly = true;
-                if (condition) synthetic.messageBusRuntimeOldValueWitnessDomain = 'selected-source';
+                synthetic.routeMetaRuntimeReadOnly = true;
+                if (condition) synthetic.routeMetaRuntimeOldValueWitnessDomain = 'selected-source';
                 const authenticatedRead = cloneNode(witnessRead) as ArrayAccessNode;
-                synthetic.messageBusRuntimeOldValueWitness = authenticatedRead;
+                synthetic.routeMetaRuntimeOldValueWitness = authenticatedRead;
                 plan = {
                   consumer: requirement,
                   sourceOrderConsumer: true,
@@ -5724,7 +5727,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (!insertBefore(block, write, check)) return false;
           const permutedRank = unitDomain ? id(group.logicalValue) : id(group.logicalRank);
           mappingWrite.expression = readAt(permutedRank);
-          mappingWrite.messageBusRuntimeValueTrace = valueTrace;
+          mappingWrite.routeMetaRuntimeValueTrace = valueTrace;
         }
         const transitionRead = expression instanceof BinaryOpNode
           && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
@@ -5735,7 +5738,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // entry supplies. Mark it before the permutation rewrites the two keys apart, so the route census does not
           // invent a fixed witness for it and code generation still folds the write into the entry. A read of another
           // key or another collection is an operand of its own, whose authenticated read the route keeps.
-          (expression as BinaryOpNode).left.messageBusRuntimeLoopTransitionRead = true;
+          (expression as BinaryOpNode).left.routeMetaRuntimeLoopTransitionRead = true;
         }
         if (generalOldEntryWrites.has(write as ArrayAssignNode | MappingAssignNode)) {
           const mappingWrite = write as ArrayAssignNode | MappingAssignNode;
@@ -5769,11 +5772,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           } else {
             mappingWrite.value = replaceOldEntry(mappingWrite.value) as ExpressionNode;
           }
-          mappingWrite.messageBusRuntimeOldValueWitness = oldRead();
+          mappingWrite.routeMetaRuntimeOldValueWitness = oldRead();
           const structRmw = structRuntimeRmws.get(mappingWrite);
           if (structRmw) {
             structRmw.declaration.expression = cloneNode(
-              mappingWrite.messageBusRuntimeOldValueWitness,
+              mappingWrite.routeMetaRuntimeOldValueWitness,
             ) as ExpressionNode;
           }
         }
@@ -6173,8 +6176,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (apply) {
         for (const write of keyed) {
           const group = groupByWrite.get(write);
-          if (write instanceof MappingAssignNode && !write.messageBusRuntimeReadOnly && group) {
-            write.messageBusJournalTransport = {
+          if (write instanceof MappingAssignNode && !write.routeMetaRuntimeReadOnly && group) {
+            write.routeMetaJournalTransport = {
               collection: write.name,
               varyingArrayParam: group.hidden,
             };
@@ -6450,7 +6453,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // loop witnesses must remain on the source-argument side of that boundary even when this lowering runs on a
     // cloned handler after route ownership was attached; otherwise caller and callee disagree on the OP_INVOKE ABI.
     const ownerIndex = node.parameters.findIndex(
-      (parameter) => parameter.name === '__internal__messageBusOwnerInput',
+      (parameter) => parameter.name === '__internal__routeMetaOwnerInput',
     );
     if (ownerIndex < 0) node.parameters.push(...added);
     else node.parameters.splice(ownerIndex, 0, ...added);
@@ -6481,8 +6484,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       postTest: boolean;
     }> = new Map(),
   ): void {
-    if (!node.body || node.messageBusConstructedArrayKeysNormalized) return;
-    node.messageBusConstructedArrayKeysNormalized = true;
+    if (!node.body || node.routeMetaConstructedArrayKeysNormalized) return;
+    node.routeMetaConstructedArrayKeysNormalized = true;
     const handlerClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
     const canonicalCounters = new Set([...canonicalLoops.values()].map((loop) => loop.logical));
     type ArrayRecurrence = {
@@ -7164,7 +7167,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const selected = new TernaryOpNode(matches, selectedValue, value);
         selected.location = access.location;
         selected.type = access.type;
-        selected.messageBusDeterministicArrayKey = true;
+        selected.routeMetaDeterministicArrayKey = true;
         value = selected;
       }
       return value;
@@ -9958,7 +9961,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }
             if ((!fixedPushes && !fixedPops) || directResizeCount === 0) {
               if (resizeCount > 0) {
-                node.messageBusUnboundedConstructedArray = true;
+                node.routeMetaUnboundedConstructedArray = true;
                 loopPlans.delete(name);
               }
               continue;
@@ -10259,7 +10262,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // This constructed vector later feeds a collection key (otherwise the method returned before building
           // plans). Its producer cannot be replayed without duplicating an effect, so refuse the kernel row
           // shape through the existing unbounded-key admission channel while retaining the direct source call.
-          node.messageBusUnboundedConstructedArray = true;
+          node.routeMetaUnboundedConstructedArray = true;
         }
         const keySnapshot = (statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode)
           && active.has(statement.name)
@@ -10359,7 +10362,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const values = statement.expression.elements.map((element) =>
               replaceArrayReads(replaceSnapshots(element, snapshots), active, []));
             if (values.some((value) => this.hasObservableEffect(value))) {
-              node.messageBusUnboundedConstructedArray = true;
+              node.routeMetaUnboundedConstructedArray = true;
               active.delete(statement.name);
             } else {
               const length = new IntLiteralNode(BigInt(width));

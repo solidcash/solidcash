@@ -10,15 +10,13 @@ import {
 export const compileString = (
   source: string, options: CompileOptions = {},
 ): ReturnType<typeof compileStringRaw> =>
-  compileStringRaw(source, {
-    messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+  compileStringRaw(source, { enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
   });
 
 export const compileStringMulti = (
   source: string, options: CompileOptions = {},
 ): ReturnType<typeof compileStringMultiRaw> =>
-  compileStringMultiRaw(source, {
-    messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+  compileStringMultiRaw(source, { enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
   });
 
 export { compileStringRaw, compileStringMultiRaw };

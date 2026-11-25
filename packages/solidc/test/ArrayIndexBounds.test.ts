@@ -52,7 +52,7 @@ const P = 'pragma solidcash ^0.52.0;';
 /** The entry `f` of `members`, settled on each convention. */
 function conventions(members: string, label: string): Array<[string, (args: readonly Arg[]) => boolean]> {
   const source = `${P} contract C { ${members} }`;
-  const direct = compileString(source, { messageBus: false });
+  const direct = compileString(source, {});
   const master = deployFramedMaster(source, label);
   return [
     ['direct', (args) => settleDirect(direct, args)],
@@ -146,7 +146,7 @@ describe('a memory index outside the length', () => {
     const negative = `${P} contract C { function f(uint e) { uint[] memory a = new uint[](2); require(a[-1] == e); } }`;
     const past = `${P} contract C { function f(uint e) { uint[3] memory a; uint p; assembly { p := a }`
       + ' require(a[3] == e); } }';
-    for (const options of [{ messageBus: false }, { composition: 'framed' as const }]) {
+    for (const options of [{}, { composition: 'framed' as const }]) {
       expect(() => compileString(negative, options)).toThrow('Index out of bounds');
       expect(() => compileString(past, options)).toThrow('Index 3 out of bounds');
     }

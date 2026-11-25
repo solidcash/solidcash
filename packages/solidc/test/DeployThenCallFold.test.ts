@@ -55,7 +55,7 @@ describe('deploy-then-call fold (compiler)', () => {
           require(true);
         }
       }
-    `, { evmCompat: true, messageBus: false });
+    `, { evmCompat: true});
     expect(artifact.contractName).toBe('Factory');
     expect(artifact.abi.find((entry) => entry.name === 'create')?.externalCalls).toBeUndefined();
   });

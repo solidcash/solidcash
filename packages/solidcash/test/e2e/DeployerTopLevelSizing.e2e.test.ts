@@ -33,7 +33,7 @@ function largeContract(): string {
 async function deployed(
   provider: MockNetworkProvider, source: string, txidByte: string, extra: object = {},
 ): Promise<{ artifact: ReturnType<typeof compileString>; result: Awaited<ReturnType<typeof StatefulContract.deploy>> }> {
-  const artifact = compileString(source, { deployer: true, messageBus: false });
+  const artifact = compileString(source, { deployer: true});
   expect(artifact.deployer).toBeDefined();
   const fundingUtxo: Utxo = { txid: txidByte.repeat(32), vout: 0, satoshis: 2_000_000n };
   await provider.seedUtxo(binToHex(authorLock), fundingUtxo);

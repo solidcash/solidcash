@@ -23,8 +23,6 @@ function expectPublishJobPostKeys(art: { abi: readonly { name: string; sortedUps
 
 const eaOpts = {
   evmCompat: true,
-  messageBus: true,
-  messageBusGraphContext: true,
   optimizeForCompilationSpeed: true,
   suppressWarnings: true,
   commitmentLimit: 128,

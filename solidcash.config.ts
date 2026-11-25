@@ -15,9 +15,6 @@ export default defineConfig({
     // Proxy-owned pointer records need the same tagged header as a singleton implementation's shared record.
     tagSingletonDataNfts: true,
     evmCompat: true,
-    messageBus: true,
-    messageBusKernel: true,
-    messageBusGraphContext: true,
     // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
     // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
     ecrecover: 'p2pkh',

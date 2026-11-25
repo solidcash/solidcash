@@ -24,7 +24,7 @@ const source = new URL('../../contracts/examples/MinimalNativeToken.scash', impo
 
 describe('MinimalNativeToken bytecode budget', () => {
   it('keeps full ERC20 allowances and immediate BchNative below 8.5 KB', () => {
-    const artifact = compileFile(source, { messageBus: false });
+    const artifact = compileFile(source, {});
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
     // Pinned to the build with the per-entry covenant hardening, its checks, return and event pins and one-target
     // transitions shared as one helper each, re-measured at feat/per-call-fix ac92c7446 after the merged slot passes
@@ -87,12 +87,12 @@ describe('MinimalNativeToken bytecode budget', () => {
 
     expect(artifact.events.map((event) => event.name).sort()).toEqual(['Approval', 'Transfer']);
 
-    const split = compileFileSplit(source, { messageBus: false });
+    const split = compileFileSplit(source, {});
     expect(Object.keys(split.facets)).toHaveLength(0);
   });
 
   it('refuses a token container spend without its master: the container has no merge path', async () => {
-    const artifact = compileFile(source, { messageBus: false });
+    const artifact = compileFile(source, {});
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
     const inner = new Contract(artifact, [], { provider });
@@ -125,7 +125,7 @@ describe('MinimalNativeToken bytecode budget', () => {
   });
 
   it('mints ledger units on wrap and burns them on unwrap', async () => {
-    const artifact = compileFile(source, { messageBus: false });
+    const artifact = compileFile(source, {});
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
     const inner = new Contract(artifact, [], { provider });
@@ -163,7 +163,7 @@ describe('MinimalNativeToken bytecode budget', () => {
   });
 
   it('deploys a bearer supply of its own category, which a first wrap admits into a new container', async () => {
-    const artifact = compileFile(source, { messageBus: false });
+    const artifact = compileFile(source, {});
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
     const fundingUtxo = { txid: 'f1'.repeat(32), vout: 0, satoshis: 3_000_000n };
@@ -202,7 +202,7 @@ describe('MinimalNativeToken bytecode budget', () => {
   });
 
   it('shares integer mapping reads without changing allowance spends', async () => {
-    const artifact = compileFile(source, { messageBus: false });
+    const artifact = compileFile(source, {});
     expect(artifact.debug.invokeDebug?.['-18']?.name).toBe('compiler helper -18');
     const transferFrom = artifact.abi.find((entry) => entry.name === 'transferFrom')!;
     const body = bytecodeToScript(hexToBin(artifact.functionBodies![transferFrom.selector]));
@@ -213,7 +213,7 @@ describe('MinimalNativeToken bytecode budget', () => {
       'library ReadFacet { mapping(bytes20=>uint256) balances;'
       + ' function f(bytes20 a, bytes20 b, bytes20 c) public {'
       + ' require(this.balances[a] == this.balances[b] || this.balances[c] == 0); } }',
-      { brandLibrary: true, messageBus: false },
+      { brandLibrary: true},
     );
     expect(delegate.debug.invokeDebug?.['-18']?.name).not.toBe('compiler helper -18');
 

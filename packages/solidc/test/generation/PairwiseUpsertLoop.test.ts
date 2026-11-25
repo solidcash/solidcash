@@ -15,7 +15,7 @@ const token = (body: string, valueType = 'int'): string => `contract Token() { m
   function run(address[] rs, ${valueType}[] amounts) { for (int i = 0; i < rs.length; i++) { ${body} } } }`;
 const MULTI_TRANSFER = 'this.bal[msg.sender] -= amounts[i]; this.bal[rs[i]] += amounts[i];';
 const quiet = { suppressWarnings: true };
-const conventions = [quiet, { ...quiet, messageBus: false }];
+const conventions = [quiet, { ...quiet}];
 
 const published = (source: string, fn: string, options: object = quiet): unknown => {
   const loop = compileString(source, options).abi.find((entry) => entry.name === fn)?.sortedUpsertLoopInfo?.[0];

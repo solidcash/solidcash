@@ -101,25 +101,25 @@ describe('October 2026 low holes', () => {
     const artifact = compileString(
       `${P} contract C { enum Status { A, B }`
       + ' function f(int x) { unchecked { Status s = Status(x); require(s == Status.A); } } }',
-      { messageBus: false },
+      {},
     );
     expect(artifact.bytecode).toContain('OP_1 OP_LESSTHANOREQUAL OP_VERIFY');
   });
 
   // Message-bus builds keep the kernel's own lifecycle policy (decided 2026-10-13); the rule holds elsewhere.
-  it('DX-9 a split without a trusted signature is rejected outside the message bus', () => {
+  it('DX-9 a split without a trusted signature is rejected outside the compiler route', () => {
     const src = `${P} contract C(pubkey admin) { int n; function fork(int k) split(k) { require(true); } }`;
-    expect(() => compileString(src, { messageBus: false })).toThrow(/without an unconditional trusted-key signature/);
+    expect(() => compileString(src, {})).toThrow(/without an unconditional trusted-key signature/);
   });
 
   it('DX-9 checkDataSig does not authorize a split, and checkSig fences the sighash', () => {
     const dataSig = `${P} contract C(pubkey admin) { int n;`
       + ' function fork(datasig ds, bytes m, int k) split(k) { require(checkDataSig(ds, m, admin)); } }';
-    expect(() => compileString(dataSig, { messageBus: false })).toThrow(/without an unconditional trusted-key signature/);
+    expect(() => compileString(dataSig, {})).toThrow(/without an unconditional trusted-key signature/);
     const signed = compileString(
       `${P} contract C(pubkey admin) { int n;`
       + ' function fork(sig s, int k) split(k) { require(checkSig(s, admin)); } }',
-      { messageBus: true },
+      {},
     );
     expect(asmOf(signed)).toMatch(/1f OP_AND/);
   });
@@ -127,11 +127,11 @@ describe('October 2026 low holes', () => {
   it('ARITH-7 a slice past the array length is rejected, and the real prefix is not', () => {
     const tooFar = compileString(
       `${P} contract C { function f() { int[] items = [1]; int[] part = items[0:2]; require(part.length == 2); } }`,
-      { messageBus: false },
+      {},
     );
     const kept = compileString(
       `${P} contract C { function f() { int[] items = [1, 2]; int[] part = items[0:2]; require(part.length == 2); } }`,
-      { messageBus: false },
+      {},
     );
     expect(spend(tooFar), 'ARITH-7 slice past the end').not.toBe(true);
     expect(spend(kept), 'ARITH-7 slice of the real prefix').toBe(true);
@@ -140,17 +140,17 @@ describe('October 2026 low holes', () => {
   it('ARITH-9 int8(bytes1(0x80)) is -128 and bytes1 of a high uint8 is 0xff', () => {
     const fromBytes = compileString(
       `${P} contract C { function f(bytes1 b) { require(int8(b) == int8(-128)); } }`,
-      { messageBus: false, evmCompat: true },
+      { evmCompat: true },
     );
     expect(spend(fromBytes, [Uint8Array.of(0x80)]), 'ARITH-9 bytes1 0x80').toBe(true);
     const high = compileString(
       `${P} contract C { function f() { uint8 x = 255; require(bytes1(x) == hex"ff"); } }`,
-      { messageBus: false, evmCompat: true },
+      { evmCompat: true },
     );
     expect(spend(high), 'ARITH-9 uint8 255 as bytes1').toBe(true);
     const negative = compileString(
       `${P} contract C { function f() { require(bytes1(int8(-1)) == hex"ff"); } }`,
-      { messageBus: false, evmCompat: true },
+      { evmCompat: true },
     );
     expect(spend(negative), 'ARITH-9 int8 -1 as bytes1').toBe(true);
   });
@@ -158,7 +158,7 @@ describe('October 2026 low holes', () => {
   it('ARITH-12 cost - msg.value reverts when the input value is larger', () => {
     const artifact = compileString(
       `${P} contract C { function f(uint256 cost, uint256 tip) { require(cost - msg.value <= tip); } }`,
-      { messageBus: false, evmCompat: true },
+      { evmCompat: true },
     );
     expect(spend(artifact, [encodeIntegerValue(100n), encodeIntegerValue(100_000n)]), 'ARITH-12 underflow').not.toBe(true);
     expect(spend(artifact, [encodeIntegerValue(20_000n), encodeIntegerValue(20_000n)]), 'ARITH-12 in range').toBe(true);
@@ -169,7 +169,7 @@ describe('October 2026 low holes', () => {
     try {
       const artifact = compileString(
         `${P} contract C { function f() { require(block.timestamp >= 0); } }`,
-        { messageBus: false },
+        {},
       );
       const warnings = spy.mock.calls.map((call) => String(call[0])).join('\n');
       expect(warnings).toContain('block.timestamp is the last value the oracle owner wrote');
@@ -194,7 +194,7 @@ describe('October 2026 low holes', () => {
     const bundle = compileStringSplit(
       `${P} contract C { int n; function ping() { this.n = this.n + 1; require(true); }`
       + ' function ping(int x) internal { require(x == 0); } }',
-      { forceSplit: true, messageBus: false },
+      { forceSplit: true},
     );
     const info = bundle.manifest.facets[0];
     if (!info) throw new Error('ping was not moved to a facet');
@@ -211,17 +211,17 @@ describe('October 2026 low holes', () => {
     const word = (1n << 256n) - 1n;
     const add = compileString(
       `${P} contract C { function spend(uint256 a) { uint256 r; assembly { r := add(a, 1) } require(r == 0); } }`,
-      { messageBus: false, evmCompat: true },
+      { evmCompat: true },
     );
     expect(spend(add, [encodeIntegerValue(word)]), 'ARITH-11 add wrap').toBe(true);
     const sub = compileString(
       `${P} contract C { function spend(uint256 a) { uint256 r; assembly { r := sub(a, 1) } require(r == ${word}); } }`,
-      { messageBus: false, evmCompat: true },
+      { evmCompat: true },
     );
     expect(spend(sub, [encodeIntegerValue(0n)]), 'ARITH-11 sub wrap').toBe(true);
     const mul = compileString(
       `${P} contract C { function spend(uint256 a) { uint256 r; assembly { r := mul(a, 2) } require(r == ${word} - 1); } }`,
-      { messageBus: false, evmCompat: true },
+      { evmCompat: true },
     );
     expect(spend(mul, [encodeIntegerValue(word)]), 'ARITH-11 mul wrap').toBe(true);
   });

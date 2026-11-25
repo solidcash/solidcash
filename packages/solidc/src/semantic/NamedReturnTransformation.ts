@@ -78,7 +78,7 @@ function bodyHolds(body: Node, matches: (node: Node) => boolean): boolean {
  * Warn on a named return the body never names, as Solidity warns "Unused function parameter" for it: the function
  * returns that output's zero value. A name counts as used where an identifier or a tuple assignment's target names
  * it, and, as Solidity counts it, a `return <values>;` uses every named return. Compiler-generated functions (a
- * generated source, or a `__` name such as a message-bus handler's copy of an entry) are left alone, and so is a body
+ * generated source, or a `__` name such as a compiler-route handler's copy of an entry) are left alone, and so is a body
  * with inline assembly, whose Yul can name the variable where this walk does not look.
  */
 function warnUnusedNamedReturns(node: FunctionDefinitionNode): void {

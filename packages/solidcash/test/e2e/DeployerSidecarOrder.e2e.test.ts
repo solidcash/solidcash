@@ -32,7 +32,7 @@ describe('Deploy<C> side-cars at a top-level deployment (A4.4, A14 item 6)', () 
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
     if (typeof change === 'string') throw new Error(change);
-    const artifact = compileString(SOURCE, { deployer: true, messageBus: false });
+    const artifact = compileString(SOURCE, { deployer: true});
     const slots = artifact.deployer!.abi.find((entry) => entry.name === 'create')!.blockLayout!.slots
       .filter((slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar')
       .sort((left, right) => left.offset - right.offset).map((slot) => slot.kind);

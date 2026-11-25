@@ -72,11 +72,10 @@ function compileCapturing(source: string, imported: boolean): string[] {
         path === './C.sol' ? { source, id: '/C.sol' } : undefined);
       compileString('pragma solidity ^0.8.20;\nimport "./C.sol";\ncontract Root is C {}\n', {
         evmCompat: true, rootFileId: '/main.sol', importResolver: resolver,
-        messageBus: false,
       });
     } else {
       compileString(source, {
-        evmCompat: true, rootFileId: '/main.sol', messageBus: false,
+        evmCompat: true, rootFileId: '/main.sol',
       });
     }
   } catch {

@@ -113,7 +113,6 @@ const FIXTURE_OPTIONS = {
   evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
-  messageBus: true,
   optimizeForCompilationSpeed: true,
   suppressWarnings: true,
   ecrecover: 'p2pkh',

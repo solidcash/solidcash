@@ -23,9 +23,9 @@ describe('compileFile artifact cache', () => {
     dir = mkdtempSync(join(tmpdir(), 'solidc-file-cache-'));
     const file = join(dir, 'Cached.scash');
     writeFileSync(file, 'pragma solidcash ^0.52.0;\ncontract Cached() { function f(int x) { require(x == 1); } }\n');
-    const first = compileFile(file, { suppressWarnings: true, messageBus: false });
+    const first = compileFile(file, { suppressWarnings: true});
     expect(getArtifactCacheHitCount()).toBe(0);
-    const second = compileFile(file, { suppressWarnings: true, messageBus: false });
+    const second = compileFile(file, { suppressWarnings: true});
     expect(first.debug?.bytecode).toBe(second.debug?.bytecode);
     expect(first.debug?.bytecode?.length).toBeGreaterThan(0);
     expect(getArtifactCacheHitCount()).toBeGreaterThan(0);
@@ -35,7 +35,7 @@ describe('compileFile artifact cache', () => {
     dir = mkdtempSync(join(tmpdir(), 'solidc-file-multi-cache-'));
     const file = join(dir, 'Cached.scash');
     writeFileSync(file, 'pragma solidcash ^0.52.0;\ncontract Cached() { function f(int x) { require(x == 1); } }\n');
-    const options = { suppressWarnings: true, messageBus: false, compileDeclarations: ['Cached'] };
+    const options = { suppressWarnings: true, compileDeclarations: ['Cached'] };
     const first = compileFileMulti(file, options);
     expect(getArtifactCacheHitCount()).toBe(0);
     const second = compileFileMulti(file, options);
@@ -50,7 +50,6 @@ describe('compileFile artifact cache', () => {
     writeFileSync(file, 'pragma solidcash ^0.52.0;\ncontract Uncached() { function f(int x) { require(x == 1); } }\n');
     const options = {
       suppressWarnings: true,
-      messageBus: false,
       compileDeclarations: ['Uncached'],
       __artifactCache: false,
     } as const;
@@ -65,8 +64,8 @@ describe('compileFile artifact cache', () => {
     delete process.env.SOLIDC_COMPILE_CACHE;
     try {
       const source = 'pragma solidcash ^0.52.0;\ncontract Uncached() { function f(int x) { require(x == 1); } }\n';
-      const first = compileString(source, { suppressWarnings: true, messageBus: false });
-      const second = compileString(source, { suppressWarnings: true, messageBus: false });
+      const first = compileString(source, { suppressWarnings: true});
+      const second = compileString(source, { suppressWarnings: true});
       expect(first.debug?.bytecode).toBe(second.debug?.bytecode);
       expect(first.debug?.bytecode?.length).toBeGreaterThan(0);
     } finally {

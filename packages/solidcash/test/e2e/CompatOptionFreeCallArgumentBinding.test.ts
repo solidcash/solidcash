@@ -178,8 +178,8 @@ contract Vault {
 
 describe('Solidity-compat target identity: a non-lock carrying the identity is refused', () => {
   const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
-  const ledgerArt = compileString(PIN_LEDGER, { evmCompat: true, forceStateful: true, messageBus: false } as any);
-  const vaultArt = compileString(PIN_VAULT, { evmCompat: true, forceStateful: true, messageBus: false } as any);
+  const ledgerArt = compileString(PIN_LEDGER, { evmCompat: true, forceStateful: true} as any);
+  const vaultArt = compileString(PIN_VAULT, { evmCompat: true, forceStateful: true} as any);
 
   it('rejects the caller covenant when the co-spent lock is a non-lock carrying the identity', async () => {
     const provider = createTestProvider();

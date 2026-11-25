@@ -16,7 +16,7 @@ const contract = (body: string): string => `contract C() {
   }
 }`;
 const quiet = { suppressWarnings: true };
-const conventions = [quiet, { ...quiet, messageBus: false }];
+const conventions = [quiet, { ...quiet}];
 
 describe('a loop guard the published upsert recipe cannot carry', () => {
   it.each([
@@ -135,7 +135,7 @@ describe('a loop guard the published upsert recipe cannot carry', () => {
     const { log } = console;
     console.log = (...args: unknown[]): void => { lines.push(String(args[0])); };
     try {
-      compileString(contract('if (flag) { part[keys[i]] = part[keys[i]] + amounts[i]; }'), { messageBus: false });
+      compileString(contract('if (flag) { part[keys[i]] = part[keys[i]] + amounts[i]; }'), {});
     } finally {
       console.log = log;
     }

@@ -39,14 +39,14 @@ let facets: string[];
 let inherited: string[];
 
 beforeAll(() => {
-  monolith = surfaceOf([compileFile(fx('native_usdt.scash'), { messageBus: false }) as Artifact]);
+  monolith = surfaceOf([compileFile(fx('native_usdt.scash'), {}) as Artifact]);
   facets = surfaceOf([
-    compileFile(fx('nusdt.scash'), { messageBus: false }) as Artifact,
-    compileFile(fx('nusdt_facet.scash'), { brandLibrary: true, messageBus: false }) as Artifact,
-    compileFile(fx('nusdt_transfer_facet.scash'), { brandLibrary: true, messageBus: false }) as Artifact,
-    compileFile(fx('nusdt_supply_facet.scash'), { brandLibrary: true, messageBus: false }) as Artifact,
+    compileFile(fx('nusdt.scash'), {}) as Artifact,
+    compileFile(fx('nusdt_facet.scash'), { brandLibrary: true}) as Artifact,
+    compileFile(fx('nusdt_transfer_facet.scash'), { brandLibrary: true}) as Artifact,
+    compileFile(fx('nusdt_supply_facet.scash'), { brandLibrary: true}) as Artifact,
   ]);
-  inherited = surfaceOf([compileFile(fx('nusdt_inherited.scash'), { messageBus: false }) as Artifact]);
+  inherited = surfaceOf([compileFile(fx('nusdt_inherited.scash'), {}) as Artifact]);
 }, 300000);
 
 describe('NativeUsdt / one token, three arrangements', () => {

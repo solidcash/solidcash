@@ -23,7 +23,7 @@ describe('lifecycle and tiered unsafe event integrity', () => {
   for (const name of ['fork', 'consolidate', 'guarded', 'valueGuarded']) {
     it(`refuses an extra addressable event NFT on ${name}`, async () => {
       const provider = new MockNetworkProvider();
-      const artifact = compileString(SOURCE, { messageBus: false, forceStateful: true, allowUnsafeOperations: true });
+      const artifact = compileString(SOURCE, { forceStateful: true, allowUnsafeOperations: true });
       const base = new Contract(artifact, [], { provider });
       const { categoryId, masterUtxo } = await setupStatefulUtxos(
         provider, base, artifact.stateLayout!, {}, { saltContract: true },
@@ -65,9 +65,9 @@ describe('lifecycle and tiered unsafe event integrity', () => {
         event Fired(bigint value);
         function record() { emit Fired(7); require(true); }
         function run() { ITarget(target).ping(); require(true); }
-      }`, { messageBus: false, forceStateful: true });
+      }`, { forceStateful: true });
     const targetArtifact = compileString('contract Target { function ping() { require(true); } }',
-      { messageBus: false, forceStateful: true });
+      { forceStateful: true });
     const targetBase = new Contract(targetArtifact, [], { provider });
     const targetSetup = await setupStatefulUtxos(provider, targetBase, targetArtifact.stateLayout!, {},
       { saltContract: true });

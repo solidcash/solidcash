@@ -61,7 +61,7 @@ contract Window() {
 `;
 
 describe('Windowed (paginated) sorted-mapping iteration', () => {
-  const artifact = compileString(WINDOW_CONTRACT, { messageBus: false, suppressWarnings: true });
+  const artifact = compileString(WINDOW_CONTRACT, { suppressWarnings: true });
   const stateLayout = artifact.stateLayout!;
 
   // Four keys with values 100/200/300/400; the sorted chain orders them by H(key), so the values the walk

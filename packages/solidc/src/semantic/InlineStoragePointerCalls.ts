@@ -267,7 +267,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     for (const fn of node.functions) {
       // Compiler-owned graph and detached-signature handlers are physical OP_INVOKE bodies. Their hidden
       // protocol context belongs to that invocation, so no storage/effect shape may flatten them into the route.
-      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
+      if (fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler) continue;
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
@@ -280,7 +280,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // `entry -> _checkOwner -> owner()` after the returning getter has been reduced into `_checkOwner`.
       const scalarJournalEligible = !this.inlineDelegateStateHelpers && this.isScalarJournalEligible(fn);
       // OZ `_checkInitializing` / `_checkOwner` often still look context-only after the first IRSH
-      // (ERC-7201 `$._initializing` / `owner()`). A later IRSH exposes the read, but a message-bus
+      // (ERC-7201 `$._initializing` / `owner()`). A later IRSH exposes the read, but a compiler-route
       // compile can leave the wrapper as OP_INVOKE. Force those guards into the delegate entry so
       // they inherit proxy-master + pending writes instead of INPUTINDEX+1 on the impl.
       const delegateGuard = this.inlineDelegateStateHelpers
@@ -329,7 +329,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       addedWrapper = false;
       for (const fn of node.functions) {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
-          || fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler
+          || fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler
           || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
         for (const candidate of this.nodesOf(fn)) {
@@ -375,7 +375,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // position: the call is replaced by the substituted return expression (`m.at(k)` -> `L.at(m, k)` -> `m[k]`).
     this.exprInlinableFns = new Map();
     for (const fn of [...node.functions, ...this.freeFns]) {
-      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
+      if (fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler) continue;
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
     }
     this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
@@ -711,7 +711,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         let args = stmt.call.parameters;
         // `using L for T; recv.method(x)` is still `recv.method` here. Physical-effect library helpers
         // (`Address.sendValue`) are selected for inlining by their `L.method` name; without rewriting this
-        // spelling the helper is dropped and ST later reports `recv.method` as undefined on the message-bus path.
+        // spelling the helper is dropped and ST later reports `recv.method` as undefined on the compiler-route path.
         const dot = name.lastIndexOf('.');
         if (!callee && dot > 0) {
           const method = name.slice(dot + 1);

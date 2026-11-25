@@ -22,7 +22,7 @@ async function deploy(
 ): Promise<{ result: Awaited<ReturnType<typeof StatefulContract.deploy>>; provider: MockNetworkProvider }> {
   clearGenesisReservations();
   const provider = new MockNetworkProvider({ profile: 'production' });
-  const artifact = compileString(source, { deployer: true, messageBus: false });
+  const artifact = compileString(source, { deployer: true});
   expect(artifact.deployerUnsupported).toBeUndefined();
   const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
   const fundingUtxo: Utxo = { txid: seed.repeat(32), vout: 0, satoshis: 500_000n };

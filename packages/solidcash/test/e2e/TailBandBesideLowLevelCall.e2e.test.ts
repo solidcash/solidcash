@@ -13,7 +13,7 @@ import { ContractFactory } from '../../src/stateful/index.js';
 import { compileString } from '../direct-compile.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 
-const OPTIONS = { evmCompat: true, forceStateful: true, messageBus: false } as any;
+const OPTIONS = { evmCompat: true, forceStateful: true} as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 
 const COUNTER = `

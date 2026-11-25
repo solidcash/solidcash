@@ -44,7 +44,7 @@ const SELF_CALL_SPLIT = 'pragma solidcash ^0.52.0; contract C { bytes20 owner;'
   + ' function ownerOf() public view returns (bytes20) { return this.owner; }'
   + ` function fork(int n) split(n) { require(this.ownerOf() == hex"${OWNER_HEX}"); } }`;
 // The lifecycle entries carry no signature, which only the unsafe-operations option admits.
-const LIFECYCLE = { messageBus: false, allowUnsafeOperations: true } as const;
+const LIFECYCLE = { allowUnsafeOperations: true } as const;
 
 const pushesOf = (values: readonly Uint8Array[]): Uint8Array =>
   new Uint8Array(values.flatMap((value) => [...encodeDataPush(value)]));

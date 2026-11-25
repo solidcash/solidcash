@@ -25,7 +25,7 @@ const SOURCE = `pragma solidity ^0.8.20;
 `;
 
 const OPTIONS = {
-  forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+  forceStateful: true,
   evmCompat: true, suppressWarnings: true,
 } as const;
 const WITNESS = '__internal__dynamicChunkOutputBase';

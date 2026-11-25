@@ -19,7 +19,7 @@ describe('external-call operand provenance stays in its executable body', () => 
           ISink(sink).ping(values.length);
         }
       }
-    `, { evmCompat: true, messageBus: true, messageBusKernel: true, suppressWarnings: true });
+    `, { evmCompat: true, suppressWarnings: true });
     const length = (entry: string): ExternalCallArgSource => artifact.abi.find((fn) => fn.name === entry)!
       .externalCalls![0]!.argSources![0]!;
     expect(length('read')).toEqual({
@@ -139,7 +139,7 @@ describe('external-call operand provenance stays in its executable body', () => 
           ISink(sink).ping(row.status, row.active);
         }
       }
-    `, { composition: 'framed', evmCompat: true, messageBus: true, messageBusKernel: true, suppressWarnings: true });
+    `, { composition: 'framed', evmCompat: true, suppressWarnings: true });
     const fn = artifact.abi.find((entry) => entry.name === 'go')!;
     expect(fn.externalCalls).toHaveLength(2);
     expect(fn.resultConsumers ?? []).toEqual([]);

@@ -30,8 +30,7 @@ describe('external expression returned struct mutations', () => {
           record.weights[0] = 17;
           require(true);
         }
-      }`, { forceStateful: true, evmCompat: true, messageBus: true,
-      messageBusKernel: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+      }`, { forceStateful: true, evmCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
       __artifactCache: false });
     const entry = artifact.abi.find((candidate) => candidate.name === 'edit')!;
     expect(entry.externalCalls).toHaveLength(2);

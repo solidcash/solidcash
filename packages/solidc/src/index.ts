@@ -2,13 +2,9 @@ export * from './Errors.js';
 export * as utils from '@solidcash/utils';
 export { compileFile, compileFileMulti, compileFileSplit } from './compileFile.js';
 export {
-  assertNoReservedMessageBusSelector,
-  classifyMessageBusRejection,
   clearCompileCache,
   compileString, compileStringMulti, compileStringSplit, DEFAULT_COMPILER_OPTIONS, framedCreationTargetsOfSource,
-  ensureMessageBusAdmissionStamp,
   getArtifactCacheHitCount,
-  resetPendingSpanAdmissionAnalysis,
   type CompileOptions, type CompileStringOptions, type SplitCompileOptions,
 } from './compiler.js';
 export {
@@ -27,59 +23,6 @@ export {
   type SolidcEnvEntry,
   type SolidcFeatureFlags,
 } from './solidc-env-registry.js';
-export {
-  isKernelCatalogCode,
-  KERNEL_CATALOG_CODES,
-  kernelCatalogCodeFromAdmission,
-  normalizeKernelAdmissionReason,
-  throwKernelCatalogDiagnostic,
-  type KernelCatalogCode,
-} from './kernel-admission-catalog.js';
-export {
-  admittedHandlerNamesFromAnalysis,
-  assertAdmissionSetUnchanged,
-  assertPublishedHandlersMatchAdmission,
-  buildAdmissionDecisionSet,
-  clearPublishedHandlerAdmissionGateInvocations,
-  getPublishedHandlerAdmissionGateInvocations,
-  refusedHandlerNamesFromAnalysis,
-  type AdmissionDecisionSet,
-  type HandlerAdmissionDecision,
-  type KernelAdmissionReason,
-  type PublishedMessageBusHandler,
-} from './admission-decision.js';
-export {
-  clearDefineFrameValidations,
-  getDefineFrameValidations,
-  validateDefineEmission,
-  type DefineEmissionFrameInput,
-  type DefineFrameValidationRecord,
-} from './define-frame-validation.js';
-export {
-  assertFinalizedTypedEffectIr,
-  assertPublishedChildDeploymentEffectIr,
-  buildPathEffectSchedule,
-  evaluatePathEffectActivation,
-  hasFinalizedResultType,
-  allowsPreFinalIntrinsicTypes,
-  normalizePathEffectActivation,
-  pathEffectActivationFromExpression,
-  pathEffectScheduleFromChildDeployments,
-  pathEffectScheduleFromHandlerEffects,
-  selectActivePathEffects,
-  type FinalizedTypedEffect,
-  type FinalizedTypedEffectIrOptions,
-  type FinalizedTypedEffectKind,
-  type HandlerPathEffectEvent,
-  type HandlerPathEffectProgramInput,
-  type HandlerPathEffectStateWrite,
-  type HandlerPathEffectTransfer,
-  type PathEffectActivation,
-  type PathEffectActivationEnvironment,
-  type PathEffectActivationExpression,
-  type PathEffectSchedule,
-  type PublishedChildDeploymentSite,
-} from './finalized-typed-effect-ir.js';
 export {
   type ArtifactMap, type FunctionSplitBundle, type SplitArtifactBundle, type SplitManifest,
 } from '@solidcash/utils';

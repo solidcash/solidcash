@@ -15,7 +15,7 @@ const S = 'pragma solidity ^0.8.20;';
 const compile = (source: string, options: Record<string, unknown> = {}): { artifact: any; warnings: string[] } => {
   const warnings: string[] = [];
   const artifact = compileString(source, {
-    deployer: true, messageBus: false, warningListener: (warning: { message: string }) => warnings.push(warning.message),
+    deployer: true, warningListener: (warning: { message: string }) => warnings.push(warning.message),
     ...options,
   } as never);
   return { artifact, warnings };
@@ -221,7 +221,7 @@ describe('B7.18: C\'s own constructor arm, compiled with a deployer', () => {
     const source = `${P} contract C { struct S { uint64 a; bool c; } mapping(int => S) m; uint64 n;
       constructor() { m[2].a = 7; n = m[2].a; } function f(int k) public { n = m[k].a; } }`;
     expect(rowsOf(compile(source).artifact)).toEqual([['m', 1]]);
-    expect(() => compileString(source, { messageBus: false } as never))
+    expect(() => compileString(source, {} as never))
       .toThrow(/a read of `m\[2\]` in the constructor after the write/);
   });
 });

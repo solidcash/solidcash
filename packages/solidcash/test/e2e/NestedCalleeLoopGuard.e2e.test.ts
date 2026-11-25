@@ -29,7 +29,7 @@ const SOURCE = `pragma solidcash ^0.52.0;
     function crowdedLoop(ID d, IT t) external { d.crowdedLoop(t); runs = runs + 1; } }`;
 
 const compileOptions = (primary: string): never => ({
-  deployer: true, genesisCalls: true, messageBus: false, primaryContractName: primary,
+  deployer: true, genesisCalls: true, primaryContractName: primary,
 }) as never;
 
 let serial = 0x7000;

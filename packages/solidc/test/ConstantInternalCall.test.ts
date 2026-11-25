@@ -6,7 +6,7 @@ describe('constant internal-call folding', () => {
     const artifact = compileString(
       'contract C { function hook(int unused) internal pure returns (bool) { return true; }'
       + ' function f(int value) { require(hook(value)); } }',
-      { messageBus: false },
+      {},
     );
     expect(artifact.bytecode).not.toContain('OP_DEFINE');
     expect(artifact.bytecode).not.toContain('OP_INVOKE');
@@ -16,7 +16,7 @@ describe('constant internal-call folding', () => {
     const artifact = compileString(
       'contract C { function hook(int unused) internal pure returns (bool) { return true; }'
       + ' function f(int value) { require(hook(value + 1)); } }',
-      { messageBus: false },
+      {},
     );
     expect(artifact.bytecode).toContain('OP_DEFINE');
     expect(artifact.bytecode).toContain('OP_INVOKE');
@@ -27,7 +27,7 @@ describe('constant internal-call folding', () => {
       'contract C(int immutable admin) {'
       + ' function getAdmin() internal view returns (int) { return admin; }'
       + ' function f(int expected) { require(getAdmin() == expected); } }',
-      { messageBus: false },
+      {},
     );
     expect(artifact.bytecode).not.toContain('OP_DEFINE');
     expect(artifact.bytecode).not.toContain('OP_INVOKE');
@@ -37,7 +37,7 @@ describe('constant internal-call folding', () => {
     const artifact = compileString(
       'contract C { function hook(int unused) internal pure {}'
       + ' function f(int value) { hook(value); require(value > 0); } }',
-      { messageBus: false },
+      {},
     );
     expect(artifact.bytecode).not.toContain('OP_DEFINE');
     expect(artifact.bytecode).not.toContain('OP_INVOKE');
@@ -47,7 +47,7 @@ describe('constant internal-call folding', () => {
     const artifact = compileString(
       'contract C { function hook(int unused) internal pure {}'
       + ' function f(int value) { hook(value + 1); require(value > 0); } }',
-      { messageBus: false },
+      {},
     );
     expect(artifact.bytecode).toContain('OP_DEFINE');
     expect(artifact.bytecode).toContain('OP_INVOKE');

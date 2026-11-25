@@ -23,7 +23,7 @@ const source = new URL('../fixture/bch_native_quarantine_token.scash', import.me
 let artifact: Artifact;
 
 beforeAll(() => {
-  artifact = compileFile(source, { messageBus: false }) as Artifact;
+  artifact = compileFile(source, {}) as Artifact;
 });
 
 describe('BchNativeQuarantine inheritance', () => {

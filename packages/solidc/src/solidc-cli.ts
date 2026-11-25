@@ -30,7 +30,7 @@ program
   .option('--split [mode]', 'Split mode: off, size, or func. A bare --split is refused.')
   .option('--suppress-warnings', 'Suppress non-fatal compiler warnings.')
   .option('--no-source-map', 'Skip bytecode source maps (faster compile; weaker debug attribution).')
-  .option('--no-message-bus', 'Disable inferred atomic message-bus composition (fails if the contract requires it).')
+  .option('--no-compiler-route', 'Disable inferred atomic compiler-route composition (fails if the contract requires it).')
   .option('-S, --skip-enforce-function-parameter-types', 'Do not enforce function parameter types.')
   .option('-L, --skip-enforce-locktime-guard', 'Do not inject a tx.time guard when tx.locktime is used.')
   .option('--allow-unverified-paths', 'Allow spending paths with no verification or state covenant (unsafe).')
@@ -77,7 +77,6 @@ function run(): void {
     ...(opts.genesisCalls === false && { genesisCalls: false }),
     // Commander reports true when the default-on `--no-*` option is absent. Leave that implicit so ordinary
     // CLI compilation uses automatic selection rather than turning the absent flag into required mode.
-    messageBus: opts.messageBus === false ? false : undefined,
     ...(opts.sourceMap === false && { sourceMap: false }),
   };
 

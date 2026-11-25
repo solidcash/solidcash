@@ -34,7 +34,7 @@ describe('a direct sender-reading call', () => {
     }
     const expected = addressToLockScript(signer.getAddress());
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const artifact = compileString(SOURCE, { messageBus: false });
+    const artifact = compileString(SOURCE, {});
     expect(artifact.abi.find((entry) => entry.name === 'who')!.usesMsgSender).toBe(true);
     const funding = { txid: 'de'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.addUtxo(p2pkh.address, funding);

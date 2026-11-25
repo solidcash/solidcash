@@ -21,7 +21,7 @@ const VERIFIED_SOURCE_SHA256 = '36bf0b5747dfe7f79a03c9bc09af63e93e352d3c61199fbf
 const MAX_UINT = 2n ** 256n - 1n;
 const TIMESTAMP = '2026-10-22T12:00:00.000Z';
 
-const options = { evmCompat: true, messageBus: false, suppressWarnings: true };
+const options = { evmCompat: true, suppressWarnings: true };
 const scriptBytes = (artifact: Artifact): number => scriptToBytecode(asmToScript(artifact.bytecode)).length;
 
 describe('Tether USDT verbatim with BchNative', () => {

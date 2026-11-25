@@ -50,7 +50,7 @@ describe('ContractFactory.deploy binds the signer as the msg.sender funder', () 
         constructor() { this.balances[msg.sender] = 7; }
       }
     `, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+      forceStateful: true,
       evmCompat: true,
     });
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs)

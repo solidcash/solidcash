@@ -55,7 +55,7 @@ describe('three-entry transferFrom insert', () => {
     const provider = createTestProvider();
     const [owner, recipient] = await getSigners(2, { provider, fundingUtxos: 8 });
     const options = {
-      forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+      forceStateful: true,
       evmCompat: true,
     } as const;
     const tokenArtifact = compileString(TOKEN, options);

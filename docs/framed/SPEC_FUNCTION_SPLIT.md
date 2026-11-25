@@ -27,27 +27,12 @@ selector and the arguments against that same input. One stored `address` is one 
 and `ICounter(counter).count` are the same lock, and the selector picks the function inside it.
 
 A participant on this path is one state-owning script. Spending it twice, or a cycle, cannot be two spends of
-one state UTXO. That is the problem the message bus exists to solve (`website/docs/guides/message-bus.md`).
+one state UTXO. A transaction that needs that shape uses the framed convention (1.3), whose validator settles
+one state owner per transaction.
 
-### 1.2 Message bus (kernel row loop)
-
-The bus does not add a call opcode. It adds one shared manifest and one route script per participant. The
-route wrapper, selector `53434231`, is the only layout owner. Every admitted handler is an `OP_DEFINE` body
-inside that one script (`message-bus.md`, "Admission and limits"). `artifact.bytecode` is that script.
-`artifact.messageBus` describes it: admitted handlers, the deployability certificate against the 10,000-byte
-P2SH limit, and one `KernelExecutionPlan` digest per handler pushed into the same bytecode
-(`packages/utils/src/artifact.ts`).
-
-A call row names a participant and a selector. The participant's one route dispatches the selector. Caller
-authentication publishes `auth: 'input-bytecode'`: the subject is the locking bytecode of the participant
-input (`CallsiteCallerIdentityAbi`). The participant is still one script.
-
-Delegate execution is refused on this path with `atomic-delegate-context-unpreservable`
-(`packages/solidc/src/compiler.ts`, the admission around the delegate-context check). A delegate input does
-not own the participant block it writes. The size splitter therefore compiles the root with `messageBus: false`.
-A moved entry is a `delegatecall` forwarder, and the bus cannot represent it. Facet bodies are delegate
-entries, so the same refusal applies to them. A contract that needs the bus for a cycle or a repeated callee
-cannot be size-split onto that bus. That hole is shipped. Function split must not widen it by accident.
+Delegate execution is refused for a direct entry: a delegate input does not own the participant block it
+writes. The size splitter therefore moves an entry into a `delegatecall` forwarder only through its facet
+topology, and facet bodies use the framed convention's own blocks.
 
 ### 1.3 Framed
 
@@ -60,10 +45,8 @@ can run any entry, because the selector is dispatched inside the program.
 
 The validator identifies a master by minting capability, never by lock and never by commitment
 (`packages/solidc/src/framed/validator/model.ts`, `isMasterToken`). The master's own prologue recreates an
-empty commitment (`packages/solidc/src/framed/master/prologue.ts`). A framed compile may still run kernel
-lowering when `messageBus` is left on (`archive/docs:docs/framed/BUS_OFF_PATH.md`). The script that is deployed is the
-master program, not the route. The marketplace fixture sets `messageBus: true` on framed compiles; that flag
-changes lowering. It does not make the master a kernel route.
+empty commitment (`packages/solidc/src/framed/master/prologue.ts`). The script that is deployed is the
+master program.
 
 ### 1.4 What function split changes
 
@@ -117,27 +100,18 @@ These are the answers the resume implements. They are not beta work.
     `CALL`. `f()` on a public function is `INTERNAL` (`msg.sender` unchanged). `this.f()` and a foreign call
     are `CALL`. An external function has no internal face. View and pure accept `STATIC` and, when the source
     calls them internally, `INTERNAL`.
-11. **A func-split framed artifact does not publish an executed kernel route.** Kernel lowering inside a
-    shard's body is allowed only where a monolithic framed master already uses it. The deployed bytecode of
-    each shard is that shard's master program. `artifact.messageBus.available` is not how a caller finds the
-    code.
+11. **A func-split framed artifact publishes only master programs.** The deployed bytecode of each shard is
+    that shard's master program.
 
 ## 3. What this does to the two frameworks
 
-### 3.1 Message bus
+### 3.1 Composition conventions
 
-Function split does not become a third bus convention. The resume refuses `func` unless the compile is framed,
-and it leaves size-split's `messageBus: false` root as it is.
+Function split does not add a third composition convention. The resume refuses `func` unless the compile is
+framed, and it leaves the direct size-split root as an ordinary direct artifact.
 
-The effect to watch is the one that already happens on a framed marketplace compile: `messageBus: true` runs
-kernel lowering in front of framed codegen. A shard must see the same lowering a monolithic framed master
-sees for the statements that remain in the shard, and it must not inherit a route wrapper. The checkable
-form is in FS-4.
-
-A contract that needs a shared manifest for a cycle still uses the framed validator (V5, V6, V8), not a
-kernel participant block. If a later release retires the kernel, that is a separate decision. This spec does
-not slice `kernel-row-loop`, does not add a shard lock to the call manifest, and does not teach
-`input-bytecode` authentication to mean "one of several locks".
+A shard must see the same lowering a monolithic framed master sees for the statements that remain in the
+shard. A contract that needs one state owner across a transaction uses the framed validator (V5, V6, V8).
 
 ### 3.2 Framed composition
 
@@ -202,7 +176,6 @@ category. That package is the one that may change `V_TEMPLATE`, and it is last.
 - one shard record per ABI entry: selector, function name, accepted frame kinds, redeem script, lock, whole-spend
   bytes
 - `internalCuts`: empty unless FS-7 added a helper shard
-- no `messageBus.routeInBytecode` on the logical artifact
 
 A size-split bundle is not a v2 bundle. Tooling branches on `format`.
 
@@ -218,7 +191,7 @@ compiles.
 - [ ] **FS-0.1** The beta branch has no `split?: 'off' | 'size' | 'func'` on `CompileOptions` or
   `SplitCompileOptions`. `solidc --split` is still a boolean.
 - [ ] **FS-0.2** `compileStringSplit` still packs with `state-affinity-best-fit-v2` and still sets the root's
-  `messageBus: false`.
+  `direct composition`.
 - [ ] **FS-0.3** A framed master prologue still requires an empty commitment, and `isMasterToken` still
   ignores lock and commitment.
 - [ ] **FS-0.4** This file is the resume point. No package below is started on the beta branch.
@@ -266,17 +239,15 @@ compiles.
   non-empty commitment is still classified as a master, and is still rejected by the prologue, pins both
   halves.
 
-### FS-4. Message bus left intact
+### FS-4. Composition kept intact
 
-- [ ] **FS-4.1** A `func` bundle's executed shard bytecode contains no kernel route wrapper (selector
-  `53434231` is not the shard's entry) and no `kernelExecutionPlans` marker. `messageBus.available` is absent
-  or false on the logical artifact.
-- [ ] **FS-4.2** `split: 'size'` still compiles its root with `messageBus: false`, and a delegate entry is
-  still refused with `atomic-delegate-context-unpreservable` when a bus route is requested for it. A
-  regression fixture covers that refusal so function split cannot "fix" it by slicing the route.
+- [ ] **FS-4.1** A `func` bundle's executed shard bytecode contains no route wrapper. The deployed bytecode is
+  the shard's own master program.
+- [ ] **FS-4.2** `split: 'size'` still compiles its root as a plain direct artifact, and a delegate entry is
+  still refused where its input cannot own the participant block it writes. A regression fixture covers that
+  refusal so function split cannot "fix" it by slicing a route.
 - [ ] **FS-4.3** A framed `func` compile of a two-contract call that is a cycle uses the framed validator.
-  The resulting transaction has no kernel verifier input and no message envelope. The machine accepts the
-  matching shards and refuses a spend that uses the caller's shard as the callee.
+  The machine accepts the matching shards and refuses a spend that uses the caller's shard as the callee.
 - [ ] **FS-4.4** `CallsiteCallerIdentityAbi.auth: 'input-bytecode'` is unchanged. No new auth mode names a
   set of locks. A grep of the kernel manifest schema shows no shard-lock field.
 

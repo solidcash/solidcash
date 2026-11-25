@@ -95,7 +95,7 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
   private localNames = new WeakMap<FunctionDefinitionNode, Set<string>>();
 
   /**
-   * `graphMode` only affects a broadcast (in-loop) call: a message-bus graph handler reconstructs one authoritative
+   * `graphMode` only affects a broadcast (in-loop) call: a compiler-route graph handler reconstructs one authoritative
    * row per reached iteration and needs the live selector as well, while the ordinary broadcast covenant verifies
    * every element against the whole selector array after the loop.
    */

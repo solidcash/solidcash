@@ -12,7 +12,7 @@ const SOURCE = `${P} contract C { int calls; function hit(int amount) { calls = 
 
 describe('B6.5: the genesis call parameter', () => {
   it('follows the return-carrier witness in the ABI of every record-publishing entry', () => {
-    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
+    const artifact = compileString(SOURCE, { genesisCalls: true });
     const entry = artifact.abi.find((candidate) => candidate.name === 'hit')!;
     const names = entry.inputs.map((input) => input.name);
     // The unlocking pushes the ABI in reverse, so the parameter that follows the carrier witness in the source
@@ -25,13 +25,13 @@ describe('B6.5: the genesis call parameter', () => {
   it('a contract with a delegate entry is not record-sound and takes no parameter', () => {
     const source = `${P} contract C { int calls; function hit(int amount) { calls = calls + amount; }
       function d() public delegate { calls = calls + 1; } }`;
-    const artifact = compileString(source, { messageBus: false, genesisCalls: true });
+    const artifact = compileString(source, { genesisCalls: true });
     const entry = artifact.abi.find((candidate) => candidate.name === 'hit')!;
     expect(entry.inputs.some((input) => input.name === '__internal__genesisCall')).toBe(false);
   });
 
   it('is absent when genesisCalls is off', () => {
-    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: false });
+    const artifact = compileString(SOURCE, { genesisCalls: false });
     const entry = artifact.abi.find((candidate) => candidate.name === 'hit')!;
     expect(entry.inputs.some((input) => input.name === '__internal__genesisCall')).toBe(false);
     expect(artifact.genesisCalls).toBe(false);

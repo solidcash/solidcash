@@ -153,7 +153,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     return node;
   }
 
-  // A compiler-owned kernel or message-bus function, which keeps the public entry points it calls as calls.
+  // A compiler-owned kernel or compiler-route function, which keeps the public entry points it calls as calls.
   private isKernelCaller(fn: FunctionDefinitionNode | undefined): boolean {
     return fn !== undefined && (fn.graphEmissionHandler === true || fn.name.startsWith('__message_bus'));
   }

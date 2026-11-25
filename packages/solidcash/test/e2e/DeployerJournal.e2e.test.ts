@@ -45,7 +45,7 @@ async function createWith(
   }> {
   clearGenesisReservations();
   const provider = new MockNetworkProvider({ profile: 'production' });
-  const artifact = compileString(source, { deployer: true, messageBus: false, ...options } as never);
+  const artifact = compileString(source, { deployer: true, ...options } as never);
   expect(artifact.deployerUnsupported).toBeUndefined();
   const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
   const fundingUtxo: Utxo = { txid: seed.repeat(32), vout: 0, satoshis: 500_000n };
@@ -402,7 +402,7 @@ describe('A4.4 "Bounds": create within its journals\' cost bound', () => {
 
   it('creates a constructor at its bound, whose journals cost less than the bound, and refuses one past it', async () => {
     const box: Record<string, unknown> = {};
-    compileString(source(12), { deployer: true, messageBus: false, __deployerTestBox: box } as never);
+    compileString(source(12), { deployer: true, __deployerTestBox: box } as never);
     const bound = box.journalCost as number;
     // At the bound: the deployer is built and the creation passes.
     const at = await createWith(source(12), 'd1', [hexToBin(W)], { __deployerTestBox: { journalBudget: bound } });
@@ -414,7 +414,7 @@ describe('A4.4 "Bounds": create within its journals\' cost bound', () => {
     expect(journals).toBeLessThanOrEqual(bound);
     // Past it: one more append is refused.
     const past = compileString(source(13), {
-      deployer: true, messageBus: false, __deployerTestBox: { journalBudget: bound },
+      deployer: true, __deployerTestBox: { journalBudget: bound },
     } as never);
     expect(past.deployerUnsupported).toBe('ctor-collection-shape');
   }, 600_000);

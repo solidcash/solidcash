@@ -63,7 +63,7 @@ const timed = compileString([
   '    require(true);',
   '  }',
   '}',
-].join('\n'), { messageBus: false });
+].join('\n'), {});
 
 /** The 1-based line of the first source line containing `needle`. */
 function lineOf(needle: string): number {

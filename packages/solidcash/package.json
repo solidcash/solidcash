@@ -46,10 +46,6 @@
       "types": "./dist/stateful/index.d.ts",
       "default": "./dist/stateful/index.js"
     },
-    "./kernel": {
-      "types": "./dist/stateful/kernel/index.d.ts",
-      "default": "./dist/stateful/kernel/index.js"
-    },
     "./framed": {
       "types": "./dist/framed/index.d.ts",
       "default": "./dist/framed/index.js"

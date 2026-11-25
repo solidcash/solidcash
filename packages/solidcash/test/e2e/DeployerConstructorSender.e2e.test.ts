@@ -34,9 +34,9 @@ describe('A7: the genesis sender through the SDK', () => {
         ...(initArgs.length === 0 ? {} : { initArgs }), ...extra,
       });
     };
-    const tArtifact = compileString(source, { deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T' } as never);
+    const tArtifact = compileString(source, { deployer: true, genesisCalls: true, primaryContractName: 'T' } as never);
     const tResult = await deploy(tArtifact);
-    const cArtifact = compileString(source, { deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C' } as never);
+    const cArtifact = compileString(source, { deployer: true, genesisCalls: true, primaryContractName: 'C' } as never);
     const cResult = await deploy(cArtifact, [addressToLockScript(tResult.contract.address)], {
       constructorCallees: [{ contract: tResult.contract, args: [] }],
     });
@@ -68,7 +68,7 @@ describe('A7: the genesis sender through the SDK', () => {
       provider, fundingUtxo: await coin(2_000_000n), funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
       changeAddress: change.address, senderLockingBytecode: authorLock, ...extra,
     });
-    const tResult = await deploy(compileString(source, { deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T' } as never));
+    const tResult = await deploy(compileString(source, { deployer: true, genesisCalls: true, primaryContractName: 'T' } as never));
     const { Signer } = await import('../../src/index.js');
     const wallet = new Signer(alicePriv, provider);
     for (let index = 0; index < 6; index += 1) await coin(200_000n);
@@ -79,7 +79,7 @@ describe('A7: the genesis sender through the SDK', () => {
     }
     // 36 + 31 bytes of the record for the child, past the 60-byte inline limit; 26 + 31 for a P2PKH sender, inline.
     const note = new Uint8Array(30).fill(9);
-    const cResult = await deploy(compileString(source, { deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C' } as never), {
+    const cResult = await deploy(compileString(source, { deployer: true, genesisCalls: true, primaryContractName: 'C' } as never), {
       initArgs: [addressToLockScript(tResult.contract.address), note], constructorCallees: [{ contract: tResult.contract }],
     });
     const child = binToHex(addressToLockScript(cResult.contract.address));

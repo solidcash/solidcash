@@ -31,9 +31,6 @@ describe('external result encoding metadata', () => {
   it('publishes one compiler-owned tuple encoding on producers and callsites', () => {
     const artifacts = compileStringMulti(SOURCE, {
       evmCompat: true,
-      messageBus: true,
-      messageBusKernel: true,
-      messageBusGraphContext: true,
       maximumInputBytes: 1_000_000,
       suppressWarnings: true,
       __artifactCache: false,
@@ -66,9 +63,6 @@ describe('external result encoding metadata', () => {
         }
       }`, {
       evmCompat: true,
-      messageBus: true,
-      messageBusKernel: true,
-      messageBusGraphContext: true,
       maximumInputBytes: 1_000_000,
       suppressWarnings: true,
       __artifactCache: false,

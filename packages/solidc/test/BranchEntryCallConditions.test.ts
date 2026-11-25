@@ -19,8 +19,7 @@ describe('external-call branch entry conditions', () => {
             IRecorder(recorder).record(30);
           }
         }
-      }`, { forceStateful: true, evmCompat: true, messageBus: true,
-      messageBusKernel: true, messageBusGraphContext: true, suppressWarnings: true,
+      }`, { forceStateful: true, evmCompat: true, suppressWarnings: true,
       optimizeForCompilationSpeed: fast });
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
     expect(calls).toHaveLength(3);
@@ -46,8 +45,7 @@ describe('external-call branch entry conditions', () => {
             }
           }
         }
-      }`, { forceStateful: true, evmCompat: true, messageBus: true,
-      messageBusKernel: true, messageBusGraphContext: true, suppressWarnings: true,
+      }`, { forceStateful: true, evmCompat: true, suppressWarnings: true,
       optimizeForCompilationSpeed: fast });
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
     expect(calls).toHaveLength(1);

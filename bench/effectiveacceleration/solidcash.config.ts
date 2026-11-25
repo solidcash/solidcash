@@ -41,9 +41,6 @@ export default defineConfig({
     // signer.getAddress(), so a packed address value is its 20-byte identity: `addressForm: 'hash'` (the
     // evmCompat default, ticked here so the suite states it).
     addressForm: 'hash',
-    messageBus: true,
-    messageBusKernel: true,
-    messageBusGraphContext: true,
     // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
     // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
     ecrecover: 'p2pkh',

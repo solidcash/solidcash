@@ -35,7 +35,7 @@ For a quick Git-aware check that requires no file selection, use `yarn test:comp
 exit successfully when no tests are affected. Use them for bounded validation after the target test is green.
 
 In `solidcash`, `test:unit` means only `test/unit`. `test:fast`, `test:changed`, and `test:watch` also cover
-top-level SDK regressions but exclude the conformance and journal/message-bus directories. Do not broaden these
+top-level SDK regressions but exclude the conformance and compatibility directories. Do not broaden these
 development-loop commands; `yarn test` remains the comprehensive non-root-e2e regression gate for major milestones.
 
 During debugging, run only the test currently being made green, optionally with one adjacent test (the target

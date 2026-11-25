@@ -36,7 +36,7 @@ const PUSHED_URI = 'example.org';
 const STATE_NFTS: NftCategory = { parse: { types: { '01': { name: 'Ledger state' } } } };
 
 const counter = compileString(COUNTER, { forceStateful: true });
-const tokenArtifact = compileFile(TOKEN, { messageBus: false });
+const tokenArtifact = compileFile(TOKEN, {});
 
 function sha256(bytes: Uint8Array): Uint8Array {
   return new Uint8Array(createHash('sha256').update(bytes).digest());

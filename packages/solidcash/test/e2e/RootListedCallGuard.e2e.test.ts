@@ -55,7 +55,7 @@ const source = (setSelector: string): string => `pragma solidcash ^0.52.0;
 
 // With `callBatch`, T carries its multi-call entry, through which R's calls in a loop run as frames of one spend.
 const compileOptions = (primary: string, callBatch = false): never => ({
-  deployer: true, genesisCalls: true, messageBus: false, primaryContractName: primary,
+  deployer: true, genesisCalls: true, primaryContractName: primary,
   ...(callBatch && { callBatch: true }),
 }) as never;
 

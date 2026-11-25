@@ -56,7 +56,7 @@ const source = (setSelector: string): string => `pragma solidcash ^0.52.0;
   }`;
 
 const compileOptions = (primary: string): never => ({
-  deployer: true, genesisCalls: true, messageBus: false, primaryContractName: primary,
+  deployer: true, genesisCalls: true, primaryContractName: primary,
 }) as never;
 
 let serial = 0x6e00;

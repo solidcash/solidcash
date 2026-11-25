@@ -15,11 +15,10 @@ describe('compileDeclarations', () => {
         }
       }
     `;
-    const all = compileStringMulti(source, { messageBus: false });
+    const all = compileStringMulti(source, {});
     expect(Object.keys(all).sort()).toEqual(['Keep', 'Other']);
 
     const filtered = compileStringMulti(source, {
-      messageBus: false,
       compileDeclarations: ['Keep'],
     });
     expect(Object.keys(filtered)).toEqual(['Keep']);

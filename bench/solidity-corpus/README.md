@@ -152,7 +152,7 @@ pure first slice below, and the stateful slice after it.
   own body, as in the pure slice. A derived wrapper the lifecycle policy refuses (`UnauthorizedLifecycleError`: a
   `__check_<k>` reaches a child deploy and has no trusted-key signature check) or that hits `MESSAGE_BUS_REQUIRED`
   (`various/write_storage_external`: repeated calls to the same state owner) is compiled again that way: the
-  compiler's message-bus auto-selection reads only the root contract's own functions, before inheritance is
+  compiler's compiler-route auto-selection reads only the root contract's own functions, before inheritance is
   expanded, so behind a derived wrapper the target's call-graph edges are invisible, the wrapper is narrowed to
   direct mode, and there the policy applies; inside the target the edges are seen as when the target compiles
   alone. So is one refused with `UndefinedReferenceError` or `AssignTypeError`: names the target resolves as the

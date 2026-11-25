@@ -7,7 +7,7 @@ import { compileString } from '../src/index.js';
 describe('tx.origin input scan', () => {
   it('filters self, token-bearing and malformed candidates and chooses the first eligible P2PKH', () => {
     const artifact = compileString('contract Origin() { function check(address expected) { require(tx.origin == expected); } }',
-      { messageBus: false });
+      {});
     const instructions = decodeAuthenticationInstructions(asmToBytecode(artifact.bytecode));
     const vm = createVirtualMachineBch2026();
     type Program = Parameters<typeof vm.evaluate>[0];

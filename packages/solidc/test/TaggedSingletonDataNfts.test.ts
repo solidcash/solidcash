@@ -67,19 +67,19 @@ describe('explicit singleton data-NFT index tags', () => {
 
   it('reserves tag bytes in opt-in packing and refuses an indivisible overflowing field', () => {
     const source = 'contract Flags { bool public a; bool public b; function check() { require(true); } }';
-    const plain = compileString(source, { messageBus: false, commitmentLimit: 2 });
-    const tagged = compileString(source, { messageBus: false, commitmentLimit: 2, tagSingletonDataNfts: true });
+    const plain = compileString(source, { commitmentLimit: 2 });
+    const tagged = compileString(source, { commitmentLimit: 2, tagSingletonDataNfts: true });
     expect(plain.stateLayout?.dataNftCount).toBe(1);
     expect(tagged.stateLayout?.dataNftCount).toBe(2);
     for (const commitment of [0, 1].map((index) => buildPushdataCommitment(tagged.stateLayout!,
       { a: true, b: false }, index))) expect(commitment.length / 2).toBeLessThanOrEqual(2);
     expect(() => compileString('contract Flag { bool a; function check() { require(true); } }',
-      { messageBus: false, commitmentLimit: 1, tagSingletonDataNfts: true })).toThrow('STATE_RECORD_CAPACITY');
+      { commitmentLimit: 1, tagSingletonDataNfts: true })).toThrow('STATE_RECORD_CAPACITY');
   });
 
   it('authenticates a tagged singleton external read and rejects a substituted input tag', async () => {
     const provider = new MockNetworkProvider();
-    const options = { messageBus: false, forceStateful: true, tagSingletonDataNfts: true } as const;
+    const options = { forceStateful: true, tagSingletonDataNfts: true } as const;
     const targetArtifact = compileString(SOURCE, options);
     const targetBase = new Contract(targetArtifact, [], { provider });
     const targetSetup = await setupStatefulUtxos(provider, targetBase, targetArtifact.stateLayout!,
@@ -117,7 +117,7 @@ describe('explicit singleton data-NFT index tags', () => {
       contract Parent {
         function create() public returns (uint8) { return (new Child()).stored(); }
         function check(uint8 expected) public { require(create() == expected); }
-      }`, { messageBus: false, evmCompat: true, forceStateful: true, tagSingletonDataNfts: true,
+      }`, { evmCompat: true, forceStateful: true, tagSingletonDataNfts: true,
       allowUnsafeOperations: true, __legacyDeployFold: true } as never);
     const descriptor = artifacts.Parent.abi.find((entry) => entry.name === 'check')?.deployTargets?.[0];
     expect(descriptor?.childLayoutDigest).toBe(childStateLayoutDigest(artifacts.Child.stateLayout!));

@@ -20,8 +20,6 @@ describe('generic upsert fixed-key recovery', () => {
     `, {
       forceStateful: true,
       evmCompat: true,
-      messageBus: true,
-      messageBusGraphContext: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       suppressWarnings: true,
@@ -50,8 +48,6 @@ describe('generic upsert fixed-key recovery', () => {
     `, {
       forceStateful: true,
       evmCompat: true,
-      messageBus: true,
-      messageBusGraphContext: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       suppressWarnings: true,

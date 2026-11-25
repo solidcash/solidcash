@@ -38,7 +38,7 @@ const SOURCE = `pragma solidcash ^0.52.0;
   contract C { int last; constructor(ITake t) { last = t.take(); } function read() { require(last >= 0); } }`;
 
 const compileOptions = (primary: string): never => ({
-  deployer: true, genesisCalls: true, messageBus: false, primaryContractName: primary,
+  deployer: true, genesisCalls: true, primaryContractName: primary,
 }) as never;
 
 let serial = 0xa1e0;

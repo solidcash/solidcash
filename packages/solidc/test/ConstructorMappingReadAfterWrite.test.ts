@@ -266,7 +266,7 @@ describe('a direct constructor that reads a mapping entry after writing it', () 
   for (const shape of DIRECT) {
     it(`reads ${shape.name}: the EVM's value is accepted, the other refused`, () => {
       const artifact = compileString(`${PRAGMA} contract Genesis {${shape.members} function g() { require(true); } }`,
-        { messageBus: false });
+        {});
       expect(settleDirect(artifact, shape.args, shape.created, num(shape.right))).toBe(true);
       expect(settleDirect(artifact, shape.args, shape.created, num(shape.wrong)))
         .toContain('Program failed an OP_VERIFY operation');
@@ -340,7 +340,7 @@ const PUSHED_ELEMENT = `${LOGS} constructor(uint k, bytes4 v, uint i, bytes4 e) 
 describe('a constructor element read past the length of the value it reads', () => {
   const compileFor = (members: string, convention: 'direct' | 'framed'): Artifact =>
     compileString(`${PRAGMA} contract Genesis {${members} function g() { require(true); } }`,
-      convention === 'direct' ? { messageBus: false } : { composition: 'framed' });
+      convention === 'direct' ? {} : { composition: 'framed' });
 
   it('refuses the deployment of an element of an entry no write names', () => {
     expect(settleDirect(compileFor(UNWRITTEN_ELEMENT, 'direct'), { k: K }, undefined, num(0n)))
@@ -371,7 +371,7 @@ const readOf = (entry: string, written: string, shape: string): string => `a rea
 function refusal(members: string, convention: 'direct' | 'framed'): string | undefined {
   try {
     compileString(`${PRAGMA} contract Refused {${members} function g() { require(true); } }`,
-      convention === 'direct' ? { messageBus: false } : { composition: 'framed' });
+      convention === 'direct' ? {} : { composition: 'framed' });
     return undefined;
   } catch (error) {
     if (error instanceof ConstructorStaleReadError) return error.message;

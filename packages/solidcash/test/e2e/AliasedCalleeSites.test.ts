@@ -534,7 +534,7 @@ contract C() {
     this.listeners.push(a);
   }`);
     for (const source of [insideCollection, pointerBefore]) {
-      expect(() => compileString(source, { messageBus: false })).toThrow(/LOOP_ARRAY_WRITTEN_AROUND_CALLS/);
+      expect(() => compileString(source, {})).toThrow(/LOOP_ARRAY_WRITTEN_AROUND_CALLS/);
     }
     // An overload of the writer's name hides no writer.
     const hiddenWriter = contract('function(address) internal op;', `function setOp() { op = _t; }
@@ -546,7 +546,7 @@ contract C() {
     for (uint256 i = 0; i < listeners.length; i = i + 1) { IL(listeners[i]).hear(v); }
     _set(a);
   }`);
-    expect(() => compileString(hiddenWriter, { messageBus: false })).toThrow(/LOOP_ARRAY_WRITTEN_AROUND_CALLS/);
+    expect(() => compileString(hiddenWriter, {})).toThrow(/LOOP_ARRAY_WRITTEN_AROUND_CALLS/);
   });
 
   it('refuses a table element whose method does not take the table\'s parameters', () => {

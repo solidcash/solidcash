@@ -48,13 +48,6 @@ export interface ApplyOverridesHost {
   externalEntryKeyOverrides: Map<number, bigint | boolean | Uint8Array>;
   entryDeleteSlots: number[];
   transfers: Array<{ lockingBytecode: Uint8Array; amount: bigint; outputSlot?: number }>;
-  compilerTransferRecipes: Array<{
-    outputSlot: number;
-    transfer: FixedBchTransferAbi;
-    args: readonly FunctionArgument[];
-    handler: AbiFunction;
-    executionArtifact: Artifact;
-  }>;
   tokenContainerTransfers: Array<{
     tokenContainerCategoryId: string; lockingBytecode: Uint8Array; amount: bigint;
   }>;
@@ -64,9 +57,6 @@ export interface ApplyOverridesHost {
   }>;
   extraOutputs: Output[];
   extraInputs: Array<{ utxo: Utxo; unlocker: Unlocker }>;
-  childDeployments: Array<{
-    slotOffset: number; genesisInput: UnlockableUtxo; outputs: readonly Output[];
-  }>;
   tokenContainerDeposits: Array<{ tokenContainerCategoryId: string; amount: bigint }>;
   manualEvents: Array<{ name: string; args: StateValueType[] }>;
   detachedEvents: Array<{
@@ -284,45 +274,8 @@ export async function applyOverrides(
     builder.addTokenContainerDeposit(tokenContainerCategoryId, amount);
   }
 
-  let effectiveTransfers = host.transfers;
-  if (effectiveTransfers.length === 0 && host.compilerTransferRecipes.length > 0) {
-    const { materializeFixedBchTransfer } = await import('./child-deployment-recipes.js');
-    const materialized: typeof host.transfers = [];
-    const authenticatedState = await host.parentContract!.getState();
-    for (const plan of host.compilerTransferRecipes) {
-      if (plan.transfer.condition === null) {
-        throw new Error(`BCH transfer predicate in '${plan.handler.name}' is not canonical`);
-      }
-      const handlerAbi = plan.executionArtifact.abi.find((candidate) =>
-        candidate.selector === plan.handler.selector || candidate.name === plan.handler.name);
-      if (!handlerAbi) throw new Error(`Message-bus handler ABI '${plan.handler.name}' is missing`);
-      // An owner-local route authenticates msg.sender as tx.origin. The ordinary builder guarantees that a
-      // connected signer contributes that native P2PKH input; use the same identity for compiler-authored
-      // fixed effects rather than accepting a caller supplied as an ABI value.
-      const sender = host.parentContract!._signer ?? host.parentContract!._logicalNonceSigner;
-      const logicalCaller = sender ? addressToLockScript(sender.getAddress()) : undefined;
-      const entries = await loadFixedEffectEntries([
-        plan.transfer.recipientRecipe, plan.transfer.amountRecipe, plan.transfer.condition?.fixedEffectRecipe,
-      ], plan.executionArtifact, host.parentContract!);
-      if (plan.transfer.condition !== undefined && !(await host.parentContract!._resolveCompilerEffectPredicate(
-        plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState, entries, logicalCaller,
-      ))) continue;
-      const transfer = materializeFixedBchTransfer(
-        plan.transfer,
-        plan.args,
-        plan.handler.inputs.map((input) => input.type),
-        plan.executionArtifact,
-        host.parentContract!.inner.provider,
-        authenticatedState as Readonly<Record<string, FunctionArgument>>,
-        logicalCaller,
-        entries,
-      );
-      // A zero-value fixed effect is an inactive conditional slot, not a positive BCH payment.
-      if (transfer.amount === 0n) continue;
-      materialized.push({ outputSlot: plan.outputSlot, ...transfer });
-    }
-    effectiveTransfers = materialized;
-  }
+  const effectiveTransfers = host.transfers;
+
 
   // Apply transfers: user overrides replace auto-derived transfers
   if (effectiveTransfers.length > 0) {
@@ -619,8 +572,5 @@ export async function applyOverrides(
   }
 
   builder._restoreProbeMasterOutpoint();
-  for (const deployment of host.childDeployments) {
-    builder.setChildDeployment(deployment.slotOffset, deployment.genesisInput, deployment.outputs);
-  }
   return builder;
 }

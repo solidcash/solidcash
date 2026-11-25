@@ -8,6 +8,8 @@
 import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
 import { generateLibauthSourceOutputs } from './utils.js';
 import { createVirtualMachineBch2026ForProvider } from './network/createVirtualMachine.js';
+import { isExternallySignedUnlocker } from './external-signing.js';
+import type { Unlocker } from './interfaces.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import {
   assessFinalizedTransactionBytes, assertFinalizedTransactionBytes, enforcedFinalizedByteRefusals,
@@ -28,6 +30,10 @@ export function covenantObjectionOf(
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const vm = createVirtualMachineBch2026ForProvider(builder.provider);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      // A wallet signs this input at broadcast; its placeholder unlocking bytecode cannot be judged here.
+      if (isExternallySignedUnlocker((builder.inputs[inputIndex] as { unlocker?: Unlocker } | undefined)?.unlocker)) {
+        continue;
+      }
       const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
       if (objection !== true) return `input ${inputIndex}: ${objection}`;
     }

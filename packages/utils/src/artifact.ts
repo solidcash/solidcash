@@ -43,7 +43,7 @@ export interface CompilerOptions {
   framedCreationTargets?: readonly string[];
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
-  /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
+  /** Skip speculative compiler-route admission rungs and compile the conservative route directly. */
   optimizeForCompilationSpeed?: boolean;
   /**
    * Emit bytecode source maps on the artifact (`debug.sourceMap` and per-body maps). Default true.
@@ -89,12 +89,12 @@ export interface CompilerOptions {
   __deployerNew?: boolean;
   /**
    * Which entry functions publish a call record: `'returning'` (today's behaviour: only functions that return a
-   * value) or `'all'` (void entries too). Framed and message-bus compiles accept only `'returning'`.
+   * value) or `'all'` (void entries too). Framed and compiler-route compiles accept only `'returning'`.
    */
   callRecords?: 'returning' | 'all';
   /**
    * Compile direct contracts with the constructor-genesis (O6) mechanisms. Defaults to on. A framed compile and a
-   * message-bus compile take none: a constructor calls only a direct contract.
+   * compiler-route compile take none: a constructor calls only a direct contract.
    */
   genesisCalls?: boolean;
   /** Encode an NFT-index tag even when fixed state occupies only one data NFT. Opt-in wire-layout choice. */
@@ -391,7 +391,7 @@ export interface FunctionBlockLayout {
 }
 
 /**
- * Compiler-authored geometry for one typed stateful child-creation site reached by a message-bus handler.
+ * Compiler-authored geometry for one typed stateful child-creation site reached by a compiler-route handler.
  *
  * This is published even while the kernel admission gate remains closed, so transaction assemblers can grow
  * against an exact, application-neutral topology rather than rediscovering `new C(...)` from contract names.
@@ -551,7 +551,7 @@ export interface ValueProvenance {
 
 /**
  * Exact, fail-closed recipe for collapsing a source forwarding function into an authenticated delegate
- * execution frame. Publication alone grants no message-bus admission: the kernel verifier must still bind the
+ * execution frame. Publication alone grants no compiler-route admission: the kernel verifier must still bind the
  * resolved implementation and payload to the executor input while keeping state and outputs owned by the
  * participant block.
  */
@@ -2211,7 +2211,7 @@ export interface Artifact {
   genesisCalls?: boolean;
   /**
    * True: compiled as record-sound (its code marker says so). False: a record-publishing entry meets an arm that
-   * prevents it, or the contract is a message-bus build.
+   * prevents it, or the contract is a compiler-route build.
    */
   recordSound?: boolean;
   /** True for a marked creator: a contract that creates a sender-reading child. */
@@ -2234,7 +2234,7 @@ export interface Artifact {
   // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.
   delegateArtifact?: Artifact;
   /** Compiler-only call graph/resource summary shared by splitting, journal
-   * eligibility, diagnostics, and message-bus planning. No covenant capability
+   * eligibility, diagnostics, and compiler-route planning. No covenant capability
    * is implied by its presence. */
   invocationAnalysis?: InvocationAnalysisArtifact;
   /**

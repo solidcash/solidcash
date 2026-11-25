@@ -7643,12 +7643,12 @@ export class StatefulTransactionBuilder {
     // The old `if (state.error)` was also a truthiness test where `!== undefined` is meant.
     //
     // Scope: this path is opt-in and default-off, and no hostile was constructed against it. The repair is
-    // inferred from field semantics that WERE measured, on the sibling decider in `route/preflight.ts`.
+    // inferred from field semantics that WERE measured, on the sibling decider in `finalization.ts`.
     try {
       assertFinalizedTransactionCovenants(builder, transaction);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(reason.replace(/^route: BCH-2026 preflight failed at /, ''));
+      throw new Error(reason.replace(/^BCH-2026 preflight failed at /, ''));
     }
   }
 

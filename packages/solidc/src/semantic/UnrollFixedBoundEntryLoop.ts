@@ -29,8 +29,6 @@ import {
   MethodCallNode,
   InstantiationNode,
   NewArrayNode,
-  CollectionIterationNode,
-  ArrayAccessNode,
   CastNode,
   StateAccessNode,
   BranchNode,
@@ -63,8 +61,7 @@ const MAX_UNROLL = 64;
  * instantiation, or an indirect external function-pointer call (else unrolling is needless). With `effects`, a
  * payment, send, token transfer or event in the body fires it too: each such site has one output register, which
  * every turn of a rolled loop would fill, so each unrolled turn takes a site of its own, pinned and counted as a
- * hand-written one is, and a branch whose predicate the turn's literal decides keeps only the arm it takes. With
- * `effects: 'only'` such a loop is the only one that unrolls. A body
+ * hand-written one is, and a branch whose predicate the turn's literal decides keeps only the arm it takes. A body
  * that assigns or redeclares the counter stays rolled, as no literal stands for it. A
  * break/continue is admitted only when substituting each fixed induction value makes every reached escape decision
  * static; returns and runtime-selected escapes remain rolled. Also requires
@@ -87,17 +84,14 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mutatedNames = new Set<string>(); // names ever reassigned / push / pop / element-written in the fn
 
   private currentFunction = '';
-  private currentGraphRuntime = false;
   // Names of the functions whose bodies make a payment, send, token transfer or event, directly or through a call.
   private effectfulFunctionNames = new Set<string>();
 
   constructor(
     private readonly indirectCallsOnly = false,
     private readonly expansions?: PointerTableExpansionMap,
-    private readonly fixedCollectionIterations = false,
-    // A fixed loop whose body makes an effect unrolls (see the class comment); `'only'` leaves every other loop to a
-    // later pass, for a legacy route compile whose route admission runs between the two.
-    private readonly effects: boolean | 'only' = false,
+    // A fixed loop whose body makes an effect unrolls (see the class comment).
+    private readonly effects = false,
   ) {
     super();
   }
@@ -134,63 +128,13 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return node;
   }
 
-  /**
-   * A native entry-backed fixed array has a compiler-owned cardinality and identities: `T[N]` is exactly the
-   * entry set 0..N-1. In route mode, expand its collection iteration to the same static indexed reads a
-   * user could write by hand. The ordinary entry-slot machinery then authenticates the exact count, source
-   * order, and every index identity. Enumerable mappings and dynamic arrays deliberately retain their runtime
-   * CollectionIterationNode and the route's named fail-closed refusal.
-   *
-   * MAX_UNROLL is also the existing fixed-resource expansion ceiling. Leaving a larger fixed array rolled makes
-   * it hit `collection-iteration-handler-not-enabled`, rather than manufacturing a route beyond that ceiling.
-   */
-  visitCollectionIteration(node: CollectionIterationNode): Node {
-    if (!this.fixedCollectionIterations) return super.visitCollectionIteration(node);
-    const type = this.collectionTypes.get(node.collectionName);
-    if (!(type instanceof ArrayType) || type.bound === undefined || type.bound > MAX_UNROLL) {
-      return super.visitCollectionIteration(node);
-    }
-
-    const iterations: StatementNode[] = [];
-    for (let index = 0; index < type.bound; index++) {
-      const statements: StatementNode[] = [];
-      if (node.keyName && node.keyType) {
-        const key = new VariableDefinitionNode(
-          node.keyType, [], node.keyName, new IntLiteralNode(BigInt(index)),
-        );
-        key.location = node.location;
-        statements.push(key);
-      }
-      if (node.valueName && node.valueType) {
-        const access = new ArrayAccessNode(
-          new IdentifierNode(node.collectionName), new IntLiteralNode(BigInt(index)),
-        );
-        access.location = node.location;
-        const value = new VariableDefinitionNode(node.valueType, [], node.valueName, access);
-        value.location = node.location;
-        statements.push(value);
-      }
-      statements.push(...(cloneNode(node.body).statements ?? []));
-      const block = new BlockNode(statements);
-      block.location = node.body.location;
-      iterations.push(this.visit(block) as StatementNode);
-    }
-    const expanded = new BlockNode(iterations);
-    expanded.location = node.location;
-    return expanded;
-  }
-
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const prevName = this.currentFunction;
-    const prevGraphRuntime = this.currentGraphRuntime;
     this.currentFunction = node.name;
-    this.currentGraphRuntime = false;
     const mutationScan = this.collectMutatedNames(node.body);
-    // Graph-mode unrolling only expands pointer-table loops. Skip every other function so a contract with one
-    // graph edge does not try-unroll every sibling handler that merely contains a C-style loop.
+    // The indirect-calls-only pass expands only pointer-table loops, so it skips every other function.
     if ((this.indirectCallsOnly && !mutationScan.hasIndirectCall) || !mutationScan.hasCandidateLoop) {
       this.currentFunction = prevName;
-      this.currentGraphRuntime = prevGraphRuntime;
       return node;
     }
     const prev = this.varTypes;
@@ -205,7 +149,6 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     this.newArrayLocalSizes = prevNewArr;
     this.mutatedNames = prevMutated;
     this.currentFunction = prevName;
-    this.currentGraphRuntime = prevGraphRuntime;
     return node;
   }
 
@@ -223,9 +166,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     let hasIndirectCall = false;
     const walk = (n: Node | undefined): void => {
       if (!n) return;
-      if (n instanceof WhileNode || (this.fixedCollectionIterations && n instanceof CollectionIterationNode)) {
-        hasCandidateLoop = true;
-      }
+      if (n instanceof WhileNode) hasCandidateLoop = true;
       if (n instanceof IndirectCallNode
         || (n instanceof MethodCallNode && (n.selectorArrayVar !== undefined || n.pointerTableBroadcast))) {
         hasIndirectCall = true;
@@ -306,8 +247,6 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const bodyStmts = all.slice(0, all.length - k);
     const step = this.evalStep(all.slice(all.length - k), varName);
     if (step === undefined || step <= 0n) return undefined;
-    // An effect-only pass leaves a loop without an effect, a dead one included, to the pass after it.
-    if (this.effects === 'only' && !this.hasEffect(bodyStmts)) return undefined;
 
     // Enumerate the iteration values; bail if unbounded or larger than MAX_UNROLL.
     const values: bigint[] = [];
@@ -320,15 +259,10 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // array arg) is DEAD CODE: drop it entirely. The body never runs, so anything in it (a vmap sorted-mapping
     // write, an external call) is unreachable - sound regardless of body content or control flow.
     if (values.length === 0) return [];
-    // Fixed loops visible before route synthesis have already been expanded. A non-empty loop which becomes
-    // literal only after helper inlining must remain rolled in a runtime graph clone: its authenticated dynamic
-    // collection/emission journals own the reached rows. Unrolling here would manufacture fixed entry slots
-    // which belong only to the unused direct source body. Empty loops above are still erased as dead code.
-    if (this.currentGraphRuntime) return undefined;
 
-    // This pass runs both before route admission and again after break/continue normalization. Remember a
-    // source escape on the loop itself: the normalization necessarily replaces the raw ContinueNode/BreakNode,
-    // but that must not make a later pass mistake the rewritten loop for an exactly-repeatable resource set.
+    // This pass runs both before and after break/continue normalization. Remember a source escape on the loop
+    // itself: the normalization necessarily replaces the raw ContinueNode/BreakNode, but that must not make a later
+    // pass mistake the rewritten loop for an exactly-repeatable resource set.
     if (w.fixedUnrollForbidden) return undefined;
     // Each turn reads the counter as one literal, which a body that assigns or redeclares it would contradict.
     if (this.writesName(bodyStmts, varName)) return undefined;
@@ -336,12 +270,12 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // Only unroll a NON-empty loop whose body writes a mapping, calls keccak256, or deploys a child (else
     // needless). A child deployment has the same fixed-resource requirement as a mapping write: each exact
     // iteration owns an independent genesis input/output span and must therefore become an ordinary syntactic
-    // site before route admission assigns site and transfer ordinals. A keccak256 in
+    // site before site and transfer ordinals are assigned. A keccak256 in
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Static break/continue replay below preserves their source target;
     // returns and runtime-selected escapes remain rolled.
-    // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (route route) mode.
+    // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly mode.
     // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
     // WHOLE table after the loop, and unrolling it into N single-element callsites changes the direct ABI
     // (per-element selector and master-index witnesses) that shipped broadcast callers use.
@@ -350,12 +284,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // that function's site between the turns, so such a body stays rolled and the generator's guard refuses it.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     const hasMappingWrite = this.hasMappingWrite(bodyStmts);
-    const effectSites = this.effects !== false && !this.indirectCallsOnly && this.hasEffect(bodyStmts)
+    const effectSites = this.effects && !this.indirectCallsOnly && this.hasEffect(bodyStmts)
       && !this.callsEffectfulFunction(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall
-      : this.effects === 'only' ? !effectSites
-        : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
-          && !this.hasChildDeployment(bodyStmts) && !effectSites)) return undefined;
+      : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
+        && !this.hasChildDeployment(bodyStmts) && !effectSites)) return undefined;
     const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
     // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
     // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
@@ -368,8 +301,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     }
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
-    // across the N copies (Solidity block scoping). A single iteration is inlined into the enclosing block so
-    // route admission still sees a top-level mapping write (computed-key journal).
+    // across the N copies (Solidity block scoping). A single iteration is inlined into the enclosing block, so its
+    // mapping write stays top-level.
     const result: StatementNode[] = [];
     for (const v of values) {
       const iterStmts: StatementNode[] = [];

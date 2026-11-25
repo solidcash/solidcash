@@ -3595,7 +3595,7 @@ function compileResolvedAst(
   // `for`, journals no send and refuses an effect in a nested loop, while a rolled loop's effect has one output
   // register for every turn. A framed body binds a looped effect where it makes it.
   const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed';
-  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, unrollLoopEffects)) as Ast;
 
   // Keep direct compilation's narrow permutation ABI stable unless a looped payment or emit needs the richer
   // lowering, which pins each iteration's effect. A framed body binds a looped effect where it makes it instead
@@ -3962,7 +3962,7 @@ function compileResolvedAst(
   // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
   // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on
   // these post-inline new-array-bound loops, and on a fixed loop whose effect an inlined helper made.
-  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, unrollLoopEffects)) as Ast;
 
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
@@ -3980,11 +3980,9 @@ function compileResolvedAst(
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache. A framed body keeps the
   // cache inside the segments its own accesses run in, so the upsert lands where the source writes the entry.
-  // Without the route no route clones a body after this pass, so a mapping the body composes stays uncached.
+  // A mapping the body composes stays uncached.
   if (needsLoop || needsCollectionJournal) {
-    ast = ast.accept(new CacheMappingEntryInLoop(
-      false, mergedCompilerOptions.composition === 'framed', true,
-    )) as Ast;
+    ast = ast.accept(new CacheMappingEntryInLoop(mergedCompilerOptions.composition === 'framed')) as Ast;
   }
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
@@ -6806,9 +6804,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
-    singleAst = singleAst.accept(new CacheMappingEntryInLoop(
-      false, compilerOptions.composition === 'framed', true,
-    )) as Ast;
+    singleAst = singleAst.accept(new CacheMappingEntryInLoop(compilerOptions.composition === 'framed')) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.composition === 'framed', compilerOptions.composition !== 'framed',
     )) as Ast;

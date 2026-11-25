@@ -61,11 +61,11 @@ import {
 import { SolidcDiagnosticError } from '../Errors.js';
 
 /** Fail closed with a stable diagnostic code for an invariant the lowering relies on. */
-const throwJournalDiagnostic = (
+function throwJournalDiagnostic(
   code: string, message: string, detail: Readonly<Record<string, unknown>> = {},
-): never => {
+): never {
   throw new SolidcDiagnosticError(code as never, message, detail);
-};
+}
 
 interface Candidate {
   fn: FunctionDefinitionNode;
@@ -340,7 +340,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (!fn.body || fn.parameters[0]?.name !== `__dj_${fn.name}`) continue;
       const reach = this.callGraphReach(fn, node, touchesCollection);
       if (reach.via) {
-        // Journal admission catalog: catalog-coded refuse.
         throwJournalDiagnostic(
           'JOURNAL_LAYOUT',
           `Handler '${sourceHandlerName(fn.name)}' writes unbounded bytes/string state and also reaches a `
@@ -362,30 +361,24 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const terminalReturn = statements[statements.length - 1];
       let returnCount = 0;
       this.walk(fn.body, (candidate) => { if (candidate instanceof ReturnNode) returnCount += 1; });
-      // A compiler-owned pooled route clone may need two independent channels at its one physical exit: pending
-      // collection values for the route journal, followed by the source ABI result for its authenticated row.
-      // This is not specific to outgoing graph/effect handlers: a leaf getter sharing a route-wide collection
-      // pool has exactly the same frame. Leaving that getter out of the journal strands its entry read inside the
-      // OP_INVOKE body, where a decoded row expression allocates a second, unbound physical entry slot and returns
-      // the collection default. Keep the admission deliberately structural: one top-level terminal return, no
-      // early branch. `forceCollectionJournalPool` is compiler-owned and marks precisely these shared route frames.
-      const pooledTerminalResult = !!(false || fn.forceCollectionJournalPool)
+      // A pooled function (`forceCollectionJournalPool`) may need two independent channels at its one physical
+      // exit: pending collection values for the journal, followed by the source ABI result. Keep the admission
+      // deliberately structural: one top-level terminal return, no early branch.
+      const pooledTerminalResult = fn.forceCollectionJournalPool === true
         && fn.returnTypes.length > 0
         && terminalReturn instanceof ReturnNode && returnCount === 1
         && terminalReturn.expressions.length === fn.returnTypes.length;
       if (!fn.body || (fn.returnTypes.length !== 0 && !pooledTerminalResult)
         || !(fn.modifiers.includes(FunctionModifier.INTERNAL)
           || fn.modifiers.includes(FunctionModifier.PRIVATE))
-        // Compiler-owned graph clones retain `inheritedFrom` so private storage access is checked in the source
-        // declaration's scope. They are nevertheless concrete helpers owned by this route and must be journalled.
-        || (fn.inheritedFrom && !false && !fn.forceCollectionJournalPool)
+        || (fn.inheritedFrom && !fn.forceCollectionJournalPool)
         || constructorCalls.has(fn.name)
         || (nameCounts.get(fn.name) ?? 0) > 1) continue;
       // An ordinary journal helper must own its complete collection footprint. If it calls a separate
       // collection-touching helper, the later inline pass can pull that helper's physical accesses into this
-      // OP_INVOKE body, adding direct-route resource witnesses after the call sites were journal-rewritten.
-      // Compiler-owned pooled route clones have their own transitive resource accounting below.
-      if (!false && !fn.forceCollectionJournalPool
+      // OP_INVOKE body, adding resource witnesses after the call sites were journal-rewritten. A pooled function
+      // is exempt.
+      if (!fn.forceCollectionJournalPool
         && [...callees(fn)].some((callee) => callee !== fn && touchesCollection(callee))) continue;
       // X118. An event emitted inside a value-threaded OP_INVOKE handler is dropped at the subroutine exit, so
       // code generation refuses this shape outright. It compiles on the pre-existing inline path, so do not
@@ -394,16 +387,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.walk(fn.body, (candidate) => {
         if (candidate instanceof EmitStatementNode) emitsEvent = true;
       });
-      // A route graph clone does not emit directly from the OP_INVOKE frame: code generation projects its
-      // event into the authenticated route-owned effect frame. It can therefore share the value-threaded
-      // collection-journal exit. Ordinary internal helpers still have no such projection and retain X118's gate.
-      if (emitsEvent && !false) continue;
-      // A journal counter-loop write owns its own trailing upsert journal.  It
-      // must not prevent this helper from value-threading a separate fixed
-      // entry read/write: e.g. `target[i] = source[0]` needs `source[0]` to
-      // share the route-wide cache while `target[i]` remains on the runtime
-      // row journal.  Entry slots are assigned by the preceding semantic pass
-      // and are stable on the cloned body at this point.
+      if (emitsEvent) continue;
+      // A counter-loop write owns its own trailing upsert journal. It must not prevent this helper from
+      // value-threading a separate fixed entry read/write: e.g. `target[i] = source[0]` needs `source[0]` to
+      // share the cache while `target[i]` remains on the runtime journal. Entry slots are assigned by the
+      // preceding semantic pass.
       const runtimeLoopSlots = new Set((fn.entryAccesses ?? [])
         .filter((entry) => entry.inLoop)
         .map((entry) => entry.slotIndex));
@@ -598,7 +586,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
-      console.error('collection-journal-route-candidates', JSON.stringify({
+      console.error('collection-journal-candidates', JSON.stringify({
         contract: node.name,
         candidates: [...this.candidates.keys()],
         multiCandidates: [...this.multiCandidates.entries()].map(([key, candidate]) => ({
@@ -609,7 +597,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             journalName: entry.journalName,
           })),
         })),
-        graphFunctions: [],
       }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
     }
 
@@ -698,13 +685,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         ...candidate.entries.map((entry) =>
           this.at(new ParameterNode(entry.valueType, entry.journalName, []), candidate.fn)));
       for (const parameter of candidate.fn.parameters) {
-        // Graph handlers may use an ordinary argument again inside a conditional effect after the journal
-        // assignment (OZ ERC20 `_approve`: assign `value`, then emit Approval(..., value)). The pre-lowering
+        // A pooled function may use an ordinary argument again after the journal assignment. The pre-lowering
         // liveness metadata describes the original mapping statement and can classify that assignment operand
-        // as its last use; OP_ROLL then removes the declared argument from the OP_INVOKE frame and the later
-        // conditional encoder reads an adjacent empty journal value. Keep the small declared handler frame
-        // stable through its single exit, just as the entry-key parameters already are.
-        if (false || candidate.fn.forceCollectionJournalPool
+        // as its last use; OP_ROLL then removes the declared argument from the OP_INVOKE frame. Keep the declared
+        // frame stable through its single exit, just as the entry-key parameters already are.
+        if (candidate.fn.forceCollectionJournalPool
           || candidate.entries.some((entry) => entry.keyParameters.includes(parameter.name))) {
           parameter.syntheticallyUsed = true;
         }
@@ -743,8 +728,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   /**
    * Resolve a journal candidate for a call. Candidates are registered by name AND arity, but arity MUTATES:
-   * semantic analysis appends synthetic parameters after registration, and a compiler-generated route
-   * route writes some of those synthetics at the call site itself. The exact key then misses on both sides -
+   * semantic analysis appends synthetic parameters after registration, and a compiler-generated call can write
+   * some of those synthetics at the call site itself. The exact key then misses on both sides -
    * the callee keeps a leading `__cj_` parameter its call site never supplies. Fall back to the name when it
    * identifies exactly one candidate; an overloaded name keeps the strict arity match.
    */
@@ -945,7 +930,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (statement.elseBlock) statement.elseBlock = this.rewriteBlock(statement.elseBlock);
       return statement;
     }
-    // Runtime dispatch is a desugared `for` (`{ init; while { body; update } }`). Assignment-form
+    // A desugared `for` is `{ init; while { body; update } }`. Assignment-form
     // invokes of returning journal helpers live in that while body; visiting only if/else left them
     // at the pre-journal arity and failed typecheck (`bool` pending prepended, call site unchanged).
     if (statement instanceof BlockNode) return this.rewriteBlock(statement);
@@ -1164,7 +1149,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         { gate: 'journal-function-scope-missing', handler: target.fn.name },
       );
     }
-    const callLocals = cache!.calls.get(call);
+    const callLocals = cache.calls.get(call);
     if (!callLocals) {
       throwJournalDiagnostic(
         'JOURNAL_INTERNAL_DEFECT',
@@ -1182,13 +1167,13 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           { gate: 'journal-dynamic-cache-missing', handler: target.fn.name, state: entry.state },
         );
       }
-      return dynamicCache!;
+      return dynamicCache;
     });
     const invoked = this.at(new FunctionCallNode(
       this.at(new IdentifierNode(call.identifier.name), call),
       [
         ...dynamicLocals.map(({ name }) => this.at(new IdentifierNode(name), call)),
-        ...callLocals!.map(({ local, runtimeValueName }) =>
+        ...callLocals.map(({ local, runtimeValueName }) =>
           this.at(new IdentifierNode(runtimeValueName ?? local.name), call)),
         ...originalArgs,
       ],
@@ -1210,7 +1195,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     };
     const runtimeDeclarations: StatementNode[] = [];
     const runtimeSelections: StatementNode[] = [];
-    for (const binding of callLocals!) {
+    for (const binding of callLocals) {
       const { runtimeAliases, runtimeOwnerName, runtimeValueName } = binding;
       if (!runtimeAliases?.length || !runtimeOwnerName || !runtimeValueName) continue;
       const linearArgument = binding.local.keyIdentity.some((identity) =>
@@ -1278,7 +1263,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       runtimeSelections.push(...(selection.statements ?? []));
     }
     const ordinaryBindings = new Map<string, ActiveMultiCacheBinding[]>();
-    for (const binding of callLocals!) {
+    for (const binding of callLocals) {
       if (binding.runtimeValueName) continue;
       const group = ordinaryBindings.get(binding.local.name) ?? [];
       group.push(binding);
@@ -1296,10 +1281,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }) : [];
     // A void pooled handler touching one entry still returns a single journal value, not a one-element tuple.
     let capture: StatementNode;
-    if (dynamicLocals.length === 0 && callLocals!.length === 1 && resultElements.length === 0) {
+    if (dynamicLocals.length === 0 && callLocals.length === 1 && resultElements.length === 0) {
       capture = this.at(new AssignNode(
         this.at(new IdentifierNode(
-          callLocals![0].runtimeValueName ?? callLocals![0].local.name,
+          callLocals[0].runtimeValueName ?? callLocals[0].local.name,
         ), call), invoked,
       ), call);
     } else {
@@ -1308,7 +1293,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           ...dynamicLocals.map(({ entry, name }) => ({
             name, type: entry.valueType, existing: true,
           })),
-          ...callLocals!.map(({ entry, local, mutates, runtimeValueName }) => ({
+          ...callLocals.map(({ entry, local, mutates, runtimeValueName }) => ({
             name: runtimeValueName ?? local.name, type: entry.valueType, existing: true,
             // A read-only helper returns the cache solely because every pooled helper shares one physical tuple
             // convention. Its value is provably unchanged, so discard that tuple field instead of rotating it
@@ -1323,7 +1308,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       ), call);
     }
     const ordinaryDirtyBindings = new Map<string, ActiveMultiCacheBinding[]>();
-    for (const binding of callLocals!) {
+    for (const binding of callLocals) {
       if (!binding.mutates || binding.runtimeValueName) continue;
       const group = ordinaryDirtyBindings.get(binding.local.name) ?? [];
       group.push(binding);
@@ -1338,7 +1323,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         this.at(new BlockNode([mark]), call),
       ), call);
     });
-    const runtimeDirties = callLocals!.flatMap((binding): StatementNode[] => {
+    const runtimeDirties = callLocals.flatMap((binding): StatementNode[] => {
       if (!binding.mutates || !binding.runtimeValueName || !binding.runtimeOwnerName) return [];
       const owners = [...new Map([
         binding.local, ...(binding.runtimeAliases ?? []),
@@ -1407,7 +1392,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         return cloneNode(call.parameters[parameterIndex]) as ExpressionNode;
       });
       const identitiesFor = (keys: ExpressionNode[]): string[] => keys.map((key) => {
-        const identity = this.canonicalCacheKey(key, wrapperParameters)!;
+        const identity = this.canonicalCacheKey(key, wrapperParameters);
         if (identity === undefined) {
           throwJournalDiagnostic(
             'JOURNAL_LAYOUT',
@@ -1474,12 +1459,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           } : {}),
         };
       });
-      cache!.calls.set(call, callLocals);
+      cache.calls.set(call, callLocals);
       if (debugRoute) {
         debugCalls.push({
           target: target.fn.name,
           runtimeAliases: target.fn.collectionJournalRuntimeAliases === true,
-          bindings: callLocals!.map((binding) => ({
+          bindings: callLocals.map((binding) => ({
             local: binding.local.name,
             keys: binding.local.keyIdentity,
             aliases: (binding.runtimeAliases ?? []).map((alias) => alias.name),
@@ -1488,7 +1473,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
     }
     if (debugRoute && caches.size > 0) {
-      console.error('collection-journal-route-pool', JSON.stringify({
+      console.error('collection-journal-pool', JSON.stringify({
         calls: debugCalls,
         pools: [...caches.entries()].map(([key, cache]) => ({
           key: key.name,
@@ -1636,11 +1621,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     key: ExpressionNode,
     wrapperParameters: Set<string>,
   ): string | undefined {
-    if (key instanceof IdentifierNode && (wrapperParameters.has(key.name)
-      || false
-      || false)) {
-      // Row-decoded arguments are wrapper locals (`__internal_arg_*`), not formal parameters.
-      // They are still one identity per physical entry of this invocation.
+    if (key instanceof IdentifierNode && wrapperParameters.has(key.name)) {
       return `parameter:${key.name}`;
     }
     if (key instanceof LiteralNode) {

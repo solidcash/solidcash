@@ -15,7 +15,6 @@ import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   collidingParticipantGroupIndex,
@@ -190,7 +189,7 @@ export async function allocateCreateBuilderFunders(
       // A void entry's slot is its call record: the covenant steps its chunk coordinates down when no record runs.
       || (dynamicChunkInputs.length > 0 && (entryAbiFunction?.outputs?.length ?? 0) > 0)
       || trailingDisposalInputs.length > 0
-      || ((entryAbiFunction as RuntimeCallAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
+      || (entryAbiFunction?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
       || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true
       // A recovery loop reads iteration k's triple at blockSize + 3k.

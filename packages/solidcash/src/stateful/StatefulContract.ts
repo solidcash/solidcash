@@ -643,7 +643,7 @@ export async function memoizeGraphPlanningProducerResult(
 
 /** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
 export { materializeInternalFunctionArgument } from './entry-journal-planning.js';
-export type { GraphBlockhashSelection, GraphEcrecoverCall } from './runtime-call-metadata.js';
+export type { GraphEcrecoverCall } from './runtime-call-metadata.js';
 
 /**
  * Compute the minimum relay fee for a built TransactionBuilder at 1 sat/byte.

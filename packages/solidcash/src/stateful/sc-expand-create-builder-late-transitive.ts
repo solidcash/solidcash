@@ -13,7 +13,6 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
-import { projectHandlerArguments } from './handler-arguments.js';
 import { RouteDiagnosticError } from './route-diagnostics.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
@@ -171,9 +170,7 @@ export async function expandCreateBuilderLateTransitive(
     const parentFn = (logicalParentArtifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === logicalParentFunctionName);
     if (!parentFn?.externalCalls?.length) return;
-    const graphParentArgs = projectHandlerArguments(
-      logicalParentArtifact, parentFn.name, parentFn.selector, graphParentArgsRaw,
-    );
+    const graphParentArgs = [...graphParentArgsRaw];
     const graphPlanningResults = createGraphPlanningProducerResultContext();
     // The parent's guards and the arguments it passes read the block as its run does: from the info coin of the pool
     // its executing code binds. Without the clock a guard on block.number or block.timestamp did not resolve and the

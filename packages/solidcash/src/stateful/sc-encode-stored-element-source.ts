@@ -13,7 +13,6 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
-import { projectHandlerArguments } from './handler-arguments.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
 import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
 
@@ -218,10 +217,7 @@ function encodeStoredSource(
     || access.mutationEffectOrdinals?.length !== 1
     || recipe.mutationEffectOrdinal !== access.mutationEffectOrdinals[0]
     || !validate(recipe.expression, storedType)) return undefined;
-  // Recipes execute in the decoded handler's value domain, not the SDK's public argument domain.
-  // In Solidity-compatible journal rows, nested value addresses are ABI words while call targets stay native.
-  const executionArgs = wholeValue
-    ? projectHandlerArguments(artifact, handler.name, handler.selector, functionArgs) : functionArgs;
+  const executionArgs = wholeValue ? [...functionArgs] : functionArgs;
   // Only this entry-aware boundary may bind entryPreValue. The general expression evaluator must
   // leave it unknown: scalar state objects and pending SDK overlays are not authenticated entries.
   const bindings = new Map<string, FunctionArgument>();

@@ -23,11 +23,6 @@ import {
 import { legacyIsPublishJobEventName } from './legacy-job-event-helpers.js';
 
 /** Minimal runtime ABI narrowing used by writer/chunkable selection. */
-type RuntimeCallAbiFunction = AbiFunction & {
-  routeActiveEntryRecipes?: ReadonlyMap<number, readonly { access: any; args: any; inputs: any }[]>;
-  routeActiveWriteCollections?: readonly string[];
-};
-
 export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
   const artifact = group.logicalArtifact
     ?? group.logicalContract?.inner?.artifact
@@ -210,18 +205,9 @@ export function describeValueChunkWrites(
       writes.push(write);
     }
   };
-  const activeRecipes = (abiFunction as RuntimeCallAbiFunction).routeActiveEntryRecipes;
-  if (activeRecipes !== undefined && activeRecipes.size > 0) {
-    for (const [routeSlot, recipes] of activeRecipes) {
-      for (const recipe of recipes) {
-        appendWrite(recipe.access, recipe.access.slotIndex ?? 0, routeSlot);
-      }
-    }
-  } else {
-    for (const activeFunction of activeFunctions) {
-      for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
-        appendWrite(access, entryAccessSlot, access.slotIndex ?? entryAccessSlot);
-      }
+  for (const activeFunction of activeFunctions) {
+    for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
+      appendWrite(access, entryAccessSlot, access.slotIndex ?? entryAccessSlot);
     }
   }
   return writes;

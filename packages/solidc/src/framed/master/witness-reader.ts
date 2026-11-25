@@ -28,6 +28,7 @@ export const WITNESS_BLOCK_HEADER_LENGTH = WITNESS_BLOCK_MAGIC.length
 /** The length-prefixed push opcodes; a direct push carries its length in the opcode itself. */
 export const PUSHDATA1_OPCODE = 0x4c;
 export const PUSHDATA2_OPCODE = 0x4d;
+export const PUSHDATA4_OPCODE = 0x4e;
 
 const PUSHDATA1_OPCODE_PUSH = encodeDataPush(new Uint8Array([PUSHDATA1_OPCODE]));
 const PUSHDATA2_OPCODE_PUSH = encodeDataPush(new Uint8Array([PUSHDATA2_OPCODE]));

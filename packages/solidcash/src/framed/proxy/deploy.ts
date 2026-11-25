@@ -156,6 +156,7 @@ import {
 import {
   EntryWriteValueAwaited, EntryWriteValueLearned, entryWriteValueKey, settledWriteValue,
 } from './written-values.js';
+import { dumpRefusedParticipant, refusalDumpOn } from '../composer/refusal.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
 export type FramedProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState' | 'mintedState'>;
@@ -2795,9 +2796,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     const state = vm.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     });
-    return vm.stateSuccess(state) === true
-      ? { id: placed.id, index: placed.index, accepted: true }
-      : { id: placed.id, index: placed.index, accepted: false, objection: String(state.error) };
+    if (vm.stateSuccess(state) === true) return { id: placed.id, index: placed.index, accepted: true };
+    if (refusalDumpOn()) dumpRefusedParticipant(`initialize ${placed.id}`, placed.index, state);
+    return { id: placed.id, index: placed.index, accepted: false, objection: String(state.error) };
   });
   // Every participant is a convention input: the masters, the validator and the proxy's records, each spent under
   // the lock it was minted at.

@@ -3,7 +3,7 @@
  * Compare compiled artifacts from two conventions.
  *
  *   node scripts/compare-convention-sizes.mjs \
- *     --left <artifact-dir> --left-name kernel \
+ *     --left <artifact-dir> --left-name direct \
  *     --right <artifact-dir> --right-name framed
  *
  * Each directory is a flat or nested folder of `*.json` artifacts (TypeScript

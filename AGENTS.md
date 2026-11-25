@@ -45,9 +45,9 @@ small, directly affected set of tests. Run full suites only at major milestones 
 integration, or release, not for ordinary edits or handoffs; they can consume an hour of CPU time. Run the
 one-shot `yarn build` before handoff.
 
-Kernel/compiler diagnostic switches are documented in `docs/compiler-diagnostics.md`. Use them on a focused
+Compiler diagnostic switches are documented in `docs/compiler-diagnostics.md`. Use them on a focused
 test, and distinguish trace-only output from switches that alter bytecode, witnesses, optimisation, or timing.
-Authoritative cold measurements must use the clean-env gate or scoreboard; never infer production behavior
+Authoritative cold measurements run with no inherited `SOLIDC_*` variable; never infer production behavior
 from an instrumented run.
 
 Always use `test:e2e:watch` for focused e2e watch runs. Do not run `vitest test/e2e <file>`: Vitest treats

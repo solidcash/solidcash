@@ -16,10 +16,8 @@ investigation; those are observations, not durable diagnostic interfaces.
 | Timing/cache | `SOLIDC_PROFILE`, `SOLIDC_DEBUG_OUTLINE_TIMING`, `SOLIDC_COMPILE_CACHE*` | Useful locally, but changes the measurement environment. |
 
 The list is illustrative, not a claim that every `SOLIDC_DEBUG_*` switch is observational. Record the exact
-environment, compiler options, artifact hash, and target title with each diagnostic result. The beta gate and
-authoritative marketplace scoreboard remove inherited `SOLIDC_*` variables before cold compilation; the
-one-shot compiler profiler also strips them before importing compiler modules. Repeat production claims with
-those clean paths. During debugging, run only the target test and at most one adjacent title. When adding a
+environment, compiler options, artifact hash, and target title with each diagnostic result. Repeat a production
+claim in an environment with no inherited `SOLIDC_*` variable. During debugging, run only the target test and at most one adjacent title. When adding a
 switch, classify it here as observational, output-changing, experimental, or timing-related; include a bounded
 invocation and explain what evidence it provides. Do not preserve one-off logging solely because it once helped.
 

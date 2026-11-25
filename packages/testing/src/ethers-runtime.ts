@@ -328,10 +328,9 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
       // while the nonzero outputs stay available for fees and compiler-owned block slots. This changes the
       // account's coin geometry, never its configured coin count or per-coin value.
       return (await anyProvider.getSigners(count, {
-        // Bounded route participant blocks can require dozens of
-        // category-neutral filler inputs in one call. Keep the Hardhat-style
-        // mock accounts generously pre-split so those compiler-owned slots do
-        // not turn into an artificial wallet-funding limit.
+        // Keep the Hardhat-style mock accounts generously pre-split so
+        // compiler-owned slots that take category-neutral inputs do not turn
+        // into an artificial wallet-funding limit.
         satoshis: opts.accountSatoshis ?? 100_000_000n,
         fundingUtxos: 512, genesisFundingUtxos: 4, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
       })).map(withEthersMessageSigning);

@@ -44,7 +44,7 @@ import { id, solidityPacked as ethersSolidityPacked, solidityPackedKeccak256 } f
 import { cashAddressToEthHex, setCashAddressLockResolver } from './cash-abi-coder.js';
 
 // The SDK presents a registered contract's ABI `address` as its value locking bytecode (the physical execution
-// lock for a plain contract, the logical CREATE lock for a journal participant). Ethers-style expectations must
+// lock, or the logical CREATE lock the deployment registry holds for it). Ethers-style expectations must
 // hash the same bytes, so route the synthetic identity through the deployment registry instead of decoding the
 // cash-address string, whose lock can differ from the value the covenant holds.
 setCashAddressLockResolver((addr) => {

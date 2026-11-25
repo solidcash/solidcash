@@ -3524,3 +3524,27 @@ the EACC checkout has not changed since 2025-10.
 change that broke it, then fix the framed proxy's `initialize` hop and the framed run-time loop's call site.
 
 **Revisit if:** before the framed convention or the EACC port is claimed to work.
+
+## Shapes only the message bus compiled (2026-11-25)
+
+**What:** with the bus removed, these shapes compile as 0.52.1 compiled them under `messageBus: false`, which refuses
+them; a default 0.52.1 compile reached them through a message-bus route or its kernel:
+- calls to one state owner in mutually exclusive arms (`if (c == 0) i.a(); else if (c == 1) i.b(); ...`), and the
+  OpenZeppelin `SafeERC20.forceApprove` shape (three low-level calls to one target): `REPEATED_CALL_UNSUPPORTED`,
+  although at most one of the exclusive calls runs;
+- a storage-pointer helper that calls one target twice and receives a mapping (Uniswap Router02's `_addLiquidity`):
+  `AssignTypeError: Type 'function(address)returns(uint256)' can not be assigned to variable of type 'mapping(...)'`,
+  a direct-path type-check fault the bus's early helper inlining used to hide;
+- a runtime loop that writes a mapping under keys from a locally built array (`new int[](count)`), and the
+  counter-keyed push `for (i < n) m[i].push(v)`: `SortedMappingCodegenPendingError` in a direct build (a framed body
+  keeps an explicit dead arm for its entry).
+
+**Why deferred:** each is a direct-convention capability of its own, not part of the removal, which keeps every other
+contract's bytes.
+
+**What it'd take:** a repeated-call check that groups calls by branch exclusivity; the Router02 type-check fault fixed
+on the direct path; direct lowerings for constructed-key and counter-keyed loop writes (the kernel's
+`captureConstructedKeyVectorProvenance` and `LowerVMapCounterLoops(true)` are the prior art).
+
+**Revisit if:** a port hits one of these refusals. The restored tests pin the first and the loop shapes; the Router02
+case is skipped in `solidity-compat/calls-abi.test.ts`.

@@ -50,6 +50,9 @@ import {
 import { computeExpressionSiteKey } from '../ast/Location.js';
 import { GlobalFunction } from '../ast/Globals.js';
 
+/** A framed runtime loop's iteration ceiling when nothing tighter bounds it: the iteration domain it publishes. */
+const FRAMED_RUNTIME_LOOP_MAXIMUM_ITERATIONS = 0xffff;
+
 /** A caller witness of a call the contract digests: the output of a record it reads, or of an edge it pins. */
 const DIGESTING_WITNESS = /^__internal__(?:externalReturnOutputIdx\d*|(?:lowLevelC|c)allEdgeOutputIdx\d+)$/;
 
@@ -1270,6 +1273,7 @@ const externalCallIterationDomainLists = (
       const callOrdinal = (call as { callOrdinal?: ExternalCallOrdinalAbi }).callOrdinal;
       const maximumIterations = fixedForMaximum(counter, loop)
       ?? loop.compilerAuthenticatedMaximumIterations
+      ?? (compilerOptions.composition === 'framed' ? FRAMED_RUNTIME_LOOP_MAXIMUM_ITERATIONS : undefined)
       ?? (callOrdinal !== undefined && 'counted' in callOrdinal ? CALL_BATCH_MAXIMUM_FRAMES : undefined);
       if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) break;
       // A serialized state read after any write in this handler would use the SDK's pre-call snapshot, not
@@ -4200,6 +4204,9 @@ function buildFunctionAbiMetadata(
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
           ? ec.resultArrayOutput ?? ec.sourceCallNode?.resultArrayOutput
             ?? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
+        if (ec.callerIdentity === undefined && compilerOptions.composition === 'framed') {
+          throw new Error(`Framed callsite ${func.name}:${ec.slotIndex} lacks caller identity metadata`);
+        }
         return {
           callsiteId: ec.slotIndex,
           ...(compilerOptions.composition !== 'framed' && ec.readonlyReturnBindingSelector !== undefined && {

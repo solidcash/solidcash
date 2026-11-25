@@ -35235,12 +35235,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // Constructed-key and other unmatched sorted mutation loops have no sound representation. A direct source
       // contract has no handler-admission boundary, so expose a source-positioned compile error instead of publishing
-      // a function which can only fail. A compiler-generated route contract does have that boundary: retain an
-      // explicit dead arm there so the enclosing admission pass can refuse only the implicated handler and preserve
-      // its siblings. A generated context is distinguished from detached/speculative passes by its own options.
-      throw new SortedMappingCodegenPendingError(node, node.collection.name,
-        `The verified-mapping write on '${node.collection.name}' in runtime loop `
-        + `'${this.currentFunction.name}' does not match a supported insert or update loop shape.`);
+      // a function which can only fail. A framed compile retains an explicit dead arm instead, so only this entry
+      // fails and its siblings keep their bodies.
+      if (this.compilerOptions.composition !== 'framed') {
+        throw new SortedMappingCodegenPendingError(node, node.collection.name,
+          `The verified-mapping write on '${node.collection.name}' in runtime loop `
+          + `'${this.currentFunction.name}' does not match a supported insert or update loop shape.`);
+      }
+      const loc = { location: node.location, positionHint: PositionHint.END };
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      return node;
     }
     // Sorted (vmap linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
     // write. Always an UPSERT (update the value if the key is present, else insert) - this is how `m[k]=false` /
@@ -37519,10 +37524,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // running it in a loop would pin only ONE iteration's delete and leave the rest un-covenanted (a vmap hole).
       // Fail closed (fixed-bound loops are unrolled to plainLoopDepth 0 before codegen and still work).
       if (this.plainLoopDepth > 0) {
-        // A direct contract has no handler boundary, so this stays a source error. A route route can
-        // reach a counter delete after a parent loop already owns the upsert setup. Keep the explicit dead
-        // arm the assign path uses so admission can keep the handler whose body published the rank stream.
-        throw new SortedMappingCodegenPendingError(node, node.collection.name);
+        // A direct contract has no handler boundary, so this stays a source error. A framed compile keeps an
+        // explicit dead arm, as the assign path does, so only this entry fails.
+        if (this.compilerOptions.composition !== 'framed') {
+          throw new SortedMappingCodegenPendingError(node, node.collection.name);
+        }
+        const unmatched = { location: node.location, positionHint: PositionHint.END };
+        this.emit(Op.OP_0, unmatched);
+        this.emit(Op.OP_VERIFY, unmatched);
+        return node;
       }
       const vt = node.collection.innermostValueType;
       if (this.sortedValueKind(vt) !== null) {
@@ -61118,12 +61128,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
     const direct = this.compilerOptions.composition !== 'framed' && !this.framedMaster;
     const activityWrites = this.activityBatchWriteSlots(node);
-    if (!direct && !this.framedMaster) return;
+    // DS-6: a framed compile's non-master body flags only its activity-settled batch writes, which the SDK settles
+    // by what ran.
+    const activityOnly = !direct && !this.framedMaster && activityWrites.size > 0;
+    if (!direct && !this.framedMaster && !activityOnly) return;
     const slots = new Set<number>();
     const invokedWrites = new Set<number>();
     this.collectConditionalSortedWriteSlots(node.body, false, slots, new Map(), invokedWrites);
     const guardedWrites = this.guardedBatchWriteSlots(node);
     for (const slotIndex of [...slots].sort((a, b) => a - b)) {
+      if (activityOnly && !activityWrites.has(slotIndex)) continue;
       const info = this.entrySlots[slotIndex];
       if (info === undefined || info.inLoop) continue;
       // An invoked subroutine cannot set this frame's flag.

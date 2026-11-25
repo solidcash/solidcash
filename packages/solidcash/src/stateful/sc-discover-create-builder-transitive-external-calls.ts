@@ -406,7 +406,8 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
           if (route === undefined) {
             throw new Error(
               `Transitive external calls to ${sharedPhysical.functionName} and ${cFunctionName} share one state `
-              + 'owner but both return values. Use route.compose() to authenticate both logical invocations.',
+              + 'owner but both return values, which one spend of it cannot answer: make the calls in separate '
+              + 'transactions.',
             );
           }
           sharedPhysical.directCall = route;

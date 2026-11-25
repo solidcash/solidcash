@@ -223,7 +223,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     if ((priorAbi?.outputs?.length ?? 0) > 0) {
       throw new Error(
         `Direct external calls to ${sharedPhysical.functionName} and ${callInfo.functionName} share one state owner `
-        + 'but both return values. Use route.compose() to authenticate both logical invocations.',
+        + 'but both return values, which one spend of it cannot answer: make the calls in separate transactions.',
       );
     }
   }

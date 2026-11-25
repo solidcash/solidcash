@@ -1214,7 +1214,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.sourceFile = node;
     this.sourceFreeFunctions.clear();
     this.reachableSourceFreeFunctions.clear();
-    if (node.freeFunctions.length > 0) {
+    if (node.freeFunctions.length > 0 && this.compilerOptions.composition !== 'framed') {
       this.sourceFreeFunctions = new Set(node.freeFunctions);
       this.reachableSourceFreeFunctions = reachableFreeFunctionsInSource(node);
     }
@@ -1656,7 +1656,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     this.sourceContractFunctions.clear();
     this.reachableSourceContractFunctions.clear();
-    if (node.functions.length > 0) {
+    if (node.functions.length > 0 && this.compilerOptions.composition !== 'framed') {
       this.sourceContractFunctions = new Set(node.functions);
       this.reachableSourceContractFunctions = reachableContractFunctions(node);
     }

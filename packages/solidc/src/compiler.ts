@@ -126,6 +126,7 @@ import {
   containsIndirectCall, type PointerTableExpansion, type PointerTableExpansionMap, type ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
+import LowerVMapCounterLoops from './semantic/LowerVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerFramedCreate2Address, { type FramedCreateSite } from './semantic/LowerFramedCreate2Address.js';
 import FoldFramedCreate2Initializer, { type FramedGenesisReplayer } from './semantic/FoldFramedCreate2Initializer.js';
@@ -3507,13 +3508,20 @@ function compileResolvedAst(
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
 
-  // Block-oracle reads synthesize before the passes that move or lower their operands.
-  const earlyEntryFeatures = surveyOptionalLowerings(ast);
-  if (earlyEntryFeatures.needsBlockOracle && !isDeployerProgram) {
-    ast = ast.accept(new SynthesizeBlockOracle(
-      mergedCompilerOptions.evmCompat ?? false,
-      oracleDelegateExecutionContext,
-    )) as Ast;
+  // A framed body lowers tail recursion this early as well, before helper inlining; the late pass below is
+  // idempotent.
+  if (mergedCompilerOptions.composition === 'framed') {
+    ast = ast.accept(new LowerTailRecursion(false)) as Ast;
+    // Reduce the straight-line pure helpers a child deployment's values call to their expressions.
+    const deploymentHelperFolder = new SymbolTableTraversal(mergedCompilerOptions);
+    const deploymentHelperFunctions = ast.contract.functions;
+    for (const fn of deploymentHelperFunctions) {
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof InstantiationNode) {
+          deploymentHelperFolder.inlineChildDeploymentHelpers(node, deploymentHelperFunctions);
+        }
+      });
+    }
   }
   // Capture logical source effects before later lowering rearranges physical journal settlement around them.
   for (const fn of [...ast.contract.functions, ...ast.freeFunctions]) {
@@ -3585,26 +3593,27 @@ function compileResolvedAst(
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
   // A fixed loop that pays, sends or emits unrolls too: the counter-loop lowering below admits no literal-bound
   // `for`, journals no send and refuses an effect in a nested loop, while a rolled loop's effect has one output
-  // register for every turn. A framed body binds a looped effect where it makes it. A route compile whose route
-  // was synthesized above keeps the loop its route admission saw; those loops unrolled before it (`unrollBusLoopEffects`).
+  // register for every turn. A framed body binds a looped effect where it makes it.
   const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed';
   if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
 
-  // Keep direct compilation's narrow permutation ABI stable. Batch compilation still needs the richer
-  // analysis to classify legacy-layout refusals, while direct execution was already lowered at admission.
-  // A looped emit takes the richer lowering too, so each iteration's event is pinned; a framed body binds a looped
-  // event where it emits it instead (framed/master/loop-effects.ts).
+  // Keep direct compilation's narrow permutation ABI stable unless a looped payment or emit needs the richer
+  // lowering, which pins each iteration's effect. A framed body binds a looped effect where it makes it instead
+  // (framed/master/loop-effects.ts).
   const needsRuntimeLoopCounter = needsRuntimeLoopTransferCounter
     || (needsRuntimeLoopEventCounter && mergedCompilerOptions.composition !== 'framed');
   if (needsVMapCounter && needsLoop && !needsRuntimeLoopCounter) {
     ast = ast.accept(new LowerLegacyVMapCounterLoops()) as Ast;
+  } else if ((needsVMapCounter || needsRuntimeLoopCounter) && needsLoop
+    && mergedCompilerOptions.composition !== 'framed') {
+    ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
   }
 
   // Break/continue expansion (before semantic analysis)
   // DesugarReturnInLoop and LowerTailRecursion can introduce synthetic breaks after the survey was taken.
   // Expand those too: an unlowered break in a recursive base case becomes a no-op in codegen, so the
   // recursive tail runs even after the base result was selected.
-  if (needsBreakContinue || needsReturnInLoop || needsTailRecursion || earlyEntryFeatures?.needsTailRecursion) {
+  if (needsBreakContinue || needsReturnInLoop || needsTailRecursion) {
     ast = expandBreakContinue(ast);
   }
 
@@ -3850,7 +3859,7 @@ function compileResolvedAst(
     ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
   }
   if (needsCollectionJournal && !cheapAdmissionCodegen) {
-    ast = ast.accept(new LowerCollectionJournalHelpers(false)) as Ast;
+    ast = ast.accept(new LowerCollectionJournalHelpers(mergedCompilerOptions.composition === 'framed')) as Ast;
   }
 
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
@@ -3981,7 +3990,7 @@ function compileResolvedAst(
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
   if (needsCollectionJournal) ast = ast.accept(new IfConvertConditionalEntryOp(
-    false, mergedCompilerOptions.composition !== 'framed',
+    mergedCompilerOptions.composition === 'framed', mergedCompilerOptions.composition !== 'framed',
   )) as Ast;
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
@@ -4334,7 +4343,7 @@ function compileResolvedAst(
   const finalRequireStarted = Date.now();
   ast = ast.accept(new EnsureFinalRequireTraversal(
     mergedCompilerOptions.enforceFinalRequire, mergedCompilerOptions.allowUnsafeOperations,
-    true,
+    mergedCompilerOptions.composition !== 'framed',
     mergedCompilerOptions.composition === 'framed',
   )) as Ast;
   profileLog('resolved:finalRequire', finalRequireStarted, { contract: contractName });
@@ -4350,7 +4359,7 @@ function compileResolvedAst(
   // A framed body's bare return ends the frame, whose tail still runs, so it is not sealed (SEM-1 is direct-only).
   if (needsEarlyReturn || holdsUnconfinedReturn(ast)) {
     ast = ast.accept(new EarlyReturnTransformation(false, mergedCompilerOptions.composition !== 'framed',
-      true)) as Ast;
+      mergedCompilerOptions.composition !== 'framed')) as Ast;
   }
 
   // Compile referenced contracts in dependency order
@@ -4490,7 +4499,10 @@ function compileResolvedAst(
   // B8.7 rule 2: after every transformation that moves statements, declare the created-children local in the arms
   // that hold a sender-reading site, so code generation's stack model and the program agree.
   injectCreatedChildrenLocals(ast, (mergedCompilerOptions as InternalCompilerOptions).__compiledDeployers);
-  const traversal = new GenerateTargetTraversal(mergedCompilerOptions);
+  // A framed program is generated in the compilation-speed mode.
+  const traversal = new GenerateTargetTraversal(mergedCompilerOptions.composition === 'framed'
+    ? { ...mergedCompilerOptions, optimizeForCompilationSpeed: true }
+    : mergedCompilerOptions);
   traversal.compiledBytecodes = compiledBytecodes;
   try {
     ast = ast.accept(traversal) as Ast;
@@ -6784,7 +6796,7 @@ function compileReferencedContracts(
       inlinesSignatureChecks(compilerOptions),
     )) as Ast;
     singleAst = singleAst.accept(new LowerDynamicStateJournalHelpers()) as Ast;
-    singleAst = singleAst.accept(new LowerCollectionJournalHelpers(false)) as Ast;
+    singleAst = singleAst.accept(new LowerCollectionJournalHelpers(compilerOptions.composition === 'framed')) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls(
       compilerOptions.evmCompat ?? false, false, compilerOptions.composition === 'framed',
       inlinesSignatureChecks(compilerOptions),
@@ -6798,7 +6810,7 @@ function compileReferencedContracts(
       false, compilerOptions.composition === 'framed', true,
     )) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
-      false, compilerOptions.composition !== 'framed',
+      compilerOptions.composition === 'framed', compilerOptions.composition !== 'framed',
     )) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;
@@ -6840,14 +6852,14 @@ function compileReferencedContracts(
     )) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
       compilerOptions.enforceFinalRequire, compilerOptions.allowUnsafeOperations,
-      true,
+      compilerOptions.composition !== 'framed',
       compilerOptions.composition === 'framed',
     )) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;
     }
     singleAst = singleAst.accept(new EarlyReturnTransformation(
-      false, true, true,
+      false, true, compilerOptions.composition !== 'framed',
     )) as Ast;
 
     refuseEmittingReturningStateHelpers(singleAst.contract);

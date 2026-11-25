@@ -461,8 +461,6 @@ export interface KernelJournalStreamPlan {
 export class FunctionDefinitionNode extends Node implements Named {
   /** A framed entry's top-level state writes, as its frame's own facts state them (`framedStateWrites`). */
   framedStateWrites?: readonly { readonly name: string; readonly value: ExternalCallExpression }[];
-  /** Set only on compiler-synthesized helpers whose source/require maps may be rewritten by helper optimization. */
-  compilerGeneratedHelper?: boolean;
   /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
   mappingArrayPagination?: NonNullable<AbiFunction['mappingArrayPagination']>;
   symbolTable?: SymbolTable;

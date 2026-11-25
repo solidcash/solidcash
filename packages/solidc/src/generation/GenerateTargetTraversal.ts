@@ -8982,22 +8982,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (this.isSubroutineUseProbe) return;
 
-    // Serialize the function body to bytecode data.
-    //
-    // User-authored function bodies remain unoptimised so their nested require pointers stay stable. The
-    // compiler-generated helpers are different: their provenance is stamped when generated, and the standard
-    // helper optimiser carries rewritten location/require data. Run that pass on these bodies so repeated
-    // stack shuffles do not consume the transaction's BCH operation-density budget.
-    const generatedVerifierBody = true;
-    const optimisedVerifierBody = generatedVerifierBody
-      ? GenerateTargetTraversalWithLocation.optimisedHelperBody(subTraversal) : undefined;
-    const bodyScript = optimisedVerifierBody?.script ?? normaliseScript(subTraversal.output);
-    const bodyLocations = optimisedVerifierBody?.locationData
-      ?? GenerateTargetTraversalWithLocation.alignLocations(
-        subTraversal.locationData, bodyScript.length, locationData,
-      );
-    const bodyRequires = optimisedVerifierBody?.requires ?? subTraversal.requires;
-    const bodyLogs = optimisedVerifierBody?.logs ?? subTraversal.consoleLogs;
+    // Serialize the function body to bytecode data. Function bodies stay unoptimised so their nested require
+    // pointers stay stable.
+    const bodyScript = normaliseScript(subTraversal.output);
+    const bodyLocations = GenerateTargetTraversalWithLocation.alignLocations(
+      subTraversal.locationData, bodyScript.length, locationData,
+    );
+    const bodyRequires = subTraversal.requires;
+    const bodyLogs = subTraversal.consoleLogs;
 
     // Unreachable functions are still compiled above: code-generation performs a number of important
     // fail-closed validations which must not disappear merely because a helper is dead. Their bodies do not,
@@ -15005,9 +14997,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         const stackAfterIf = [...this.stack];
         staleAfterElse = settleElsePath(staleAfterIf, () => { this.stack = [...stackBeforeIf]; });
-        // Past an arm that can only fail, execution continues on the path that skipped it. A route compile
+        // Past an arm that can only fail, execution continues on the path that skipped it. A framed compile
         // nests the rest into the other arm instead (EarlyReturnTransformation), so its branch keeps the arm's stack.
-        const keepsRest = true && true;
+        const keepsRest = this.compilerOptions.composition !== 'framed';
         this.stack = keepsRest && this.blockEndsInFailure(node.ifBlock) ? [...stackBeforeIf] : stackAfterIf;
       }
       if (staleAtBranch !== undefined) this.framedFixedFieldsJoin(node, staleAfterIf, staleAfterElse);

@@ -233,20 +233,7 @@ export {
   resolveCollectionSignature,
   resolveEventSignature,
 } from './covenant-helpers.js';
-export {
-  preflightBalancedBlockAssembly,
-  deriveBalancedAssemblyFromInputs,
-  assertCompleteLocalBlock,
-  participantRegionEnd,
-  BALANCED_SLOT_SATOSHIS,
-  BALANCED_EVENT_SLOT_CEILING,
-  OUTPUT_ONLY_BLOCK_SLOT_KINDS,
-  EVENT_BLOCK_SLOT_KINDS,
-  type BalancedAssembly,
-  type BalancedAssemblyOptions,
-  type BalancedAssemblyView,
-  type BalancedBlockPlacement,
-} from './balancedBlocks.js';
+export { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 export { StatefulMasterPaymentError, refusePaymentsToStatefulMasters } from './master-lock-payment.js';
 export {
   buildDeployerPrep, buildDeployerPreps, buildDeployerSweep, buildDeployerUnlocking,

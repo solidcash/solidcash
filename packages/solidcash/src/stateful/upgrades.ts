@@ -55,7 +55,7 @@ const proxyEventFacades = new WeakMap<object, StatefulContract>();
  * Extra CREATE2 salt bytes the default mock proxy carries as a BCH-2026 density reserve.
  * Proxy unlocks are tiny (~260 bytes) while a delegate setter still runs its full body against
  * that input's budget (`operationCostBudgetPerByte * densityControlLength`). Size the reserve
- * from the largest non-route function body so admin calls clear the mock 10_000/byte budget.
+ * from the largest function body so admin calls clear the mock 10_000/byte budget.
  */
 export function mockProxyDensityReserveBytes(
   maximumInputBytes: number | undefined,
@@ -65,8 +65,7 @@ export function mockProxyDensityReserveBytes(
 ): number {
   if ((maximumInputBytes ?? 10_000) <= 10_000) return 0;
   let hasAdminBody = false;
-  for (const [selector, body] of Object.entries(implArtifact?.functionBodies ?? {})) {
-    if (selector === '53434231') continue;
+  for (const body of Object.values(implArtifact?.functionBodies ?? {})) {
     if (typeof body !== 'string') continue;
     const bytes = body.length / 2;
     if (bytes > 16_000) continue;

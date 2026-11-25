@@ -19,6 +19,9 @@
 - Every other contract, direct or framed, compiles to the bytes 0.52.1 emitted.
 - An SDK preflight refusal no longer starts with `messageBus: `: it reads `BCH-2026 preflight failed at input N: ...`,
   and `finalized transaction refused by its covenant and ...`.
+- Refusal codes named after the bus are renamed: `KERNEL_LAYOUT`, `KERNEL_UNBOUNDED_KEY` and `KERNEL_INTERNAL_DEFECT`
+  become `JOURNAL_LAYOUT`, `JOURNAL_UNBOUNDED_KEY` and `JOURNAL_INTERNAL_DEFECT`, and
+  `MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE` becomes `DELEGATE_CONTEXT_UNPRESERVABLE`.
 
 ## 0.52.1
 

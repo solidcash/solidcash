@@ -1008,7 +1008,7 @@ export function analyzeFixedBchEffectRecipes(
     // Graph lowering replaces msg.sender with this compiler-owned row local before final artifact analysis.
     // Both spellings name the manifest-authenticated logical caller, not a user-controlled ABI input.
     if ((expression instanceof NullaryOpNode && expression.operator === NullaryOperator.MSG_SENDER)
-      || (expression instanceof IdentifierNode && expression.name === '__compiler_route_graph_caller')) {
+      || (expression instanceof IdentifierNode && false)) {
       return { kind: 'logicalCaller', resultType: 'address' };
     }
     const resolved = childDeploymentValueRecipe(

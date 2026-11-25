@@ -36,13 +36,13 @@ describe('in-block writer return ABI', () => {
     expect(selectWriterReturnAbi(transferFrom, owner)?.name).toBe('transferFrom');
   });
 
-  it('prefers the compiler route entry and falls back to the owner only when the alias has none', () => {
-    const route = { name: 'routeApprove', writesState: true, outputs: [{ type: 'bool' }] };
+  it('prefers the direct call entry and falls back to the owner only when the alias has none', () => {
+    const call = { name: 'callApprove', writesState: true, outputs: [{ type: 'bool' }] };
     const owner = { functionName: 'balanceOf', externalContract: withAbi([BALANCE_OF]) };
     expect(selectWriterReturnAbi(
-      { functionName: 'approve', compilerRoute: { abiFunction: route }, externalContract: withAbi([APPROVE]) },
+      { functionName: 'approve', directCall: { abiFunction: call }, externalContract: withAbi([APPROVE]) },
       owner,
-    )?.name).toBe('routeApprove');
+    )?.name).toBe('callApprove');
     expect(selectWriterReturnAbi(
       { functionName: 'unknownAlias', externalContract: withAbi([BALANCE_OF]) }, owner,
     )?.name).toBe('balanceOf');

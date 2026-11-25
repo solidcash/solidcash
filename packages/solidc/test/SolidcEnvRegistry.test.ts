@@ -116,7 +116,7 @@ describe('solidc env registry', () => {
       }
       expect(classifySolidcEnv('SOLIDC_NO_OPTIMISE')).toBe('instrumented');
       expect(classifySolidcEnv('SOLIDC_COMPILE_CACHE')).toBe('feature');
-      expect(classifySolidcEnv('SOLIDC_DUMP_ROUTE')).toBe('observation');
+      expect(classifySolidcEnv('SOLIDC_COMPILE_CACHE_DIR')).toBe('observation');
     });
 
     it('unknownSolidcEnvKeys excludes the production hot-set when those keys are set', () => {
@@ -250,14 +250,12 @@ describe('solidc env registry', () => {
       }
     });
 
-    it('compiler routes cache/dump/oracle hot-set through registry helpers (no raw process.env)', () => {
+    it('compiler cache hot-set goes through registry helpers (no raw process.env)', () => {
       const here = dirname(fileURLToPath(import.meta.url));
       const src = readFileSync(join(here, '../src/compiler.ts'), 'utf8');
       expect(src).toContain('enforceSolidcEnvPolicy');
       expect(src).toContain('solidcEnvValue');
       expect(src).toContain("solidcEnvFlagEnabled('SOLIDC_COMPILE_CACHE')");
-      expect(src).toContain("solidcEnvFlagEnabled('SOLIDC_DUMP_ROUTE')");
-      expect(src).toContain("solidcEnvFlagEnabled('SOLIDC_ROUTE_PARSE_ORACLE')");
       expect(src).toContain("solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR')");
       const codeLines = src.split('\n').filter((line) => {
         const t = line.trim();
@@ -266,8 +264,6 @@ describe('solidc env registry', () => {
       const rawHot = codeLines.filter((line) => (
         /process\.env\.SOLIDC_COMPILE_CACHE\b/.test(line)
         || /process\.env\.SOLIDC_COMPILE_CACHE_DIR/.test(line)
-        || /process\.env\.SOLIDC_DUMP_ROUTE/.test(line)
-        || /process\.env\.SOLIDC_ROUTE_PARSE_ORACLE/.test(line)
       ));
       expect(rawHot).toEqual([]);
     });

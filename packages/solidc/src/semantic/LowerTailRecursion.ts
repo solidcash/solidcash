@@ -452,7 +452,7 @@ export default class LowerTailRecursion extends AstTraversal {
     };
     for (const effect of effects) collect(effect);
     if (!complete || accesses.length === 0) return;
-    node.routeMetaAffineRecursiveFrameDescriptors = [{
+    node.runtimeLoopAffineRecursiveFrameDescriptors = [{
       version: 1, phase: 'unwind', inductionParameterIndex: visibleInductionIndex,
       step, maximumFrames: 64, parameterProgressions: progressions, accesses,
     }];

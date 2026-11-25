@@ -151,7 +151,7 @@ export class UnpublishableLoopGuardError extends SolidcDiagnosticError {
  * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot
  * reach: a diagnostic raised during SEMANTIC ANALYSIS of the merged AST, on a node the route parse built.
  * Measured on `SushiMakerKashi.sol` (169 lines) during generated graph-route analysis:
- * `Undefined reference to symbol __compiler_route_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
+ * `Undefined reference to symbol __internal_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
  * `address private immutable sushi;`. The position is INSIDE the file, so nothing signals it is wrong.
  */
 export function generatedSourceCaveat(location?: Location): string {
@@ -317,7 +317,7 @@ export class UnsupportedMemoryAliasingError extends SolidCashError {
  * X119. A graph handler whose call shape route synthesis cannot lower.
  *
  * Six sites in `SymbolTableTraversal` raised a bare `throw new Error`, so the user got a message naming a
- * SYNTHESIZED handler (`__compiler_route_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
+ * SYNTHESIZED handler and nothing to look at - no class name, no line, and no way to tell
  * which of their own functions it was cloned from. The stamp cannot reach these: they need a NODE. Carrying the
  * handler's definition node routes them through `SolidCashError`, so each one gains a Line/Column plus both file
  * caveats the same way every other diagnostic here does.
@@ -2307,37 +2307,15 @@ export class ContractTypeConstructorArgCountError extends SolidCashError {
  */
 export class UnboundReturnCallError extends SolidCashError {
   constructor(node: Node, functionName: string, edge: string, slotIndex: number, slotCount: number) {
-    const routed = /^__compiler_route/.test(functionName);
     super(
       node,
       `Function '${functionName}' consumes the return value of the external call '${edge}', but no return-event `
       + `slot is reserved for it in that function's compiled layout (${slotCount} external-call slot`
       + `${slotCount === 1 ? '' : 's'}; the call carries index ${slotIndex}), so there is no authenticated `
       + 'output to read the result from. The call was relocated into this function after its layout was fixed. '
-      + (routed
-        ? 'On a compiler-route route that is a void helper which both consumes a call result and carries a '
-          + 'physical effect: the effect makes the helper ineligible for its own OP_INVOKE subroutine, so it is '
-          + 'inlined into the compiler-route batch wrapper, and the wrapper owns the block slots. Keep the returning call in a '
-          + 'handler whose body carries no other physical effect (event, satoshi transfer, token-container move '
-          + 'or deploy), or drop the result and make the call a void tail call.'
-        : 'Keep the returning call in the function whose layout owns its return-event slot, or drop the result '
-          + 'and make the call a void tail call.'),
+      + 'Keep the returning call in the function whose layout owns its return-event slot, or drop the result '
+      + 'and make the call a void tail call.',
     );
   }
 }
 
-export class GraphEmissionEffectError extends SolidCashError {
-  constructor(node: Node, handlerName: string, effect: string) {
-    super(
-      node,
-      `Batched handler '${handlerName}' performs ${effect}, which the route reserves no output slot for, so it `
-      + 'would settle WITHOUT the effect while the same function called directly enforces it - and the spender chooses '
-      + 'which entry to use. A token-container transfer needs a co-spent container INPUT slot bound to its '
-      + 'category parameter, which the route only reserves when a handler also READS the container: adding '
-      + '`require(this.tokens[<category>].tokenAmount >= <amount>)` makes the route settle the transfer. Handlers '
-      + 'routed through the compiler route additionally execute behind OP_INVOKE (that is what keeps their outgoing '
-      + 'edges recomputable against the callManifest); the route frames their emit and transfer outputs per '
-      + 'dispatch site (X29), but not a container input.',
-    );
-  }
-}

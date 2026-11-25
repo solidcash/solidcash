@@ -115,9 +115,7 @@ interface ActiveDynamicCache {
 }
 
 /** Strip the compiler's synthetic batch-clone prefix so a diagnostic names the handler the user wrote. */
-const sourceHandlerName = (name: string): string => name
-  .replace(/^__compiler_route_(?:resource|handler|dynamic|array|graph)_/, '')
-  .replace(/_self_alias$/, '');
+const sourceHandlerName = (name: string): string => name.replace(/_self_alias$/, '');
 
 interface ActiveMultiCacheLocal {
   entry: JournalEntry;
@@ -319,9 +317,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
       return targets;
     };
-    const routes = node.functions.filter((fn) => fn.routeMetaRoute).map((fn) => ({
-      fn, raw: rawCollections(fn), callees: callees(fn), pooled: new Set<FunctionDefinitionNode>(),
-    }));
     const dynamicArrays = new Map(node.stateVariables.filter((state) =>
       state.isDynamic && state.type instanceof ArrayType)
       .map((state) => [state.name, state.type as ArrayType]));
@@ -393,7 +388,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       // OP_INVOKE body, where a decoded row expression allocates a second, unbound physical entry slot and returns
       // the collection default. Keep the admission deliberately structural: one top-level terminal return, no
       // early branch. `forceCollectionJournalPool` is compiler-owned and marks precisely these shared route frames.
-      const pooledTerminalResult = !!(fn.graphEmissionHandler || fn.forceCollectionJournalPool)
+      const pooledTerminalResult = !!(false || fn.forceCollectionJournalPool)
         && fn.returnTypes.length > 0
         && terminalReturn instanceof ReturnNode && returnCount === 1
         && terminalReturn.expressions.length === fn.returnTypes.length;
@@ -402,14 +397,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           || fn.modifiers.includes(FunctionModifier.PRIVATE))
         // Compiler-owned graph clones retain `inheritedFrom` so private storage access is checked in the source
         // declaration's scope. They are nevertheless concrete helpers owned by this route and must be journalled.
-        || (fn.inheritedFrom && !fn.graphEmissionHandler && !fn.forceCollectionJournalPool)
+        || (fn.inheritedFrom && !false && !fn.forceCollectionJournalPool)
         || constructorCalls.has(fn.name)
         || (nameCounts.get(fn.name) ?? 0) > 1) continue;
       // An ordinary journal helper must own its complete collection footprint. If it calls a separate
       // collection-touching helper, the later inline pass can pull that helper's physical accesses into this
       // OP_INVOKE body, adding direct-route resource witnesses after the call sites were journal-rewritten.
       // Compiler-owned pooled route clones have their own transitive resource accounting below.
-      if (!fn.graphEmissionHandler && !fn.forceCollectionJournalPool
+      if (!false && !fn.forceCollectionJournalPool
         && [...callees(fn)].some((callee) => callee !== fn && touchesCollection(callee))) continue;
       // X118. An event emitted inside a value-threaded OP_INVOKE handler is dropped at the subroutine exit, so
       // code generation refuses this shape outright. It compiles on the pre-existing inline path, so do not
@@ -421,7 +416,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       // A compiler-route graph clone does not emit directly from the OP_INVOKE frame: code generation projects its
       // event into the authenticated route-owned effect frame. It can therefore share the value-threaded
       // collection-journal exit. Ordinary internal helpers still have no such projection and retain X118's gate.
-      if (emitsEvent && !fn.graphEmissionHandler) continue;
+      if (emitsEvent && !false) continue;
       // A kernel counter-loop write owns its own trailing upsert journal.  It
       // must not prevent this helper from value-threading a separate fixed
       // entry read/write: e.g. `target[i] = source[0]` needs `source[0]` to
@@ -633,7 +628,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             journalName: entry.journalName,
           })),
         })),
-        graphFunctions: node.functions.filter((fn) => fn.graphEmissionHandler).map((fn) => fn.name),
+        graphFunctions: node.functions.filter((fn) => false).map((fn) => fn.name),
       }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
     }
 
@@ -649,8 +644,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.activeMultiCaches = this.currentMulti
         ? new Map()
         : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
-      const route = routes.find((candidate) => candidate.fn === fn);
-      if (route) route.pooled = new Set(this.activeMultiCaches.keys());
       // A pooled dynamic array may only be cached here when EVERY writer of that array in this body is threaded
       // through the journal tuple. A writer that is not (a call emitted directly, or a direct state write) keeps
       // its own frame authoritative, and the pooled flush after the row loop would write this body's PRE-call
@@ -659,7 +652,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.activeDynamicCaches = this.currentMulti
         ? new Map()
         : this.prepareDynamicCaches(fn.body);
-      this.lazyMultiCaches = !(fn.graphEmissionHandler || fn.forceCollectionJournalPool);
+      this.lazyMultiCaches = !fn.forceCollectionJournalPool;
       fn.body = this.rewriteBlock(fn.body);
       // Dynamic chunks precede newly inserted entry outputs. Publish their selected pending values before the
       // entry flush computes that prefix, including when an untouched sibling's dirty guard is false.
@@ -730,7 +723,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         // as its last use; OP_ROLL then removes the declared argument from the OP_INVOKE frame and the later
         // conditional encoder reads an adjacent empty journal value. Keep the small declared handler frame
         // stable through its single exit, just as the entry-key parameters already are.
-        if (candidate.fn.graphEmissionHandler || candidate.fn.forceCollectionJournalPool
+        if (false || candidate.fn.forceCollectionJournalPool
           || candidate.entries.some((entry) => entry.keyParameters.includes(parameter.name))) {
           parameter.syntheticallyUsed = true;
         }
@@ -758,55 +751,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       candidate.fn.blockLayout = undefined;
       this.invalidateSemanticMetadata(candidate.fn);
       candidate.fn.collectionJournal = true;
-    }
-    for (const route of routes) {
-      // Every reachable helper must now be free of physical accesses to a discharged resource. This rejects
-      // mixed pooled/unpooled readers as well as writers: a later read must observe the previous row's value.
-      const unpooled = new Set(route.raw);
-      const visited = new Set<FunctionDefinitionNode>();
-      const inspect = (fn: FunctionDefinitionNode): void => {
-        if (visited.has(fn)) return;
-        visited.add(fn);
-        for (const name of rawCollections(fn)) unpooled.add(name);
-        for (const target of callees(fn)) inspect(target);
-      };
-      for (const target of route.callees) inspect(target);
-      const discharged = new Set<string>();
-      for (const source of node.functions) {
-        const selector = source.routeMetaKernelJournalDispositionSelectorHex;
-        if (!source.isEntryPoint || source.routeMetaFixedChunkableWriteMaxRows !== 1
-          || !selector || !source.routeMetaFixedChunkableResources?.length) continue;
-        const resources = new Set(source.routeMetaFixedChunkableResources.map((resource) => resource.collection));
-        if ([...resources].some((name) => unpooled.has(name))) continue;
-        const variants = [...route.callees].filter((fn) =>
-          fn.routeMetaKernelJournalDispositionSelectorHex === selector);
-        if (variants.length === 0 || variants.some((fn) => {
-          const candidate = [...this.threadedMultis].find((entry) => entry.fn === fn);
-          return !route.pooled.has(fn) || !candidate || fn.collectionJournal !== true
-            || [...resources].some((name) => !candidate.entries.some((entry) =>
-              entry.collection === name && entry.mutates));
-        })) continue;
-        // Do not publish a capability unless this exact route contains its compiler-stamped guard.
-        let guarded = false;
-        this.walk(route.fn.body, (child) => {
-          if (child instanceof RequireNode && child.routeMetaFixedChunkableWriteGuard === selector) guarded = true;
-        });
-        if (!guarded) continue;
-        source.routeMetaPooledChunkableWrite = true;
-        discharged.add(selector);
-      }
-      if (discharged.size === 0) continue;
-      this.walk(route.fn.body, (child) => {
-        if (!(child instanceof BlockNode)) return;
-        child.statements = child.statements?.filter((statement) =>
-          !discharged.has(statement.routeMetaFixedChunkableWriteGuard ?? ''));
-      });
-      let remainingGuard = false;
-      this.walk(route.fn.body, (child) => {
-        if (child instanceof RequireNode && child.routeMetaFixedChunkableWriteGuard) remainingGuard = true;
-      });
-      if (!remainingGuard) route.fn.body.statements = route.fn.body.statements?.filter((statement) =>
-        !(statement instanceof VariableDefinitionNode && statement.name === '__compiler_route_fixed_chunkable_write_count'));
     }
     return node;
   }
@@ -1292,7 +1236,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         (target.fn.collectionJournalLinearKeyPools ?? []).some((pool) =>
           identity === `parameter:${pool.argumentName}`));
       const laneSelection = linearArgument && runtimeAliases.every((alias) =>
-        alias.keyIdentity.every((identity) => identity.startsWith('parameter:__compiler_route_key_')));
+        alias.keyIdentity.every((identity) => false));
       if (laneSelection) {
         const laneCache = [...this.activeMultiCaches.values()].find((candidate) => candidate.calls.has(call));
         const temps = [
@@ -1504,35 +1448,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         calls: new WeakMap(),
       };
       if (!caches.has(target.fn)) caches.set(target.fn, cache);
-      const linearPools = target.fn.collectionJournalLinearKeyPools ?? [];
-      if (linearPools.length > 0) {
-        for (const entry of target.entries) {
-          const keys = keysFor(entry);
-          const keyName = keys.length === 1 && keys[0] instanceof IdentifierNode ? keys[0].name : undefined;
-          const lanePrefix = `__compiler_route_key_${entry.collection}_`;
-          const pool = keyName === undefined ? undefined
-            : linearPools.find((candidate) => candidate.argumentName === keyName
-              && candidate.lanes.some((lane) => lane.startsWith(lanePrefix)));
-          if (!pool) continue;
-          for (const lane of pool.lanes) {
-            const laneIdentity = `parameter:${lane}`;
-            const existing = cache.locals.find((local) => local.entry.collection === entry.collection
-              && local.keyIdentity.length === 1 && local.keyIdentity[0] === laneIdentity);
-            if (existing) {
-              existing.mutates ||= entry.mutates;
-              continue;
-            }
-            cache.locals.push({
-              entry,
-              name: `__cj_cache_${sharedLocals.length}`,
-              keys: [this.at(new IdentifierNode(lane), call)],
-              keyIdentity: [laneIdentity],
-              index: sharedLocals.length,
-              mutates: entry.mutates,
-            });
-          }
-        }
-      }
       const earlierLocals = [...cache.locals];
       const runtimeAliasOrdinal = target.fn.collectionJournalRuntimeAliases
         ? runtimeAliasCallOrdinal++ : undefined;
@@ -1581,9 +1496,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       for (const binding of callLocals!) {
         const lanes = binding.runtimeAliases ?? [];
         const laneBacked = lanes.length > 0 && lanes.every((alias) => alias.keyIdentity.every((identity) =>
-          identity.startsWith('parameter:__compiler_route_key_')));
+          false));
         // A function-level flush cannot name the row-loop argument. Lane parameters own that write.
-        if (laneBacked && binding.local.keyIdentity.some((identity) => identity.includes('__compiler_route_arg_'))) {
+        if (laneBacked && binding.local.keyIdentity.some((identity) => false)) {
           binding.local.mutates = false;
         }
       }
@@ -1750,9 +1665,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     wrapperParameters: Set<string>,
   ): string | undefined {
     if (key instanceof IdentifierNode && (wrapperParameters.has(key.name)
-      || key.name.startsWith('__compiler_route_key_')
-      || key.name.startsWith('__compiler_route_arg_'))) {
-      // Kernel row-decoded arguments are wrapper locals (`__compiler_route_arg_*`), not formal parameters.
+      || false
+      || false)) {
+      // Kernel row-decoded arguments are wrapper locals (`__internal_arg_*`), not formal parameters.
       // They are still one identity per physical entry of this invocation.
       return `parameter:${key.name}`;
     }

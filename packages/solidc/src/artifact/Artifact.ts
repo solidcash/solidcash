@@ -1383,7 +1383,7 @@ const expressionSource = (
     && (expression as unknown as { operator?: string }).operator === 'msg.sender') {
     return { kind: 'msgSender' };
   }
-  if (expression.constructor.name === 'IdentifierNode' && shaped.name === '__compiler_route_graph_caller') {
+  if (expression.constructor.name === 'IdentifierNode' && false) {
     return { kind: 'msgSender' };
   }
   if (expression.constructor.name === 'IdentifierNode' && shaped.name) {
@@ -3578,15 +3578,15 @@ function buildFunctionAbiMetadata(
   // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
   // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
   // mutable placeholder and its handler covenant correctly rejects the missing entry-NFT output.
-  const routeEntryLoopWrites = func.routeMetaRoute
+  const routeEntryLoopWrites = false
     ? [...new Set([
       ...(func.entryLoopWrites ?? []),
-      ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)
+      ...(contract?.functions ?? []).filter((candidate) => false)
         .flatMap((candidate) => candidate.entryLoopWrites ?? []),
     ])]
     : func.entryLoopWrites;
-  const loopSignatureFunctions = func.routeMetaRoute
-    ? [func, ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)]
+  const loopSignatureFunctions = false
+    ? [func, ...(contract?.functions ?? []).filter((candidate) => false)]
     : [func];
   const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
     .flatMap((candidate) => candidate.entryAccesses ?? [])
@@ -4046,13 +4046,8 @@ function buildFunctionAbiMetadata(
     ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
-    ...(func.routeMetaConstructedKeyVectorDescriptors?.length && {
-      // Descriptors have already crossed the narrow typed proof-program boundary. Copy the outer list so later
-      // compiler lowering cannot mutate published metadata; no AST node or source-local identity escapes.
-      constructedKeyVectors: func.routeMetaConstructedKeyVectorDescriptors.map((descriptor) => ({ ...descriptor })),
-    }),
-    ...(func.routeMetaAffineRecursiveFrameDescriptors?.length && {
-      affineRecursiveFrames: func.routeMetaAffineRecursiveFrameDescriptors.map((descriptor) => ({
+    ...(func.runtimeLoopAffineRecursiveFrameDescriptors?.length && {
+      affineRecursiveFrames: func.runtimeLoopAffineRecursiveFrameDescriptors.map((descriptor) => ({
         ...descriptor,
         parameterProgressions: descriptor.parameterProgressions.map((progression) => ({ ...progression })),
         accesses: descriptor.accesses.map((access) => ({ ...access, key: [...access.key] })),
@@ -4140,20 +4135,15 @@ function buildFunctionAbiMetadata(
         }),
         ...(ea.arrayMutation !== undefined && { arrayMutation: ea.arrayMutation }),
         ...((() => {
-          const pooledActivation = func.routeMetaPooledChunkableArrayPush === true
+          const pooledActivation = func.runtimeLoopPooledChunkableArrayPush === true
             && ea.arrayMutation === 'push'
-            && func.routeMetaPooledChunkableArrayPushActivation !== undefined
-            && (func.routeMetaPooledChunkableArrayPushEffectOrdinal === undefined
-              || (ea.mutationEffectOrdinals?.includes(func.routeMetaPooledChunkableArrayPushEffectOrdinal)
+            && func.runtimeLoopPooledChunkableArrayPushActivation !== undefined
+            && (func.runtimeLoopPooledChunkableArrayPushEffectOrdinal === undefined
+              || (ea.mutationEffectOrdinals?.includes(func.runtimeLoopPooledChunkableArrayPushEffectOrdinal)
                 ?? false))
-            ? func.routeMetaPooledChunkableArrayPushActivation
+            ? func.runtimeLoopPooledChunkableArrayPushActivation
             : undefined;
-          const stamped = ea.activation
-            ?? func.routeMetaFixedChunkableResources?.find((resource) =>
-              resource.collection === ea.collection
-              && (ea.mutationEffectOrdinals?.includes(resource.effectOrdinal) ?? false))
-              ?.activation
-            ?? pooledActivation;
+          const stamped = ea.activation ?? pooledActivation;
           return stamped !== undefined
             ? { activation: cloneExternalCallExpression(stamped) }
             : {};
@@ -4561,15 +4551,6 @@ function buildFunctionAbiMetadata(
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
     ...(func.usesBlockOracle && { usesBlockOracle: true }),
     ...(func.indirectPoolReads && { indirectPoolReads: { ...func.indirectPoolReads } }),
-    ...(func.routeMetaBlockhashReadWidth && func.routeMetaBlockhashReads && {
-      graphBlockhashOracle: {
-        inputBaseParameter: '__internal__blockhashInputIndex' as const,
-        rowCount: func.routeMetaMaximumRows!,
-        readWidth: func.routeMetaBlockhashReadWidth,
-        slotCount: func.routeMetaMaximumRows! * func.routeMetaBlockhashReadWidth,
-        reads: [...func.routeMetaBlockhashReads],
-      },
-    }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
   };
 }
@@ -4759,7 +4740,7 @@ export function generateArtifact(
       })),
       // The compiler-generated route always carries its aggregate vector in one compact outer bytes field.
       // Individual handler rows independently publish EVM or compact result encodings inside that carrier.
-      resultEncoding: func.routeMetaRoute
+      resultEncoding: false
         ? 'compact-pushdata-v1' : externalResultEncoding(func.returnTypes, compilerOptions),
     }),
     ...(func.settlesCallRecord === true && { callRecord: true }),

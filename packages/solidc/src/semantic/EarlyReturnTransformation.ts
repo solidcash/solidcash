@@ -168,7 +168,7 @@ export function refuseHaltingCalls(ast: SourceFileNode): void {
       + `the whole call, not only '${callee}'`);
   };
   for (const caller of functions) {
-    if (caller.routeMetaRoute) continue;
+    if (false) continue;
     // A call's own identifier, and a member read like `f.selector`, are no function value.
     const named = new Set<Node>();
     walkInvocationAst(caller.body, (node) => {

@@ -493,9 +493,6 @@ function validateExpandedSelfdestructs(contract: ContractNode): void {
 }
 
 /** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
-// `enabled` is the user-facing `routeMeta: true`: skip graph-edge narrowing but keep the direct-only fallback.
-// `required` is the internal verifier-program route, where a composable artifact is mandatory and absence throws.
-type RouteMetaMode = 'disabled' | 'auto' | 'enabled' | 'required';
 type AdmissionWinner = {
   direct?: boolean;
   admitExternalHandlers: boolean;
@@ -1002,8 +999,6 @@ function compileDeployerProgram(
     // C is stateful, so its deployer program is compiled as one, also when C declares no state of its own and
     // is stateful because it creates a stateful child (B10): the program keeps none of C's functions to show it.
     forceStateful: true,
-    routeMeta: false,
-    routeMetaKernel: false,
     callBatch: false,
     callRecords: 'returning',
     genesisCalls: false,
@@ -1542,10 +1537,7 @@ type InternalCompilerOptions = CompilerOptions & {
    * exactly these, as its own standalone compile, so the embedded bytes are the artifact a caller deploys.
    */
   __referencedChildOptions?: CompilerOptions;  /**
-   * Set when graph-free auto-selection chose the direct path for a caller who never asked for it. A later
-   * refusal must then offer `routeMeta: true` instead of telling the caller to omit an option they omitted.
-   */
-  __routeMetaAutoNarrowed?: boolean;  /**
+  /**
    * Disk hits rebuild the delegate from caller options, which have not been through graph-free narrowing.
    * The getter applies that narrowing once so the cold variant matches the warm one.
    */
@@ -2092,8 +2084,7 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     optimise,
     // Compiler-owned locals are generated source and never user-actionable warning locations.
     __suppressGeneratedRouteWarnings: true,
-    // Recorded once, from the options as the caller gave them. Normalizing an already-normalized copy keeps the
-    // original: the folded `routeMeta` above no longer says which of its three states was asked for.
+    // Recorded once, from the options as the caller gave them so a normalized copy keeps the original.
     __referencedChildOptions: (options as InternalCompilerOptions).__referencedChildOptions
       ?? publicCompilerOptions(options),
   } as InternalCompilerOptions;
@@ -2313,13 +2304,10 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__artifactCache;
   delete keyOptions.__referencedChildOptions;
   delete keyOptions.__cheapAdmissionCodegen;
-  delete keyOptions.__routeMetaRouteParseOracle;
   delete keyOptions.__parsedAst;
   delete keyOptions.__pristineAstBox;
   delete keyOptions.__synthesizeBoundRoutePlaceholder;
   delete keyOptions.__singlePassVerifierSource;
-  delete keyOptions.__routeMetaMaximumRows;
-  delete keyOptions.__routeMetaSignatureVerifierSource;
   delete keyOptions.__admissionWinnerBox;
   delete keyOptions.__attemptFailureBox;
   delete keyOptions.__strictNoInternalRecovery;
@@ -2662,9 +2650,7 @@ function markDynamicChunkInputBaseFunctions(
   const footprintCache = createFootprintAnalysisCache(dynamicStateNames);
   for (const fn of functions) {
     const sourceKey = externalHandlerKey(fn);
-    const cloneSourceKey = (fn as FunctionDefinitionNode & {
-      routeMetaCloneSourceKey?: string;
-    }).routeMetaCloneSourceKey;
+    const cloneSourceKey = undefined;
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
     const writesDynamicState = footprint.writes.some((resource) => {
       // Element/field mutations are collection resources before semantic lowering; whole-value writes use
@@ -2748,41 +2734,6 @@ function overInputLimit(artifact: Artifact, compilerOptions: CompileOptions): bo
   return asmToBytecode(artifact.bytecode).length > (compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE);
 }
 
-/** A default compile's direct build when it fits the per-input limit; its warnings are emitted only then. */
-function directBuildWithinInputLimit(code: string, compilerOptions: CompileOptions): Artifact | undefined {
-  const options = { ...compilerOptions, routeMeta: false } as InternalCompilerOptions;
-  delete options.__parsedAst;
-  const held: string[] = [];
-  let direct: Artifact;
-  try {
-    direct = withWarningListener(({ message }) => { held.push(message); },
-      () => compileStringUnchecked(code, options as CompileOptions));
-  } catch {
-    return undefined;
-  }
-  if (overInputLimit(direct, compilerOptions)) return undefined;
-  for (const message of new Set(held)) emitCompilerWarning(message);
-  return direct;
-}
-
-/**
- * An entry only the route runs, which the route does not serve, is refused: the SDK is not offered it (a sole entry's
- * program also fails outright), and the artifact names why, as for a function refused for its loop guard. Its body's
- * looped call still carries the entry's direct-spend guard, so a direct run that enters the loop fails at the VM.
- */
-function refuseUnservedEntries(artifact: Artifact, unserved: Artifact['abi']): Artifact {
-  const refusedFunctions = [...(artifact.refusedFunctions ?? [])];
-  for (const fn of unserved) {
-    const call = fn.externalCalls?.find((candidate) => candidate.occurrence === 'loop');
-    const target = call ? ` to ${call.interfaceName}.${call.functionName}` : '';
-    const reason = `ROUTE_ONLY_ENTRY_UNSERVED: its looped call${target} is bound only by the compiler-route route, `
-      + 'which does not serve it; `routeMeta: false` runs the loop as frames of the callee\'s multi-call entry, '
-      + 'or refuses it';
-    emitCompilerWarning(`Warning: function '${fn.name}' is refused: ${reason}`);
-    refusedFunctions.push({ functionName: entryFunctionName(artifact.contractName, fn.name), reason });
-  }
-  return { ...artifact, refusedFunctions };
-}
 
 function compileStringRefusingLoopGuards(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const inherited = (compilerOptions as InternalCompilerOptions).__loopGuardRefusals;
@@ -3137,9 +3088,7 @@ function setPrimaryContract(ast: Ast, name: string): void {
 }
 
 
-const routeMetaSignatureVerifierSource = new WeakMap<object, string>();
 /** Exact capability attached to each compiler-generated detached verifier source. */
-const routeMetaVerifierLifecycleSources = new Set<string>();
 /** Artifact-fixed P2SH32 shape (`OP_HASH256 <32> OP_EQUAL`); content is patched after cheap verifier emit. */
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
@@ -3169,7 +3118,7 @@ const detachedVerifierLockCache = new Map<string, Uint8Array>();
 
 
 /**
- * Memo for `compileDetachedRouteMetaVerifier`. A multi-declaration compile hands the same generated verifier
+ * Memo for a detached verifier. A multi-declaration compile hands the same generated verifier
  * source to every declaration, and the emit is a pure function of that source and its options, so the second and
  * later emits were recomputing an identical program (~150ms per extra declaration here).
  *
@@ -3369,15 +3318,6 @@ function streamsEveryEmit(fn: FunctionDefinitionNode, byName: Map<string, Functi
   return emits.length > 0 && emits.length === total && !returnBeforeLast;
 }
 
-/** Signatures of an admitted stream handler's emits in source order; undefined for any other handler. */
-function streamedEventSignatures(fn: FunctionDefinitionNode): string[] | undefined {
-  if (fn.routeMetaEventStream !== true || fn.routeMetaEligible !== true || !fn.body) return undefined;
-  const signatures: string[] = [];
-  walkInvocationAst(fn.body, (node) => {
-    if (node instanceof EmitStatementNode) signatures.push(node.eventDefinition?.signature ?? node.eventName);
-  });
-  return signatures;
-}
 
 /**
  * Kernel stream clone: its top-level emits become the records of one exact-count runtime event segment, one compact
@@ -3684,9 +3624,6 @@ function childDeploymentSites(
           value.foldedCollectionEntries, inputIndex, inputTypes, analyzed?.aliases, analyzed?.aliasDefinitions,
           child.collections,
         ) : undefined;
-      if (root.routeMetaEligible === true && value.hasFoldedChildCall && !genesisState) {
-        throw new Error(`Kernel folded child initialization at site ${sites.length} has no complete genesis proof`);
-      }
       const childLayoutDigest = childStateLayoutDigest({
         variables: child.stateVariables.map((state) => ({
           name: state.name,
@@ -3972,7 +3909,7 @@ function hasUntransportedChunkableWrite(
       // concrete counter-keyed array mutation. Loop position alone is not authority: an invariant-key write or
       // an inlined fixed-key helper can share a function with an unrelated transported stream.
       const transported = nowLoop && node instanceof MappingAssignNode
-        && node.routeMetaJournalTransport?.collection === collection;
+        && node.runtimeLoopJournalTransport?.collection === collection;
       if (!transported) {
         unsupported = true;
         return;
@@ -4365,7 +4302,7 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
     }
     if (node instanceof MappingAssignNode && chunkableNames.has(node.name)) {
       if (!footprintNames.has(node.name) || node.arrayIndex || node.arrayPush || node.arrayPop
-        || node.routeMetaJournalTransport) {
+        || node.runtimeLoopJournalTransport) {
         unsupported = true;
       } else {
         direct.push({ node, ...(activation && { activation }) });
@@ -4508,7 +4445,7 @@ function pooledChunkableArrayPushCollection(
         && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
     if (node instanceof MappingAssignNode && chunkableArrays.has(node.name)) {
       if (node.name !== collection || !node.arrayPush || node.arrayPop || node.arrayIndex
-        || node.routeMetaJournalTransport || node.sourceEffectOrdinal === undefined || nestedConditional
+        || node.runtimeLoopJournalTransport || node.sourceEffectOrdinal === undefined || nestedConditional
         || node.keys.length !== 1 || node.keys.some((key) => (
         !(key instanceof IdentifierNode) || !parameterNames.has(key.name)
       ))) {
@@ -4559,9 +4496,9 @@ function collectJournalTransportedWrites(
   const transports: Array<{ collection: string; varyingArrayParam: string }> = [];
   if (!fn.body) return transports;
   walkInvocationAst(fn.body, (node) => {
-    if (node instanceof MappingAssignNode && !node.routeMetaRuntimeReadOnly
-      && node.routeMetaJournalTransport) {
-      transports.push(node.routeMetaJournalTransport);
+    if (node instanceof MappingAssignNode && !node.runtimeLoopReadOnly
+      && node.runtimeLoopJournalTransport) {
+      transports.push(node.runtimeLoopJournalTransport);
     }
   });
   return transports;
@@ -4597,7 +4534,6 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
       if (!fn.parameters.some((parameter) => parameter.name === leading)) {
         fn.parameters.push(new ParameterNode(new BytesType(), leading));
       }
-      // completePushValue is late-injected after route synthesis (early inject removes routeMeta availability).
     });
     // Route source is synthesized before SymbolTableTraversal classifies fixed sorted writes into
     // `sortedBatchInfo`. Make the shared trailing-width witness part of the source handler now, so a row route
@@ -4668,7 +4604,6 @@ function parseGeneratedHostFunction(
  * The cached functions are a TEMPLATE and are never handed out directly: every call returns clones, including
  * the first, so no compile can mutate what a later compile reads.
  */
-const routeMetaHelperCache = new Map<string, FunctionDefinitionNode[]>();
 
 
 
@@ -5802,7 +5737,7 @@ function compileResolvedAst(
   // Framed entries use their declared record coordinates, and delegates retain their suffix convention.
   if (mergedCompilerOptions.composition !== 'framed') {
     for (const fn of ast.contract.functions) {
-      if (!fn.isEntryPoint || fn.routeMetaRoute || fn.graphEmissionHandler
+      if (!fn.isEntryPoint || false || false
         || fn.modifiers.includes(FunctionModifier.DELEGATE)
         || !dynamicChunkWriteFunctionKeys.has(externalHandlerKey(fn))
         || ((fn.externalCalls?.length ?? 0) === 0 && (fn.lowLevelCalls?.length ?? 0) === 0)
@@ -7426,7 +7361,7 @@ function compileStringSplitUnchecked(
         fn.overrideBases = [];
         fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
       }
-      const trialOptions = { ...merged, routeMeta: false };
+      const trialOptions = { ...merged };
       const trialRoot = compileResolvedAst(
         trial, code, trialOptions, false, true, true, true, true, true, undefined,
         splitPreLowersFnPtrArrays(trialOptions),
@@ -7530,7 +7465,7 @@ function compileStringSplitUnchecked(
   // route; on UniswapV2Pair that unusable getter-only route inflated the otherwise valid forwarding root to
   // 13,658 bytes. Keep every ordinary ABI selector and one-hop forwarder, but omit the root's incoming batch route.
   // Facet bodies retain their normal external-call/compiler-route lowering; this changes only the synthetic root.
-  const rootOptions = { ...merged, routeMeta: false };
+  const rootOptions = { ...merged };
   const root = compileResolvedAst(
     rootAst, code, rootOptions, false, true, true, true, true, true, undefined,
     splitPreLowersFnPtrArrays(rootOptions),
@@ -9109,7 +9044,7 @@ function validateUnicodeDirectionMarkers(code: string): void {
 function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   const functions = contract.fallbackDef ? [...contract.functions, contract.fallbackDef] : contract.functions;
   const candidates = functions.filter((fn) => fn.body && fn.functionId !== undefined && fn.returnTypes.length > 0
-    && (fn.emitInfos?.length ?? 0) > 0 && !fn.graphEmissionHandler);
+    && (fn.emitInfos?.length ?? 0) > 0 && !false);
   if (candidates.length === 0) return;
   const walk = (node: Node, visit: (n: Node) => void, seen = new Set<Node>()): void => {
     if (seen.has(node)) return;

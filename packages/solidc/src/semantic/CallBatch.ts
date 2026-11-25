@@ -62,7 +62,7 @@ function readsOwnOutputState(node: Node | undefined, seen: Set<Node> = new Set()
  */
 export function isCallBatchFrameCandidate(fn: FunctionDefinitionNode, writesBeyondFixedState: () => boolean): boolean {
   if (!fn.isEntryPoint || fn.isFallback || fn.isReceive) return false;
-  if (fn.graphEmissionHandler || fn.routeMetaRoute === true || fn.name.startsWith('__')) return false;
+  if (false || false || fn.name.startsWith('__')) return false;
   if (!fn.modifiers.every((modifier) => FRAME_MODIFIERS.has(modifier))) return false;
   if ((fn.externalCalls?.length ?? 0) > 0 || (fn.externalReads?.length ?? 0) > 0
     || (fn.externalOutStateReads?.length ?? 0) > 0 || (fn.lowLevelCalls?.length ?? 0) > 0

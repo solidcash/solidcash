@@ -30,7 +30,7 @@ function run(layout: StateLayout, source: UnlockableUtxo, commitments: string[],
   const host = {
     categoryId: otherCategory, externalIdentityAnchorUtxos: [], loopEntryVars: [], loopEntryCommitments: new Map(),
     pendingOutputs: [], externalCallUtxoGroups: [group], allInputs: options.inputs ?? [source], lowLevelCallUtxoGroups: [],
-    compilerRouteDelegateBlock: false, builderOptions: { provider }, derivedChunkOutputs: new Map(),
+    directCallDelegateBlock: false, builderOptions: { provider }, derivedChunkOutputs: new Map(),
     delegateDynamicChunksAtSuffix: false, delegateLoopEntryVars: () => [], applyDerivedValueChunks: () => {},
   } as unknown as RepairNestedCalleeOutputsHost;
   repairNestedCalleeOutputs(host, builder, () => {});

@@ -44,39 +44,29 @@ describe('argumentsForPhysicalAbiFrame', () => {
       physicalFunctionArgs: ['stale-key', 'stale-value'],
       logicalFunctionName: 'record',
       logicalFunctionArgs: ['current-key', 'current-value'],
-      compilerRoute: { abiFunction: handler, args: ['route-key', 'route-value'] },
     })).toEqual(['current-key', 'current-value']);
   });
 
-  it('keeps synthetic route arguments when the route ABI is not the logical handler', () => {
-    const route = { name: '__dispatch', inputs: [{ name: 'batch' }] };
+  it('keeps direct call arguments when the physical ABI is not the logical handler', () => {
+    const call = { name: '__dispatch', inputs: [{ name: 'batch' }] };
     expect(argumentsForPhysicalAbiFrame({
-      abiFunction: route,
+      abiFunction: call,
       physicalFunctionArgs: ['physical-batch'],
       logicalFunctionName: 'record',
       logicalFunctionArgs: ['current-key', 'current-value'],
-      compilerRoute: { abiFunction: route, args: ['authenticated-batch'] },
+      directCall: { abiFunction: call, args: ['authenticated-batch'] },
     })).toEqual(['authenticated-batch']);
   });
 });
 
 describe('groupEventSignatures', () => {
-  it('uses compiler slot identities and falls back to declared event order', () => {
-    expect(groupEventSignatures({
-      compilerRoute: {
-        abiFunction: { name: '__dispatch' } as never,
-        selector: new Uint8Array(),
-        blob: new Uint8Array(),
-        args: [],
-        logicalSelectors: [],
-        eventSignaturesBySlot: [undefined, 'Changed(bytes32)'],
-      },
-    }, {
+  it('uses the declared event order', () => {
+    expect(groupEventSignatures({}, {
       emits: [
         { eventSignature: 'Created(uint)', emitIndex: 0 },
         { eventSignature: 'Fallback(bool)', emitIndex: 1 },
       ],
-    })).toEqual(['Created(uint)', 'Changed(bytes32)']);
+    })).toEqual(['Created(uint)', 'Fallback(bool)']);
   });
 });
 

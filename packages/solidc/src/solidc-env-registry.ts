@@ -44,9 +44,7 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_EMIT_TRAP_WINDOW', class: 'observation' },
   { name: 'SOLIDC_DEBUG_INPUTS', class: 'observation' },
   { name: 'SOLIDC_DEBUG_ADMISSION_REASONS', class: 'observation' },
-  // production SOLIDC env hot-set production observation / dump / oracle (do not alter default bytecode by themselves)
-  { name: 'SOLIDC_DUMP_ROUTE', class: 'observation' },
-  { name: 'SOLIDC_ROUTE_PARSE_ORACLE', class: 'observation' },
+  // production SOLIDC env hot-set observations (do not alter default bytecode by themselves)
   { name: 'SOLIDC_COMPILE_CACHE_DIR', class: 'observation' },
   { name: 'SOLIDC_COMPILE_CACHE_MAX_ENTRIES', class: 'observation' },
   { name: 'SOLIDC_DEBUG_CACHE_ID', class: 'observation' },
@@ -234,7 +232,5 @@ export const PRODUCTION_SOLIDC_ENV_HOT_SET: readonly string[] = Object.freeze([
   'SOLIDC_COMPILE_CACHE_DIR',
   'SOLIDC_COMPILE_CACHE_MAX_ENTRIES',
   'SOLIDC_NO_OPTIMISE',
-  'SOLIDC_ROUTE_PARSE_ORACLE',
-  'SOLIDC_DUMP_ROUTE',
   'SOLIDC_STRICT_UNKNOWN_ENV',
 ]);

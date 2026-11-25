@@ -267,7 +267,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     for (const fn of node.functions) {
       // Compiler-owned graph and detached-signature handlers are physical OP_INVOKE bodies. Their hidden
       // protocol context belongs to that invocation, so no storage/effect shape may flatten them into the route.
-      if (fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler) continue;
+      if (false || false) continue;
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
@@ -329,7 +329,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       addedWrapper = false;
       for (const fn of node.functions) {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
-          || fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler
+          || false || false
           || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
         for (const candidate of this.nodesOf(fn)) {
@@ -375,7 +375,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // position: the call is replaced by the substituted return expression (`m.at(k)` -> `L.at(m, k)` -> `m[k]`).
     this.exprInlinableFns = new Map();
     for (const fn of [...node.functions, ...this.freeFns]) {
-      if (fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler) continue;
+      if (false || false) continue;
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
     }
     this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
@@ -1287,7 +1287,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         // n.name is a STRUCT FIELD MEMBER, never a variable - never rename it. The base `expression` is still
         // walked as a child, so a renamed receiver is applied there. Without this guard, an inlined local that
         // shares a struct field's name (`string label` vs `items[id].label`) corrupts the field access to
-        // `items[id].__compiler_route_arg_*` / `__spN_label` -> "Struct has no field ...", which then fails the
+        // `items[id].__internal_arg_*` / `__spN_label` -> "Struct has no field ...", which then fails the
         // autoDelegate variant build for pooled Item[] writers that use parameter names matching fields.
       } else if (n instanceof TupleAssignmentNode) {
         // Tuple lvalues are plain element descriptors rather than

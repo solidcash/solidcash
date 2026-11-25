@@ -151,7 +151,7 @@ import { hasEffectiveCallValue, hasExternalCallValueEffect, isDirectOwnerTransfe
 import { checksTransactionSignature, inlinesSignatureChecks } from '../semantic/transactionSignatureCheck.js';
 import { CALL_BATCH_CONTEXT, CALL_BATCH_ROW_SHIFT, CALL_BATCH_SELECTOR } from '../semantic/CallBatch.js';
 import {
-  hasRecordSoundArms, isRouteMetaCompile, isOrdinaryRecordArm, isRecordMaster, publishesCallRecord,
+  hasRecordSoundArms, isOrdinaryRecordArm, isRecordMaster, publishesCallRecord,
 } from '../semantic/RecordSound.js';
 import { deployerNewBindsPool, takesOraclePool } from '../semantic/SynthesizeBlockOracle.js';
 import {
@@ -943,7 +943,7 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
 /**
  * X91. A synthetic witness an internal call forwards but the CALLER does not carry, refused by name.
  *
- * X42's `blockhash` half at its real origin. That guard fires on `graphEmissionHandler`, which is only the
+ * X42's `blockhash` half at its real origin. That guard fires on a graph handler, which is only the
  * subset of compiler-route handlers that also make a tail-form external call. The failure is not a property of
  * the handler's effects at all - it is a property of the CALL EDGE:
  *
@@ -951,7 +951,7 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  *      Unlike `__internal__msgSenderCategory`, that injection is NOT skipped for a route or a graph handler.
  *   2. `TypeCheckTraversal.forwardInternalReturnOutputIdx` auto-forwards such a witness at an internal call
  *      site as an identifier naming "the caller's own same-named param".
- *   3. The generated `__compiler_route1` route calls each eligible handler with the user-visible args only, and declares
+ *   3. A generated aggregate entry calls each eligible handler with the user-visible args only, and declares
  *      no such param - so step 2 inserts a reference to a name the route does not have.
  *   4. Code generation evaluates that identifier and died on the bare internal
  *      `Expected variable '__internal__blockhashInputIndex' does not exist on the stack`.
@@ -976,11 +976,8 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
 /** Compiler-added hidden ABI parameter carrying the authenticated participant owner of a route frame. */
 /** Largest journal segment the route transport carries in one stack item. */
 const MAX_JOURNAL_SEGMENT_BYTES = 520;
-const COMPILER_ROUTE_OWNER_INPUT = '__internal__routeMetaOwnerInput';
 /** Route-local flag set when the authenticated row selector names a handler that writes dynamic state. */
-const COMPILER_ROUTE_DYNAMIC_WRITE_ACTIVE = '__compiler_route_dynamic_write_active';
 /** Stable route-band coordinate for a graph participant's physical owner input. */
-const COMPILER_ROUTE_OWNER_BAND_INPUT = '__internal__routeMetaOwnerBandInput';
 /** The value-chunk lock list the mutable-output check admits: the chunk-base witness, or a route-owned item. */
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
 /** The `ordinal 0 || selector` the selector dispatcher leaves a dispatched entry, its call record's prefix. */
@@ -1023,7 +1020,6 @@ const SCAN_OUT_MINTS = '(__scan_out_mints)';
 // The number of token container coins a direct upgrade's migration band holds (emitUpgradeTokenBandCount).
 const UPGRADE_TOKEN_BAND = '(__upgrade_token_band)';
 /** A route row's lifecycle mode; minting uniqueness holds in mode 0 only. */
-const LIFECYCLE_MODE = '__compiler_route_active_lifecycle_mode';
 /** A route's mint bound operands (emitRouteMintBoundItems), bottom first. */
 const ROUTE_MINT_LO = '(__route_mint_lo)';
 const ROUTE_MINT_HI = '(__route_mint_hi)';
@@ -1137,11 +1133,12 @@ function slotScanResidue(sat: boolean, foreign: boolean, mint: boolean): string[
     ...(foreign ? [SCAN_OWN_MUTABLE] : []), ...(sat ? [SCAN_IN_SUM] : []), ...(mint ? [SCAN_IN_MINTS] : []),
   ];
 }
-/** Tracked-local name for the entry-time copy of the participant owner (see routeMetaOwnerAltAnchor). */
-const OWNER_ANCHOR_LOCAL = '(compiler_route_owner)';
-const PROXY_MASTER_ANCHOR_LOCAL = '(compiler_route_proxy_master)';
+/** Tracked-local name for the entry-time copy of the participant owner. */
+const LIFECYCLE_MODE_LOCAL = '(lifecycle_mode)';
+const OWNER_ANCHOR_LOCAL = '(owner_anchor)';
+const PROXY_MASTER_ANCHOR_LOCAL = '(proxy_master_anchor)';
 /** O8: a route arm's proxy-forward decision (`index == 0`), kept across its exact-stack check. */
-const PROXY_FORWARD_DECISION = '(compiler_route_proxy_forward_decision)';
+const PROXY_FORWARD_DECISION = '(proxy_forward_decision)';
 const GRAPH_EVENT_OWNER_LOCAL = '(graph_event_owner)';
 
 /**
@@ -1284,7 +1281,7 @@ const FORWARDED_WITNESS_DETAIL: Record<string, string> = {
   'route-cannot-carry-blockhash-oracle-index':
     'reading blockhash(n) is not admitted in a function the compiler-route route invokes. The block-oracle '
     + 'co-spend is located through a synthesized __internal__blockhashInputIndex witness that the compiler '
-    + 'forwards from the caller; the generated __compiler_route1 route neither declares it nor appears in the ABI, so the '
+    + 'forwards from the caller; a generated aggregate entry neither declares it nor appears in the ABI, so the '
     + 'SDK has nowhere to fill it and the handler would read an unlocated input. The read itself is fine off the '
     + 'route: compile without the compiler-route option, or keep the blockhash read in a function the route does '
     + 'not admit, and it compiles unchanged',
@@ -1319,7 +1316,7 @@ function forwardedWitnessMiss(
   constantExpressions: Map<string, ExpressionNode>,
 ): { reason: string; node: Node } | undefined {
   // X76's class: the forwarded identifier was synthesized by TypeCheckTraversal at the CALL site, which for a
-  // routed handler lives in compiler-generated `__compiler_route1` source. Its Line/Column reads as a position in the
+  // routed handler lives in compiler-generated source. Its Line/Column reads as a position in the
   // user's file and is not one. Report the effect's own site in the callee instead, falling back to the callee's
   // declaration - both are genuine user-source positions.
   const blame = (name: string, fallback: Node): Node =>
@@ -1344,9 +1341,7 @@ function forwardedWitnessMiss(
     // caller simply was not given one, because it does not read blockhash itself - and reading it there fixes
     // the call. Both remedies were verified by compiling them, not inferred.
     const reason = name === '__internal__blockhashInputIndex'
-      ? (callerFunc?.routeMetaRoute
-        ? 'route-cannot-carry-blockhash-oracle-index'
-        : 'caller-cannot-forward-blockhash-oracle-index')
+      ? 'caller-cannot-forward-blockhash-oracle-index'
       : 'forwarded-witness-not-carried-by-caller';
     return { reason, node: blame(name, arg) };
   }
@@ -3179,7 +3174,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // revert never reaches the end of its arm, where the count is emitted: it cannot succeed, so it settles no carrier.
     if (!this.framedMaster && node.name !== '__construct' && node.genesisMode !== true
       && (node.isEntryPoint === true || node.isReceive === true || node.isFallback === true)
-      && !node.graphEmissionHandler && node.routeMetaRoute !== true) {
+      && !false && true) {
       const previous = this.armFacts.get(node.name);
       const counted = record.carrierCount || this.blockEndsWithRevert(node.body);
       this.armFacts.set(node.name, { carrierCount: (previous?.carrierCount ?? true) && counted });
@@ -3479,7 +3474,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private currentFunctionIsDelegate: boolean = false;
 
-  private currentFunctionIsRouteMetaRoute: boolean = false;
   // C1/piece-5: stack slot holding "a delegate edge was reached on this path" (0/1), allocated only for a
   // conditional delegatecall. The epilogue requires the proxy's own state to be untouched wherever it is 0.
   private static readonly DELEGATE_TAKEN = '__internal__delegateTaken';
@@ -3507,7 +3501,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractUsesBlockOracle: boolean = false;
   // True when anything reads blockhash(n), which makes the contract stateful.
   private currentContractReadsBlockhash: boolean = false;
-  private currentContractHasRouteMeta: boolean = false;
   /**
    * An entry of this contract returns values, or it carries the multi-call entry, so every direct run of it accounts
    * for its call records.
@@ -3536,7 +3529,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * seeding them into the handler's frame model is what makes a deep (bottom-ordinal or far top-relative) read
    * address the item the runtime actually has there.
    */
-  private routeMetaRouteParameterNames: string[] = [];
   // SDK auto-derivation recognizes the tight verification spans emitted by routes which combine a
   // verified-map transition with dynamic-storage chunks. Moving those spans behind another OP_INVOKE changes the
   // active trace shape and can make a valid chunk region unobservable, so these contracts keep their bodies inline.
@@ -3718,7 +3710,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Mark a reached graph-handler mutation. Emitted at the operation site, so untaken branches stay clean. */
   private emitGraphStaticDirty(node: Node): void {
-    if (!this.isDefineSubTraversal || !this.currentFunction.graphEmissionHandler
+    if (!this.isDefineSubTraversal || !false
       || !this.stack.includes(GRAPH_STATIC_DIRTY)) return;
     const locationData = { location: node.location, positionHint: PositionHint.END };
     this.emit(Op.OP_1, locationData);
@@ -3933,7 +3925,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const layout = this.currentFunction.blockLayout;
     if (!layout) throw new BlockLayoutUnavailableError(this.currentFunction.name);
     const physicalSlotIndex = kind === 'entry' && slotIndex !== undefined
-      ? this.routeMetaPhysicalEntrySlot(slotIndex) : slotIndex;
+      ? this.physicalEntrySlot(slotIndex) : slotIndex;
     const slot = layout.slots.find(
       (s) => s.kind === kind && (physicalSlotIndex === undefined || s.slotIndex === physicalSlotIndex),
     );
@@ -3951,17 +3943,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * access at slot 1 (or later). Indexing the projection by the local slot therefore selects the wrong route
    * witness, or no witness at all.
    */
-  private routeMetaPhysicalEntrySlot(localSlot: number): number {
-    const projection = this.currentFunction.routeMetaPhysicalEntrySlots;
-    // Source ABI metadata carries the projection so the SDK can compose the same function through the route, but
-    // a direct invocation still owns its source block layout. Only compiler handlers execute inside the aggregate
-    // participant block and must translate their local sparse slot identities.
-    if (!projection || !this.ownsRouteMetaParticipantBlock()) return localSlot;
-    const fixedEntryIndex = this.currentFunction.entryAccesses
-      ?.filter((entry) => !entry.inLoop)
-      .findIndex((entry) => entry.slotIndex === localSlot) ?? -1;
-    return fixedEntryIndex >= 0 ? projection[fixedEntryIndex] ?? localSlot : localSlot;
+  private physicalEntrySlot(localSlot: number): number {
+    return localSlot;
   }
+
 
   /**
    * Pre-allocate only this function's own fixed entry slots. `collectMappingSlots` follows invoked callees, so a
@@ -3975,10 +3960,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The aggregate route publishes the union layout, but outlined handlers own these transitions behind
     // OP_INVOKE. Their local slot ordinals are scoped to the handler and can collide with an unrelated physical
     // route slot. Treating either ordinal as an outer-owned fixed slot preallocates a speculative journal write.
-    if (this.currentFunction.routeMetaRoute
-      && this.currentFunction.routeMetaHandlerManagedEntrySlots?.includes(slotIndex)) return false;
+    if (false
+      && false) return false;
     if (this.currentFunction.ownRecordsScalarOnly === true
-      && this.currentFunction.routeMetaPhysicalEntrySlots !== undefined) {
+      && false) {
       return this.currentFunction.entryAccesses
         ?.some((entry) => entry.slotIndex === slotIndex && entry.inLoop !== true) ?? false;
     }
@@ -3992,8 +3977,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private usesDelegateExecutorBlockBase(): boolean {
     return this.usesProxyStateBlockBase()
-      && !this.isCompilerRouteMetaRoute()
-      && !this.usesRouteMetaOwnerBlockBase();
+      && !false
+      && !false;
   }
 
   /**
@@ -4002,10 +3987,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private recordsBelongToProxyMaster(): boolean {
     if (this.sharedCheckBody !== undefined) return this.sharedCheckBody.masterOrdinal !== undefined;
-    if (this.usesRouteMetaOwnerBlockBase()) {
-      return (this.currentFunction.routeMetaCallerBandNames ?? this.routeMetaRouteParameterNames)
-        .includes('__internal__proxyMasterIndex');
-    }
     return this.usesProxyStateBlockBase()
       && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0;
   }
@@ -4098,7 +4079,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
   ): SharedEntryCheck | undefined {
     if (this.framedMaster || !this.directConvention
-      || this.currentFunction?.name?.startsWith('__compiler_route_verify_atomic')) return undefined;
+      ) return undefined;
     const fullKey = `stack|${key}`;
     let check = this.sharedEntryChecks.get(fullKey);
     if (check === undefined) {
@@ -4145,7 +4126,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     key: string,
     emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
   ): SharedEntryCheck | undefined {
-    if (this.sharedCheckBody !== undefined || this.framedMaster || this.usesRouteMetaOwnerBlockBase()) {
+    if (this.sharedCheckBody !== undefined || this.framedMaster || false) {
       return undefined;
     }
     let masterOrdinal: number | undefined;
@@ -4193,42 +4174,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_INPUTINDEX, locationData);
   }
 
-  /** A compiler-generated route handler receives its physical owner identity as an explicit hidden argument. */
-  private usesRouteMetaOwnerBlockBase(): boolean {
-    return this.hasRouteMetaParticipantOwner(this.currentFunction);
-  }
 
-  /** Whether this physical invocation frame carries an authenticated participant-block owner. */
-  private hasRouteMetaParticipantOwner(node: FunctionDefinitionNode = this.currentFunction): boolean {
-    return node?.parameters?.some((parameter) =>
-      parameter.name === COMPILER_ROUTE_OWNER_INPUT
-      // Merge-capable routes publish the survivor index as `__internal__lifecycleOwnerInput` instead of the
-      // ordinary handler owner witness. Treat it as the same participant-block authority so journal
-      // preallocation and state reads stay owner-relative when consumed masters share this unlocker.
-      || parameter.name === '__internal__lifecycleOwnerInput') === true;
-  }
 
-  /** Stack name of the authenticated participant-block owner for the current frame, if any. */
-  private routeMetaParticipantOwnerName(
-    node: FunctionDefinitionNode = this.currentFunction,
-  ): string | undefined {
-    if (node?.parameters?.some((parameter) => parameter.name === COMPILER_ROUTE_OWNER_INPUT)) {
-      return COMPILER_ROUTE_OWNER_INPUT;
-    }
-    if (node?.parameters?.some((parameter) => parameter.name === '__internal__lifecycleOwnerInput')) {
-      return '__internal__lifecycleOwnerInput';
-    }
-    return undefined;
-  }
 
-  /**
-   * Compute resources reached through either the physical route or one of its outlined handlers belong beside
-   * the authenticated participant block. Handler clones are identified by their explicit hidden owner ABI,
-   * which survives cloning even when analysis-only route markers do not.
-   */
-  private ownsRouteMetaParticipantBlock(node = this.currentFunction): boolean {
-    return this.isCompilerRouteMetaRoute(node) || this.hasRouteMetaParticipantOwner(node);
-  }
 
   /**
    * Legacy delegate entries place dynamic continuations immediately before the transaction trailer. A routed
@@ -4236,19 +4184,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * published trailing base even when later participants and verifier outputs extend the transaction suffix.
    */
   private usesDelegateTransactionSuffix(): boolean {
-    return this.currentFunctionIsDelegate && !this.ownsRouteMetaParticipantBlock();
+    return this.currentFunctionIsDelegate && !false;
   }
 
-  /**
-   * Compiler-owned batch routes are identified by their physical ABI frame, not only the transient AST marker.
-   * Delegate-artifact cloning preserves the route name/ABI but may intentionally discard analysis-only fields.
-   */
-  private isCompilerRouteMetaRoute(node = this.currentFunction): boolean {
-    return (node === this.currentFunction && this.currentFunctionIsRouteMetaRoute)
-      || node?.routeMetaRoute === true
-      || (node?.name.startsWith('__compiler_route') === true
-        && node.parameters?.some((parameter) => parameter.name === 'batchBlob') === true);
-  }
 
   /**
    * State belongs to a proxy whenever the physical entry frame carries the authenticated proxy-master witness.
@@ -4269,7 +4207,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * ordinary entry can publish the same authenticated own-self witness without moving its physical state block.
    */
   private selfLockingBytecodeNamesParticipantOwner(): boolean {
-    return this.usesRouteMetaOwnerBlockBase() || this.usesProxyStateBlockBase()
+    return false || this.usesProxyStateBlockBase()
       || this.currentFunction?.parameters.some((parameter) => parameter.name === '__internal__graphSelfIdentityInput') === true;
   }
 
@@ -4431,9 +4369,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Push the vout-0 genesis input owned by the current kernel row. */
   private emitGraphDeployInputIndex(deployIndex: number, locationData: SingleLocationData): boolean {
     const frame = this.currentFunction.graphEffectFrame;
-    if (!frame || !this.currentFunction.graphEmissionHandler || (frame.deployWidth ?? 0) === 0) return false;
+    if (!frame || !false || (frame.deployWidth ?? 0) === 0) return false;
     const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
-      : this.stack.includes('__compiler_route_row') ? '__compiler_route_row' : GRAPH_EFFECT_SITE;
+      : false ? '(runtime site)' : GRAPH_EFFECT_SITE;
     this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
     const width = frame.deployWidth ?? 0;
@@ -4461,9 +4399,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitGraphDeployOutputIndex(extra: number, locationData: SingleLocationData): boolean {
     const frame = this.currentFunction.graphEffectFrame;
     const width = frame?.deployWidth ?? 0;
-    if (!frame || !this.currentFunction.graphEmissionHandler || width === 0) return false;
+    if (!frame || !false || width === 0) return false;
     const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
-      : this.stack.includes('__compiler_route_row') ? '__compiler_route_row' : GRAPH_EFFECT_SITE;
+      : false ? '(runtime site)' : GRAPH_EFFECT_SITE;
     this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
     if (width > 1) {
@@ -4550,9 +4488,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const base = kind === 'event' ? frame.eventBase
       : kind === 'transfer' ? frame.transferBase : frame.tokenTransferBase;
     const constant = (routeOffset ?? this.getBlockSlotOffset(kind, base)) + slotIndex;
-    const rowIndex = this.getStackIndex('__compiler_route_row');
+    const rowIndex = -1;
     if (rowIndex < 0) {
-      throw new Error("Runtime effect slot missing loop variable '__compiler_route_row'");
+      throw new Error("Runtime effect slot missing loop variable '(runtime site)'");
     }
     this.emit(encodeInt(BigInt(rowIndex)), locationData);
     this.emit(Op.OP_PICK, locationData);
@@ -4577,7 +4515,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     kind: BlockSlotKind, slotIndex: number | undefined, locationData: SingleLocationData,
   ): boolean {
     const frame = this.currentFunction.graphEffectFrame;
-    if (!frame || !this.currentFunction.graphEmissionHandler) return false;
+    if (!frame || !false) return false;
     // tokenContainer is a co-spent INPUT for the whole route, not a per-site output window. Indexing it
     // through the live row would turn unused `tcTransfer` output offsets into OP_UTXO indices.
     if (kind !== 'event' && kind !== 'transfer' && kind !== 'tcTransfer' && kind !== 'ecrecoverSideCar') {
@@ -4599,10 +4537,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           : frame.ecrecoverOffset;
     const constant = (routeOffset ?? this.getBlockSlotOffset(kind, base)) + (slotIndex ?? 0);
     // Read the ordinal BEFORE pushing anything untracked, so getStackIndex needs no offset correction.
-    // Kernel loop dispatch indexes the frame by live `__compiler_route_row` when the hidden site is absent
+    // Kernel loop dispatch indexes the frame by the live row when the hidden site is absent
     // (receive/fallback clones compiled outside OP_DEFINE still share the route's row loop).
     const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
-      : this.stack.includes('__compiler_route_row') ? '__compiler_route_row' : GRAPH_EFFECT_SITE;
+      : false ? '(runtime site)' : GRAPH_EFFECT_SITE;
     this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
     if (width > 1) {
@@ -4633,7 +4571,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emitIndex: number, blobName: string, expectedLockName: string, locationData: SingleLocationData,
   ): string {
     const frame = this.currentFunction.graphEffectFrame;
-    if (!frame || !this.currentFunction.graphEmissionHandler || frame.eventWidth < 1) {
+    if (!frame || !false || frame.eventWidth < 1) {
       throw new Error(`Missing graph event frame while resolving emit ${emitIndex}`);
     }
     const baseName = `(__graph_event_base_${emitIndex})`;
@@ -4642,7 +4580,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (ownerIndex >= 0) {
       this.emit(encodeInt(BigInt(ownerIndex)), locationData);
       this.emit(Op.OP_PICK, locationData);
-      const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE : '__compiler_route_row';
+      const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE : '(runtime site)';
       this.emit(encodeInt(BigInt(this.getStackIndex(siteName) + 1)), locationData);
       this.emit(Op.OP_PICK, locationData);
       if (frame.eventWidth > 1) {
@@ -4878,8 +4816,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!node.blockLayout || !node.deployTargets?.length) return;
     // Kernel graph handlers share the route's already-expanded row frame. Re-expanding that shared layout from
     // one handler's local deployTargets would erase every other row's data-NFT span.
-    if ((node.graphEmissionHandler || node.routeMetaRoute)
-      && (node.graphEffectFrame?.deployWidth ?? 0) > 0) return;
     const old = node.blockLayout.slots;
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
@@ -5005,7 +4941,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** A direct pure read that may prove its key with another slot's input (emitSharedProofRedirect). */
   private sharesProofInput(slotIndex: number): boolean {
-    return this.entrySlots[slotIndex]?.sharedProofPriorSlot !== undefined && !this.isCompilerRouteMetaRoute();
+    return this.entrySlots[slotIndex]?.sharedProofPriorSlot !== undefined && !false;
   }
 
   /**
@@ -5194,7 +5130,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // `verifierProgram.inputs`, with the authenticated envelope deliberately left underneath. It does not
       // participate in compiler-to-compiler hidden-context threading, even when a sibling route handler uses a
       // compute side-car. Giving it this phantom slot makes its return cleanup NIP the preserved envelope.
-      if (entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
+      if (entries.some((entry) => false)) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -6528,28 +6464,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
-    if (this.compilerOptions.callRecords === 'all'
-      && (this.framedMaster || ['enabled', 'required'].includes(
-        (this.compilerOptions as { __routeMetaMode?: string }).__routeMetaMode ?? ''))) {
-      throw new CallRecordsOptionError(node, this.framedMaster ? 'framed' : 'compiler-route');
+    if (this.compilerOptions.callRecords === 'all' && this.framedMaster) {
+      throw new CallRecordsOptionError(node, 'framed');
     }
     this.dynamicReadBases = [];
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractUsesBlockOracle = node.usesBlockOracle;
     this.currentContractReadsBlockhash = node.readsBlockhash;
-    this.currentContractHasRouteMeta = node.functions.some((fn) => fn.routeMetaRoute === true);
     this.currentContractSettlesCallRecords = node.functions.some((fn) => fn.isEntryPoint && fn.returnTypes.length > 0
-      && !fn.graphEmissionHandler && !this.isCompilerRouteMetaRoute(fn));
-    // Match the predicate codegen itself uses for a route (`currentFunctionIsRouteMetaRoute`): the AST
-    // `routeMetaRoute` flag is set by route synthesis, which runs AFTER this contract visit, so keying on it here
-    // silently produced an empty band (measured: the owner pick's ordinal did not move at all).
-    const routeMetaRouteFunction = node.functions.find((fn) =>
-      (fn.routeMetaRoute === true
-        || (fn.name.startsWith('__compiler_route')
-          && fn.parameters?.some((parameter) => parameter.name === 'batchBlob') === true)));
-    this.routeMetaRouteParameterNames = (routeMetaRouteFunction?.parameters ?? [])
-      .map((parameter) => parameter.name);
+      && !false && !false);
     this.currentContractRequiresTraceStableBodies = node.functions.some((fn) =>
       (fn.dynamicWrites?.length ?? 0) > 0
       && (fn.entryAccesses?.length ?? 0) > 0);
@@ -6569,7 +6493,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.contractFunctionKeys = new Set(node.functions
       .filter((fn) => fn.functionId !== undefined)
       .map((fn) => `${fn.functionId}:${fn.name}`));
-    const routedFunction = node.functions.find((fn) => fn.routeMetaRoute);
+    const routedFunction = node.functions.find((fn) => false);
     this.routePhysicalSortedBatchCollections = new Set(
       (routedFunction?.sortedBatchInfo ?? []).map((batch) => batch.collection),
     );
@@ -7414,9 +7338,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * X151 checked only bodies compiled on the contract traversal, and refused every chunk read in an OP_DEFINE'd
    * body outright because such a body carries its own footprint rather than the invoking entry's. X170 measured
-   * the shape that reached: `__compiler_route_graph_fireAll`, whose emitted basis and trailing base ALREADY equal those of
-   * the only entry that reaches it (`__compiler_route1`), and whose bytecode is byte-identical with and without X151's
-   * correction. `RouteMetaRuntimeSizedPointerTable` settles that same contract on the VM over a non-empty chunk run
+   * the shape that reached: a graph fireAll handler, whose emitted basis and trailing base ALREADY equal those of
+   * the only entry that reaches it, and whose bytecode is byte-identical with and without X151's
+   * correction. A runtime-sized pointer table settles that same contract on the VM over a non-empty chunk run
    * at 1, 2 and 3 rows. The blanket refusal was over-broad, so it is replaced by the check it should have been:
    * compare the emitted basis against every entry that can reach the body, and refuse on disagreement.
    *
@@ -7673,7 +7597,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // helpers are force-inlined, so the exposure is any returning internally-invoked helper that
       // emits - whether or not it also writes state. Reject it (fail closed) rather than lose the event.
       if (fn.returnTypes.length > 0 && internallyInvoked.has(fn.functionId)) {
-        if (writes.emits && !fn.graphEmissionHandler) {
+        if (writes.emits && !false) {
           throw new Error(
             `Returning state helper '${fn.name}' with an event must be inlined before code generation`,
           );
@@ -7682,7 +7606,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // journal share one caller-owned stack frame. InlineReturningStateHelpers inlines single-tail helpers at
         // every call it can hoist; any survivor here cannot safely execute behind OP_INVOKE (the VM otherwise
         // rejects its off-by-return-slot write-back).
-        if (writes.dynamicArray && !fn.graphEmissionHandler) {
+        if (writes.dynamicArray && !false) {
           throw new Error(hasSingleTailReturn(fn)
             ? `Returning dynamic-array state helper '${fn.name}' must be inlined at every call; a call through a `
               + 'function pointer, by recursion, or in a loop condition or conditionally evaluated operand cannot be'
@@ -7702,7 +7626,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // is gone and code generation aborts with `Expected variable '__internal__state_write_<table>' does not
       // exist on the stack`. Measured on `solidity-by-example/defi/stable-swap-amm/StableSwap.sol`, which
       // stopped compiling in DIRECT, DIRECT-stateful and BUS modes alike.
-      for (const slot of fn.graphEmissionHandler ? fn.externalCalls ?? [] : []) {
+      for (const slot of false ? fn.externalCalls ?? [] : []) {
         for (const name of [slot.loopArrayVar, slot.selectorArrayVar]) {
           if (!name) continue;
           const sv = this.stateVariables.find((candidate) => candidate.name === name);
@@ -7741,7 +7665,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the compiler-route route as an OP_INVOKE subroutine it therefore re-read the authenticated PRE-state
     // commitment while an earlier row's write was live in the wrapper's frame - a stale read that settled.
     // Admit every function the route can reach, so all rows of one route load through one journal. Scoped to
-    // the route's own call closure: a contract with no `__compiler_route1` produces the same map as before, and a
+    // the route's own call closure: a contract with no aggregate entry produces the same map as before, and a
     // read-only function outside the route keeps its established covenant path.
     // X111. A graph EMISSION clone used to be dropped from this widening entirely, so a clone which reads a
     // scalar slot and writes none still re-read the pre-transaction commitment while an earlier row's write
@@ -7765,9 +7689,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // variable only where the AST does, and a foreign function-pointer table's target and selector arrays are
     // named on the external-call SLOT. Completing it above puts both back in the basis, and the widening below
     // then costs nothing.
-    const routeFunctionId = functions.find((fn) => fn.routeMetaRoute)?.functionId;
+    const routeFunctionId = functions.find((fn) => false)?.functionId;
     const emissionClones = new Set(functions
-      .filter((fn) => fn.graphEmissionHandler && fn.functionId !== undefined)
+      .filter((fn) => false && fn.functionId !== undefined)
       .map((fn) => fn.functionId!));
     const routeReachable = new Set<number>();
     const widenedClones = new Set<number>();
@@ -7903,7 +7827,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!target || !this.functionReadsDynamicState(target)) continue;
       // Graph handlers already carry their route's runtime pointer-table frame. Re-basing that shared frame as
       // an ordinary helper changes the authenticated row indices; X170's verifier remains their boundary.
-      if (target.graphEmissionHandler) continue;
+      if (false) continue;
       // Indirect calls have no statically known callee-specific hidden frame. Keep their existing fail-closed
       // basis verification until the function-value ABI can carry this context explicitly.
       if (indirect.has(functionId)) continue;
@@ -7939,7 +7863,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const first = sideCarOffsets(entries[0]);
       if (first === '' || !entries.every((entry) => sideCarOffsets(entry) === first)) continue;
       this.keccakSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
+      if (entries.some((entry) => false)) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -7966,7 +7890,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           keccakOffsetsOf(entry).join(',') === firstKeccak.join(','))) continue;
       }
       this.ecrecoverSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
+      if (entries.some((entry) => false)) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -8068,7 +7992,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // record, so no returning entry pushes its own. Batch programs and the multi-call entry keep theirs.
       this.dispatchHandsCallPrefix = !hasFallback && !hasReceive && !this.currentContractCarriesCallBatch
         && this.directConvention && this.contractSettlesCallRecords() && this.compactCallRecords
-        && !dispatchFunctions.some((fn) => this.isCompilerRouteMetaRoute(fn));
+        && !dispatchFunctions.some((fn) => false);
       // OP_DEFINE each entry-point function with its 4-byte hash selector, then dispatch
       dispatchFunctions.forEach((f) => {
         this.emitEntryPointFunctionDefine(f, node.parameters);
@@ -8782,7 +8706,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private isExactStackArm(node: FunctionDefinitionNode): boolean {
     return !this.framedMaster && !this.isDefineSubTraversal && node.blockLayout !== undefined
-      && node.isEntryPoint === true && node.graphEmissionHandler !== true;
+      && node.isEntryPoint === true && true;
   }
 
   /**
@@ -9126,8 +9050,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // in step with the stamp (which already never sees them).
     if (true || !fn.isEntryPoint || slot.callOrdinal !== undefined
       || slot.loopArrayVar !== undefined || slot.inlineLoopDispatch === true
-      || fn.name.startsWith('__compiler_route') || fn.graphEmissionHandler || fn.graphRuntimeEmissionHandler
-      || this.isCompilerRouteMetaRoute(fn) || !this.isExternalCallSlotLoopNested(slot)) return false;
+      || false || false || false
+      || false || !this.isExternalCallSlotLoopNested(slot)) return false;
     // A repeated-address batch's owner, verified in the epilogue, binds its whole invocation vector, loop rows too.
     const owner = slot.batchInvocations ? slot : this.externalCallSlots.find((candidate) =>
       candidate.slotIndex < slot.slotIndex && candidate.addressParam === slot.addressParam
@@ -9267,7 +9191,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // physical slots inherit the route batch topology. Propagating this contract-wide makes unrelated public
     // functions treat ordinary scalar collection writes as batch-owned merely because the contract also exposes
     // a compiler-route route.
-    subTraversal.routePhysicalSortedBatchCollections = (func.routeMetaPhysicalEntrySlots?.length ?? 0) > 0
+    subTraversal.routePhysicalSortedBatchCollections = (0) > 0
       ? this.routePhysicalSortedBatchCollections : new Set();
     subTraversal.outlinedDynamicReadBasisByFunctionId = this.outlinedDynamicReadBasisByFunctionId;
     subTraversal.outlinedDynamicReadThreadedFunctionIds = this.outlinedDynamicReadThreadedFunctionIds;
@@ -9354,7 +9278,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // DEFINE fail-closed validation: returning bodies legitimately leave `returnTypes.length` result cells — subtract that
     // arity so return values are not false-positive live-anonymous.
     const parameterNames = new Set(func.parameters.map((parameter) => parameter.name));
-    const bandNames = new Set(func.routeMetaCallerBandNames ?? []);
+    const bandNames = new Set<string>();
     const leftover = subTraversal.stack.filter((name) => (
       !parameterNames.has(name)
       && !bandNames.has(name)
@@ -9371,7 +9295,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           helperId: `${func.name}:arg:${parameter.name}`,
           reads: [parameter.name],
         })),
-      ...(func.routeMetaCallerBandNames ?? []).map((name) => ({
+      ...([]).map((name) => ({
         helperId: `${func.name}:band:${name}`,
         reads: [name],
       })),
@@ -9379,7 +9303,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const frameResult: { ok: boolean; failures: readonly { invariantId: string }[] } = { ok: true, failures: [] };
     // DEFINE fail-closed validation: under kernel, fail-closed for every DEFINE kind. Return-aware leftover counting
     // (`anonymousLive = max(0, leftover - returnArity)`) is the exact model for user returns and
-    // for `__compiler_route_verify_atomic*` / `__compiler_route_parse_row` (their `(value)` leftovers
+    // for generated verifier and row-parse bodies (their `(value)` leftovers
     // match published return arity).
     if (false) {
       const failureIds = frameResult.failures.map((failure) => failure.invariantId);
@@ -9836,7 +9760,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // tails regardless of whether the caller requested the faster front-end path.
     const largeBodyOutline = emittedBytesBeforeOutline > MAX_INPUT_BYTESIZE * 10
       && (this.compilerOptions.optimizeForCompilationSpeed === true
-        || (this.currentContractHasRouteMeta && false));
+        || (false && false));
     if (!this.isSubroutineUseProbe) this.releaseUnusedSingleByteIdsForOutlining();
     const bodies = this.definedBodyRecords.map((record) => {
       // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
@@ -9884,12 +9808,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // run 8 only.
       const minimumWindows = largeBodyOutline
         ? [8]
-        : this.currentContractHasRouteMeta
+        : false
           ? false ? [12, 10] : [12]
           : [12, 10, 8];
       // A direct contract still over the input-script limit before outlining searches more groups per round.
       const candidateGroupsPerRound = largeBodyOutline ? 12288
-        : !this.currentContractHasRouteMeta && this.directConvention && emittedBytesBeforeOutline > MAX_INPUT_BYTESIZE
+        : !false && this.directConvention && emittedBytesBeforeOutline > MAX_INPUT_BYTESIZE
           ? 4096 : 1024;
       const originalOrder = bodies.map((_body, index) => index);
       const shortestOrder = [...originalOrder].sort((left, right) =>
@@ -9900,7 +9824,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         : bodies;
       for (const minimumWindowElements of minimumWindows) {
         if (minimumWindowElements === 10
-          && this.currentContractHasRouteMeta
+          && false
           && false) {
           const estimatedPostOutlineBytes = scriptToBytecode(this.output).length - (result?.savedBytes ?? 0);
           const sizePressureMargin = 512;
@@ -9985,7 +9909,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         'savings',
         // Ordinary direct contracts may nest compiler helpers at window 8. Batch bodies keep the
         // window-12 floor so traced derivation does not lose the fragments it matches.
-        !this.currentContractHasRouteMeta && this.directConvention ? 8 : MINIMUM_WINDOW_ELEMENTS,
+        !false && this.directConvention ? 8 : MINIMUM_WINDOW_ELEMENTS,
         // A round cap of 1024 predates this pass being able to nest the first pass's ids. Nesting turns the
         // candidates into a cascade, and the cap - not the round count, which reaches its fixed point at 6 -
         // was what stopped it: on the framed corpus the sampled programs all stop shrinking at 8192, and none
@@ -10033,7 +9957,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Keep it enabled for speed-hinted large contracts even after a productive first pass: the first pass turns
     // repeated entry/handler scaffolding into invocation-delimited fragments, and a 39-handler corpus measurement
     // recovered another 4,608 bytes in 61ms (127,429 -> 122,821) from precisely those tails.
-    const kernelOutline = this.currentContractHasRouteMeta && false;
+    const kernelOutline = false && false;
     if ((largeBodyOutline || kernelOutline)
       && result !== undefined && result.functions.length > 0) {
       const leftoverStart = Date.now();
@@ -10210,7 +10134,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // is defined after it.
     const inputLimit = this.compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
     const programBytes = result === undefined ? 0 : scriptToBytecode(this.output).length - result.savedBytes;
-    if (result !== undefined && this.directConvention && !this.framedMaster && !this.currentContractHasRouteMeta
+    if (result !== undefined && this.directConvention && !this.framedMaster && !false
       && !this.currentContractCarriesCallBatch && !largeBodyOutline
       && this.definedBodyRecords.some((record) => record.selectorHex !== undefined)
       && programBytes > inputLimit - GenerateTargetTraversalWithLocation.DIRECT_SIZE_PRESSURE_MARGIN
@@ -10614,7 +10538,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Settle the fixed effect frame while a graph handler's OP_INVOKE context is still live. */
   private emitGraphHandlerEffectSettlement(node: FunctionDefinitionNode): void {
-    if (!node.graphEmissionHandler) return;
+    if (!false) return;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_GRAPH_SETTLEMENT === '1') {
       console.error('graph-handler-effect-settlement', {
@@ -10678,7 +10602,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * than from source names or a particular constructor shape.
    */
   private graphDeploySettlementDependencies(): string[] {
-    if (!this.isDefineSubTraversal || !this.currentFunction.graphEmissionHandler) return [];
+    if (!this.isDefineSubTraversal || !false) return [];
     const collector = new IdentifierUsageCollector();
     for (const deploy of this.pendingDeploys) {
       const deployNode = deploy.node;
@@ -10805,39 +10729,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // The anchor flag is per EMISSION, not per node: the same function is emitted as an entry body, as its
     // OP_DEFINE body and as a subroutine-use probe, and only a stream that actually captured the owner may read it.
-    node.routeMetaOwnerAltAnchor = false;
     this.bindTransferOnlyRawCallOrdinals(node);
-    this.currentFunctionIsRouteMetaRoute = node.routeMetaRoute === true
-      || (node.name.startsWith('__compiler_route')
-        && node.parameters?.some((parameter) => parameter.name === 'batchBlob') === true);
-    if (this.currentFunctionIsRouteMetaRoute
-      ) {
-      const box = (this.compilerOptions as CompilerOptions & {
-        __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
-      }).__kernelReadCarrierAuthorizationBox;
-      if (box) box.codegenMatchedKernelJournalDispositionRoute = true;
-    }
     if ((node.dynamicWrites?.length ?? 0) > 0 && (node.entryAccesses?.length ?? 0) > 0) {
       this.currentContractRequiresTraceStableBodies = true;
     }
     // X42. Refuse the two effect kinds a graph emission handler cannot describe BEFORE either of them reaches
     // the block-slot lookup or the route's parameter forwarding. Scoped to an emission handler: the same
     // effects on the direct route, and in a route-eligible handler that makes no external call, are unchanged.
-    if (node.graphEmissionHandler) {
-      const unsupported = graphHandlerUnsupportedEffect(node.body,
-        node.parameters.some((parameter) => parameter.name === '__internal__blockhashRowOffset'),
-        (node.graphEffectFrame?.deployWidth ?? 0) > 0 && node.blockLayout !== undefined);
-      if (unsupported) {
-        throw new GraphHandlerEffectError(
-          unsupported.node, unsupported.reason, GRAPH_HANDLER_EFFECT_DETAIL[unsupported.reason],
-        );
-      }
-    }
     this.graphStraightRuntimeRows = [];
     this.deferredGraphEmissionRows = 0;
     this.pendingGraphEmissionRows = 0;
     this.graphStraightRuntimeMode = this.isDefineSubTraversal
-      && node.graphRuntimeEmissionHandler === true
+      && false
       && (node.externalCalls?.length ?? 0) > 1
       && (node.externalCalls ?? []).every((slot) => slot.selectorArrayVar !== undefined && !slot.loopArrayVar)
       && !this.hasConditionalOrLoop(node.body);
@@ -10973,7 +10876,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.functionDeploySiteCount = deploySurvey.count;
     this.functionDeploySites = deploySurvey.sites;
     this.graphConditionalDeployReachActive = this.isDefineSubTraversal
-      && node.graphEmissionHandler === true && deploySurvey.hasConditional;
+      && false && deploySurvey.hasConditional;
     // Multi-site inline deploy: 2+ deploy sites with at least one conditional (a not-fired conditional shifts
     // the trailing output layout, so fixed slots break). The direct compact route tracks both fired genesis
     // count and fired output width; a graph handler instead uses the exact surveyed span of each source site.
@@ -11038,7 +10941,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || node.modifiers.includes(FunctionModifier.MERGE);
     const isConstructor = node.name === '__construct';
     const isUnsafeTier0 = node.modifiers.includes(FunctionModifier.UNSAFE) && (node.unsafeTier ?? 0) === 0;
-    const hasFullStateModifier = node.routeMetaUpgradeRoute === true
+    const hasFullStateModifier = false
       || node.modifiers.some((m) => m === FunctionModifier.UPGRADE
       || m === FunctionModifier.SELFDESTRUCT
       || m === FunctionModifier.DELEGATE) || isUnsafeTier0;
@@ -11217,7 +11120,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentFunctionIsDelegate = node.modifiers.includes(FunctionModifier.DELEGATE);
     // A framed frame carries a run of loops over one collection through its own loop chain instead.
     this.repeatedSortedUpsertLoopTotals = this.directConvention && !this.isDefineSubTraversal
-      && !this.currentFunctionIsDelegate && !this.currentFunctionIsRouteMetaRoute
+      && !this.currentFunctionIsDelegate && !false
       ? this.findRepeatedSortedUpsertLoopTotals(node.body) : new Map();
 
     // O8: an arm of a direct stateful master runs no code before its exact-stack check, which it makes once it has
@@ -11225,7 +11128,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // rebuilt call data, the composite checks, the anchors, the pre-state reads, the genesis guard) follows the check.
     const exactStackArm = this.isExactStackArm(node);
     // A route arm drops its positional items first; its exact-stack check follows.
-    const routeArm = exactStackArm && this.isCompilerRouteMetaRoute(node);
+    const routeArm = exactStackArm && false;
     if (exactStackArm && this.obligationHook === 'op-before-exact-stack') {
       this.emit(Op.OP_NOP, { location: node.location, positionHint: PositionHint.START });
     }
@@ -11308,12 +11211,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         console.error('compiler-route-define-params', JSON.stringify({
           function: node.name,
           isDefineSubTraversal: this.isDefineSubTraversal,
-          isRoute: this.isCompilerRouteMetaRoute(node),
+          isRoute: false,
           parameters: node.parameters.map((parameter) => parameter.name),
-          ownerIndex: node.parameters.findIndex((parameter) => parameter.name === COMPILER_ROUTE_OWNER_INPUT),
+          ownerIndex: -1,
           false: false,
-          graphEmissionHandler: node.graphEmissionHandler,
-          ownerIsLastArgument: node.routeMetaOwnerIsLastArgument,
+          ownerIsLastArgument: false,
         }));
       }
       // Depth 0 only: route synthesis reports the owner as the call's LAST argument, so the top item at entry IS
@@ -11327,13 +11229,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // FIRST argument (observed: an unrelated scalar was captured and failed OP_UTXOBYTECODE).
         // Storage is the ALT stack because no main-stack push can shift its depth; the item stays for the whole
         // body, and every call site drops the leaked copy right after the invoke, before its own alt rotations.
-        const ownerDepth = this.getStackIndex(COMPILER_ROUTE_OWNER_INPUT, true);
+        const ownerDepth = -1;
         if (ownerDepth >= 0) {
           const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
           this.emit(encodeInt(BigInt(ownerDepth)), anchorLocation);
           this.emit(Op.OP_PICK, anchorLocation);
           this.pushToStack(OWNER_ANCHOR_LOCAL);
-          node.routeMetaOwnerAltAnchor = true;
         }
       }
     } else {
@@ -11365,7 +11266,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const clearLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
       this.emit(Op.OP_0, clearLoc);
       this.emitReplace(this.getStackIndex(chunkLockList) + 1, node);
-    } else if (!this.isDefineSubTraversal && this.isCompilerRouteMetaRoute(node)
+    } else if (!this.isDefineSubTraversal && false
       && this.chunkLockListAboveBand(node.parameters.map((parameter) => parameter.name))) {
       // A band without the witness: start the list right above it, the ordinal invoked handlers append at.
       // Only the band lies below it at runtime once the positional items under the band are dropped.
@@ -11382,7 +11283,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // authenticated proxy master while the entry ABI is still the complete top-relative frame; later effect
     // settlement can then follow this ordinary tracked local instead of addressing across that unknown prefix.
     if (false && !this.isDefineSubTraversal
-      && this.isCompilerRouteMetaRoute(node)
+      && false
       && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0) {
       const proxyDepth = this.getStackIndex('__internal__proxyMasterIndex');
       const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
@@ -11409,9 +11310,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // runtime has it). Without this, a bottom-ordinal read of a band value - or of the owner parameter, whose
     // ordinal is computed from the model's bottom - addresses a neighbouring item (measured: the owner read landed
     // on `graphFixedSize`/`graphBlockSize`, turning the intended coordinate 20 into 151).
-    const callerBandNames = node.routeMetaCallerBandNames ?? this.routeMetaRouteParameterNames;
+    const callerBandNames = [];
     if (this.isDefineSubTraversal && callerBandNames.length > 0
-      && node.parameters.some((parameter) => parameter.name === COMPILER_ROUTE_OWNER_INPUT)
+      && false
       && false) {
       // Every route input is seeded, INCLUDING `batchBlob`: the SDK pushes `[blob, ...routeWitnesses]`, so the blob
       // is physically the deepest band item. Omitting it under-counts the band by one and every deep read lands one
@@ -11427,15 +11328,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // direct root at input zero. Normalize the physical frame immediately after declaring the parameters:
     // journal pre-allocation, parameter validation, and delegate setup all address that frame. A route arm has
     // normalized it already, ahead of its exact-stack check.
-    if (this.isCompilerRouteMetaRoute(node) && !routeArm) this.emitRouteFrameNormalization(node, false);
+    if (false && !routeArm) this.emitRouteFrameNormalization(node, false);
 
     // X29. Shallowest hidden context, so it mirrors the LAST value the route pushes before the constructor
     // captures and the declared arguments. Carries the dispatch-site ordinal that selects this invocation's
     // event / transfer frame inside the route's block layout.
-    if (this.isDefineSubTraversal && node.graphEmissionHandler && node.graphEffectFrame) {
+    if (this.isDefineSubTraversal && false && node.graphEffectFrame) {
       this.pushToStack(GRAPH_EFFECT_SITE, true);
     }
-    if (this.isDefineSubTraversal && node.graphEmissionHandler) {
+    if (this.isDefineSubTraversal && false) {
       // Reverse of the caller's push order: DIRTY is pushed after MODE and is therefore shallower in the
       // OP_INVOKE frame. Both are handler-local and are discarded rather than returned with journal context.
       this.pushToStack(GRAPH_STATIC_DIRTY, true);
@@ -11445,7 +11346,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Runtime handlers instead receive the complete emission vector and peel each reached result in the loop;
     // no `graphResultN` arguments are pushed by their caller. Tracking those names here creates phantom stack
     // slots and makes every loop-body parameter/local lookup too deep after the runtime vector argument.
-    if (this.isDefineSubTraversal && node.graphEmissionHandler && !node.graphRuntimeEmissionHandler) {
+    if (this.isDefineSubTraversal && false && !false) {
       // OP_INVOKE exposes hidden operands in call-frame order: the first
       // produced result is on top inside the subroutine. Declare the symbolic
       // frame in reverse so source callsite 0 names that physical item.
@@ -11471,22 +11372,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal && this.framedMaster && this.framedSelfContextCarrierNames().has(node.name)) {
       this.pushToStack(FRAMED_SELF_CONTEXT, true);
     }
-    if (this.isDefineSubTraversal && node.graphEmissionHandler && node.usesMsgSender) {
+    if (this.isDefineSubTraversal && false && node.usesMsgSender) {
       this.pushToStack('__internal__handlerMsgSender', true);
     }
-    if (this.isDefineSubTraversal && !node.graphEmissionHandler && node.usesMsgSender) {
+    if (this.isDefineSubTraversal && !false && node.usesMsgSender) {
       this.pushToStack('__internal__handlerMsgSender', true);
     }
-    if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgSig) {
+    if (this.isDefineSubTraversal && false && this.contractUsesMsgSig) {
       this.pushToStack('__internal__handlerMsgSig', true);
     }
-    if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgData) {
+    if (this.isDefineSubTraversal && false && this.contractUsesMsgData) {
       this.pushToStack('__internal__handlerMsgData', true);
     }
-    if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgValue) {
+    if (this.isDefineSubTraversal && false && this.contractUsesMsgValue) {
       this.pushToStack('__internal__handlerMsgValue', true);
     }
-    if (this.isDefineSubTraversal && node.graphRuntimeEmissionHandler) {
+    if (this.isDefineSubTraversal && false) {
       // The caller pushes the runtime emission vector before every authenticated msg.* context, so it is
       // physically deeper than those contexts inside OP_INVOKE. Declare it after them in the bottom-growing
       // symbolic frame. Keeping it above msg.* makes every still-deeper argument (including sorted-map topology
@@ -11519,7 +11420,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // when a handler both reads msg.sender and writes scalar state - leaves the frame one item deeper than
         // the caller actually pushes, and every subsequent read is off by one (observed as an OP_SPLIT on an
         // empty item). The caller pushes each context value exactly once, so the frame must too.
-        if (!node.graphEmissionHandler) {
+        if (!false) {
           if (this.contractUsesMsgSig) this.pushToStack('__internal__handlerMsgSig', true);
           if (this.contractUsesMsgData) this.pushToStack('__internal__handlerMsgData', true);
         }
@@ -11535,7 +11436,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.pendingDynamicWrites.set(sv.name, { valueStackName, sv, knownEmpty: false });
             this.preAllocatedDynamicWrites.add(sv.name);
             const writes = (node.dynamicWrites ??= []);
-            if (!node.routeMetaRouteReadOnlyDynamicResources?.includes(sv.name)
+            if (!false
               && !writes.includes(sv.name)) writes.push(sv.name);
           }
         }
@@ -11546,7 +11447,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
-    const contextThreadedDefine = this.isDefineSubTraversal && (node.graphEmissionHandler
+    const contextThreadedDefine = this.isDefineSubTraversal && (false
       || runtimeLoopEntryInputCountRequired || runtimeLoopEntryOutputCountRequired
       || runtimeLoopEventContextRequired || activeJournalSlots.length > 0
       || node.parameters.some((parameter) => parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
@@ -11633,7 +11534,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // distance would let the witness name a master the forward did not place. Later state reads use this witness.
       const compactOffset = 1 + this.dataNftCount;
       this.emit(Op.OP_INPUTINDEX, loc);
-      this.emit(encodeInt(BigInt(this.isCompilerRouteMetaRoute(node)
+      this.emit(encodeInt(BigInt(false
         ? node.blockLayout?.blockSize ?? compactOffset : compactOffset)), loc);
       this.emit(Op.OP_SUB, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
@@ -11715,7 +11616,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // container inside its OP_INVOKE subroutine, which only runs on a reached dispatch site - and a route may
     // admit a transfer-FREE sibling handler, so a batch of rows selecting only that sibling reaches no site.
     // The flag lets the epilogue preserve the container on exactly that path.
-    this.graphTransferFlagActive = !this.isDefineSubTraversal && this.isCompilerRouteMetaRoute(node)
+    this.graphTransferFlagActive = !this.isDefineSubTraversal && false
       && (node.graphEffectFrame?.transferWidth ?? 0) > 0;
     if (this.graphTransferFlagActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
@@ -11724,13 +11625,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Reached-site bit mask for event frames. Each occurrence settles its own window; the epilogue binds every
     // window whose bit remains clear. A mask (rather than the former last-site ordinal) supports repetition.
-    this.graphEventSiteActive = !this.isDefineSubTraversal && this.isCompilerRouteMetaRoute(node)
+    this.graphEventSiteActive = !this.isDefineSubTraversal && false
       && (node.graphEffectFrame?.eventWidth ?? 0) > 0;
     if (this.graphEventSiteActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GRAPH_EVENT_SITE);
     }
-    this.graphDeploySiteActive = !this.isDefineSubTraversal && this.isCompilerRouteMetaRoute(node)
+    this.graphDeploySiteActive = !this.isDefineSubTraversal && false
       && (node.graphEffectFrame?.deployWidth ?? 0) > 0;
     if (this.graphDeploySiteActive) {
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
@@ -11742,7 +11643,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack(`${GRAPH_CONDITIONAL_DEPLOY_REACHED}_${siteIndex}`);
       }
     }
-    this.graphTokenSiteActive = !this.isDefineSubTraversal && this.isCompilerRouteMetaRoute(node)
+    this.graphTokenSiteActive = !this.isDefineSubTraversal && false
       && (node.graphEffectFrame?.tokenTransferWidth ?? 0) > 0;
     if (this.graphTokenSiteActive) {
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
@@ -11853,7 +11754,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.runtimeLoopEntryInputCountActive = true;
       this.runtimeLoopEntryJournalCountActive = true;
     }
-    if (!this.isDefineSubTraversal && this.isCompilerRouteMetaRoute(node)
+    if (!this.isDefineSubTraversal && false
       && this.runtimeLoopEntryJournalCountActive && this.hasKernelJournalRecordCarrier()) {
       const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
       this.emitKernelJournalSegmentsValidate(loc);
@@ -11988,7 +11889,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //
     // Keep this on the compatibility route only. Kernel rows own separate event frames/runtime journals, and
     // ordinary entry points retain their established allocation order and bytecode.
-    if (this.isCompilerRouteMetaRoute(node) && true
+    if (false && true
       && this.emitInfos.length > 0) {
       const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
       for (const { emitIndex } of this.emitInfos) {
@@ -12116,7 +12017,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // child genesis data NFTs no longer share the first post-blockSize index.
     this.expandDeployDataNftLayout(node);
 
-    if (!this.isDefineSubTraversal && this.isCompilerRouteMetaRoute(node)
+    if (!this.isDefineSubTraversal && false
       && this.stack.includes('__internal__graphEmissions')) {
       const loc = { location: node.body.location, positionHint: PositionHint.END };
       this.emitGraphEmissionStreamRead(loc);
@@ -12125,7 +12026,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
-    if (!this.isDefineSubTraversal && this.isCompilerRouteMetaRoute(node)
+    if (!this.isDefineSubTraversal && false
       && this.runtimeLoopEntryJournalCountActive && this.hasKernelJournalRecordCarrier()) {
       const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
       // A byte-identical carrier used only the established per-row settlement path. A changed carrier must pass
@@ -12196,13 +12097,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Collection-journal lowering can give an otherwise-void graph handler a typed return channel. It remains
     // an effect-owning handler: settle its event/transfer/deploy frame before the generic returning-internal
     // fast exit. visitReturn retained these compiler-owned values specifically for this single exit.
-    if (this.isDefineSubTraversal && node.graphEmissionHandler && node.returnTypes.length > 0) {
+    if (this.isDefineSubTraversal && false && node.returnTypes.length > 0) {
       this.emitGraphHandlerEffectSettlement(node);
       const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
       for (const name of [
         GRAPH_EFFECT_SITE, GRAPH_STATIC_DIRTY, GRAPH_STATIC_MODE, GRAPH_HANDLER_CALLER_DEPTH,
         OWNER_ANCHOR_LOCAL,
-        ...(this.usesRouteMetaOwnerBlockBase() ? ['__internal__routeMetaOwnerInput'] : []),
         ...this.graphDeploySettlementDependencies(),
       ]) {
         const index = this.getStackIndex(name, true);
@@ -12267,7 +12167,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const journalNames = [
         ...runtimeCardinalityNames,
         ...kernelJournalRecordNames,
-        ...(node.graphRuntimeEmissionHandler ? ['__internal__graphEmissions'] : []),
+        ...(false ? ['__internal__graphEmissions'] : []),
       ];
       if (runtimeLoopEntryInputCountRequired) {
         journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
@@ -12364,21 +12264,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // inherit it into its own foreign-token keep scan.
     this.upgradeTokenContainerInputBase = -1;
     this.upgradeTokenBandActive = false;
-    const isUpgrade = node.routeMetaUpgradeRoute === true
+    const isUpgrade = false
       || node.modifiers.includes(FunctionModifier.UPGRADE);
     // A direct upgrade may mint the data NFTs a longer layout needs. A compiler-route upgrade appends inside the
     // final existing data NFT, and its route verifier already pins the participant block, so it keeps the
     // balanced census: the participant co-spends its own detached verifier NFT alongside the state, and the
     // exact-census pre-check would count that verifier as an extra own-category mutable input.
-    const upgradeMintsDataNfts = isUpgrade && node.routeMetaEligible !== true
-      && node.routeMetaUpgradeRoute !== true;
+    const upgradeMintsDataNfts = isUpgrade && true
+      && true;
     const isSelfdestruct = node.modifiers.includes(FunctionModifier.SELFDESTRUCT);
     const isSplit = node.modifiers.includes(FunctionModifier.SPLIT);
     const isMerge = node.modifiers.includes(FunctionModifier.MERGE);
     // A migrateRecords entry is the bounded per-record batch: it preserves the master and re-mints a co-spent
     // entry at the replacement-bound covenant, one entry per transaction, before the final upgrade moves it.
     const isMigrateRecords = node.modifiers.includes(FunctionModifier.MIGRATE_RECORDS)
-      && node.routeMetaUpgradeRoute !== true;
+      && true;
 
     // Split/merge: dedicated covenant verification (handled in later steps)
     if (isSplit) {
@@ -12543,7 +12443,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (verifiesOwnReads && hasExternalReads) {
         this.emitExternalReadVerification(node);
       }
-      if (hasExternalCalls && !node.graphEmissionHandler && !this.framedMaster) {
+      if (hasExternalCalls && !false && !this.framedMaster) {
         this.emitExternalCallVerification(node);
       }
       if (verifiesOwnReads && hasExternalOutStateReads) {
@@ -12577,7 +12477,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // that body settles its `retval` here like any other framed entry.
       const settlesProxyFallbackReturn = this.proxyFallbackRawReturn();
       if ((!this.functionHasDelegatecall || settlesProxyFallbackReturn) && node.isEntryPoint
-        && !node.graphEmissionHandler && !this.blockEndsWithRevert(node.body)) {
+        && !false && !this.blockEndsWithRevert(node.body)) {
         if (this.framedMaster) {
           if (this.framedReturnsValue) this.emitFramedReturnCheck(node);
         } else if (node.returnTypes.length > 0) {
@@ -12587,7 +12487,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         } else if (!this.isDefineSubTraversal && this.settlesUniversalVoidRecord(node)) {
           // Approach B: a void entry attests the method it ran as `digest || 0x01` at its carrier witness.
           this.emitUniversalVoidCallRecordSettlement({ location: node.location, positionHint: PositionHint.END });
-        } else if (!this.isDefineSubTraversal && !this.isCompilerRouteMetaRoute(node)) {
+        } else if (!this.isDefineSubTraversal && !false) {
           const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
           if (this.contractSettlesCallRecords()
             || (isStatefulContract && !this.framedMaster && node.name !== '__construct' && unsafeTier !== 0)) {
@@ -12630,7 +12530,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Minting uniqueness counts in the slot scans' passes when they walk the inputs anyway. A route row outside
       // lifecycle mode 0 skips it, so a lifecycle route keeps the guarded check rather than count on every row.
       this.mintCountFoldable = (scansSatoshi || scansForeign)
-        && !(this.currentFunctionIsRouteMetaRoute && this.getStackIndex(LIFECYCLE_MODE, true) >= 0);
+        && !(false && this.getStackIndex(LIFECYCLE_MODE_LOCAL, true) >= 0);
       // Master self-preservation + uniqueness (upgrade-aware)
       // 'upgrade' functions use emitUpgradeSelfPreservation (category/capability + replacement-bytecode witness)
       // Delegate functions: verify proxy's state transitions + delegate's own self-preservation
@@ -12663,14 +12563,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Selfdestruct: skip master self-preservation (contract is being destroyed).
         // Kernel bus rows authenticate retirement census in the detached verifier; keep the minting
         // uniqueness guard and the own-NFT bound only for direct (non-bus) spends.
-        if (!this.currentFunctionIsRouteMetaRoute && node.routeMetaEligible !== true) {
+        if (!false && true) {
           this.emitMintingNftUniqueness(node);
           this.emitSelfdestructOwnNftBound(node);
         }
       } else if (!this.functionHasDelegatecall && isStatefulContract && isSelfdestruct && !hasAnyStatefulAccess) {
         // Selfdestruct without state access: direct spends still verify minting uniqueness (M6).
         // Batch eligible handlers defer category census to selector-derived lifecycle mode 3.
-        if (!this.currentFunctionIsRouteMetaRoute && node.routeMetaEligible !== true) {
+        if (!false && true) {
           this.emitMintingNftUniqueness(node);
           this.emitSelfdestructOwnNftBound(node);
         }
@@ -12787,7 +12687,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // pass, where its edge refusal was, so a pad costs one short test, not a second walk. Any other route counts
       // them (emitRouteCarrierCount) and keeps the output pass its contract's entries share, whose route-only copy
       // costs that pass again in bytes.
-      const routeCarriers = this.isCompilerRouteMetaRoute(node) && isStatefulContract && !this.framedMaster;
+      const routeCarriers = false && isStatefulContract && !this.framedMaster;
       const scanRefusesCarriers = routeCarriers && !takesEventCensus && node.returnTypes.length === 0
         && (scansSatoshi || scansMutable || scansMints);
       this.emitSlotScans(scansSatoshi, scansForeign ? admitAnchor : undefined, scansMutable, scansMints,
@@ -12926,7 +12826,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.modifiers.includes(FunctionModifier.DELEGATE)) return;
     // A compiler-synthesized aggregate route or participant handler is reached through its authenticated verifier,
     // not a raw forwarded selector, so it is not this hole and must stay spendable.
-    if (this.isCompilerRouteMetaRoute(node) || this.ownsRouteMetaParticipantBlock(node)) return;
+    if (false || false) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_VERIFY, loc);
@@ -14703,7 +14603,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         line: node.location.start.line,
         variable: node.identifier.name,
         define: this.isDefineSubTraversal,
-        graphHandler: this.currentFunction.graphEmissionHandler === true,
+        graphHandler: false,
         stackSize: this.stack.length,
         targetDepth: this.getStackIndex(node.identifier.name, true),
         stack: env.SOLIDC_DEBUG_DYNAMIC_FRAME_STACK === '1' ? this.stack : undefined,
@@ -15232,7 +15132,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // generation outright.
       // Per-iteration vmap deletes (`for (i) delete m[k[i]]`) are the same class as loop writes: they have no
       // fixed `entry[N]` slot. collectMappingSlots follows the invoked clone, so the kernel row-dispatch
-      // `if (selector) handler()` would otherwise soft-delete-allocate `entry[0]` on `__compiler_route1`.
+      // `if (selector) handler()` would otherwise soft-delete-allocate `entry[0]` on an aggregate entry.
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (this.pendingEntryDeletes.has(slotIndex)) continue;
       this.preAllocateCondDeleteWrite(slotIndex, locationData);
@@ -15776,7 +15676,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
     const byId = new Map(functions.filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn]));
     const pending = node.functions.filter((fn) => fn.isEntryPoint && fn.modifiers.includes(FunctionModifier.UPGRADE)
-      && fn.routeMetaUpgradeRoute !== true && fn.routeMetaEligible !== true);
+      && true && true);
     const scanned = new Set<FunctionDefinitionNode>();
     let indirect = false;
     while (pending.length > 0) {
@@ -16364,7 +16264,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingDynamicWrites.set(sv.name, { valueStackName, sv, knownEmpty: false });
     this.preAllocatedDynamicWrites.add(sv.name);
     const writes = (this.currentFunction.dynamicWrites ??= []);
-    if (!this.currentFunction.routeMetaRouteReadOnlyDynamicResources?.includes(sv.name)
+    if (!false
       && !writes.includes(sv.name)) writes.push(sv.name);
   }
 
@@ -17779,27 +17679,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     const names = new Set(this.currentFunction.dynamicReads ?? []);
-    // Batch route handlers share one trailing band. Preserved dynamic resources (_name/_symbol, …)
-    // occupy slots from trailingBase before any mapping NEW; omitting those counts aliases NEW verifies onto
-    // chunk locks (take-job FakeToken input 225 EQUALVERIFY).
-    const sharesRouteBand = this.currentFunction.routeMetaRoute === true
-      || this.currentFunction.graphEmissionHandler === true;
-    const routePreserved = new Set(sharesRouteBand
-      ? this.currentFunction.routeMetaRouteDynamicResources ?? [] : []);
-    // Outlined entry-loop bodies often lose route dynamic projections; fall back so jobEvents NEWs do not
-    // land on preserved dynamic chunk slots (MDV1 take-job pad@163 vs entry@161).
-    if (sharesRouteBand && routePreserved.size === 0 && (
-      this.currentFunction.routeMetaRoute === true
-      || (this.currentFunction.name?.startsWith('__compiler_route') === true)
-      || this.isCompilerRouteMetaRoute()
-      || this.currentFunction.routeMetaEligible === true
-      || (this.currentFunction.entryLoopWrites?.length ?? 0) > 0
-    )) {
-      for (const sv of this.stateVariables) {
-        if (sv.isDynamic) routePreserved.add(sv.name);
-      }
-    }
-    for (const name of routePreserved) names.add(name);
     if (includeWrittenOldChunks) {
       for (const name of written) names.add(name);
     }
@@ -19648,8 +19527,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // or a subroutine one of those reaches. A compiler-route route fences its signatures in the route.
   private fencesUpgradeSignatures(): boolean {
     const fn = this.currentFunction;
-    if (!fn || this.framedMaster || this.currentFunctionIsRouteMetaRoute
-      || fn.routeMetaUpgradeRoute === true || fn.routeMetaEligible === true) return false;
+    if (!fn || this.framedMaster || false
+      || false || false) return false;
     const lifecycle = fn.modifiers.includes(FunctionModifier.UPGRADE)
       || fn.modifiers.includes(FunctionModifier.DEPLOY)
       || fn.modifiers.includes(FunctionModifier.SPLIT)
@@ -19975,48 +19854,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * push (and thus on top). The dispatcher uses OP_DEPTH OP_1SUB OP_ROLL to
    * pull the selector from the bottom.
    */
-  private bindRouteMetaPhysicalEntryArgument(
+  private bindPhysicalEntryArgument(
     argument: ExpressionNode,
-    targetParameter: ParameterNode | undefined,
-    targetFunc: FunctionDefinitionNode,
+    _targetParameter: ParameterNode | undefined,
+    _targetFunc: FunctionDefinitionNode,
   ): ExpressionNode {
-    if (!this.isCompilerRouteMetaRoute() || !(argument instanceof IdentifierNode)
-      || !targetParameter || argument.name !== targetParameter.name) return argument;
-    // A generated handler names compiler-owned entry witnesses in its LOCAL slot coordinates, while the
-    // aggregate route owns one union of every handler's entry accesses. Bind every per-entry witness family to
-    // the handler's published physical slot. Remapping only the chunk-value witnesses leaves sorted-batch
-    // topology arguments (slot/proof/next/predOut/rank) pointed at a same-numbered, unrelated route entry; the
-    // handler then compares its runtime key hash with a valid witness for the wrong collection or key.
-    const match = /^__internal__(valueWitness|(?:leading|complete)PushValue|vmapBatch(?:Slot|Proof|Next|PredOut|Rank))_(\d+)$/
-      .exec(targetParameter.name);
-    const physicalEntrySlots = targetFunc.routeMetaPhysicalEntryArgumentSlots
-      ?? targetFunc.routeMetaPhysicalEntrySlots;
-    if (!match || !physicalEntrySlots) return argument;
-    const localSlot = Number(match[2]);
-    const matchedEntryIndex = targetFunc.entryAccesses
-      ?.findIndex((entry) => entry.slotIndex === localSlot);
-    const localEntryIndex = matchedEntryIndex === undefined || matchedEntryIndex < 0
-      ? localSlot : matchedEntryIndex;
-    const physicalSlot = physicalEntrySlots[localEntryIndex];
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_BIND_ENTRY === '1') {
-      // eslint-disable-next-line no-console
-      console.error('bind-compiler-route-entry-argument', this.currentFunction.name, targetFunc.name,
-        argument.name, physicalEntrySlots, physicalSlot);
-    }
-    if (physicalSlot === undefined || physicalSlot === localSlot) return argument;
-    const physicalName = `__internal__${match[1]}_${physicalSlot}`;
-    if (!this.stack.includes(physicalName)) {
-      throw new Error(
-        `Missing physical entry argument '${physicalName}' while invoking '${targetFunc.name}' `
-          + `(local slot ${localSlot})`,
-      );
-    }
-    const bound = new IdentifierNode(physicalName);
-    bound.location = argument.location;
-    bound.type = argument.type ?? targetParameter.type;
-    return bound;
+    return argument;
   }
+
 
   /** Copy a contiguous fixed segment bank into a callee frame in reverse-argument order using constant code. */
   private emitKernelJournalSegmentCallArguments(
@@ -20180,7 +20025,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X91. Refuse a forwarded synthetic witness the caller cannot supply BEFORE anything is emitted - ahead of
     // the journal-context picks, the hidden-context pushes and the argument loop - so no partially lowered call
     // is left behind. Checked against this caller's stack rather than against the callee's effect list: the
-    // failure belongs to the call edge, which is why X42's graphEmissionHandler gate did not see it.
+    // failure belongs to the call edge, which is why X42's graph-handler gate did not see it.
     const witnessMiss = forwardedWitnessMiss(
       node.parameters, targetFunc, this.currentFunction, this.stack, this.constantExpressions,
     );
@@ -20195,7 +20040,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         (total, access) => total + access.transferCount + access.transferNftCount, 0,
       );
     const graphNftSites: Array<{ transferIndex: number; routeContainerSlot: number }> = [];
-    if (targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame?.tokenNftTransfers === true) {
+    if (false && targetFunc.graphEffectFrame?.tokenNftTransfers === true) {
       const seen = new WeakSet<object>();
       const collectNftSite = (candidate: unknown): void => {
         if (Array.isArray(candidate)) {
@@ -20269,7 +20114,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((name) => name === KERNEL_JOURNAL_RECORDS
         || name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
     const targetJournalContextNames = [
-      ...(targetFunc.graphRuntimeEmissionHandler && targetFunc.graphRuntimeEmissionThreaded
+      ...(false && targetFunc.graphRuntimeEmissionThreaded
         ? ['__internal__graphEmissions'] : []),
       ...(targetRuntimeLoopEntryInputCount
         ? [
@@ -20290,7 +20135,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...targetJournalContextNames,
     ];
     let hiddenContextCount = 0;
-    if (targetFunc.graphEmissionHandler || targetReturnedContextNames.length > 0) {
+    if (false || targetReturnedContextNames.length > 0) {
       // Capture the physical boundary before adding any invocation operands. Handler epilogues use it to avoid
       // classifying the caller's live route frame as untracked temporary data.
       this.emit(Op.OP_DEPTH, locationData);
@@ -20327,29 +20172,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(contextName);
       hiddenContextCount += 1;
     }
-    if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
+    if (false && !targetFunc.graphRuntimeEmissionThreaded) {
       this.emitGraphEmissionStreamRead(locationData);
       this.pushToStack(`(__graph_emissions_arg_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (targetFunc.graphEmissionHandler && this.contractUsesMsgValue) {
+    if (false && this.contractUsesMsgValue) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (!this.stack.includes('__compiler_route_graph_msg_value')) {
+      if (!false) {
         throw new Error(`Missing authenticated logical msg.value while invoking '${targetFunc.name}'`);
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_msg_value'))), contextLoc);
+      this.emit(encodeInt(BigInt(-1)), contextLoc);
       this.emit(Op.OP_PICK, contextLoc);
       this.pushToStack(`(__handler_msg_value_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if ((targetJournalSlots.length > 0 || targetFunc.graphEmissionHandler)
+    if ((targetJournalSlots.length > 0 || false)
       && this.contractUsesMsgData) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (targetFunc.graphEmissionHandler) {
-        if (!this.stack.includes('__compiler_route_graph_msg_data')) {
+      if (false) {
+        if (!false) {
           throw new Error(`Missing logical graph calldata while invoking '${targetFunc.name}'`);
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_msg_data'))), contextLoc);
+        this.emit(encodeInt(BigInt(-1)), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else if (this.stack.includes('__internal__handlerMsgData')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), contextLoc);
@@ -20360,10 +20205,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_msg_data_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if ((targetJournalSlots.length > 0 || targetFunc.graphEmissionHandler)
+    if ((targetJournalSlots.length > 0 || false)
       && this.contractUsesMsgSig) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (targetFunc.graphEmissionHandler) {
+      if (false) {
         if (!this.stack.includes('rowSelector')) {
           throw new Error(`Missing logical graph selector while invoking '${targetFunc.name}'`);
         }
@@ -20380,14 +20225,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (targetFunc.usesMsgSender) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (targetFunc.graphEmissionHandler && this.stack.includes('__compiler_route_graph_caller')) {
-        this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_caller'))), contextLoc);
+      if (false && false) {
+        this.emit(encodeInt(BigInt(-1)), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
-      } else if (targetFunc.graphEmissionHandler && this.stack.includes('__internal__graphCallers')) {
+      } else if (false && this.stack.includes('__internal__graphCallers')) {
         // A real graph route authenticates one caller per row. Local compiler-route event/transfer handlers reuse
         // the graph-emission frame machinery too, but have no caller vector and correctly fall through to the
         // route's ordinary authenticated sender context below.
-        if (!this.stack.includes('__compiler_route_graph_caller')) {
+        if (!false) {
           throw new Error(`Missing authenticated graph caller while invoking '${targetFunc.name}'`);
         }
       } else if (this.framedMaster && node.fromThisCall) {
@@ -20432,7 +20277,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_selector_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
+    if (false && !false) {
       // One physical participant may represent several source callsites. Each logical invocation still owns an
       // authenticated transcript row, so expand the collapsed slot before consuming the emission stream.
       const logicalSlots = (targetFunc.externalCalls ?? []).flatMap((slot) => (
@@ -20496,11 +20341,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // discarding its temporary construction names, or later declared-argument OP_PICKs are one slot shallow.
       for (const result of emissionResults) this.pushToStack(result);
     }
-    if (targetFunc.graphEmissionHandler) {
-      if (!this.stack.includes('__compiler_route_call_options')) {
+    if (false) {
+      if (!false) {
         throw new Error(`Missing authenticated call mode while invoking '${targetFunc.name}'`);
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_call_options'))), locationData);
+      this.emit(encodeInt(BigInt(-1)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack(`(__graph_static_mode_${targetFunc.functionId})`);
       this.emit(Op.OP_0, locationData);
@@ -20509,18 +20354,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // X29. Which owner-local effect frame this invocation owns. OP_DEFINE declares this context before its
     // graph-result contexts, so it is pushed after the authenticated results and therefore sits above them.
-    if (targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame) {
+    if (false && targetFunc.graphEffectFrame) {
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('__compiler_route_row');
+        const rowIndex = -1;
         if (rowIndex < 0) {
-          throw new Error(`Runtime graph effect site missing loop variable '__compiler_route_row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime graph effect site missing loop variable '(runtime site)' at a call to '${targetFunc.name}'`);
         }
         this.emit(encodeInt(BigInt(rowIndex)), locationData);
         this.emit(Op.OP_PICK, locationData);
       } else if (node.graphEffectSite === undefined) {
         throw new Error(`Unplanned graph effect frame at a call to '${targetFunc.name}'`);
       } else {
-        this.emit(encodeInt(BigInt(node.graphEffectSite)), locationData);
+        this.emit(encodeInt(BigInt(node.graphEffectSite!)), locationData);
       }
       this.pushToStack(`(__graph_effect_site_${targetFunc.functionId})`);
       hiddenContextCount += 1;
@@ -20654,7 +20499,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = node.parameters.length - 1; i >= 0; i--) {
       if (skipArg(i)) continue;
       const targetParameterName = targetFunc.parameters[i]?.name;
-      const argument = this.bindRouteMetaPhysicalEntryArgument(
+      const argument = this.bindPhysicalEntryArgument(
         node.parameters[i], targetFunc.parameters[i], targetFunc,
       );
       if (targetParameterName?.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) {
@@ -20747,7 +20592,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = targetReturnedContextNames.length - 1; i >= 0; i--) {
       this.pushToStack(`(__returned_context_${targetFunc.functionId}_${i})`);
     }
-    if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
+    if (false && !targetFunc.graphRuntimeEmissionThreaded) {
       // The handler epilogue canonicalizes the retained bank with its runtime-emission cursor first, so the
       // returned cursor sits above every returned journal context. The cursor is not a declared context of this
       // caller, but it is one physical member of the bank, so model it to keep the tracked depth equal to the
@@ -20844,13 +20689,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // reserved event ordinals this dispatch does NOT own. Keyed on the reached handler's OWN emit count for the
     // same reason SEC-8 keys the transfer flag that way: the shared frame's `eventWidth` is a group maximum, so
     // a dispatch of an emit-free sibling would otherwise claim a window and exempt it from the binding.
-    if (this.graphEventSiteActive && targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame
+    if (this.graphEventSiteActive && false && targetFunc.graphEffectFrame
       && (targetFunc.emitInfos?.length ?? 0) > 0 && this.stack.includes(GRAPH_EVENT_SITE)) {
       this.emitPickCompilerRouteFrameValue(GRAPH_EVENT_SITE, locationData);
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('__compiler_route_row');
+        const rowIndex = -1;
         if (rowIndex < 0) {
-          throw new Error(`Runtime event site missing loop variable '__compiler_route_row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime event site missing loop variable '(runtime site)' at a call to '${targetFunc.name}'`);
         }
         // Mask was just PICK'd untracked; the subsequent `1` is untracked too.
         this.emit(encodeInt(1n), locationData);
@@ -20877,13 +20722,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitReplaceCompilerRouteFrameValue(GRAPH_EVENT_SITE, node);
       this.popFromStack();
     }
-    if (this.graphDeploySiteActive && targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame
+    if (this.graphDeploySiteActive && false && targetFunc.graphEffectFrame
       && hasDirectChildDeployment(targetFunc.body) && this.stack.includes(GRAPH_DEPLOY_SITE)) {
       this.emitPickCompilerRouteFrameValue(GRAPH_DEPLOY_SITE, locationData);
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('__compiler_route_row');
+        const rowIndex = -1;
         if (rowIndex < 0) {
-          throw new Error(`Runtime deploy site missing loop variable '__compiler_route_row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime deploy site missing loop variable '(runtime site)' at a call to '${targetFunc.name}'`);
         }
         this.emit(Op.OP_1, locationData);
         this.emit(encodeInt(BigInt(rowIndex + 2)), locationData);
@@ -20897,15 +20742,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitReplaceCompilerRouteFrameValue(GRAPH_DEPLOY_SITE, node);
       this.popFromStack();
     }
-    const graphTokenInvocation = this.graphTokenSiteActive && targetFunc.graphEmissionHandler
+    const graphTokenInvocation = this.graphTokenSiteActive && false
       && targetFunc.graphEffectFrame && targetTokenTransferCount > 0
       && this.stack.includes(GRAPH_TOKEN_SITE);
     const nftOccurrenceDelta = '(__graph_token_occurrence_delta)';
     if (graphTokenInvocation) {
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('__compiler_route_row');
+        const rowIndex = -1;
         if (rowIndex < 0) {
-          throw new Error(`Runtime token site missing loop variable '__compiler_route_row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime token site missing loop variable '(runtime site)' at a call to '${targetFunc.name}'`);
         }
         this.emit(encodeInt(1n), locationData);
         // Only the `1` is temporarily above the tracked row here. (The event accumulator also has its old mask
@@ -21037,7 +20882,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // External return data has one schema-wide representation. The consumer makes this same decision before
     // decoding, so mixing EVM words for some fields with compact pushdata for others is never sound.
     const evmEntrypointReturn = publishesEntrypointReturn
-      && !this.currentFunctionIsRouteMetaRoute
+      && !false
       && usesEvmResultWords(returnTypes, this.compilerOptions);
 
     // Evaluate return expressions - they will be left on the stack
@@ -21101,7 +20946,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // removing parameters/locals, then place the context above the ordinary
     // results. visitUserFunctionCall consumes the context first and exposes
     // only the declared return tuple to the source expression.
-    const graphEmissionContext = this.currentFunction.graphRuntimeEmissionHandler
+    const graphEmissionContext = false
       && this.stack.includes('__internal__graphEmissions');
     const runtimeCardinalityNames = this.currentFunction.parameters
       .map((parameter) => parameter.name)
@@ -21111,7 +20956,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .map((parameter) => parameter.name)
       .filter((name) => name === KERNEL_JOURNAL_RECORDS
         || name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
-    if (this.isDefineSubTraversal && (this.currentFunction.graphEmissionHandler
+    if (this.isDefineSubTraversal && (false
       || this.activeJournalSlots.length > 0 || graphEmissionContext
       || this.runtimeLoopEntryInputCountActive || this.runtimeLoopEntryJournalCountActive
       || this.runtimeLoopEntryOutputCountActive
@@ -21141,13 +20986,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // return has evaluated the source result. Preserve the authenticated invocation context and effect values
       // until that epilogue runs; treating the compiler-added collection-journal result like an ordinary
       // internal return previously discarded the event blob and skipped the whole graph-effect epilogue.
-      const graphEffectNames = this.currentFunction.graphEmissionHandler ? [
+      const graphEffectNames = false ? [
         GRAPH_EFFECT_SITE,
         GRAPH_STATIC_DIRTY,
         GRAPH_STATIC_MODE,
         GRAPH_HANDLER_CALLER_DEPTH,
         OWNER_ANCHOR_LOCAL,
-        ...(this.usesRouteMetaOwnerBlockBase() ? ['__internal__routeMetaOwnerInput'] : []),
         ...graphDeployDependencies,
         ...this.pendingEmits.flatMap((emit) => [emit.stackName, emit.identityStackName]),
         ...this.pendingTransfers.flatMap((transfer) => [
@@ -21901,28 +21745,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // `target.code.length`, so answer that exact question from the logical BCH address without attempting the
     // ordinary fixed-slot redeem-script lookup. P2SH20 and P2SH32 locking bytecodes are respectively 23 and 35
     // bytes; EOAs (P2PKH) are 25 bytes. The reached callsite still consumes and authenticates the target row.
-    if (node.operator === UnaryOperator.SIZE && node.expression instanceof FieldAccessNode
-      && node.expression.name === 'code' && this.currentFunction.graphRuntimeEmissionHandler) {
-      const addressExpression = node.expression.expression;
-      const addressParam = addressExpression instanceof IdentifierNode ? addressExpression.name : undefined;
-      const authenticatedSlot = (addressParam === undefined
-        ? undefined : this.externalCallSlots.find((slot) => slot.addressParam === addressParam))
-        ?? this.externalCallSlots.find((slot) => slot.interfaceName === '__raw__');
-      if (authenticatedSlot) {
-        this.visit(addressExpression);
-        this.emit(Op.OP_SIZE, locationData);
-        this.emit(Op.OP_NIP, locationData);
-        this.emit(Op.OP_DUP, locationData);
-        this.emit(encodeInt(23n), locationData);
-        this.emit(Op.OP_NUMEQUAL, locationData);
-        this.emit(Op.OP_SWAP, locationData);
-        this.emit(encodeInt(35n), locationData);
-        this.emit(Op.OP_NUMEQUAL, locationData);
-        this.emit(Op.OP_BOOLOR, locationData);
-        this.stack[0] = '(value)';
-        return node;
-      }
-    }
 
     // A bounded chunk-packed array always holds its N elements: `.length` is the constant bound. So is the length of
     // a bound past the safe-integer range, whose blob can never hold its elements.
@@ -23314,7 +23136,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         line: node.location.start.line,
         variable: node.name,
         define: this.isDefineSubTraversal,
-        graphHandler: this.currentFunction.graphEmissionHandler === true,
+        graphHandler: false,
         stackSize: this.stack.length,
         targetDepth: this.getStackIndex(node.name, true),
         stack: env.SOLIDC_DEBUG_DYNAMIC_FRAME_STACK === '1' ? this.stack : undefined,
@@ -23969,7 +23791,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         line: node.location.start.line,
         variable: node.name,
         define: this.isDefineSubTraversal,
-        graphHandler: this.currentFunction.graphEmissionHandler === true,
+        graphHandler: false,
         stackSize: this.stack.length,
         pendingValue: pending?.valueStackName,
         pendingDepth: pending ? this.getStackIndex(pending.valueStackName) : undefined,
@@ -24400,7 +24222,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !(this.currentFunction.collectionJournal
         && (node.name.startsWith('__cj_') || node.name.startsWith('__dcj_')))
       // A bound route's record pin reads its journal dirty words after the flushes (emitRouteBlockClaims).
-      && !(this.currentFunction.routeMetaRecordClaims !== undefined && node.name.startsWith('__cj_cache_dirty_mask_'))
+      && !(false && node.name.startsWith('__cj_cache_dirty_mask_'))
       && this.currentFunction.opRolls.get(node.name) === node && this.scopeDepth === 0;
   }
 
@@ -24875,15 +24697,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // stated recipient. Mode-3 verifier census still authenticates category retirement.
   visitSelfdestructStatement(node: SelfdestructStatementNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
-    // false defaults on for ordinary compiles, and `currentContractHasRouteMeta` is still false
-    // during the first contract visit (route synthesis sets routeMetaRoute afterward). Key the pin fork on
-    // the explicit user-facing `routeMeta: true` request instead. Standalone selfdestruct keeps the whole-tx
-    // single-output + fee-floor covenant.
-    const kernelRouteMetaRetirement = false
-      && false
-      && this.currentFunction?.modifiers.includes(FunctionModifier.SELFDESTRUCT) === true;
+    // Standalone selfdestruct keeps the whole-tx single-output + fee-floor covenant.
     node.recipient = this.visit(node.recipient);          // [recipient_lb]
-    if (kernelRouteMetaRetirement) {
+    if (false) {
       // Recipient pin only: mode-3 verifier census already requires token-free reclaim + conserved sats.
       this.emit(Op.OP_INPUTINDEX, locationData);          // [recipient_lb, base]
       this.pushToStack('(value)');
@@ -28163,7 +27979,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // each child row using that row's published external-result encoding, so a non-EVM schema must use the
     // canonical compact tuple encoder without changing the source-language builtin.
     const compatibilityAbi = this.compilerOptions.evmCompat;
-    const routeResultEncoding = this.currentFunction.routeMetaRoute
+    const routeResultEncoding = false
       ? externalResultEncoding(node.parameters.map((parameter) => parameter.type!), this.compilerOptions)
       : undefined;
     if (compatibilityAbi && routeResultEncoding !== 'compact-pushdata-v1') {
@@ -28325,7 +28141,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A decoded raw graph edge authenticates these arguments AGAIN against the participant row. The source
     // payload still has to be constructed, but its last-use marks predate graph verification: consuming an
     // inlined argument here leaves that verifier with a dangling local. Keep the values until the row check.
-    const graphRawPayload = this.currentFunction.graphEmissionHandler
+    const graphRawPayload = false
       && this.externalCallSlots.some((slot) => slot.interfaceName === '__raw__'
         && slot.rawSelector && slot.rawParameters !== undefined);
     if (graphRawPayload) this.graphRawPayloadEncodeDepth += 1;
@@ -28875,7 +28691,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // verbatim locking-bytecode leaf encoding instead (see `encodingReferenceDataValue`).
       if ((this.compilerOptions.evmCompat)
         && type instanceof AddressType
-        && this.currentFunction?.graphEmissionHandler === true
+        && false
         && !this.encodingReferenceDataValue) {
         this.emitGraphEmissionAddressLane(locationData);
       }
@@ -29772,7 +29588,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitStateAccess(node: StateAccessNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
-    if (this.currentFunction?.graphEmissionHandler === true
+    if (false
       && (globalThis as { process?: { env?: Record<string, string> } }).process
         ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
       // A state read inside a graph emission handler is served from the handler's pre-allocated cache lane, which the
@@ -29913,7 +29729,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         stateVariable: node.stateVariable?.name,
         dynamic: node.stateVariable?.isDynamic,
         define: this.isDefineSubTraversal,
-        graphHandler: this.currentFunction.graphEmissionHandler === true,
+        graphHandler: false,
         stackSize: this.stack.length,
       }));
     }
@@ -30540,9 +30356,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The entry point lays out and binds a callee; an invoked body has none of it, so a call left there would run
     // unchecked. A compiler-route build's own bodies are the route's, which binds their calls per row.
     if (this.isDefineSubTraversal && !this.isUnemittedDefine && this.directConvention
-      && !this.currentFunction.name.startsWith('__compiler_route') && !this.currentFunction.graphEmissionHandler
-      && !this.currentFunction.graphRuntimeEmissionHandler && !this.currentFunction.routeMetaDetachedSignatureHandler
-      && !this.isCompilerRouteMetaRoute()) {
+      && !false && !false
+      && !false && !false
+      && !false) {
       throw new SolidcDiagnosticError(
         'EXTERNAL_CALL_IN_SUBROUTINE',
         `'${this.currentFunction.name}' makes the external call ${node.interfaceName}.${node.functionName} inside an `
@@ -30646,52 +30462,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } satisfies ExternalCallSlot;
     // Both graph paths return before ordinary call lowering. Queue the reached raw call's payment before
     // either reconstructs its result, so runtime-emission handlers also settle their compiler-owned slot.
-    if ((this.currentFunction.graphEmissionHandler || this.currentFunction.graphRuntimeEmissionHandler)
-      && node.interfaceName === '__raw__' && node.callOptions?.value && node.valueTransferIndex >= 0) {
-      // The recipient where the call runs (lowLevelCallSiteTarget): a write of it before the call is the one paid.
-      const target = this.lowLevelCallSiteTarget(node, node.addressExpression);
-      const address = this.getAddressParamFromTarget(target);
-      // Payment is evaluated before the emission's calldata/target replay. Copies must not consume an
-      // identifier merely because source-order liveness marked its call-option occurrence as the final use.
-      const value = cloneNode(node.callOptions.value) as ExpressionNode;
-      node.callOptions.value = address
-        ? this.emitValueTransfer(node.valueTransferIndex, value, address, locationData, node)
-        : this.emitValueTransferToExpression(
-          node.valueTransferIndex, value, cloneNode(target) as ExpressionNode, locationData, node,
-        );
-    }
-    if (this.currentFunction.graphRuntimeEmissionHandler) {
-      if (!graphEmissionSlot) throw new Error(
-        `Runtime graph call '${node.interfaceName}.${node.functionName}' in '${this.currentFunction.name}' `
-        + `lacks compiler metadata (slot ${node.callInfo?.externalCallSlotIndex ?? 'unset'}, `
-        + `slots ${this.externalCallSlots.map((slot) => `${slot.interfaceName}.${slot.functionName}`).join(', ')})`,
-      );
-      // A target the body wrote after its compiler local read it is read again here (lowLevelCallSiteTarget).
-      const target = this.lowLevelCallSiteTargets.get(node);
-      if (this.graphStraightRuntimeMode) {
-        this.verifyGraphEmissionRow(graphEmissionSlot, this.currentFunction, node.parameters, locationData, {
-          disposition: 'defer-whole-vector', parametersAreCallArguments: true, ...(target !== undefined && { target }),
-        });
-        const rowName = `(__graph_straight_row_${this.graphStraightRuntimeRows.length})`;
-        this.stack[0] = rowName;
-        this.graphStraightRuntimeRows.push(rowName);
-        return node;
-      }
-      this.consumeGraphRuntimeEmissionRow(graphEmissionSlot, node.parameters, node, locationData, target);
-      if (node.opaqueReturn) {
-        // A reached graph edge is successful or the co-spend aborts. Pair that success bit with the exact
-        // producer-authenticated blob peeled from this occurrence's row.
-        this.emit(Op.OP_1, locationData);
-        this.pushToStack('(success)');
-        this.emit(Op.OP_SWAP, locationData);
-        const result = this.stack[1];
-        this.stack[1] = this.stack[0];
-        this.stack[0] = result;
-        this.stack[0] = '(returnData)';
-      }
-      return node;
-    }
-    if (this.currentFunction.graphEmissionHandler) {
+    if (false) {
       const returnTypes = physicalSlot?.returnTypes ?? node.callInfo?.returnTypes ?? [];
       if (node.opaqueReturn) {
         if (node.discardedOpaqueReturn) return node;
@@ -31385,9 +31156,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         disposition,
         hasReturnValues: slot.hasReturnValues,
         parametersAreCallArguments,
-        graphEmissionHandler: handler.graphEmissionHandler === true,
         isDefineSubTraversal: this.isDefineSubTraversal,
-        isRoute: this.isCompilerRouteMetaRoute(),
+        isRoute: false,
         modelLength: this.stack.length,
         expectedIndex: this.getStackIndex('__internal__graphEmissions', true),
         outputLength: this.output.length,
@@ -32255,7 +32025,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       modelTop: this.stack.slice(0, 8),
       expectedIndex: this.getStackIndex('__internal__graphEmissions', true),
       isDefineSubTraversal: this.isDefineSubTraversal,
-      graphEmissionHandler: this.currentFunction.graphEmissionHandler === true,
     }));
   }
 
@@ -32656,8 +32425,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private bindsRawCalleeReader(node: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
     return slot.interfaceName === '__raw__' && slot.functionName === '__raw__' && this.keepsState()
       && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
-      && this.directConvention && !this.framedMaster && !this.inGenesisMode && !node.graphEmissionHandler
-      && !this.isCompilerRouteMetaRoute(node);
+      && this.directConvention && !this.framedMaster && !this.inGenesisMode && !false
+      && !false;
   }
 
   /**
@@ -33217,7 +32986,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || (!inLoop && (slot.loopArrayVar || slot.inlineLoopDispatch))
       || slot.batchInvocations || slot.addressIsSelf || slot.callOrdinal !== undefined) return undefined;
     if ((!inLoop && (this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot)))
-      || this.isCompilerRouteMetaRoute()
+      || false
       || this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
         && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) return undefined;
     // A call whose record digests its arguments (emitCallerCallRecordDigest) is bound there, a loop's call from the
@@ -33251,7 +33020,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return undefined;
     if (slot.batchInvocations || slot.addressIsSelf || slot.callOrdinal !== undefined
       || this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot)
-      || this.isCompilerRouteMetaRoute()
+      || false
       || this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
         && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) return undefined;
     if (slot.hasReturnValues && slot.callRecordSelector !== undefined
@@ -33732,7 +33501,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDelegateInputIndex(
     node: LowLevelCallNode | LowLevelCallStatementNode, locationData: SingleLocationData,
   ): void {
-    if (this.currentFunction.graphEmissionHandler) {
+    if (false) {
       const nftCount = this.currentFunction.requiredNftIndices?.length
         ?? new Set(this.stateVariables.map((state) => state.nftIndex ?? 0)).size;
       this.emitMasterInputIndex(locationData);
@@ -33787,11 +33556,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Only a build that lowers raw calls to compiler-route edges routes them. A direct build's raw external call (an
     // option-free one, or one whose payload names a function that declares a result) routes nothing, and a
     // low-level call beside it keeps its own pin.
-    const routeMetaMode = (this.compilerOptions as { __routeMetaMode?: 'auto' | 'enabled' | 'required' })
-      .__routeMetaMode;
-    const routesRawCalls = false
-      || routeMetaMode === 'enabled' || routeMetaMode === 'required';
-    return routesRawCalls && this.externalCallSlots.some((slot) => slot.interfaceName === '__raw__');
+    return false;
   }
 
   // ===== Mapping (Entry NFT) Support =====
@@ -34127,7 +33892,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSortedKeyHash(
     node: MappingAccessNode | MappingAssignNode | MappingDeleteNode, slotIndex: number, loc: SingleLocationData,
   ): void {
-    const physicalSlotIndex = this.routeMetaPhysicalEntrySlot(slotIndex);
+    const physicalSlotIndex = this.physicalEntrySlot(slotIndex);
     const localEntrySlot = this.entrySlots[slotIndex];
     const numKeys = node.keys.length;
     // Accumulate H(k0)++H(k1)++... on the stack. The running accumulator is kept TRACKED as '(__skh_acc)' during
@@ -34157,7 +33922,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // the compile-time tracker remains internally consistent. Copy route-owned keys by their stable bottom
         // ordinal, matching the topology/value witness capsule convention. Ordinary functions and synthesized
         // locals keep the smaller top-relative form because their frames can begin above an OP_INVOKE return item.
-        const routeOwnedParameter = this.isCompilerRouteMetaRoute()
+        const routeOwnedParameter = false
           && this.currentFunction.parameters.some((parameter) => parameter.name === keyParamName);
         if (routeOwnedParameter) {
           this.emitPickTrackedFromBottom(keyParamName, loc);
@@ -34238,7 +34003,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitStagedOwnerRead(node, slotIndex, loc);
       return node;
     }
-    const routeBatch = this.ownsRouteMetaParticipantBlock()
+    const routeBatch = false
       && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex)) ?? false)
       && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${slotIndex}`), true) >= 0;
     if (routeBatch) {
@@ -34321,7 +34086,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const sharedProofPrior = this.entrySlots[slotIndex]?.sharedProofPriorSlot;
     if (sharedProofPrior !== undefined && !this.readsRecordsFromFrame && !routeBatch
-      && !this.isCompilerRouteMetaRoute()) {
+      && !false) {
       this.emitSharedProofRedirect(collection.name, sharedProofPrior, loc);
     }
     if (this.activityAliasWrite(slotIndex)) {
@@ -34346,7 +34111,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // its own frame, where an entry index authenticated in the caller's must not be reinterpreted.
       if ((valueType instanceof IntType || valueType === PrimitiveType.BIGINT) && !routeBatch
         && runtimeAliasPriors.length === 0 && !this.currentFunctionIsDelegate && !this.usesProxyStateBlockBase()
-        && !this.isCompilerRouteMetaRoute() && this.directConvention) {
+        && !false && this.directConvention) {
         this.emitSortedIntReadProof(loc);
         this.pushToStack('(value)');
         if (composeWrites.length > 0) this.emitComposeReadFold(composeWrites, loc);
@@ -34659,7 +34424,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Delegate functions keep the proxy master index on the altstack. OP_INVOKE temporarily places its return
       // address above that value, so this helper's category check would read the return address as the proxy index.
       // Keep the delegate-sensitive verifier inline; ordinary functions still share the helper.
-      if (!this.currentFunctionIsDelegate && !this.usesRouteMetaOwnerBlockBase()
+      if (!this.currentFunctionIsDelegate && !false
         && !this.readsRecordsFromFrame && this.subroutineDefined.get(id)) {
         // Copy the arbitrarily-positioned fields into the helper's canonical frame. Each copy increases the depth of
         // the still-original fields by one. The original output index is copied last, then dropped after the helper
@@ -34763,7 +34528,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * appended old-chunk lock would only widen the output slot scan.
    */
   private outsideLayoutWalkReadsChunkLockList(): boolean {
-    return !this.isDefineSubTraversal && !this.isCompilerRouteMetaRoute()
+    return !this.isDefineSubTraversal && !false
       && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
   }
 
@@ -34784,7 +34549,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private routePinReadsChunkLockList(): boolean {
     if (this.isDefineSubTraversal) return this.chunkLockListBandOrdinal() !== undefined;
-    return this.isCompilerRouteMetaRoute() && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
+    return false && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
   }
 
   /**
@@ -34891,8 +34656,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         vIndex: this.getStackIndex(vName),
         expression: assignment?.expression instanceof IdentifierNode
           ? assignment.expression.name : assignment?.expression?.constructor.name,
-        oldWitness: assignment?.routeMetaRuntimeOldValueWitness?.array instanceof IdentifierNode
-          ? assignment.routeMetaRuntimeOldValueWitness.array.name : undefined,
+        oldWitness: assignment?.runtimeLoopOldValueWitness?.array instanceof IdentifierNode
+          ? assignment.runtimeLoopOldValueWitness.array.name : undefined,
         arrayPush: assignment?.arrayPush === true,
         stack: this.stack.slice(0, 80),
       }));
@@ -35151,7 +34916,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ) ?? false;
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
-    const routeScalarWitness = this.isCompilerRouteMetaRoute() && !inBatch
+    const routeScalarWitness = false && !inBatch
       && this.getStackIndex(`__internal__vmapBatchSlot_${slotIndex}`, true) >= 0;
     const mayKeepValue = !routeScalarWitness && this.sortedWriteMayKeepValue(node);
     let keptValue = false;
@@ -35484,7 +35249,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         pinsCollectionOutputCount,
         extraCollectionOutputs: extraCollectionOutputs.toString(),
         sameCollectionOthers,
-        physicalSlots: this.currentFunction.routeMetaPhysicalEntrySlots,
       });
     }
 
@@ -35599,7 +35363,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const routeHasDynamicBase = routeScalarWitness
         && this.getStackIndex('__internal__dynamicChunkInputBase', true) >= 0;
       const delegateNeedsChunkProbe = this.usesDelegateTransactionSuffix()
-        && (this.currentFunction.routeMetaRouteDynamicResources?.length ?? 0) > 0
+        && (0) > 0
         && (this.currentFunction.dynamicWrites?.length ?? 0) === 0;
       if (routeHasDynamicBase) {
         this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc, 5);
@@ -35609,7 +35373,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Direct proxy calls put the sorted entry before old dynamic chunks. Compiler-owned participants preserve
         // those chunks at the leading trailing coordinates, and both paths invoke this same handler body.
         const leadingChunks = [...new Set([
-          ...(this.currentFunction.routeMetaRouteDynamicResources ?? []),
+          ...([]),
           ...(this.currentFunction.dynamicReads ?? []),
         ])]
           .map((name) => this.stateVariables.find((variable) => variable.name === name && variable.isDynamic))
@@ -35785,20 +35549,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // contract has no handler-admission boundary, so expose a source-positioned compile error instead of publishing
       // a function which can only fail. A compiler-generated compiler-route contract does have that boundary: retain an
       // explicit dead arm there so the enclosing admission pass can refuse only the implicated handler and preserve
-      // its siblings. `currentContractHasRouteMeta` distinguishes that generated context from detached/speculative
-      // passes whose options deliberately set `routeMeta: false`.
-      const sourceDirectCodegen = (this.compilerOptions as CompilerOptions & {
-        __routeMetaExplicitlyDisabled?: boolean;
-      }).__routeMetaExplicitlyDisabled === true;
-      if (sourceDirectCodegen) {
-        throw new SortedMappingCodegenPendingError(node, node.collection.name,
-          `The verified-mapping write on '${node.collection.name}' in runtime loop `
-          + `'${this.currentFunction.name}' does not match a supported insert or update loop shape.`);
-      }
-      const loc = { location: node.location, positionHint: PositionHint.END };
-      this.emit(Op.OP_0, loc);
-      this.emit(Op.OP_VERIFY, loc);
-      return node;
+      // its siblings. A generated context is distinguished from detached/speculative passes by its own options.
+      throw new SortedMappingCodegenPendingError(node, node.collection.name,
+        `The verified-mapping write on '${node.collection.name}' in runtime loop `
+        + `'${this.currentFunction.name}' does not match a supported insert or update loop shape.`);
     }
     // Sorted (vmap linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
     // write. Always an UPSERT (update the value if the key is present, else insert) - this is how `m[k]=false` /
@@ -36414,7 +36168,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private refuseDirectStaleSortedReads(fn: FunctionDefinitionNode): void {
     this.directKeptSortedWrites = new WeakSet();
     this.directServedSortedReads = new WeakSet();
-    if (this.framedMaster || fn.body === undefined || this.ownsRouteMetaParticipantBlock(fn)) return;
+    if (this.framedMaster || fn.body === undefined || false) return;
     type Pending = { readonly shape?: string; readonly write?: Node };
     type Flow = Map<number, Pending>;
     const isWrite = (node: Node): node is MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode =>
@@ -37211,7 +36965,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         line: node.location.start.line,
         collection: collection.name,
         slotIndex,
-        physicalSlotIndex: this.routeMetaPhysicalEntrySlot(slotIndex),
+        physicalSlotIndex: this.physicalEntrySlot(slotIndex),
         sortedRmw,
         arrayPush: node.arrayPush === true,
         arrayPop: node.arrayPop === true,
@@ -37228,7 +36982,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let untrackedCount = 1;
 
     if (sortedRmw && runtimeOldWitness) {
-      const witness = node.routeMetaRuntimeOldValueWitness;
+      const witness = node.runtimeLoopOldValueWitness;
       if (!witness) throw new Error('Runtime mapping-array mutation is missing its old-value witness');
       this.visit(witness);
       // Phase 2 intentionally manages the materialized blob as untracked stack state.
@@ -37676,7 +37430,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         trailingMembers: node.trailingMembers,
         collection: node.collection?.name,
         define: this.isDefineSubTraversal,
-        graphHandler: this.currentFunction.graphEmissionHandler === true,
+        graphHandler: false,
         stackSize: this.stack.length,
       }));
     }
@@ -38080,16 +37834,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // A direct contract has no handler boundary, so this stays a source error. A compiler-route route can
         // reach a counter delete after a parent loop already owns the upsert setup. Keep the explicit dead
         // arm the assign path uses so admission can keep the handler whose body published the rank stream.
-        const sourceDirectCodegen = (this.compilerOptions as CompilerOptions & {
-          __routeMetaExplicitlyDisabled?: boolean;
-        }).__routeMetaExplicitlyDisabled === true;
-        if (sourceDirectCodegen) {
-          throw new SortedMappingCodegenPendingError(node, node.collection.name);
-        }
-        const unmatched = { location: node.location, positionHint: PositionHint.END };
-        this.emit(Op.OP_0, unmatched);
-        this.emit(Op.OP_VERIFY, unmatched);
-        return node;
+        throw new SortedMappingCodegenPendingError(node, node.collection.name);
       }
       const vt = node.collection.innermostValueType;
       if (this.sortedValueKind(vt) !== null) {
@@ -38148,7 +37893,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** The layout half of settlesSortedTargetsByActivity, as the SDK reads it. */
   private settlesSortedTargetsByActivityLayout(node: FunctionDefinitionNode): boolean {
     if (!this.directConvention || this.framedMaster || this.readsRecordsFromFrame
-      || this.isCompilerRouteMetaRoute(node)) return false;
+      || false) return false;
     const runtime = new Set(this.vmapRuntimeCollections(node));
     // A write a shared batch settles alone: one a branch guards, with no alias of its own bar the batch's delete.
     // A swap-remove whose moved key is a state array's last keeps the guarded batch and its alias sentinel.
@@ -38299,7 +38044,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private guardedBatchWriteSlots(node: FunctionDefinitionNode): Set<number> {
     if (this.functionHasDelegatecall || this.sortedBatchGuard(node)?.slotIndex === undefined || !this.directConvention
-      || this.framedMaster || this.readsRecordsFromFrame || this.isCompilerRouteMetaRoute(node)) return new Set();
+      || this.framedMaster || this.readsRecordsFromFrame || false) return new Set();
     const softDelete = (slot: number): boolean => node.blockLayout?.slots.some(
       (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.softDelete) === true;
     return new Set((node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1
@@ -38329,7 +38074,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private directAliasPair(node: MappingAssignNode | MappingDeleteNode, owner: number, framed = false): boolean {
     if ((!framed && (!this.directConvention || this.framedMaster || this.readsRecordsFromFrame))
-      || this.isDefineSubTraversal || this.isCompilerRouteMetaRoute()
+      || this.isDefineSubTraversal || false
       || this.isChunkableValue(node.collection!.innermostValueType)) return false;
     return this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(owner)
       && batch.slotIndices.includes(node.entrySlotIndex)) ?? false;
@@ -38475,7 +38220,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** DS-6: a switch case's delete that a direct swap-remove write aliases takes the branch's soft-delete lowering. */
   private switchSoftDeletes(fn: FunctionDefinitionNode, slot: number): boolean {
-    return this.directConvention && !this.framedMaster && !this.isCompilerRouteMetaRoute(fn)
+    return this.directConvention && !this.framedMaster && !false
       && (fn.entryAccesses ?? []).some((access) => access.aliasCondDeleteSlot === slot
         && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slot)
           && batch.slotIndices.includes(access.slotIndex)));
@@ -38991,7 +38736,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Cardinality is a property of the authenticated physical collection, not of any particular source loop or
     // compiler-route row. Verify it once while the declared frame is still exact. This covers zero-trip loops and
     // permits disjoint handlers to share a collection without depending on body-local stack residue.
-    if (!this.isDefineSubTraversal && !this.isCompilerRouteMetaRoute(node)
+    if (!this.isDefineSubTraversal && !false
       && !this.currentFunctionIsDelegate) {
       for (const collectionName of this.vmapRuntimeCollections(node)) {
         const cardinalityProofStartIp = this.getMostRecentInstructionPointer() + 1;
@@ -39003,7 +38748,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
         this.emitTakeFirst32(loc);
         this.pushToStack(`(vmap_cardinality_addr_${collectionName})`);
-        this.emitSortedEntryAddress(computeCollectionHash(collectionSignature), loc);
+        this.emitSortedEntryAddress(computeCollectionHash(collectionSignature!), loc);
         this.stack[0] = `(vmap_cardinality_addr_${collectionName})`;
         const fixedEntryCount = this.entrySlots.filter(
           (slot, index) => slot.collection === collectionName && this.ownsFixedEntrySlot(index),
@@ -39075,7 +38820,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // may legally reorder the original parameter cells while preserving stack depth; all post-body vmap work reads
     // these snapshots instead. Freeze the name list here - restore MUST pop the same sequence.
     const topologyNames = this.vmapBatchTopologyNames(node);
-    const runtimeCardinalityNames = this.isCompilerRouteMetaRoute(node)
+    const runtimeCardinalityNames = false
       ? this.vmapRuntimeCollections(node).flatMap((collection) => [
         vmapRuntimeInputCountName(collection), vmapRuntimeOutputCountName(collection),
       ]) : [];
@@ -39210,10 +38955,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         function: this.currentFunction.name,
         name,
         isDefineSubTraversal: this.isDefineSubTraversal,
-        isCompilerRouteMetaRoute: this.isCompilerRouteMetaRoute(),
-        graphEmissionHandler: this.currentFunction.graphEmissionHandler === true,
         stackHasName: this.getStackIndex(name, true) >= 0,
-        physicalSlots: this.currentFunction.routeMetaPhysicalEntrySlots,
         entrySlots: this.currentFunction.entryAccesses?.map((entry) => entry.slotIndex),
         batches: this.currentFunction.sortedBatchInfo?.map((batch) => ({
           collection: batch.collection,
@@ -39252,7 +38994,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Copy a batch-topology witness from the compiler-tracked top frame. */
   private emitPickVMapWitness(name: string, loc: SingleLocationData, extraStackOffset = 0): void {
-    if (this.isCompilerRouteMetaRoute()
+    if (false
       && (name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX))) {
       // The route splits each collection cardinality into an immutable ABI witness and a mutable remainder before
@@ -39273,20 +39015,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // temps sit beside the capsule. The route's caller frame makes that same ordinal land on an ABI value;
     // its snapshot is above the residue and a top-relative pick is the one that names it.
     if (resolved.startsWith('__vmap_snapshot_') && linearKeyPools && !this.isDefineSubTraversal
-      && !this.isCompilerRouteMetaRoute()) {
+      && !false) {
       this.emitPickTrackedFromBottom(resolved, loc);
       return;
     }
-    if (this.isCompilerRouteMetaRoute() && linearKeyPools && resolved.startsWith('__vmap_snapshot_')) {
+    if (false && linearKeyPools && resolved.startsWith('__vmap_snapshot_')) {
       this.emit(encodeInt(BigInt(this.getStackIndex(resolved) + extraStackOffset)), loc);
       this.emit(Op.OP_PICK, loc);
       return;
     }
-    if (this.isCompilerRouteMetaRoute() && this.vmapUpsertWitnessSnapshotNames?.includes(name)) {
+    if (false && this.vmapUpsertWitnessSnapshotNames?.includes(name)) {
       this.emitCopyUpsertVMapWitness(name, loc);
       return;
     }
-    if (resolved.startsWith('__vmap_snapshot_') && this.isCompilerRouteMetaRoute()) {
+    if (resolved.startsWith('__vmap_snapshot_') && false) {
       // Restored snapshots are pushed only after every invoked handler has returned, so they sit above any
       // runtime-only handler residue in a compiler-owned route. Their top-relative depth is stable there; a bottom
       // ordinal would incorrectly count the route's untracked caller frame and select an adjacent ABI value.
@@ -39996,11 +39738,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // ordinal would overwrite an ABI value and leave the named count at zero. A linear handler has no
     // caller frame; the include flag is the untracked item a depth-1 replace would overwrite.
     const linearHandlerPools = (node.collectionJournalLinearKeyPools?.length ?? 0) > 0
-      && !this.isCompilerRouteMetaRoute(node);
+      && !false;
     // Lane temps on a linear route leave that same replace one slot off. Proof picks stay on the main
     // stack, so the route keeps its running totals on the altstack instead of a named main-stack slot.
     const linearRoute = (node.collectionJournalLinearKeyPools?.length ?? 0) > 0
-      && this.isCompilerRouteMetaRoute(node);
+      && false;
     const replaceNamed = (name: string): void => {
       if (linearHandlerPools) {
         this.emitReplaceAtBottomOrdinal(this.stack.length - this.getStackIndex(name), loc);
@@ -40285,7 +40027,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (targets.length === 1) {
         // DS-1: -2 is a compiler-route route's inactive-row sentinel. A plain direct function has no such row, and
         // accepting it skipped the transition. A direct delegate build of a runtime loop still uses it.
-        const plain = !this.isCompilerRouteMetaRoute() && !this.currentFunctionIsDelegate;
+        const plain = !false && !this.currentFunctionIsDelegate;
         // A plain entry's target reads only its four witnesses and the executing input: one shared body settles it.
         const shared = plain && !this.usesProxyStateBlockBase() && !this.readsRecordsFromFrame
           ? this.sharedEntryCheckId('sortedTarget', (t, l) => t.emitSharedSortedTargetTransition(l)) : undefined;
@@ -40522,7 +40264,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (this.readsRecordsFromFrame) this.emitFramedDistinctBatchTargets(node, targets, loc);
         // ROUTE-SKIP-1: -2 skips a target's topology and census here. A plain direct target has no inactive row
         // (as DS-1): only a route row, a framed skipped group or a row the preflight bound to an alias carries it.
-        if (this.directConvention && !this.readsRecordsFromFrame && !this.isCompilerRouteMetaRoute()
+        if (this.directConvention && !this.readsRecordsFromFrame && !false
           && !this.currentFunctionIsDelegate) {
           for (const slot of targets) {
             if (this.composeBatchSlots(slot) !== undefined || (this.entrySlots[slot]?.runtimeAliasPriorSlots ?? [])
@@ -40749,7 +40491,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Direct entry points already performed this combined fixed+runtime scan before executing the body. Routes
       // must defer it until now because only their authenticated activity flags reveal which fixed rows exist.
-      if (!this.isCompilerRouteMetaRoute(node) && runtimeCollections.has(batch.collection)) continue;
+      if (!false && runtimeCollections.has(batch.collection)) continue;
 
       // A framed frame writes one record group of a collection the transaction may hold other records of: the
       // insert frame relinks a predecessor this frame never touches, so the transaction's collection census is not
@@ -40783,7 +40525,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const directSmallCensus = !settled
         && (targets.length === 1 || (targets.length === 2 && batch.linear === true))
         && aliasWrite === undefined && this.directConvention
-        && !this.isCompilerRouteMetaRoute(node)
+        && !false
         && !runtimeCollections.has(batch.collection)
         && readSlots.length === 0;
       const addr = `(__vmap_batch_addr_${batch.collection})`;
@@ -40797,7 +40539,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A read that did not run never pinned its input: a pure-read slot counts only at the collection's entry address.
       const readSlotIsNode = (slot: number): void => {
         this.emitFixedEntryInputIndex(slot, loc); bin(Op.OP_UTXOBYTECODE);
-        if (this.isCompilerRouteMetaRoute()) {
+        if (false) {
           this.emit(encodeInt(BigInt(this.getStackIndex(addr) + 1)), loc); bin(Op.OP_PICK);
         } else this.emitPickTrackedFromBottom(addr, loc);
         bin(Op.OP_EQUAL);
@@ -40880,7 +40622,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(encodeInt(-2n), loc); bin(Op.OP_NUMEQUAL); bin(Op.OP_SUB);
         }
       }
-      if (linearRoute && this.isCompilerRouteMetaRoute(node)
+      if (linearRoute && false
         && runtimeCollections.has(batch.collection)) {
         this.emitPickVMapWitness(vmapRuntimeOutputCountName(batch.collection), loc);
         bin(Op.OP_ADD);
@@ -40890,7 +40632,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(0n), loc);
       }
       this.pushToStack(expected);
-      if (!linearRoute && this.isCompilerRouteMetaRoute(node)
+      if (!linearRoute && false
         && runtimeCollections.has(batch.collection)) {
         // The immutable snapshot is untracked; OP_ADD leaves the named expected accumulator in place.
         this.emitPickVMapWitness(vmapRuntimeOutputCountName(batch.collection), loc);
@@ -40970,7 +40712,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           replaceNamed(inputExpected);
         }
       }
-      if (this.isCompilerRouteMetaRoute(node) && runtimeCollections.has(batch.collection)) {
+      if (false && runtimeCollections.has(batch.collection)) {
         this.emitPickVMapWitness(vmapRuntimeInputCountName(batch.collection), loc);
         if (linearRoute) addParked();
         else this.emit(Op.OP_ADD, loc);
@@ -40990,7 +40732,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // A route containing only runtime rows has no fixed batch from which to anchor the combined scan. Bind both
     // sides directly to the original collection claims; this is the common pure row-loop shape.
-    if (this.isCompilerRouteMetaRoute(node)) {
+    if (false) {
       for (const collection of runtimeCollections) {
         if (cardinalityScanned.has(collection)) continue;
         const collectionSignature = this.vmapCollectionSignature(collection);
@@ -40999,7 +40741,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
         this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
         this.pushToStack(addr);
-        this.emitSortedEntryAddress(computeCollectionHash(collectionSignature), loc);
+        this.emitSortedEntryAddress(computeCollectionHash(collectionSignature!), loc);
         this.stack[0] = addr;
         for (const [name, output] of [
           [vmapRuntimeInputCountName(collection), false],
@@ -41785,7 +41527,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Raw emit: callers manage the stack tracker.
     // The shared body is captured in the ordinary (call) context, where the owner's category is the input's token
     // category. A genesis body's input is the tokenless deployer coin, so it must inline the outpoint-hash form.
-    if (!this.framedMaster && !this.usesRouteMetaOwnerBlockBase()
+    if (!this.framedMaster && !false
       && !this.usesProxyStateBlockBase()
       && this.currentFunction?.genesisMode !== true
       && this.invokeSubroutineIfDefined(
@@ -41917,7 +41659,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const retained = new Set<string>();
     // Only the ordinary direct-call epilogue below consumes these values. Graph handlers authenticate their
     // receivers at the callsite, and a function that delegatecalls writes no state of its own to retain.
-    if (node.graphEmissionHandler || this.functionHasDelegatecall) return retained;
+    if (false || this.functionHasDelegatecall) return retained;
     // Selector cells: the epilogue evaluates every slot's runtime selector once (its `rtSelTemps` pass, with no
     // loop/nested exemption), so a selector naming a written state field must resolve to the post-write value.
     // A lowered foreign function-pointer store writes the wrapper address and this companion selector together,
@@ -42022,7 +41764,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             // A field a call closed is the record's own declared value on the paths the end does not hold the record
             // kept, where its slot is the value from before the call.
             const fromSlot = (): void => {
-              this.emitPickSettlementValue(stackName, locationData, node);
+              this.emitPickSettlementValue(stackName!, locationData, node);
               this.pushToStack('(value)');
             };
             const fromDeclaration = (): void => {
@@ -42041,7 +41783,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           } else if (stackName) {
             const dynamicBaseIndex = sv.isDynamic
               ? this.getStackIndex('__internal__dynamicChunkInputBase', true) : -1;
-            if (dynamicBaseIndex >= 0 && this.isCompilerRouteMetaRoute(node)) {
+            if (dynamicBaseIndex >= 0 && false) {
               // The route journal is a union across handlers. If the selected rows contain no dynamic writer,
               // dormant lanes are not authoritative state updates: preserve each dynamic header directly from
               // authenticated input state while allowing scalar fields in the same NFT to settle normally.
@@ -42050,7 +41792,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
               this.emit(encodeInt(-1n), locationData);
               this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
               this.emit(Op.OP_IF, locationData);
-              this.emitPickSettlementValue(stackName, locationData, node);
+              this.emitPickSettlementValue(stackName!, locationData, node);
               this.emit(Op.OP_ELSE, locationData);
               this.stack = [...savedStack];
               const fieldType = this.physicalFieldType(sv);
@@ -42064,7 +41806,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
               // Use already-encoded value from stack. An aggregate compiler-route route invokes handlers which
               // return journal slots into the physical route frame. Their runtime height can grow independently
               // of the route traversal's top-relative model, but the entry frame remains anchored at the bottom.
-              this.emitPickSettlementValue(stackName, locationData, node);
+              this.emitPickSettlementValue(stackName!, locationData, node);
               if (this.inGenesisMode) {
                 const fieldType = this.physicalFieldType(sv);
                 this.pushToStack('(value)');
@@ -42105,7 +41847,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
         // An authenticated kernel upgrade may append canonical fixed-field encodings to the final existing
         // data NFT. The old-layout route still reconstructs every prior field, then binds the exact hidden suffix.
-        if (node.routeMetaUpgradeRoute === true && compactOffset === this.dataNftCount) {
+        if (false && compactOffset === this.dataNftCount) {
           const suffixDepth = this.getStackIndex('__internal__upgradeStateSuffix');
           this.emit(encodeInt(BigInt(suffixDepth)), locationData);
           this.emit(Op.OP_PICK, locationData);
@@ -42145,7 +41887,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // A record the frame only reads keeps its view.
       } else {
         // Read-only NFT: verify commitment preservation (input == output)
-        if (node.routeMetaUpgradeRoute === true && compactOffset === this.dataNftCount) {
+        if (false && compactOffset === this.dataNftCount) {
           this.emit(Op.OP_INPUTINDEX, locationData);
           this.emit(encodeInt(BigInt(compactOffset)), locationData);
           this.emit(Op.OP_ADD, locationData);
@@ -42222,7 +41964,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.readsRecordsFromFrame
         && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)) continue;
 
-      const routeBatch = this.ownsRouteMetaParticipantBlock()
+      const routeBatch = false
         && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)
         && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${i}`), true) >= 0;
       if (!routeBatch && this.sharesFixedEntryCoordinate(i)) {
@@ -42407,7 +42149,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const idx = (n as unknown as { entrySlotIndex?: number }).entrySlotIndex;
       // A compiler-owned read stream is settled by the sorted-upsert loop, not by this entry-mint counter.
       // Counting it here pins the collection's outputs to zero beside the upsert's reproduced nodes.
-      if (n instanceof MappingAssignNode && !n.routeMetaRuntimeReadOnly && typeof idx === 'number' && idx >= 0
+      if (n instanceof MappingAssignNode && !n.runtimeLoopReadOnly && typeof idx === 'number' && idx >= 0
         && (this.entrySlots[idx]?.inLoop || this.currentFunction.entryAccesses?.[idx]?.inLoop)) {
         found = n;
         return;
@@ -42850,7 +42592,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const containsRuntimeArrayKey = (key: Node, visited = new WeakSet<object>()): boolean => {
         if (visited.has(key)) return false;
         visited.add(key);
-        if ((key as ExpressionNode).routeMetaDeterministicArrayKey === true || key instanceof ArrayAccessNode) return true;
+        if ((key as ExpressionNode).runtimeLoopDeterministicArrayKey === true || key instanceof ArrayAccessNode) return true;
         for (const [name, value] of Object.entries(key)) {
           if (semanticBackReferences.has(name) || name === 'symbol') continue;
           if (value instanceof Node && containsRuntimeArrayKey(value, visited)) return true;
@@ -42873,7 +42615,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !excludedStreams.has(this.sortedUpsertStreamKey(n))
         && hasRuntimeVaryingKey(n)) {
         const arrayMutation = n.arrayIndex !== undefined || n.arrayPush || n.arrayPop;
-        if (arrayMutation && n.routeMetaRuntimeOldValueWitness
+        if (arrayMutation && n.runtimeLoopOldValueWitness
           && n.collection.innermostValueType instanceof ArrayType) {
           found = n; return;
         }
@@ -42897,7 +42639,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // expression is evaluated on-chain and becomes the new tail. Admit that compiler-owned witness form here
         // as well as the two direct raw-byte sources above, otherwise admission accepts the row but codegen never
         // creates its sorted-upsert context and the write falls into the generic runtime-loop failure trap.
-        const hasOldValueWitness = n.routeMetaRuntimeOldValueWitness !== undefined;
+        const hasOldValueWitness = n.runtimeLoopOldValueWitness !== undefined;
         const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet || hasOldValueWitness);
         const isLoopCachedSet = n.entrySlotIndex >= 0 && this.entrySlots[n.entrySlotIndex]?.inLoop === true
           && e instanceof IdentifierNode;
@@ -43027,7 +42769,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // conditions), and a compiler-route route or handler clone is admitted by the bus rather than by this recipe.
     const fn = this.currentFunction;
     if (fn.runtimeCounterLoopCounters?.has(varyingArrayParam) || fn.runtimeCounterLoopConditions?.has(varyingArrayParam)
-      || this.currentFunctionIsRouteMetaRoute || fn.name.startsWith('__compiler_route')) return undefined;
+      || false || false) return undefined;
     const backReferences = new Set(['location', 'collection', 'symbol', 'symbolTable', 'type', 'resolvedFunction',
       'definition', 'referencedContract', 'stateVariable', 'functionReference']);
     const children = (node: Node): Node[] => Object.entries(node).flatMap(([key, value]) => {
@@ -43292,7 +43034,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     walk(block);
     const structName = (write.collection!.innermostValueType as StructType).name;
-    const witness = write.routeMetaRuntimeOldValueWitness;
+    const witness = write.runtimeLoopOldValueWitness;
     const validRead = read instanceof MappingAccessNode ? read.name === write.name
       : read instanceof ArrayAccessNode && witness?.array instanceof IdentifierNode
         && read.array instanceof IdentifierNode && read.array.name === witness.array.name;
@@ -43448,7 +43190,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * The route publishes one `bytes[]` access vector per batch row. A handler parameter is that row's vector.
-   * Inlined route code still names the route parameter, so select `__compiler_route_row` before reading a stream.
+   * Inlined route code still names the row parameter, so select it before reading a stream.
    */
   private kernelJournalAccessVector(): ExpressionNode {
     const location = this.currentFunction.location;
@@ -43463,7 +43205,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return name;
     }
     name.type = parameter.type;
-    const row = new IdentifierNode('__compiler_route_row');
+    const row = new IdentifierNode('(runtime site)');
     row.type = PrimitiveType.INT;
     row.location = location;
     const selected = new ArrayAccessNode(name, row);
@@ -43546,13 +43288,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * selected stream `selected ? perm[rank] : 0`, whose write runs only where it is selected). Or the symbol pass gave
    * the two accesses one entry slot, as it does for keys that canonicalize alike through single-assign locals
    * (`int k = ks[i]; m[k] = m[ks[i]] + v`), and which code generation serves as the entry the loop co-spends. Or
-   * LowerVMapCounterLoops marked the read `routeMetaRuntimeLoopTransitionRead` after comparing the keys as written.
+   * LowerVMapCounterLoops marked the read `runtimeLoopTransitionRead` after comparing the keys as written.
    */
   private readsOwnEntry(read: ExpressionNode | undefined, write: MappingAssignNode): read is MappingAccessNode {
     if (!(read instanceof MappingAccessNode) || read.name !== write.name || read.arrayIndex !== undefined
       || write.arrayIndex !== undefined || read.keys.length !== write.keys.length) return false;
     if (read.entrySlotIndex >= 0 && read.entrySlotIndex === write.entrySlotIndex) return true;
-    if (read.routeMetaRuntimeLoopTransitionRead === true) return true;
+    if (read.runtimeLoopTransitionRead === true) return true;
     const body = this.currentFunction.body;
     const logical = (node: ExpressionNode): ExpressionNode => {
       if (!(node instanceof IdentifierNode) || !node.name.startsWith('__internal__vmapCounterLogical_')) return node;
@@ -43953,9 +43695,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return false;
     };
-    if (writeNode instanceof MappingAssignNode && writeNode.routeMetaRuntimeReadOnly) {
+    if (writeNode instanceof MappingAssignNode && writeNode.runtimeLoopReadOnly) {
       op = 'read';
-      const witness = writeNode.routeMetaRuntimeOldValueWitness;
+      const witness = writeNode.runtimeLoopOldValueWitness;
       if (witness?.array instanceof IdentifierNode) valueArrayParam = witness.array.name;
     } else if (isDelete) {
       op = 'delete'; // nullify to the type default; no per-key value array
@@ -43997,10 +43739,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         mutationIndexConst = indexSource.constant;
         mutationIndexExpression = indexSource.expression;
         if (mutationValueExpression) {
-          mutationValueExpression = assign.routeMetaRuntimeMutationValueExpression ?? mutationValueExpression;
+          mutationValueExpression = assign.runtimeLoopMutationValueExpression ?? mutationValueExpression;
         }
         if (mutationIndexExpression) {
-          mutationIndexExpression = assign.routeMetaRuntimeMutationIndexExpression ?? mutationIndexExpression;
+          mutationIndexExpression = assign.runtimeLoopMutationIndexExpression ?? mutationIndexExpression;
         }
         op = 'set';
       }
@@ -44028,7 +43770,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       const expr = assign.expression;
-      const valueTrace = assign.routeMetaRuntimeValueTrace;
+      const valueTrace = assign.runtimeLoopValueTrace;
       if (expr instanceof IdentifierNode && collection.innermostValueType instanceof StructType
         && this.isLoopStructRuntimeRmw(block, assign, expr.name)) {
         valueRuntimeLocal = expr.name;
@@ -44109,7 +43851,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
     const hasValue = !!mutation || !!valueArrayParam || !!valueScalarParam || valueConst !== undefined
       || !!valueRuntimeLocal || !!(writeNode instanceof MappingAssignNode
-        && writeNode.routeMetaRuntimeValueTrace);
+        && writeNode.runtimeLoopValueTrace);
     const valueRuntimeExpression = !isDelete && (
       !!mutation
       || (!!decodedKeyRecipe && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined))
@@ -44128,7 +43870,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Two loops can write the same mapping from different key arrays and values. Key by
     // collection + varying array + predicate so the SDK co-spends both runs.
     const valueTraceWitness = writeNode instanceof MappingAssignNode
-      ? writeNode.routeMetaRuntimeValueTrace?.witnessParam : undefined;
+      ? writeNode.runtimeLoopValueTrace?.witnessParam : undefined;
     const prefixCountTrace = this.currentFunction.runtimeCounterLoopPrefixCountTraces
       ?.get(`${varyingArrayParam}\0${collection.name}`);
     const existingInfo = infos.find((x) => x.collection === collection.name
@@ -44226,12 +43968,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(mutationIndexScalarParam && { mutationIndexScalarParam }),
         ...(mutationIndexConst !== undefined && { mutationIndexConst }),
         ...(mutationIndexExpression && { mutationIndexExpression }),
-        ...(writeNode instanceof MappingAssignNode && writeNode.routeMetaRuntimeValueTrace && {
-          valueTraceWitnessParam: writeNode.routeMetaRuntimeValueTrace.witnessParam,
-          valueTraceLocal: writeNode.routeMetaRuntimeValueTrace.local,
-          valueTraceInitial: writeNode.routeMetaRuntimeValueTrace.initial,
-          valueTraceUpdates: writeNode.routeMetaRuntimeValueTrace.updates,
-          valueTraceAfterUpdates: writeNode.routeMetaRuntimeValueTrace.afterUpdates,
+        ...(writeNode instanceof MappingAssignNode && writeNode.runtimeLoopValueTrace && {
+          valueTraceWitnessParam: writeNode.runtimeLoopValueTrace.witnessParam,
+          valueTraceLocal: writeNode.runtimeLoopValueTrace.local,
+          valueTraceInitial: writeNode.runtimeLoopValueTrace.initial,
+          valueTraceUpdates: writeNode.runtimeLoopValueTrace.updates,
+          valueTraceAfterUpdates: writeNode.runtimeLoopValueTrace.afterUpdates,
         }),
         ...(prefixCountTrace && {
           prefixCountWitnessParam: prefixCountTrace.witnessParam,
@@ -44244,11 +43986,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(turns.senderDebit && { senderDebit: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }),
         ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
-        ...(writeNode instanceof MappingAssignNode && writeNode.routeMetaRuntimeOldValueWitness
-          && writeNode.routeMetaRuntimeOldValueWitness.array instanceof IdentifierNode
-          && { oldValuesWitnessParam: writeNode.routeMetaRuntimeOldValueWitness.array.name }),
-        ...(writeNode instanceof MappingAssignNode && writeNode.routeMetaRuntimeOldValueWitnessDomain
-          && { oldValuesWitnessDomain: writeNode.routeMetaRuntimeOldValueWitnessDomain }),
+        ...(writeNode instanceof MappingAssignNode && writeNode.runtimeLoopOldValueWitness
+          && writeNode.runtimeLoopOldValueWitness.array instanceof IdentifierNode
+          && { oldValuesWitnessParam: writeNode.runtimeLoopOldValueWitness.array.name }),
+        ...(writeNode instanceof MappingAssignNode && writeNode.runtimeLoopOldValueWitnessDomain
+          && { oldValuesWitnessDomain: writeNode.runtimeLoopOldValueWitnessDomain }),
         ...(sourceOrderIndexParam && { sourceOrderIndexParam }),
         ...(cardinality && { inputCountParam: cardinality.input, outputCountParam: cardinality.output }),
         ...(counter && { iterationCounter: counter }),
@@ -44298,11 +44040,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Materialize this operation stream's tuple payload as an independent cursor. Entry-input and output counters
     // are physical resource counters: deferred updates intentionally make them diverge from source operation order.
     // A cursor is therefore the only sound identity for consuming one journal access per executed mapping operation.
-    if ((this.isCompilerRouteMetaRoute() || this.hasRouteMetaParticipantOwner())
+    if ((false || false)
       && this.sortedUpsertLoopJournalAccessStreamIndex !== undefined
       && this.getStackIndex(KERNEL_JOURNAL_ACCESS_STREAMS, true) >= 0) {
       this.visit(this.kernelJournalAccessVector());
-      this.emit(encodeInt(BigInt(this.sortedUpsertLoopJournalAccessStreamIndex)), loc);
+      this.emit(encodeInt(BigInt(this.sortedUpsertLoopJournalAccessStreamIndex!)), loc);
       this.emit(encodeInt(BigInt(this.currentFunction.sortedUpsertLoopInfo?.length ?? 0)), loc);
       this.emit(collectionHash, loc);
       this.emitKernelJournalCursorHelper(loc);
@@ -44407,7 +44149,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
       this.pushToStack('(ul_scan_addr)');
-      this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
+      this.emitSortedEntryAddress(computeCollectionHash(signature!), loc);
       this.stack[0] = '(ul_scan_addr)';
       const nFixed = this.entrySlots.filter(
         (slot, index) => slot.collection === collection && this.ownsFixedEntrySlot(index),
@@ -44602,7 +44344,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.scopeDepth += 1;
     if (this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === 'delete') {
       const mutationOldWitness = node instanceof MappingAssignNode
-        ? node.routeMetaRuntimeOldValueWitness : undefined;
+        ? node.runtimeLoopOldValueWitness : undefined;
       if (mutationOldWitness) {
         // A repeated mapping-array key has no second co-spent input: its language-level old value is the pending
         // value produced by the preceding occurrence. Authenticate the caller-supplied raw-array witness against
@@ -45941,7 +45683,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // rawbytes (bytesN/address) is stored verbatim (no tail), matching the single-write path + the reader.
     const isRawbytes = this.sortedValueKind(collection.innermostValueType) === 'rawbytes';
     const isChunkableVal = isRawbytes && this.isChunkableValue(collection.innermostValueType);
-    const oldWitness = node instanceof MappingAssignNode ? node.routeMetaRuntimeOldValueWitness : undefined;
+    const oldWitness = node instanceof MappingAssignNode ? node.runtimeLoopOldValueWitness : undefined;
     const iterIdx = (): number => this.getStackIndex(this.sortedUpsertLoopCounterName);
     const outIdxC = (): number => this.getStackIndex(this.sortedUpsertLoopOutCounterName);
     const addrIdx = (): number => this.getStackIndex(this.sortedUpsertLoopAddrName);
@@ -46782,7 +46524,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
       this.pushToStack('(ul_scan_addr)');
-      this.emitSortedEntryAddress(computeCollectionHash(collectionSignature), loc);
+      this.emitSortedEntryAddress(computeCollectionHash(collectionSignature!), loc);
       this.stack[0] = '(ul_scan_addr)';
       for (const [countName, output] of [
         [this.sortedUpsertLoopCounterName, false], [this.sortedUpsertLoopOutCounterName, true],
@@ -46875,7 +46617,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
     this.pushToStack('(ul_aggregate_scan_addr)');
-    this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
+    this.emitSortedEntryAddress(computeCollectionHash(signature!), loc);
     this.stack[0] = '(ul_aggregate_scan_addr)';
     const nFixed = this.entrySlots.filter(
       (slot, index) => slot.collection === collection && this.ownsFixedEntrySlot(index),
@@ -47087,7 +46829,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The kernel's row dispatcher is a transport loop, not a source-level repetition of the selected handler.
     // Semantic links from its typed handler call can make the recursive scan see a handler's keccak node; using
     // the row counter as a dynamic side-car ordinal then moves an ordinary fixed compute slot past blockSize.
-    if (this.currentFunctionIsRouteMetaRoute) return false;
+    if (false) return false;
     if (!this.currentFunction.keccakCompute) return false;
     if (!this.blockHasKeccakCall(block)) return false;
     // A direct function with BOTH a keccak loop and a runtime mapping/transfer loop shares one trailing band:
@@ -47147,7 +46889,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // each iteration.
   private emitLoopEcrecoverSetup(block: Node, loc: SingleLocationData, condition?: Node): boolean {
     if (this.ecrecoverLoopActive) return false;
-    if (this.currentFunctionIsRouteMetaRoute) return false;
+    if (false) return false;
     if (!this.currentFunction.ecrecoverCompute) return false;
     const fn = this.currentFunction;
     // The condition runs inside the loop too. A recovery-loop entry counts a recovery there as one of its loop's
@@ -47248,7 +46990,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitEntryCovenantVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
-    const handlerManagedSlots = new Set(node.routeMetaHandlerManagedEntrySlots ?? []);
+    const handlerManagedSlots = new Set<number>();
 
     // 1. Verify output commitments for WRITTEN (non-deleted) entries
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
@@ -47381,7 +47123,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True for a write slot marked alias-conditional (verified via a runtime key-inequality gate, not the main loops).
   private isAliasCondWrite(slotIdx: number): boolean {
     const entry = this.entrySlots[slotIdx];
-    return !this.currentFunction.routeMetaHandlerManagedEntrySlots?.includes(slotIdx)
+    return !false
       && !this.sortedWrittenCollections.has(entry?.collection)
       && (entry?.aliasCondDeleteSlot !== undefined
         || (entry?.runtimeAliasPriorSlots?.length ?? 0) > 0)
@@ -47491,7 +47233,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.condDeleteSlots.size === 0) return;
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     for (const slotIdx of this.condDeleteSlots) {
-      if (node.routeMetaHandlerManagedEntrySlots?.includes(slotIdx)) continue;
+      if (false) continue;
       if (!this.ownsFixedEntrySlot(slotIdx)) continue;
       if (this.readsRecordsFromFrame
         && (node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIdx)) ?? false)) continue;
@@ -47697,20 +47439,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // check below was skipped. The route program, proxy frames and delegates that do not run a writer clone keep
     // the established inactive lane because the route verifier settles their band.
     const dynamicBaseIndex = this.getStackIndex('__internal__dynamicChunkInputBase', true);
-    const routeParticipant = this.ownsRouteMetaParticipantBlock() || this.usesProxyStateBlockBase()
+    const routeParticipant = false || this.usesProxyStateBlockBase()
       || this.currentFunctionIsDelegate;
     // A handler clone that writes dynamic state is only invoked from its authenticated selector branch, and the
     // SDK sends the read-only sentinel only when NO selected handler writes. A free route witness could otherwise
     // select the writer row and pass a base below -1, taking the old skip (audit DYN-1 route lane).
-    const routeWriteClone = this.currentFunction.routeMetaCloneSourceKey !== undefined
+    const routeWriteClone = false
       && this.pendingDynamicWrites.size > 0;
     // The route body carries the union's write settlement, so it runs the verification for every selected row.
     // Its synthesized source sets this flag only inside an authenticated writer selector branch; a writer row may
     // not take the read-only sentinel (audit DYN-1 route lane). Inactive rows keep the established skip below.
-    const routeWriteFlagIndex = this.isCompilerRouteMetaRoute()
-      ? this.getStackIndex(COMPILER_ROUTE_DYNAMIC_WRITE_ACTIVE, true) : -1;
+    const routeWriteFlagIndex = -1;
     if (routeWriteFlagIndex >= 0) {
-      this.emitPickTrackedFromBottom(COMPILER_ROUTE_DYNAMIC_WRITE_ACTIVE, loc);
+      this.emitPickTrackedFromBottom('(dynamic_write_active)', loc);
       this.emit(Op.OP_IF, loc);
       this.emitDynamicChunkBasePick(loc);
       this.emit(encodeInt(-1n), loc);
@@ -47775,7 +47516,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // to the end) so a prior var's count is ceil(size(value)/CHUNK), computed on demand.
     const declIndex = (n: string): number => this.stateVariables.findIndex((v) => v.name === n);
     const writesInDeclOrder = [...this.pendingDynamicWrites.entries()]
-      .filter(([name]) => !node.routeMetaRouteReadOnlyDynamicResources?.includes(name))
+      .filter(([name]) => !false)
       .sort(([a], [b]) => declIndex(a) - declIndex(b));
     const writtenValueStackNames: string[] = [];
 
@@ -48066,7 +47807,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // --- final cleanup: drop the deferred written-var values + the foreign-read count temps ---
     const readOnlyValues = [...this.pendingDynamicWrites.entries()]
-      .filter(([name]) => node.routeMetaRouteReadOnlyDynamicResources?.includes(name))
+      .filter(([name]) => false)
       .map(([, write]) => write.valueStackName);
     const finalTemps = [...writtenValueStackNames, ...readOnlyValues, ...fReadTempNames];
     if (this.valueChunkTrailingCountActive) {
@@ -48205,8 +47946,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         this.emitAddCollectionIterCounts(loc);
       };
-      const sharesRouteBand = this.currentFunction.routeMetaRoute === true
-        || this.currentFunction.graphEmissionHandler === true;
+      const sharesRouteBand = false
+        || false;
       if (explicitDynamicBase >= 0 && sharesRouteBand && !this.readsRecordsFromFrame) {
         // Composed routes publish the exact first dynamic-chunk coordinate. An invoked route clone's active
         // input can be the adjacent executor rather than its participant owner, so reconstructing owner +
@@ -48724,7 +48465,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.callBatchRecordViews) {
       this.emitPickAt(this.getStackIndex(this.callBatchRecordView(nftIdx)), loc);
     } else {
-      if (this.usesRouteMetaOwnerBlockBase() || this.usesProxyStateBlockBase()) this.emitMasterInputIndex(loc);
+      if (false || this.usesProxyStateBlockBase()) this.emitMasterInputIndex(loc);
       else this.emitRecordBlockBase('in', loc);
       this.emit(encodeInt(BigInt(compactOffset)), loc);
       this.emit(Op.OP_ADD, loc);
@@ -48755,7 +48496,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitStateFieldDecode(sv, targetType, fieldsInNft, loc);
       return;
     }
-    if (this.usesRouteMetaOwnerBlockBase() || this.usesProxyStateBlockBase()) {
+    if (false || this.usesProxyStateBlockBase()) {
       this.emitMasterInputIndex(loc, extraStackOffset);
       this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
       this.emit(Op.OP_ADD, loc);
@@ -49404,7 +49145,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Delegate and compiler-route owner-base frames must address the authenticated participant block, not
     // OP_INPUTINDEX. Merge tails share the route unlocker; baking INPUTINDEX into a shared helper would make
     // them preserve a neighbouring consumed master instead of the survivor dataNft.
-    if (this.currentFunctionIsDelegate || this.usesRouteMetaOwnerBlockBase()) {
+    if (this.currentFunctionIsDelegate || false) {
       this.emitDataNftPreservationInline(offset, loc, true);
       return;
     }
@@ -49514,7 +49255,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitDataNftCommitmentPreservation(offset: number, loc: SingleLocationData): void {
     if (this.inGenesisMode) return;
-    if (this.currentFunctionIsDelegate || this.usesRouteMetaOwnerBlockBase()) {
+    if (this.currentFunctionIsDelegate || false) {
       this.emitDataNftCommitmentPreservationInline(offset, loc, true);
       return;
     }
@@ -49579,7 +49320,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitDataNftOutputCommitment(offset: number, loc: SingleLocationData): void {
-    if (this.currentFunctionIsDelegate || this.usesRouteMetaOwnerBlockBase()) {
+    if (this.currentFunctionIsDelegate || false) {
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
@@ -49613,7 +49354,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitDataNftOutputCommitmentInline(offset: number, loc: SingleLocationData): void {
-    if (this.usesRouteMetaOwnerBlockBase()) {
+    if (false) {
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
@@ -49708,7 +49449,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           line: loc.location.start.line,
           variable: sv.name,
           define: this.isDefineSubTraversal,
-          graphHandler: this.currentFunction.graphEmissionHandler === true,
+          graphHandler: false,
           stackSize: this.stack.length,
           pendingValue: pending.valueStackName,
           pendingDepth: this.getStackIndex(pending.valueStackName),
@@ -49855,7 +49596,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Pick from the bottom so extra untracked items only shift DEPTH.
     // An altstack needle (already parked by the caller) is immune to tracker drift.
     if (!opts?.addrOnAltstack) {
-      if (this.isCompilerRouteMetaRoute()) {
+      if (false) {
         // Route dynamic epilogues create their address after all handler invocations. It is above any untracked
         // handler residue, so its top-relative depth is authoritative (unlike the pre-handler ABI frame).
         this.emit(encodeInt(BigInt(this.getStackIndex(addrName))), loc);
@@ -49938,7 +49679,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc); this.emit(encodeBool(true), loc);
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_DUP, loc); this.emit(bytecodeOp, loc);
-    if (this.ownsRouteMetaParticipantBlock()) {
+    if (false) {
       // This address is created inside the invoked handler, above any runtime-only route frame residue. Its
       // top-relative depth is therefore authoritative; a bottom ordinal would be shifted by that residue and can
       // silently count zero, collapsing every later collection group onto the first one's predecessor run.
@@ -49968,7 +49709,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(CHUNK)), loc);
     this.emit(Op.OP_DIV, loc); // (dyn_oldnnew) = ceil(oldLen/CHUNK)
     this.emitVerifyChunkUtxoCount('(dyn_oldnnew)', false, loc);
-    if (this.isCompilerRouteMetaRoute()) {
+    if (false) {
       const index = this.getStackIndex('(dyn_oldnnew)');
       this.emit(encodeInt(BigInt(index)), loc);
       this.emit(Op.OP_ROLL, loc);
@@ -50475,18 +50216,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack();
       }
 
-      if (node.graphEmissionHandler && node.graphEffectFrame) {
-        // OP_TRUE is the authenticated inactive-slot sentinel and the route accumulator maps it to zero. Keep
-        // active recipients disjoint at runtime (including dynamically computed bytecode), then the ordinary
-        // equality check below proves the output is disjoint too. Direct-call transfer semantics are unchanged.
-        const activeLbIdx = this.getStackIndex(lockingBytecodeStackName);
-        this.emit(encodeInt(BigInt(activeLbIdx)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.emit(new Uint8Array([Op.OP_1]), locationData);
-        this.emit(Op.OP_EQUAL, locationData);
-        this.emit(Op.OP_NOT, locationData);
-        this.emit(Op.OP_VERIFY, locationData);
-      }
 
       // 1. Verify output locking bytecode
       const lbIdx = this.getStackIndex(lockingBytecodeStackName);
@@ -50528,9 +50257,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
 
       if (isConditional) {
-        if (node.graphEmissionHandler && node.graphEffectFrame) {
-          this.emit(Op.OP_ELSE, locationData);
-          this.emitNotTakenGraphTransferSlotBinding(transferIndex, locationData);
+        if (false) {
         } else if (this.framedMaster) {
           // A framed send the execution did not make still owns its region position, and the position must say
           // so: the body requires the no-index sentinel there rather than leaving a listed output unclaimed.
@@ -52062,8 +51789,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // The fixed-slot checks above authenticate every required output but do not reject extra genesis NFTs.
       // Enforce exact capability counts for this child category across all transaction outputs.
-      const graphCategory = this.currentFunction.graphEmissionHandler ? categoryStackName : undefined;
-      const fixedIndex = this.currentFunction.graphEmissionHandler ? undefined : deployIndex;
+      const graphCategory = false ? categoryStackName : undefined;
+      const fixedIndex = false ? undefined : deployIndex;
       this.emitDeployCapabilityOutputCount(graphCategory, 0x02, 1, locationData, fixedIndex);
       this.emitDeployCapabilityOutputCount(
         graphCategory, 0x01, dataNftCount + entryVerifications.length, locationData, fixedIndex,
@@ -52997,7 +52724,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitEventCovenantVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
-    const graphHandlerEventWidth = this.currentFunction.graphEmissionHandler === true
+    const graphHandlerEventWidth = false
       ? (this.currentFunction.graphEffectFrame?.eventWidth ?? 0) : 0;
     // X29. When an effect-carrying graph emission handler owns this function's event frame, the ROUTE's own
     // emit blobs are a shadow of it: the handler settles the reached sites' outputs from inside its OP_INVOKE
@@ -53015,7 +52742,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The per-slot form needs the reached site's ordinal on the stack. If it is ever absent - a route compiled
     // on a path that did not allocate it - fall back to the unshadowed SEC-10 binding rather than skipping:
     // that over-refuses (it is the measured ablation) but never leaves a slot unbound, and never throws.
-    const frameShadowed = this.isCompilerRouteMetaRoute(node) && (node.graphEffectFrame?.eventWidth ?? 0) > 0
+    const frameShadowed = false && (node.graphEffectFrame?.eventWidth ?? 0) > 0
       && this.stack.includes(GRAPH_EVENT_SITE);
 
     // Persist upsert / data-NFT 1:1 can leave untracked leftovers (`0057000000`) above
@@ -53030,7 +52757,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.armObligations.eventChunksPinned += node.emitInfos?.find((info) => info.emitIndex === emitIndex)?.chunkCount ?? 1;
       }
       const isConditionalEmit = this.conditionalEmitIndices.has(emitIndex);
-      const resolveGraphEvent = this.currentFunction.graphEmissionHandler === true
+      const resolveGraphEvent = false
         && (this.currentFunction.graphEffectFrame?.eventWidth ?? 0) > 1;
       let resolvedEventOutput: string | undefined;
 
@@ -53070,7 +52797,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const chunkCount = node.emitInfos?.find((info) => info.emitIndex === emitIndex)?.chunkCount ?? 1;
       if (chunkCount > 1) {
         if (resolveGraphEvent || frameShadowed || graphHandlerEventWidth > 0 || this.framedMaster
-          || node.routeMetaRoute || node.graphEmissionHandler) {
+          || false || false) {
           throw new SolidcDiagnosticError(
             'EVENT_PAYLOAD_EXCEEDS_COMMITMENT',
             `emit ${emitIndex} in '${node.name}' can encode more than one 128-byte NFT commitment; its continuation `
@@ -53092,7 +52819,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // A direct entry's own event output is settled by one body every such site shares.
       const sharedPin = !resolveGraphEvent && !frameShadowed && graphHandlerEventWidth === 0
-        && !this.readsRecordsFromFrame && !this.isCompilerRouteMetaRoute() && !this.usesProxyStateBlockBase()
+        && !this.readsRecordsFromFrame && !false && !this.usesProxyStateBlockBase()
         && !this.stack.includes(categoryOwnerSlotName())
         ? this.sharedEntryCheckId('eventPin', (t, l) => t.emitSharedEventPin(l)) : undefined;
       if (sharedPin !== undefined && this.subroutineDefined.get(sharedPin)) {
@@ -54167,7 +53894,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const targets = new Map<number, CallSiteTarget>();
     const selectors = new Map<number, CallSiteTarget>();
     const body = node.body;
-    if (!body || this.isDefineSubTraversal || this.framedMaster || this.inGenesisMode || node.graphEmissionHandler
+    if (!body || this.isDefineSubTraversal || this.framedMaster || this.inGenesisMode || false
       || (node.returnTypes.length > 0 && !node.isEntryPoint)
       || [FunctionModifier.UNSAFE, FunctionModifier.SPLIT, FunctionModifier.MERGE]
         .some((modifier) => node.modifiers.includes(modifier))) return { targets, selectors };
@@ -54235,7 +53962,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the target its code holds there (emitFramedComputedTarget), and a genesis body checks each call's target where
     // the call runs and again after the body (emitGenesisCalleeChecks), all with none of the direct convention's
     // call-site registers (collectCallSiteTargets): every call they make is looked at.
-    const readsEveryCall = node.graphRuntimeEmissionHandler === true || this.framedMaster || this.inGenesisMode;
+    const readsEveryCall = false || this.framedMaster || this.inGenesisMode;
     const sites: { call: Node; target: IdentifierNode }[] = [];
     walkInvocationAst(body, (child) => {
       const target = child instanceof LowLevelCallNode || child instanceof LowLevelCallStatementNode
@@ -55150,7 +54877,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // target, runtime selector, arguments, order, and callee frame are all authenticated. The direct-call
         // epilogue assumes callees occupy one contiguous call block, which is false when independently balanced
         // graph participant blocks own those inputs.
-        if (node.graphEmissionHandler) continue;
+        if (false) continue;
         this.emitArrayExternalCallLoop(slot, node);
         continue;
       }
@@ -55545,7 +55272,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitLoopIndexDistinctFromPointerWitnesses(
     slot: ExternalCallSlot, loc: SingleLocationData, emitIndex: () => void,
   ): void {
-    if (this.isCompilerRouteMetaRoute()) return;
+    if (false) return;
     for (const other of this.externalCallSlots) {
       if (other === slot) continue;
       const witness = `__internal__extcallMasterIdx${other.slotIndex}`;
@@ -55565,7 +55292,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitDistinctCalleeInputs(locationData: SingleLocationData): void {
     // A compiler-route route's calls are rows its manifest binds one by one.
-    if (this.isCompilerRouteMetaRoute()) return;
+    if (false) return;
     const index = (slot: ExternalCallSlot): string => `__internal__extcallMasterIdx${slot.slotIndex}`;
     const target = (slot: ExternalCallSlot): string | undefined => (slot.addressParam ? `param:${slot.addressParam}`
       : slot.addressStateVar ? `state:${slot.addressStateVar}`
@@ -55742,7 +55469,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * input too, and one run would serve both calls: the loop's inputs must stay below it.
    */
   private loopCalleeRegionEnd(slot: ExternalCallSlot): number | undefined {
-    if (this.isCompilerRouteMetaRoute()) return undefined;
+    if (false) return undefined;
     const later = this.externalCallSlots.filter((other) => other !== slot && other.computedOffset > slot.computedOffset
       && !other.sourceCallNode?.rawValueTransferOnly).map((other) => other.computedOffset);
     return later.length > 0 ? Math.min(...later) : undefined;
@@ -56684,7 +56411,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A standalone run's carrier refusal is the record count at zero, so that helper is defined first.
     if (this.contractSettlesCallRecords()) this.registerCallRecordCount();
     // With the blob directly beneath the picked index, the check is the same bytes in every function.
-    const blobUnderIndex = !this.isCompilerRouteMetaRoute() && this.getStackIndex('__internal__returnBlob') === 0;
+    const blobUnderIndex = !false && this.getStackIndex('__internal__returnBlob') === 0;
     if (!blobUnderIndex || !this.invokeSharedEntryCheck(
       'returnEvent', (t, l) => t.emitReturnEventCheck(() => t.emit(Op.OP_OVER, l), l), locationData,
     )) {
@@ -56856,8 +56583,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the record at its return witness. Batch routes, graph handlers and framed entries bind results otherwise.
    */
   private settlesDirectCallRecord(node: FunctionDefinitionNode): boolean {
-    return !this.framedMaster && node.isEntryPoint && node.returnTypes.length > 0 && !node.graphEmissionHandler
-      && !this.isCompilerRouteMetaRoute(node) && !this.functionHasDelegatecall && !this.blockEndsWithRevert(node.body)
+    return !this.framedMaster && node.isEntryPoint && node.returnTypes.length > 0 && !false
+      && !false && !this.functionHasDelegatecall && !this.blockEndsWithRevert(node.body)
       && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
   }
 
@@ -56875,7 +56602,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private settlesUniversalVoidRecord(node: FunctionDefinitionNode): boolean {
     return !this.framedMaster && node.isEntryPoint && node.returnTypes.length === 0
-      && !node.graphEmissionHandler && !this.isCompilerRouteMetaRoute(node) && !this.functionHasDelegatecall
+      && !false && !false && !this.functionHasDelegatecall
       && !this.blockEndsWithRevert(node.body) && !this.callBatchFrame && node.name !== '__construct'
       && this.directConvention && !this.isLifecycleOrUnsafeEntry(node)
       && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
@@ -57769,8 +57496,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private settlesCallBatchFrameRecord(node: FunctionDefinitionNode): boolean {
     if (node.returnTypes.length > 0) return this.settlesDirectCallRecord(node);
-    return !this.framedMaster && node.isEntryPoint && !node.graphEmissionHandler
-      && !this.isCompilerRouteMetaRoute(node) && !this.functionHasDelegatecall && !this.blockEndsWithRevert(node.body)
+    return !this.framedMaster && node.isEntryPoint && !false
+      && !false && !this.functionHasDelegatecall && !this.blockEndsWithRevert(node.body)
       && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
   }
 
@@ -58229,7 +57956,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // One direct readonly input executes once, so its identical zero-argument aliases read its one record: the
     // callee holds the transaction to the records it pinned, and each read checks its own digest. The binding is
     // published for the SDK, which lays both reads on that record.
-    if (!this.framedMaster && !node.graphEmissionHandler && !this.isCompilerRouteMetaRoute()) {
+    if (!this.framedMaster && !false && !false) {
       const aliases = returningSlots.filter((slot) => slot.readonlyReturnSelector !== undefined
         && !slot.optional && !slot.condition && !slot.batchInvocations && !slot.batchRepresentative
         && (slot.callMode === undefined || slot.callMode === ExternalCallMode.REGULAR
@@ -58462,7 +58189,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
     // Owner-base compiler-route frames must not reuse an INPUTINDEX-baked shared body: merge tails share the
     // route unlocker and would preserve the wrong input/output pair.
-    if (!this.currentFunctionIsDelegate && !this.usesRouteMetaOwnerBlockBase()
+    if (!this.currentFunctionIsDelegate && !false
       && this.invokeSubroutineIfDefined(
         GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID, locationData)) {
       if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
@@ -58503,11 +58230,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A mode-2 survivor carries every consumed master's satoshis (audit MERGE-1), so its output grows rather
     // than staying equal; the route's lifecycle verification pins the exact total. Every other case keeps the
     // exact master-value equality.
-    const lifecycleModeIndex = this.currentFunctionIsRouteMetaRoute
-      ? this.getStackIndex('__compiler_route_active_lifecycle_mode', true) : -1;
+    const lifecycleModeIndex = -1;
     const relaxedMergeValue = lifecycleModeIndex >= 0
       && this.getStackIndex('__internal__lifecycleOwnerInput', true) >= 0;
-    if (!relaxedMergeValue && !this.currentFunctionIsDelegate && !this.usesRouteMetaOwnerBlockBase()
+    if (!relaxedMergeValue && !this.currentFunctionIsDelegate && !false
       && this.invokeSubroutineIfDefined(
         GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID, locationData)) {
       if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
@@ -58516,7 +58242,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (relaxedMergeValue) {
-      this.emitPickTrackedFromBottom('__compiler_route_active_lifecycle_mode', locationData);
+      this.emitPickTrackedFromBottom('(lifecycle_mode)', locationData);
       this.emit(encodeInt(2n), locationData);
       this.emit(Op.OP_NUMEQUAL, locationData);
       this.emit(Op.OP_IF, locationData);
@@ -58538,10 +58264,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Skip ordinary master-output preservation when selector-derived retirement destroyed the master. */
   private beginAtomicSelfdestructExclusion(locationData: SingleLocationData): boolean {
-    const lifecycleModeIndex = this.currentFunctionIsRouteMetaRoute
-      ? this.getStackIndex('__compiler_route_active_lifecycle_mode', true) : -1;
+    const lifecycleModeIndex = -1;
     if (lifecycleModeIndex < 0) return false;
-    this.emitPickTrackedFromBottom('__compiler_route_active_lifecycle_mode', locationData);
+    this.emitPickTrackedFromBottom('(lifecycle_mode)', locationData);
     this.emit(encodeInt(3n), locationData);
     this.emit(Op.OP_NUMNOTEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
@@ -58551,17 +58276,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Skip ordinary INPUTINDEX-relative covenants for verifier-authorized merge tail inputs.
    * Owner-base compiler-route frames already address the survivor via `__internal__lifecycleOwnerInput`
-   * / `__internal__routeMetaOwnerInput`, so their covenants are safe (and required for journal
+   * / `__internal__lifecycleOwnerInput`, so their covenants are safe (and required for journal
    * stack balance) on tails — do not exclude them.
    */
   private beginAtomicMergeTailExclusion(locationData: SingleLocationData): boolean {
-    if (this.usesRouteMetaOwnerBlockBase()) return false;
-    const lifecycleModeIndex = this.currentFunctionIsRouteMetaRoute
-      ? this.getStackIndex('__compiler_route_active_lifecycle_mode', true) : -1;
-    const lifecycleOwnerIndex = this.currentFunctionIsRouteMetaRoute
-      ? this.getStackIndex('__internal__lifecycleOwnerInput', true) : -1;
+    const lifecycleModeIndex = -1;
+    const lifecycleOwnerIndex = -1;
     if (lifecycleModeIndex < 0 || lifecycleOwnerIndex < 0) return false;
-    this.emitPickTrackedFromBottom('__compiler_route_active_lifecycle_mode', locationData);
+    this.emitPickTrackedFromBottom('(lifecycle_mode)', locationData);
     this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_INPUTINDEX, locationData);
@@ -58587,9 +58309,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private ownerAnchorPreconditionHolds(
     _debugEnv: Record<string, string | undefined> | undefined, node: FunctionDefinitionNode,
   ): boolean {
-    return false
-      && (node.routeMetaOwnerIsLastArgument === true || node.graphEmissionHandler === true)
-      && node.parameters.some((parameter) => parameter.name === COMPILER_ROUTE_OWNER_INPUT);
+    return false;
   }
 
   /** Copy a tracked frame value by its stable distance from the bottom. */
@@ -58606,7 +58326,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       console.error('DBG-BOTTOM-PICK', JSON.stringify({
         function: this.currentFunction.name,
         isDefineSubTraversal: this.isDefineSubTraversal,
-        isRoute: this.isCompilerRouteMetaRoute(this.currentFunction),
+        isRoute: false,
         name,
         topIndex,
         modelLength: this.stack.length,
@@ -58627,8 +58347,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Resolve a compiler-published route-band item to its stable one-based bottom ordinal. */
   private declaredBandOrdinal(name: string): number | undefined {
-    const names = this.currentFunction.routeMetaCallerBandNames;
-    if (names === undefined) return undefined;
+    const names: string[] = [];
+    if (names.length === 0) return undefined;
     const index = names.indexOf(name);
     // The SDK pushes route inputs in reverse declaration order, so declaration index i is always
     // one-based bottom ordinal `names.length - i` while the route and invoked handlers execute.
@@ -58650,7 +58370,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * value-chunk lock witness off its ABI. The entry then keeps its lock list in an item it pushes above its frame.
    */
   private chunkLockListAboveFrame(node: FunctionDefinitionNode): boolean {
-    if (!this.directConvention || this.framedMaster || this.isCompilerRouteMetaRoute(node)) return false;
+    if (!this.directConvention || this.framedMaster || false) return false;
     const names = node.parameters.map((parameter) => parameter.name);
     if (names.includes(VALUE_CHUNK_LOCK_LIST)) return false;
     return (node.entryAccesses ?? []).some((access) => access.inLoop === true
@@ -58663,10 +58383,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** One-based bottom ordinal of the route's value-chunk lock list, as an invoked handler addresses it. */
   private chunkLockListBandOrdinal(): number | undefined {
-    const names = this.currentFunction.routeMetaCallerBandNames;
+    const names: string[] = [];
     const declared = this.declaredBandOrdinal(VALUE_CHUNK_LOCK_LIST);
     if (declared !== undefined || !this.chunkLockListAboveBand(names)) return declared;
-    return names!.length + 1;
+    return names.length + 1;
   }
 
   /** Replace the item at a known one-based bottom ordinal with the value currently on top. */
@@ -58769,7 +58489,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPickCompilerRouteFrameValue(
     name: string, locationData: SingleLocationData, extraStackOffset = 0,
   ): void {
-    if (this.isCompilerRouteMetaRoute()) {
+    if (false) {
       this.emitPickTrackedFromBottom(name, locationData);
       return;
     }
@@ -58786,7 +58506,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitReplaceCompilerRouteFrameValue(
     name: string, node: Node, ordinaryExtraStackOffset = 0,
   ): void {
-    if (!this.isCompilerRouteMetaRoute()) {
+    if (!false) {
       this.emitReplace(this.getStackIndex(name) + ordinaryExtraStackOffset, node);
       return;
     }
@@ -58826,7 +58546,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPickSettlementValue(
     name: string, locationData: SingleLocationData, node = this.currentFunction,
   ): void {
-    if (this.isCompilerRouteMetaRoute(node)) {
+    if (false) {
       this.emitPickTrackedFromBottom(name, locationData);
       return;
     }
@@ -58838,7 +58558,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDropSettlementValue(
     name: string, locationData: SingleLocationData, node = this.currentFunction,
   ): void {
-    if (this.isCompilerRouteMetaRoute(node)) {
+    if (false) {
       this.emitDropTrackedFromBottom(name, locationData);
       return;
     }
@@ -58888,7 +58608,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const neighbours = new Map<string, number>();
     for (const candidate of [
       '__internal__proxyMasterIndex', '__internal__dynamicChunkInputBase',
-      '__internal__dynamicChunkOutputBase', '__internal__routeMetaOwnerInput',
+      '__internal__dynamicChunkOutputBase',
       '__internal__lifecycleOwnerInput', '__internal__graphBlockSize', '__internal__graphFixedSize',
       '__internal__returnOutputIdx', '__internal__activeVerifierIndex',
     ]) {
@@ -58900,7 +58620,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       function: this.currentFunction.name,
       functionId: this.currentFunction.functionId,
       isDefineSubTraversal: this.isDefineSubTraversal,
-      isRoute: this.isCompilerRouteMetaRoute(this.currentFunction),
+      isRoute: false,
       hasBlockLayout: this.currentFunction.blockLayout !== undefined,
       branch,
       name,
@@ -58927,8 +58647,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       above: this.stack.slice(Math.max(0, index - 2), index + 3),
       neighbours: [...neighbours.entries()],
       stackTop: this.stack.slice(0, 28),
-      callerBandNames: this.currentFunction.routeMetaCallerBandNames,
-      ownerBandOrdinal: this.declaredBandOrdinal(COMPILER_ROUTE_OWNER_BAND_INPUT),
+      callerBandNames: [],
+      ownerBandOrdinal: undefined,
       ownerAnchorIndex: this.getStackIndex(OWNER_ANCHOR_LOCAL, true),
     }));
     return site;
@@ -58957,7 +58677,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitPickTrackedFromBottom(categoryOwnerSlotName(), locationData);
       return;
     }
-    if (this.usesRouteMetaOwnerBlockBase()) {
+    if (false) {
       // Every generated route handler receives its physical participant owner as an explicit compiler argument.
       // Use that one authority for both direct routes (where the caller supplied OP_INPUTINDEX) and delegated
       // routes (where the caller supplied its authenticated proxy witness). Deciding again from transient clone
@@ -58972,7 +58692,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // untracked operands ABOVE the tracked frame, the top-relative form when the extras sit BELOW it. A fix
       // for the take-job coordinate must therefore correct the MODEL (or the specific base emitter), not the
       // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
-      const ownerName = this.routeMetaParticipantOwnerName() ?? COMPILER_ROUTE_OWNER_INPUT;
+      const ownerName = '(owner)';
       const trackedOwnerIndex = this.getStackIndex(ownerName, true);
       const trackedOwnerAnchorIndex = this.getStackIndex(OWNER_ANCHOR_LOCAL, true);
       if (trackedOwnerAnchorIndex >= 0) {
@@ -59021,26 +58741,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // top-relative form settles. Keep PubKey on the bottom form; force EVM (and explicit TOP debug) off it.
         const evmProjection = (this.currentFunction.ecrecoverEvmCallCount ?? 0) > 0
           || (this.currentFunction.ecrecoverClosureEvmFlags?.some(Boolean) ?? false);
-        const graphRowHandler = ((this.currentFunction.graphEmissionHandler === true
+        const graphRowHandler = ((false
           && Math.max(this.currentFunction.recoveryEffectCount ?? 0,
             this.currentFunction.ecrecoverCallCount ?? 0) > 0
           && !evmProjection)
-          || (forcedBottomHandler !== undefined && forcedBottomHandler.length > 0
-            && this.currentFunction.name.includes(forcedBottomHandler)))
-          && !(forcedTopHandler !== undefined && forcedTopHandler.length > 0
-            && this.currentFunction.name.includes(forcedTopHandler));
+          || (forcedBottomHandler !== undefined && forcedBottomHandler!.length > 0
+            && this.currentFunction.name.includes(forcedBottomHandler!)))
+          && !(forcedTopHandler !== undefined && forcedTopHandler!.length > 0
+            && this.currentFunction.name.includes(forcedTopHandler!));
         const ownerSite = this.debugComputeBase(
           graphRowHandler ? 'owner-bottom' : 'owner', ownerName,
           trackedOwnerIndex, extraStackOffset,
         );
         this.emitComputeBaseSiteMarker(locationData, ownerSite);
-        const bandOwnerOrdinal = graphRowHandler
-          && ownerName === COMPILER_ROUTE_OWNER_INPUT
-          ? this.declaredBandOrdinal(COMPILER_ROUTE_OWNER_BAND_INPUT) : undefined;
+        const bandOwnerOrdinal = undefined as number | undefined;
         if (bandOwnerOrdinal !== undefined) {
           // The route ABI band is stable while invoked handler frames and their live operands are not.
           this.emit(Op.OP_DEPTH, locationData);
-          this.emit(encodeInt(BigInt(bandOwnerOrdinal)), locationData);
+          this.emit(encodeInt(BigInt(bandOwnerOrdinal!)), locationData);
           this.emit(Op.OP_SUB, locationData);
           this.emit(Op.OP_PICK, locationData);
         } else if (graphRowHandler) {
@@ -59048,12 +58766,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         } else {
           // Merge-capable routes keep `__internal__lifecycleOwnerInput` under a growing row frame; pick it by
           // stable bottom ordinal. Ordinary handler owners keep the compact top-relative form.
-          if (ownerName === '__internal__lifecycleOwnerInput' || this.isCompilerRouteMetaRoute()) {
-            this.emitPickTrackedFromBottom(ownerName, locationData);
-          } else {
-            this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
-            this.emit(Op.OP_PICK, locationData);
-          }
+          this.emit(encodeInt(BigInt(trackedOwnerIndex! + extraStackOffset)), locationData);
+          this.emit(Op.OP_PICK, locationData);
         }
       } else if (this.isSubroutineUseProbe) {
         // The call-graph probe has no physical function frame; its emitted instructions are discarded.
@@ -59065,7 +58779,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     } else if (this.usesProxyStateBlockBase()) {
       if (!this.isDefineSubTraversal) {
-        if (this.isCompilerRouteMetaRoute()) {
+        if (false) {
           // The aggregate route keeps runtime-only row, snapshot and mapping operands above its tracked ABI frame.
           // A top-relative copy captured at entry therefore drifts as those operands accumulate. The authenticated
           // proxy-master argument remains in the fixed caller band at the bottom of the frame, so address that
@@ -59391,10 +59105,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Every selected row shares the route's physical read-only prefix. A body's own footprint can omit a
     // sibling's preserved run or classify a sibling-written variable as read-only; neither changes that band.
     // Direct non-route entries keep their ordinary function footprint.
-    const sharesRouteBand = fn.routeMetaRoute === true || fn.graphEmissionHandler === true;
-    const prefix = (sharesRouteBand ? fn.routeMetaRouteReadOnlyDynamicResources : undefined)
+    const sharesRouteBand = false || false;
+    const prefix = (sharesRouteBand ? [] : undefined)
       ?? [...reads].filter((name) => !written.has(name));
-    const routeResources = sharesRouteBand ? fn.routeMetaRouteDynamicResources ?? [] : [];
+    const routeResources = sharesRouteBand ? [] : [];
     const inputBase = '__internal__dynamicChunkInputBase';
     const inputBaseOrdinal = this.declaredBandOrdinal(inputBase);
     const hasInputBase = this.getStackIndex(inputBase, true) >= 0 || inputBaseOrdinal !== undefined;
@@ -59740,8 +59454,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // An atomic split route is authorized by the detached V3 verifier to increase this participant's exact
     // minting population. The authenticated mode is carried back through the verifier commitment and checked
     // against the selected split handler's decoded count by the route. Every ordinary row retains this guard.
-    const lifecycleModeIndex = this.currentFunctionIsRouteMetaRoute
-      ? this.getStackIndex(LIFECYCLE_MODE, true) : -1;
+    const lifecycleModeIndex = false
+      ? this.getStackIndex(LIFECYCLE_MODE_LOCAL, true) : -1;
     if (lifecycleModeIndex >= 0) {
       this.emit(encodeInt(BigInt(lifecycleModeIndex)), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -60192,22 +59906,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private directUpgradeMigratesDataNfts(node: FunctionDefinitionNode): boolean {
     return this.dataNftCount > 0
       && node.modifiers.includes(FunctionModifier.UPGRADE)
-      && node.routeMetaEligible !== true
-      && node.routeMetaUpgradeRoute !== true;
+      && true
+      && true;
   }
 
   /** A direct upgrade must also re-mint the contract's satoshi container at the replacement lock. */
   private directUpgradeMigratesSatoshiContainer(node: FunctionDefinitionNode): boolean {
     return this.contractKeepsSatoshiContainer
       && node.modifiers.includes(FunctionModifier.UPGRADE)
-      && node.routeMetaEligible !== true
-      && node.routeMetaUpgradeRoute !== true;
+      && true
+      && true;
   }
 
   /** A direct upgrade of a contract that keeps token containers migrates every container coin it spends. */
   private directUpgradeMigratesTokenContainer(node: FunctionDefinitionNode): boolean {
     if (!node.modifiers.includes(FunctionModifier.UPGRADE)) return false;
-    if (node.routeMetaEligible === true || node.routeMetaUpgradeRoute === true) return false;
+    if (false || false) return false;
     return this.contractTokenContainerCount > 0;
   }
 
@@ -61096,7 +60810,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // not the surviving master; the direct transaction's survivor is always input 0. Composed routes carry an
     // explicit physical owner and must keep using that authenticated coordinate.
     // A framed compile keeps the master index its frame resolves.
-    if (!this.directConvention || this.usesRouteMetaOwnerBlockBase() || this.usesProxyStateBlockBase()) {
+    if (!this.directConvention || false || this.usesProxyStateBlockBase()) {
       this.emitMasterInputIndex(locationData, extraStackOffset);
     } else {
       this.emit(Op.OP_0, locationData);
@@ -61109,7 +60823,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitMergeSurvivorIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (!(this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName()))
-      && !this.usesRouteMetaOwnerBlockBase() && !this.usesProxyStateBlockBase()) {
+      && !false && !this.usesProxyStateBlockBase()) {
       this.emit(encodeInt(0n), locationData);
       return;
     }
@@ -61652,7 +61366,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < this.entrySlots.length; i++) {
       // An outlined compiler-route handler owns the transition or preservation proof for this shared physical slot.
       // The aggregate route cannot repeat it: inactive runtime rows intentionally leave the capacity slot empty.
-      if (node.routeMetaHandlerManagedEntrySlots?.includes(i)) continue;
+      if (false) continue;
       // A sorted-batch slot is settled by emitSortedBatchTransitionVerification. In a compiler route the slot is
       // part of the union layout and may be inactive for the selected row (predOut=-2), so treating it as an
       // ordinary read-only access would require an output that the authenticated inactive representation forbids.
@@ -61678,7 +61392,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const entry = this.entrySlots[i];
     return entry !== undefined && !entry.inLoop && this.directConvention && !this.framedMaster
       && !this.readsRecordsFromFrame && this.sharedCheckBody === undefined
-      && !this.usesRouteMetaOwnerBlockBase() && !this.usesProxyStateBlockBase() && !this.sharesProofInput(i)
+      && !false && !this.usesProxyStateBlockBase() && !this.sharesProofInput(i)
       && !((this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)
         && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${i}`), true) >= 0);
   }
@@ -61806,9 +61520,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private allocateConditionalSortedBatchFlags(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
-    const routeMetaDisabled = (this.compilerOptions as { __routeMetaExplicitlyDisabled?: boolean })
-      .__routeMetaExplicitlyDisabled === true;
-    const direct = routeMetaDisabled && this.compilerOptions.composition !== 'framed' && !this.framedMaster;
+    const direct = this.compilerOptions.composition !== 'framed' && !this.framedMaster;
     if (!direct && !this.framedMaster) return;
     const batches = (node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1);
     if (batches.length === 0) return;
@@ -61840,23 +61552,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private allocateConditionalSortedWriteFlags(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
-    // A compiler-route route settles its entry slots through its own handler machinery.
-    const routeMetaDisabled = (this.compilerOptions as { __routeMetaExplicitlyDisabled?: boolean })
-      .__routeMetaExplicitlyDisabled === true;
-    const direct = routeMetaDisabled && this.compilerOptions.composition !== 'framed' && !this.framedMaster;
+    const direct = this.compilerOptions.composition !== 'framed' && !this.framedMaster;
     const activityWrites = this.activityBatchWriteSlots(node);
-    // DS-6: with the bus on, the SDK still settles a direct entry's activity batch by what ran (it reads the layout
-    // alone); settlesSortedTargetsByActivity agrees only with each such write's flag. A route, as the SDK names one,
-    // gets none.
-    const busDirect = !direct && !this.framedMaster && activityWrites.size > 0 && !node.name.startsWith('__compiler_route')
-      && !node.parameters.some((parameter) => parameter.name === 'batchBlob');
-    if (!direct && !this.framedMaster && !busDirect) return;
+    if (!direct && !this.framedMaster) return;
     const slots = new Set<number>();
     const invokedWrites = new Set<number>();
     this.collectConditionalSortedWriteSlots(node.body, false, slots, new Map(), invokedWrites);
     const guardedWrites = this.guardedBatchWriteSlots(node);
     for (const slotIndex of [...slots].sort((a, b) => a - b)) {
-      if (busDirect && !activityWrites.has(slotIndex)) continue;
       const info = this.entrySlots[slotIndex];
       if (info === undefined || info.inLoop) continue;
       // An invoked subroutine cannot set this frame's flag.
@@ -61982,21 +61685,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * whose flush runs exactly where its dirty bit is set, so the pin claims the lane by that bit. A write outside a
    * flush leaves no such evidence, so it is refused.
    */
-  private noteRouteLaneWrite(node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode): void {
-    if (this.isDefineSubTraversal || !this.isCompilerRouteMetaRoute()
-      || this.currentFunction.routeMetaRecordClaims === undefined) return;
-    const slot = node.entrySlotIndex;
-    const offset = this.routeLaneOffset(this.currentFunction, slot);
-    if (offset === undefined) return;
-    const dirty = node instanceof MappingAssignNode ? node.journalDirtyBit : undefined;
-    if (dirty === undefined) {
-      throw new Error(`compiler-route record pin: route '${this.currentFunction.name}' writes '${node.name}' at lane `
-        + `${offset} outside its journal flush, so no dirty bit records where the write ran`);
-    }
-    const sources = this.routeLaneWrites.get(slot) ?? new Map<string, { word: string; bit: number }>();
-    sources.set(`${dirty.word}:${dirty.bit}`, dirty);
-    this.routeLaneWrites.set(slot, sources);
+  private noteRouteLaneWrite(_node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode): void {
+    return;
   }
+
 
   /** Set a conditional sorted write's "the write ran" flag true at its upsert site (no-op without the flag). */
   private markConditionalSortedWriteFlag(slotIndex: number, node: Node): void {
@@ -62708,7 +62400,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
     this.pushToStack(addr);
-    this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
+    this.emitSortedEntryAddress(computeCollectionHash(signature!), loc);
     this.stack[0] = addr;
     this.emit(Op.OP_0, loc);
     this.pushToStack(expected);
@@ -62737,7 +62429,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     // Handler-managed slots are removed from the route's batch list because the outlined handler settles
     // them. Leaving them here makes the route require zero inputs at that address and rejects the spend.
-    const handlerManaged = new Set((node.routeMetaHandlerManagedEntrySlots ?? []).flatMap((slotIndex) => {
+    const handlerManaged = new Set(([]).flatMap((slotIndex) => {
       const name = this.entrySlots[slotIndex]?.collection;
       return name === undefined ? [] : [name];
     }));
@@ -62778,7 +62470,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // spends it beside any master, so pin the input count at that address to the output count.
     for (const sv of this.stateVariables) {
       if (!sv.isDynamic || (this.pendingDynamicWrites.has(sv.name)
-        && !this.currentFunction.routeMetaRouteReadOnlyDynamicResources?.includes(sv.name))) continue;
+        && !false)) continue;
       const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
       if (!this.invokeSharedEntryCheck(`unwrittenChunks:${binToHex(chunkHash)}`,
         (t, l) => t.emitUnwrittenChunkCensus(chunkHash, l), loc)) this.emitUnwrittenChunkCensus(chunkHash, loc);
@@ -62793,7 +62485,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // An own-category mutable NFT outside the function's block is not one of its entries, chunks, or records.
     // Re-emitting it at the same index with another commitment keeps no check that only counts layout slots.
     // A compiler-owned route's handlers rewrite records across its whole block, so it pins only past the block.
-    if (!this.isCompilerRouteMetaRoute(node)) this.emitPreserveOutsideLayoutOwnMutable(node, loc);
+    if (!false) this.emitPreserveOutsideLayoutOwnMutable(node, loc);
     else {
       this.emitRouteOutsideBlockRecordPin(node, loc);
       this.emitRouteCollectionMintBounds(node, loc);
@@ -62817,11 +62509,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * one-byte commitment. Stack neutral.
    */
   private emitRouteCollectionMintBounds(node: FunctionDefinitionNode, loc: SingleLocationData): void {
-    if (node.routeMetaRecordClaims === undefined) return;
+    if (true) return;
     const counted = new Set([
       ...(node.sortedBatchInfo ?? []).map((batch) => batch.collection), ...this.vmapRuntimeCollections(node),
     ]);
-    const collections = [...new Set((node.routeMetaHandlerManagedEntrySlots ?? []).flatMap((slotIndex) => {
+    const collections = [...new Set(([]).flatMap((slotIndex) => {
       const name = this.entrySlots[slotIndex]?.collection;
       return name === undefined || counted.has(name) ? [] : [name];
     }))].filter((name) => this.collectionDefinitions.some((collection) => collection.name === name && collection.sorted));
@@ -62833,7 +62525,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
       this.pushToStack(addr);
-      this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
+      this.emitSortedEntryAddress(computeCollectionHash(signature!), loc);
       this.stack[0] = addr;
       this.emitRelinkedInputCount(loc);
       this.emit(Op.OP_TOALTSTACK, loc);
@@ -62958,10 +62650,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * by index picks its window at run time (emitParticipantSizedWindow). Stack neutral.
    */
   private emitRouteOutsideBlockRecordPin(node: FunctionDefinitionNode, loc: SingleLocationData): void {
-    const verifierLock = node.routeMetaVerifierLock;
+    const verifierLock = undefined;
     const blockSize = node.blockLayout?.blockSize;
     if (verifierLock === undefined || blockSize === undefined || blockSize <= 0) return;
-    const inBlock = node.routeMetaRecordClaims !== undefined;
+    const inBlock = false;
     const byIndex = this.routeVerifierSkipsByIndex(node);
     const graphSized = node.parameters.some((parameter) => parameter.name === GRAPH_BLOCK_SIZE);
     const participantSized = !inBlock && !graphSized && byIndex && this.usesProxyStateBlockBase()
@@ -63082,7 +62774,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the chunks of all of them. Each row with `bandCollections` forms a group of its own with their entry locks.
    */
   private routeBandLockClaims(node: FunctionDefinitionNode): BandLockGroup[] | undefined {
-    const claims = node.routeMetaRecordClaims ?? [];
+    const claims: Array<{
+      flag: string;
+      bandStates?: readonly string[];
+      bandCollections?: readonly string[];
+      lanes?: readonly number[];
+      collections?: readonly string[];
+    }> = [];
     const groups: BandLockGroup[] = [];
     const flags = claims.flatMap((claim) => (claim.bandStates !== undefined
       && this.routeBandStates(node, claim.bandStates).length > 0 ? [claim.flag] : []));
@@ -63116,7 +62814,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * where it keeps its records as chunks at a lock of its own. A packed state is one data record, the route's own.
    */
   private routeBandStates(node: FunctionDefinitionNode, written: readonly string[]): string[] {
-    const readOnly = new Set(node.routeMetaRouteReadOnlyDynamicResources ?? []);
+    const readOnly = new Set<string>();
     return [...new Set([...written, ...[...this.pendingDynamicWrites.keys()].filter((name) => !readOnly.has(name))])]
       .filter((name) => this.stateVariables.some((variable) => variable.name === name && variable.isDynamic));
   }
@@ -63277,8 +62975,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * verifier only for a lifecycle row, so it takes that row's flag alone. Bit 0, the master, stays clear.
    */
   private emitRouteBlockClaims(node: FunctionDefinitionNode, blockSize: number, loc: SingleLocationData): void {
-    const claims = node.routeMetaRecordClaims ?? [];
-    const handlerManaged = new Set(node.routeMetaHandlerManagedEntrySlots ?? []);
+    const claims: Array<{
+      flag: string;
+      bandStates?: readonly string[];
+      bandCollections?: readonly string[];
+      lanes?: readonly number[];
+      collections?: readonly string[];
+    }> = [];
+    const handlerManaged = new Set<number>();
     const own = new Set<BlockSlotKind>(['dataNft', 'readOnlyDataNft', 'keccakSideCar', 'ecrecoverSideCar']);
     const slots = (node.blockLayout?.slots ?? []).filter((slot) => slot.offset > 0 && slot.offset < blockSize);
     const bit = (offset: number): bigint => 1n << BigInt(offset);
@@ -63481,7 +63185,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ])];
     // A route participant's record block is settled by the route verifier, and its dynamic band is shared across
     // handlers, so the walk keeps the full family list there. A plain direct entry admits only what it rewrites.
-    const routeParticipantWalk = this.ownsRouteMetaParticipantBlock() || this.usesProxyStateBlockBase()
+    const routeParticipantWalk = false || this.usesProxyStateBlockBase()
       || this.currentFunctionIsDelegate;
     const admitMintableLocks = (routeParticipantWalk
       ? (this.entrySlots.some((slot) => slot.inLoop) || (node.collectionIterations?.length ?? 0) > 0
@@ -63663,12 +63367,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private contractRoutePinsByIndex(): boolean {
     for (const fn of this.userFunctionDefs.values()) {
-      if (fn.routeMetaRoute !== true || fn.routeMetaVerifierLock === undefined
+      if (true || true
         || (fn.blockLayout?.blockSize ?? 0) <= 0) continue;
       const names = new Set(fn.parameters.map((parameter) => parameter.name));
-      if (fn.routeMetaRecordClaims !== undefined && !names.has(GRAPH_BLOCK_SIZE)) continue;
+      if (false && !names.has(GRAPH_BLOCK_SIZE)) continue;
       if (names.has(ACTIVE_VERIFIER_INDEX) && !names.has('__internal__msgSenderCategory')
-        && !names.has('__internal__proxyMasterIndex') && !names.has(COMPILER_ROUTE_OWNER_INPUT)
+        && !names.has('__internal__proxyMasterIndex')
         && !names.has('__internal__lifecycleOwnerInput')) return true;
     }
     return false;
@@ -63778,13 +63482,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private countedRecordPin(node: FunctionDefinitionNode, settlesDataRecords: boolean): CountedRecordPin | undefined {
     if (this.isDefineSubTraversal || this.framedMaster || this.readsRecordsFromFrame || node.name === '__construct'
-      || (this.usesProxyStateBlockBase() && !this.isCompilerRouteMetaRoute(node))) return undefined;
-    const verifierLock = this.isCompilerRouteMetaRoute(node) ? node.routeMetaVerifierLock : undefined;
-    if (this.ownsRouteMetaParticipantBlock(node) && verifierLock === undefined) return undefined;
+      || (this.usesProxyStateBlockBase() && !false)) return undefined;
+    const verifierLock = false ? undefined : undefined;
+    if (false && verifierLock === undefined) return undefined;
     // A migrateRecords entry moves the entry at input 1 to its replacement-bound covenant, and
     // emitMigrateRecordsEntryMigrationCheck pins it there (the master at input 0), so the pin leaves it out.
     const migratesEntry = node.modifiers.includes(FunctionModifier.MIGRATE_RECORDS)
-      && node.routeMetaUpgradeRoute !== true && this.collectionDefinitions.length > 0;
+      && true && this.collectionDefinitions.length > 0;
     const span = 1 + (settlesDataRecords ? this.compactOffsetMap.size : Number(migratesEntry));
     if (verifierLock === undefined) return { span };
     return { span, verifierLock, verifierByIndex: this.routeVerifierSkipsByIndex(node) };
@@ -64625,7 +64329,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private takesCallerSelector(fn: FunctionDefinitionNode): boolean {
     if (this.framedMaster) return this.framedSelectorCarrierNames().has(fn.name);
-    if (!this.contractUsesMsgSig || false || fn.graphEmissionHandler
+    if (!this.contractUsesMsgSig || false || false
       || fn.functionId === undefined || (this.journalSlotsByFunctionId.get(fn.functionId)?.length ?? 0) > 0
       || !this.framedSelectorCarrierNames().has(fn.name)) return false;
     return !this.sourcePrimaryContract || !this.functionReferenceIds(this.sourcePrimaryContract).has(fn.functionId);
@@ -64936,8 +64640,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       return;
     }
-    if (this.stack.includes('__compiler_route_graph_caller')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_caller'))), locationData);
+    if (false) {
+      this.emit(encodeInt(BigInt(-1)), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }
@@ -65194,12 +64898,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Inlined compiler-route batch handlers execute in the wrapper traversal, where the parsed
     // row value is an ordinary local rather than an OP_DEFINE frame argument.
-    if (this.stack.includes('__compiler_route_graph_msg_value')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_msg_value'))), locationData);
+    if (false) {
+      this.emit(encodeInt(BigInt(-1)), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }
-    if (this.currentFunction.graphEmissionHandler) {
+    if (false) {
       if (!this.stack.includes('__internal__handlerMsgValue')) {
         throw new Error(
           `Missing logical msg.value context in graph handler '${this.currentFunction.name}'`,
@@ -65413,8 +65117,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private entryBindsCallerEdge(node: FunctionDefinitionNode): boolean {
     return node.requiresCallerEdge === true && !this.isDefineSubTraversal && node.isEntryPoint
-      && this.directConvention && !this.framedMaster && !this.isCompilerRouteMetaRoute(node)
-      && !node.graphEmissionHandler;
+      && this.directConvention && !this.framedMaster && !false
+      && !false;
   }
 
   /**
@@ -66596,10 +66300,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Get token container category from the key parameter
       const keyParamName = this.tokenContainerSlots[i].keyParam;
       // Prefer the live parameter; after a transfer emission the category may only remain as `__tc_cat_*`.
-      // Batch routes keep forwarded `__compiler_route_token_category*` witnesses instead of source names.
-      const routeMetaCatName = i === 0
-        ? '__compiler_route_token_category'
-        : `__compiler_route_token_category_${i}`;
+      // A forwarded category witness keeps a compiler-owned name rather than a source name.
+      const forwardedCategoryName = i === 0
+        ? '(forwarded_category)'
+        : `(forwarded_category_${i})`;
       let keyIdx = this.getStackIndex(keyParamName, true);
       const slot = this.tokenContainerSlots[i];
       if (keyIdx < 0 && (slot.keySource === 'own' || slot.keySource === 'state')) {
@@ -66608,7 +66312,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitFixedTokenContainerKey(slot, i, locationData);
       } else {
         if (keyIdx < 0) {
-          keyIdx = this.getStackIndex(routeMetaCatName, true);
+          keyIdx = this.getStackIndex(forwardedCategoryName, true);
         }
         if (keyIdx < 0) {
           const transferCat = this.pendingTokenContainerTransfers
@@ -66621,8 +66325,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         if (keyIdx < 0) {
           // Fall back to the i-th forwarded witness still on the stack when slot ordinals drifted.
-          const forwardedOnStack = this.stack.filter((name) => name === '__compiler_route_token_category'
-            || name.startsWith('__compiler_route_token_category_'));
+          const forwardedOnStack = this.stack.filter((name) => name === '(forwarded_category)');
           const byOrdinal = forwardedOnStack[i] ?? forwardedOnStack[0];
           if (byOrdinal !== undefined) keyIdx = this.getStackIndex(byOrdinal, true);
         }
@@ -67336,24 +67039,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       if (isConditionalTc) {
-        if (node.graphEmissionHandler && node.graphEffectFrame) {
-          this.emit(Op.OP_ELSE, locationData);
-          this.emitNotTakenTokenTransferSlotBinding(transferIndex, locationData);
-        }
         this.emit(Op.OP_ENDIF, locationData);
       }
     }
 
-    if (node.graphEmissionHandler && node.graphEffectFrame) {
-      const covered = new Set(this.pendingTokenContainerTransfers.map((transfer) => transfer.transferIndex));
-      for (let transferIndex = 0;
-        transferIndex < node.graphEffectFrame.tokenTransferWidth;
-        transferIndex += 1) {
-        if (!covered.has(transferIndex)) {
-          this.emitNotTakenTokenTransferSlotBinding(transferIndex, locationData);
-        }
-      }
-    }
 
     // Transfer values remain live until container preservation. The preservation equation consumes their
     // authenticated amount witnesses directly, allowing inactive conditional suffix slots to contribute zero
@@ -67601,49 +67290,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A frame with no fungible transfer effects therefore has no debit to scan; container preservation
       // below still requires the entire input fungible balance to remain. Unknown metadata keeps the scan.
       const hasFungibleGraphTransfers = node.tokenContainerAccesses?.some((access) => access.transferCount > 0) ?? true;
-      if (this.isCompilerRouteMetaRoute(node) && (node.graphEffectFrame?.tokenTransferWidth ?? 0) > 0
-        && hasFungibleGraphTransfers) {
-        for (let transferIndex = 0;
-          transferIndex < node.graphEffectFrame!.sites * node.graphEffectFrame!.tokenTransferWidth;
-          transferIndex += 1) {
-          // Every inactive/unowned graph slot is tokenless (SEC-16), so a present category is an authenticated
-          // transfer. Debit it only from the container with the same base category; the former route-wide sum
-          // let a transfer from A relax B's conservation equation as well.
-          this.emitBlockSlotIndex('tcTransfer', transferIndex, locationData, 1);
-          this.emit(Op.OP_DUP, locationData);
-          this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
-          this.emit(Op.OP_LESSTHAN, locationData);
-          this.emit(Op.OP_IF, locationData);
-          this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-          this.emit(Op.OP_DUP, locationData);
-          this.emit(Op.OP_SIZE, locationData);
-          this.emit(Op.OP_NIP, locationData);
-          this.emit(encodeInt(32n), locationData);
-          this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
-          this.emit(Op.OP_IF, locationData);
-          this.emit(encodeInt(32n), locationData);
-          this.emit(Op.OP_SPLIT, locationData);
-          this.emit(Op.OP_DROP, locationData);
-          this.emitTokenContainerInputIndex(i, locationData, 2);
-          this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-          this.emit(encodeInt(32n), locationData);
-          this.emit(Op.OP_SPLIT, locationData);
-          this.emit(Op.OP_DROP, locationData);
-          this.emit(Op.OP_EQUAL, locationData);
-          this.emit(Op.OP_ELSE, locationData);
-          this.emit(Op.OP_DROP, locationData);
-          this.emit(Op.OP_0, locationData);
-          this.emit(Op.OP_ENDIF, locationData);
-          this.emit(Op.OP_IF, locationData);
-          this.emitBlockSlotIndex('tcTransfer', transferIndex, locationData, 1);
-          this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
-          this.emit(Op.OP_SUB, locationData);
-          this.emit(Op.OP_ENDIF, locationData);
-          this.emit(Op.OP_ELSE, locationData);
-          this.emit(Op.OP_DROP, locationData);
-          this.emit(Op.OP_ENDIF, locationData);
-        }
-      }
       const hasRuntimeEffectSpan = this.stack.includes(
         GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START,
       ) && this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END);
@@ -67715,9 +67361,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         !this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex));
       const conditionalNftTransfers = nftTransfersForSlot.filter((transfer) =>
         this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex));
-      const hasGraphNftOccurrence = this.isCompilerRouteMetaRoute(node)
-        && this.stack.includes(GRAPH_TOKEN_SITE)
-        && node.graphEffectFrame?.tokenNftTransfers === true;
+      const hasGraphNftOccurrence = false
       const hasConditionalNftOccurrence = conditionalNftTransfers.length > 0
         || hasGraphNftOccurrence || hasRuntimeNftCounts;
       const emitConditionalNftOccurrence = (untrackedDepth: number): void => {
@@ -67727,19 +67371,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.getStackIndex(transfer.argStackNames[0]) + untrackedDepth + (emitted ? 1 : 0),
           )), locationData);
           this.emit(Op.OP_PICK, locationData);
-          this.emit(Op.OP_0NOTEQUAL, locationData);
-          if (emitted) this.emit(Op.OP_BOOLOR, locationData);
-          emitted = true;
-        }
-        if (hasGraphNftOccurrence) {
-          this.emitPickCompilerRouteFrameValue(
-            GRAPH_TOKEN_SITE, locationData, untrackedDepth + (emitted ? 1 : 0),
-          );
-          const packing = graphTokenOccurrencePacking(node.graphEffectFrame!, i);
-          this.emit(encodeInt(1n << BigInt(packing.offset)), locationData);
-          this.emit(Op.OP_DIV, locationData);
-          this.emit(encodeInt(1n << BigInt(packing.width)), locationData);
-          this.emit(Op.OP_MOD, locationData);
           this.emit(Op.OP_0NOTEQUAL, locationData);
           if (emitted) this.emit(Op.OP_BOOLOR, locationData);
           emitted = true;

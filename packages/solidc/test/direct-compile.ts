@@ -14,7 +14,7 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
  *
  * General parser/type/codegen tests must not synthesize an unrelated compiler-route batch route: doing so changes byte-identity
  * assertions, can replace the source diagnostic with a generated-route diagnostic, and multiplies full-suite
- * runtime. compiler route tests import the production compiler directly. An explicit `routeMeta: true` still wins.
+ * runtime. Tests that need production defaults import the compiler directly.
  */
 export const compileFile = (
   sourcePath: Parameters<typeof compileFileRaw>[0], options: FileOptions = {},

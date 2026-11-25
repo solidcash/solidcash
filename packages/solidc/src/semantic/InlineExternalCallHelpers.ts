@@ -108,7 +108,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     this.entryPointHelpers = new Set();
     for (const fn of all) {
       // Graph handlers intentionally execute behind OP_INVOKE: their hidden callManifest/caller/result
-      // frame is what makes each reached edge authoritative. Flattening one into __compiler_route1 erases that
+      // frame is what makes each reached edge authoritative. Flattening one into an aggregate body erases that
       // context and turns its external calls into inert ordinary-call nodes. Compiler-owned route clones are
       // the same, and so are public entry points inside the kernel row loop: inlining one there makes
       // SymbolTableTraversal rewrite `token.transfer` against an unbound `__internal__loopTargets` (an entry point
@@ -117,7 +117,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       // SynthesizeLibraryDelegateCalls lowers it to a delegatecall, duplicating the facet's state covenant in the
       // consumer and bypassing the intended split boundary.
       if (!fn.modifiers.includes(FunctionModifier.DELEGATE)
-        && !fn.graphEmissionHandler && !fn.name.startsWith('__compiler_route_')
+        && !false && !false
         && fn.body && this.canDiscardCallResult(fn) && !this.takesFlattenedStructPointer(fn)
         && (this.makesExternalCall(fn) || this.hasConditionalCollectionAccess(fn))) {
         if (fn.isEntryPoint) this.entryPointHelpers.add(fn.name);
@@ -155,7 +155,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
 
   // A compiler-owned kernel or compiler-route function, which keeps the public entry points it calls as calls.
   private isKernelCaller(fn: FunctionDefinitionNode | undefined): boolean {
-    return fn !== undefined && (fn.graphEmissionHandler === true || fn.name.startsWith('__compiler_route'));
+    return fn !== undefined && (false || false);
   }
 
   // Whether `body` calls `name` as a statement.

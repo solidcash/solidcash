@@ -355,10 +355,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const addContext = (caller: FunctionDefinitionNode, callee: FunctionDefinitionNode): boolean => {
       let changed = false;
       const existing = new Set(caller.parameters.map((parameter) => parameter.name));
-      const ownerIndex = caller.parameters.findIndex(
-        (parameter) => parameter.name === '__internal__routeMetaOwnerInput',
-      );
-      let insertionIndex = ownerIndex < 0 ? caller.parameters.length : ownerIndex;
+      let insertionIndex = caller.parameters.length;
       for (const parameter of callee.parameters.filter(contextParameter)) {
         if (existing.has(parameter.name)) continue;
         const forwarded = new ParameterNode(parameter.type, parameter.name, [...parameter.modifier]);
@@ -408,12 +405,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const handlerClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
     const keySnapshotPrelude: StatementNode[] = [];
     const markCarrierRole = (
-      name: string,
-      role: 'counter-permutation' | 'old-values-witness',
-    ): void => {
-      if (!node.routeMetaKernelReadCarrierDiscovery) return;
-      (node.routeMetaKernelReadCarrierSyntheticParameterRoles ??= new Map()).set(name, role);
-    };
+      _name: string,
+      _role: 'counter-permutation' | 'old-values-witness',
+    ): void => {};
     // The compiler invokes this pass both before speculative admission and, when needed, before final codegen.
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
     // the generated proof statements on the second pass.
@@ -2319,8 +2313,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       for (const write of keyed) {
         if (!(write instanceof MappingAssignNode)
           || (!write.arrayPush && !write.arrayPop && write.arrayIndex === undefined)) continue;
-        if (!write.arrayPop) write.routeMetaRuntimeMutationValueExpression = cloneNode(write.expression);
-        if (write.arrayIndex) write.routeMetaRuntimeMutationIndexExpression = cloneNode(write.arrayIndex);
+        if (!write.arrayPop) write.runtimeLoopMutationValueExpression = cloneNode(write.expression);
+        if (write.arrayIndex) write.runtimeLoopMutationIndexExpression = cloneNode(write.arrayIndex);
       }
       // Collapse an exhaustive top-level local assignment join into the exact value produced for this source
       // iteration. The original branch remains in the executable body; this expression is metadata used wherever
@@ -4478,9 +4472,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 );
                 synthetic.location = candidate.location ?? destination.location;
                 synthetic.collection = sourceCollection;
-                synthetic.routeMetaRuntimeReadOnly = true;
+                synthetic.runtimeLoopReadOnly = true;
                 const authenticatedRead = cloneNode(witnessRead) as ArrayAccessNode;
-                synthetic.routeMetaRuntimeOldValueWitness = authenticatedRead;
+                synthetic.runtimeLoopOldValueWitness = authenticatedRead;
                 plan = {
                   destination,
                   consumer: destination,
@@ -4566,10 +4560,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 );
                 synthetic.location = candidate.location ?? requirement.location;
                 synthetic.collection = sourceCollection;
-                synthetic.routeMetaRuntimeReadOnly = true;
-                if (condition) synthetic.routeMetaRuntimeOldValueWitnessDomain = 'selected-source';
+                synthetic.runtimeLoopReadOnly = true;
+                if (condition) synthetic.runtimeLoopOldValueWitnessDomain = 'selected-source';
                 const authenticatedRead = cloneNode(witnessRead) as ArrayAccessNode;
-                synthetic.routeMetaRuntimeOldValueWitness = authenticatedRead;
+                synthetic.runtimeLoopOldValueWitness = authenticatedRead;
                 plan = {
                   consumer: requirement,
                   sourceOrderConsumer: true,
@@ -5727,7 +5721,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (!insertBefore(block, write, check)) return false;
           const permutedRank = unitDomain ? id(group.logicalValue) : id(group.logicalRank);
           mappingWrite.expression = readAt(permutedRank);
-          mappingWrite.routeMetaRuntimeValueTrace = valueTrace;
+          mappingWrite.runtimeLoopValueTrace = valueTrace;
         }
         const transitionRead = expression instanceof BinaryOpNode
           && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
@@ -5738,7 +5732,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // entry supplies. Mark it before the permutation rewrites the two keys apart, so the route census does not
           // invent a fixed witness for it and code generation still folds the write into the entry. A read of another
           // key or another collection is an operand of its own, whose authenticated read the route keeps.
-          (expression as BinaryOpNode).left.routeMetaRuntimeLoopTransitionRead = true;
+          (expression as BinaryOpNode).left.runtimeLoopTransitionRead = true;
         }
         if (generalOldEntryWrites.has(write as ArrayAssignNode | MappingAssignNode)) {
           const mappingWrite = write as ArrayAssignNode | MappingAssignNode;
@@ -5772,11 +5766,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           } else {
             mappingWrite.value = replaceOldEntry(mappingWrite.value) as ExpressionNode;
           }
-          mappingWrite.routeMetaRuntimeOldValueWitness = oldRead();
+          mappingWrite.runtimeLoopOldValueWitness = oldRead();
           const structRmw = structRuntimeRmws.get(mappingWrite);
           if (structRmw) {
             structRmw.declaration.expression = cloneNode(
-              mappingWrite.routeMetaRuntimeOldValueWitness,
+              mappingWrite.runtimeLoopOldValueWitness,
             ) as ExpressionNode;
           }
         }
@@ -6176,8 +6170,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (apply) {
         for (const write of keyed) {
           const group = groupByWrite.get(write);
-          if (write instanceof MappingAssignNode && !write.routeMetaRuntimeReadOnly && group) {
-            write.routeMetaJournalTransport = {
+          if (write instanceof MappingAssignNode && !write.runtimeLoopReadOnly && group) {
+            write.runtimeLoopJournalTransport = {
               collection: write.name,
               varyingArrayParam: group.hidden,
             };
@@ -6449,14 +6443,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     if (keySnapshotPrelude.length > 0 || prelude.length > 0) {
       node.body.statements = [...keySnapshotPrelude, ...prelude, ...(node.body.statements ?? [])];
     }
-    // Route synthesis appends the physical owner context after every source-derived handler argument. Generated
-    // loop witnesses must remain on the source-argument side of that boundary even when this lowering runs on a
-    // cloned handler after route ownership was attached; otherwise caller and callee disagree on the OP_INVOKE ABI.
-    const ownerIndex = node.parameters.findIndex(
-      (parameter) => parameter.name === '__internal__routeMetaOwnerInput',
-    );
-    if (ownerIndex < 0) node.parameters.push(...added);
-    else node.parameters.splice(ownerIndex, 0, ...added);
+    node.parameters.push(...added);
     return node;
   }
 
@@ -6484,8 +6471,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       postTest: boolean;
     }> = new Map(),
   ): void {
-    if (!node.body || node.routeMetaConstructedArrayKeysNormalized) return;
-    node.routeMetaConstructedArrayKeysNormalized = true;
+    if (!node.body || node.runtimeLoopConstructedArrayKeysNormalized) return;
+    node.runtimeLoopConstructedArrayKeysNormalized = true;
     const handlerClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
     const canonicalCounters = new Set([...canonicalLoops.values()].map((loop) => loop.logical));
     type ArrayRecurrence = {
@@ -7167,7 +7154,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const selected = new TernaryOpNode(matches, selectedValue, value);
         selected.location = access.location;
         selected.type = access.type;
-        selected.routeMetaDeterministicArrayKey = true;
+        selected.runtimeLoopDeterministicArrayKey = true;
         value = selected;
       }
       return value;
@@ -9961,7 +9948,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }
             if ((!fixedPushes && !fixedPops) || directResizeCount === 0) {
               if (resizeCount > 0) {
-                node.routeMetaUnboundedConstructedArray = true;
                 loopPlans.delete(name);
               }
               continue;
@@ -10259,10 +10245,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           && active.has(statement.name)
           && this.hasObservableEffect(replayedArrayValue);
         if (effectfulArrayValue) {
-          // This constructed vector later feeds a collection key (otherwise the method returned before building
-          // plans). Its producer cannot be replayed without duplicating an effect, so refuse the kernel row
-          // shape through the existing unbounded-key admission channel while retaining the direct source call.
-          node.routeMetaUnboundedConstructedArray = true;
         }
         const keySnapshot = (statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode)
           && active.has(statement.name)
@@ -10362,7 +10344,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const values = statement.expression.elements.map((element) =>
               replaceArrayReads(replaceSnapshots(element, snapshots), active, []));
             if (values.some((value) => this.hasObservableEffect(value))) {
-              node.routeMetaUnboundedConstructedArray = true;
               active.delete(statement.name);
             } else {
               const length = new IntLiteralNode(BigInt(width));

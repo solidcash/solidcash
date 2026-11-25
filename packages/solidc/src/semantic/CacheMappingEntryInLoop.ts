@@ -762,7 +762,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private composedMappings(fn: FunctionDefinitionNode, constructor: boolean): Set<string> {
     const composed = new Set<string>();
     if (!this.composesAliases || this.routeSnapshotKeysOnly || this.callsCloseSegments || constructor
-      || fn.routeMetaRoute || fn.name.startsWith('__compiler_route_') || fn.modifiers.includes(FunctionModifier.DELEGATE)
+      || false || false || fn.modifiers.includes(FunctionModifier.DELEGATE)
       || !(fn.body instanceof BlockNode)) return composed;
     const statements = fn.body.statements ?? [];
     for (const [mapping, info] of this.scalarMappings) {
@@ -1945,8 +1945,8 @@ export class CloseDirectEntryCaches extends AstTraversal {
       && !(col.innermostValueType instanceof ArrayType) && !(col.innermostValueType instanceof StructType)
       && !isChunkableValueType(col.innermostValueType)).map((col) => col.name));
     if (scalars.size === 0) return node;
-    const routed = (fn: FunctionDefinitionNode): boolean => fn.routeMetaRoute === true
-      || fn.name.startsWith('__compiler_route');
+    const routed = (fn: FunctionDefinitionNode): boolean => false
+      || false;
     const flushes = (statement: StatementNode): boolean => scalars.has(cacheFlush(statement)?.write.name ?? '');
     const direct = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]
       .filter((fn): fn is FunctionDefinitionNode => fn?.body instanceof BlockNode && fn.isEntryPoint

@@ -184,7 +184,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const prevName = this.currentFunction;
     const prevGraphRuntime = this.currentGraphRuntime;
     this.currentFunction = node.name;
-    this.currentGraphRuntime = node.graphRuntimeEmissionHandler === true;
+    this.currentGraphRuntime = false;
     const mutationScan = this.collectMutatedNames(node.body);
     // Graph-mode unrolling only expands pointer-table loops. Skip every other function so a contract with one
     // graph edge does not try-unroll every sibling handler that merely contains a C-style loop.

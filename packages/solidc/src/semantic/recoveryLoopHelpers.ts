@@ -76,8 +76,8 @@ export function recoveryLoopHelpers(contract: ContractNode, freeFunctions: reado
     return found;
   };
 
-  const owned = (fn: FunctionDefinitionNode): boolean => fn.name.startsWith('__') || fn.routeMetaRoute === true
-    || fn.graphEmissionHandler === true;
+  const owned = (fn: FunctionDefinitionNode): boolean => fn.name.startsWith('__') || false
+    || false;
   const constructors = [contract.constructorDef, ...contract.functions.filter((fn) => fn.name === '__construct')];
   const reached = new Set<FunctionDefinitionNode>();
   for (const fn of contract.functions) {

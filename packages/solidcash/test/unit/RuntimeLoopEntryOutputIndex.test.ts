@@ -29,7 +29,7 @@ describe('runtime loop entry output indices', () => {
       loopEntryCommitments: new Map([['entries', ['11'.repeat(65), '22'.repeat(65)]]]),
       kernelJournalSettlementOutputPlan: [], kernelJournalEagerOutputPlan: [],
       loopEntriesBeforeDynamicChunks: true, delegateEntriesAfterLowLevel: false,
-      compilerRouteDelegateBlock: false, trailingLoopEntryVars: () => [entry],
+      directCallDelegateBlock: false, trailingLoopEntryVars: () => [entry],
       delegateLoopEntryVars: () => [], validateKernelJournalSettlementOutputPlan: () => {},
       kernelJournalOutputLayout: () => { throw new Error('unused'); },
       trailingLoopEntryOutputCount: () => 2, loopEntryTransitionSatoshis: () => 1200n,
@@ -118,7 +118,7 @@ describe('runtime loop entry output indices', () => {
       >;
       runtimeLoopEventOutputs: unknown[];
       runtimeLoopTransferOutputs: unknown[];
-      compilerRouteDelegateBlock: boolean;
+      directCallDelegateBlock: boolean;
       kernelJournalSettlementOutputPlan: unknown[];
       kernelJournalEagerOutputPlan: unknown[];
       getLoopEntryOutputBase: () => number;
@@ -135,7 +135,7 @@ describe('runtime loop entry output indices', () => {
     ];
     builder.runtimeLoopEventOutputs = [{}];
     builder.runtimeLoopTransferOutputs = [{}];
-    builder.compilerRouteDelegateBlock = false;
+    builder.directCallDelegateBlock = false;
     builder.kernelJournalSettlementOutputPlan = [];
     builder.kernelJournalEagerOutputPlan = [];
     builder.getLoopEntryOutputBase = () => 7;

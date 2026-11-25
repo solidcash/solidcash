@@ -95,9 +95,7 @@ export function deriveFullPhase1ReturnAndEvents(
       max: returnEventOutputBase + totalReturnEvents,
     };
     let returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
-    const routeReturnTypes = (group.compilerRoute?.rowArguments ?? []).flatMap(
-      (row) => row.handler.outputs?.map((output) => output.type) ?? [],
-    );
+    const routeReturnTypes: string[] = [];
     const calleeReturnArtifact = group.externalContract.inner.artifact;
     const calleeReturnFunction = (calleeReturnArtifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName);
@@ -263,9 +261,9 @@ export function deriveFullPhase1ReturnAndEvents(
       );
       // A shared ordinary readonly input executes only one selected zero-argument frame. Every active
       // identical alias is bound to that same result by the caller covenant; retain its distinct output channel.
-      if (group.readonlyReturnSelector !== undefined && !group.compilerRoute) {
+      if (group.readonlyReturnSelector !== undefined && !group.directCall) {
         for (const [aliasIndex, alias] of externalCallUtxoGroups.entries()) {
-          if (alias.sharedGroupIndex !== groupIdx || alias.compilerRoute
+          if (alias.sharedGroupIndex !== groupIdx || alias.directCall
             || alias.readonlyReturnSelector !== group.readonlyReturnSelector
             || alias.callerIdentity?.categoryId !== group.callerIdentity?.categoryId
             || alias.callerIdentity?.lockingBytecode !== group.callerIdentity?.lockingBytecode) continue;
@@ -296,16 +294,11 @@ export function deriveFullPhase1ReturnAndEvents(
       ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
     const bArt = delegateEventGroup?.externalContract.inner?.artifact
       ?? group.externalContract.inner?.artifact ?? group.externalContract.artifact;
-    const bAbiFunc = delegateEventGroup?.compilerRoute?.abiFunction
-      ?? group.compilerRoute?.abiFunction
+    const bAbiFunc = delegateEventGroup?.directCall?.abiFunction
+      ?? group.directCall?.abiFunction
       ?? bArt?.abi?.find((f: any) => f.name === (delegateEventGroup?.functionName ?? group.functionName));
-    const routeEventSignatures = delegateEventGroup?.compilerRoute?.eventSignaturesBySlot
-      ?? group.compilerRoute?.eventSignaturesBySlot;
     const bEmits: Array<{ eventSignature: string; emitIndex: number } | undefined> =
-      routeEventSignatures
-        ? routeEventSignatures.map((eventSignature, emitIndex) => eventSignature
-          ? { eventSignature, emitIndex } : undefined)
-        : bAbiFunc?.emits ?? [];
+      bAbiFunc?.emits ?? [];
 
     if (bEmits.some((emit) => emit !== undefined)) {
     // Delegate callees emit at their implementation-relative offset.
@@ -526,7 +519,7 @@ export function deriveFullPhase1ReturnAndEvents(
   // A compiler route can verify conditional events before its deferred collection-entry settlement.
   // The pre-event entry pass above then legitimately reveals only an event commitment. Once reached
   // events are installed, converge the entry band again so the route can advance to its return output.
-  if (group.compilerRoute && group.blockLayout && group.blockInputs
+  if (group.directCall && group.blockLayout && group.blockInputs
     && group.eventOutputs?.some((output) => output !== undefined)) {
     const learnedEntries = new Set<number>();
     const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
@@ -663,9 +656,7 @@ export function deriveFullPhase1ReturnAndEvents(
     let returnCommitments = extractCommitmentsFromTrace(
       returnTrace, 1, { min: returnOutputIndex, max: returnOutputIndex + 1 }, true,
     );
-    const routeReturnTypes = (group.compilerRoute?.rowArguments ?? []).flatMap(
-      (row) => row.handler.outputs?.map((output) => output.type) ?? [],
-    );
+    const routeReturnTypes: string[] = [];
     const routeReturnPushes = routeReturnTypes.length || 1;
     let aggregatePending = routeReturnPushes > 1
       ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;

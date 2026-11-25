@@ -292,7 +292,7 @@ export async function planCreateBuilderNestedComposeRoute(
     const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
     delegate.functionName = childCompilerRoute.abiFunction.name;
     delegate.functionArgs = childCompilerRoute.args;
-    delegate.compilerRoute = childCompilerRoute;
+    delegate.directCall = childCompilerRoute;
     // The proxy's forwarder authenticates the selector on the co-spent implementation unlocker.
     // For a compiler batch, both inputs therefore carry SCB1; the batch envelope binds the
     // individual logical selectors and arguments.

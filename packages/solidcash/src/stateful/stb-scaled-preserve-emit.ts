@@ -49,7 +49,7 @@ export function scaledPreserveRanges(
     if (group.callMode !== 'delegatecall') continue;
     const impl = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (impl < 0) continue;
-    const dataNfts = (group.compilerRoute?.abiFunction?.blockLayout?.slots
+    const dataNfts = (group.directCall?.abiFunction?.blockLayout?.slots
       ?? group.blockLayout?.slots ?? []).filter((slot) => slot.kind === 'dataNft').length;
     const scale = Math.max(2, 1 + (dataNfts || 4));
     const endExclusive = scaledInputPreserveExclusiveEnd(impl, scale);
@@ -83,7 +83,7 @@ export function chunkableValueWriteInputIndex(host: ScaledPreserveEmitHost): num
     if (legacyIsPublishJobEventName(name)) candidates.push(index);
   }
   for (const [llcIndex, group] of host.lowLevelCallUtxoGroups.entries()) {
-    const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
+    const names = [group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name];
     if (!names.some((name) => legacyIsPublishJobEventName(name))) {
       continue;
     }
@@ -129,7 +129,7 @@ export function emitDestinationIndices(host: ScaledPreserveEmitHost): number[] {
     if (llc.callMode !== 'delegatecall') continue;
     const impl = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (impl < 0) continue;
-    const fn = llc.compilerRoute?.abiFunction
+    const fn = llc.directCall?.abiFunction
       ?? llc.externalContract?.inner?.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName);
     for (const slot of fn?.blockLayout?.slots ?? []) {
       if (slot.kind === 'event') dests.push(impl + slot.offset);
@@ -225,7 +225,7 @@ export function scidReservedIndices(
     if (group.callMode !== 'delegatecall') continue;
     const impl = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (impl < 0) continue;
-    const blockSize = group.compilerRoute?.abiFunction?.blockLayout?.blockSize
+    const blockSize = group.directCall?.abiFunction?.blockLayout?.blockSize
       ?? group.blockLayout?.blockSize
       ?? 5;
     for (let offset = 0; offset < blockSize; offset++) reserved.add(impl + offset);

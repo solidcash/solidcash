@@ -22,7 +22,7 @@ import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
-  compilerRouteUsesPhysicalWrapper,
+  directCallUsesPhysicalWrapper,
   selectedRouteResourceMetadata,
 } from './route-resource-selection.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
@@ -108,7 +108,7 @@ export function constructCreateBuilderTransactionBuilder(
     lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
     activeDelegateGroupIndex: number | undefined;
     lowLevelCallRawInputs: any[];
-    compilerRouteDelegateLayout: FunctionBlockLayout | undefined;
+    directCallDelegateLayout: FunctionBlockLayout | undefined;
     hasDelegatedDynamicReadChunks: boolean;
     delegateReturnEventOffset: number | undefined;
     delegateEventSlots: Array<{ kind: string; offset: number }>;
@@ -148,7 +148,7 @@ export function constructCreateBuilderTransactionBuilder(
     deferredEcrecoverCompute, ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates,
     keccakLoopSideCars, keccakLoopRecreates, externalOutStateUtxoGroups, externalCallUtxoGroups,
     embeddedFunderUtxos, logicalIdentity, identityAnchors, lowLevelCallUtxoGroups,
-    activeDelegateGroupIndex, lowLevelCallRawInputs, compilerRouteDelegateLayout,
+    activeDelegateGroupIndex, lowLevelCallRawInputs, directCallDelegateLayout,
     hasDelegatedDynamicReadChunks, delegateReturnEventOffset, delegateEventSlots,
     lowLevelCallInputBase, batchPredCommitments, sortedLoopCommitments, eventDefs,
     eventNftLockingBytecodes, iterationEntryInputs, insertLoopPredecessors,
@@ -189,7 +189,7 @@ export function constructCreateBuilderTransactionBuilder(
       ]).filter(([name]) => String(name).startsWith('__internal__')),
       build: {
         returnProbeOnly: overrides?.returnProbeOnly === true,
-        compilerRoute: overrides?.compilerRouteSelector !== undefined,
+        directCall: overrides?.directCallSelector !== undefined,
         calls: overrides?.calls?.length ?? 0,
       },
     }));
@@ -268,15 +268,15 @@ export function constructCreateBuilderTransactionBuilder(
     ...(activeDelegateGroupIndex !== undefined && { activeDelegateGroupIndex }),
     ...(lowLevelCallRawInputs.length > 0 && { lowLevelCallRawInputs }),
     ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
-      && !compilerRouteDelegateLayout
+      && !directCallDelegateLayout
       && { delegateEntriesAfterLowLevel: true }),
     ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
       && dynamicChunkVars.some((variable) => variable.delegate === true)
-      && !compilerRouteDelegateLayout
+      && !directCallDelegateLayout
       && { delegateDynamicChunksAtSuffix: true }),
     // A compiler-owned delegate route already reserves its dynamic resources in the balanced trailing frame.
     // Legacy delegates have no such frame, so only they use the transaction-wide reverse suffix.
-    ...(hasDelegatedDynamicReadChunks && !compilerRouteDelegateLayout
+    ...(hasDelegatedDynamicReadChunks && !directCallDelegateLayout
       && { delegateDynamicChunksAtSuffix: true }),
     // X56. Only when the co-spent implementation BOTH emits and returns: its event resolves to the index the
     // forwarder had reserved for the return channel, so the return channel has to follow the events.
@@ -284,14 +284,14 @@ export function constructCreateBuilderTransactionBuilder(
       && { delegateReturnEventAfterEvents: true }),
     ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
       && { lowLevelCallInputBase }),
-    ...(compilerRouteDelegateLayout && { compilerRouteDelegateBlock: true }),
+    ...(directCallDelegateLayout && { directCallDelegateBlock: true }),
     ...(overrides?.omitLocalFeeTail && { preserveBlockLayoutWidth: true }),
     ...(delegateEventSlots.some((slot: any) => slot.kind === 'entry') && { preserveBlockLayoutWidth: true }),
     ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0
       || runtimeLoopEventOutputs.length > 0 || runtimeLoopTransferOutputs.length > 0)
       // A compiler-owned delegate block preserves its dynamic chunks at the published trailing base;
       // sorted entry creations in that same block follow the chunks.
-      && !(compilerRouteDelegateLayout && dynamicChunkVars.length > 0)
+      && !(directCallDelegateLayout && dynamicChunkVars.length > 0)
       && { loopEntriesBeforeDynamicChunks: true }),
     ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
     ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
@@ -307,7 +307,7 @@ export function constructCreateBuilderTransactionBuilder(
   const selfIdentityArgumentIndex = abiFunction?.inputs.findIndex((input) =>
     input.name === '__internal__graphSelfIdentityInput') ?? -1;
   const refreshTopLevelSelfIdentityInput = selfIdentityArgumentIndex < 0 || !usesOrdinarySelfIdentity(abiFunction)
-    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
+    || directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (logicalIdentity === undefined) {
@@ -326,7 +326,7 @@ export function constructCreateBuilderTransactionBuilder(
     input.name === '__internal__dynamicChunkOutputBase') ?? -1;
   const refreshTopLevelDynamicChunkOutputBase = dynamicOutputArgumentIndex < 0
     || overrides?.omitLocalFeeTail === true
-    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
+    || directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (materialized === undefined || abiFunction === undefined) return;
@@ -344,8 +344,8 @@ export function constructCreateBuilderTransactionBuilder(
     ? dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0
     : selectedRouteResourceMetadata(selectedRows).dynamicWrites.length > 0;
   const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
-    || compilerRouteUsesPhysicalWrapper(
-      overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,
+    || directCallUsesPhysicalWrapper(
+      overrides?.directCallSelector, physicalAbiFunction, abiFunction,
     )
     ? undefined
     : (materialized?: TransactionBuilder): void => {
@@ -435,7 +435,7 @@ export function constructCreateBuilderTransactionBuilder(
     utxo?: Pick<Utxo, 'txid' | 'vout'>;
   } | undefined)[];
   const refreshTopLevelLowLevelCallInputIndices = abiFunction === undefined
-    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
+    || directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (!abiFunction) return;

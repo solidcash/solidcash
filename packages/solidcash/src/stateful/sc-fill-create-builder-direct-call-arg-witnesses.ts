@@ -179,7 +179,7 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
       let value: FunctionArgument = defaultInternalFunctionArg(input);
       if (groupIndex !== undefined && group) {
         if (selector) {
-          const selected = group.compilerRoute?.selector
+          const selected = group.directCall?.selector
             ?? (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
               .find((candidate) => candidate.name === group.functionName)?.selector;
           if (selected === undefined) throw new Error(`No selector for direct callee '${group.functionName}'`);
@@ -228,8 +228,8 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
       // the compiler marked needsSelectorVerification get a filled selector. Absent (older artifacts) = fill.
       if ((groupMetas[i].ecSlot as { needsSelectorVerification?: boolean })
         .needsSelectorVerification === false) continue;
-      const targetSelector = group.compilerRoute
-        ? binToHex(group.compilerRoute.selector)
+      const targetSelector = group.directCall
+        ? binToHex(group.directCall.selector)
         : (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
           .find((f) => f.name === group.functionName)?.selector;
       if (!targetSelector) {
@@ -307,7 +307,7 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
       const physicalGroup = group === undefined ? undefined
         : externalCallUtxoGroups[group.sharedGroupIndex ?? i];
       finalArgs = [...finalArgs, externalCallAnchorIndices.get(i)
-        ?? (physicalGroup?.compilerRoute ? -2n : -1n)];
+        ?? (physicalGroup?.directCall ? -2n : -1n)];
     } else {
       topLevelAnchorFillPositions.push({
         argIndex: finalArgs.length,

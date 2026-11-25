@@ -212,7 +212,7 @@ export function bindWriterReturnWitness(
  */
 export function selectWriterReturnAbi<
   T extends {
-    compilerRoute?: { abiFunction?: AbiFunction };
+    directCall?: { abiFunction?: AbiFunction };
     externalContract?: { inner?: { artifact?: { abi?: readonly AbiFunction[] } } };
     functionName?: string;
     logicalFunctionName?: string;
@@ -222,6 +222,6 @@ export function selectWriterReturnAbi<
     candidate.externalContract?.inner?.artifact?.abi ?? [];
   const named = (candidate: T): AbiFunction | undefined =>
     abiOf(candidate).find((fn) => fn.name === (candidate.functionName ?? candidate.logicalFunctionName));
-  return group.compilerRoute?.abiFunction ?? named(group)
-    ?? owner.compilerRoute?.abiFunction ?? named(owner);
+  return group.directCall?.abiFunction ?? named(group)
+    ?? owner.directCall?.abiFunction ?? named(owner);
 }

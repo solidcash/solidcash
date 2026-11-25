@@ -95,11 +95,11 @@ export function publishCreateBuilderNestedComposeGroup(
       ...sharedPrimary.internalArgs,
       ...childValueWitnessArgs,
     };
-    if (sharedPrimary.compilerRoute) {
-      sharedPrimary.compilerRoute = {
-        ...sharedPrimary.compilerRoute,
+    if (sharedPrimary.directCall) {
+      sharedPrimary.directCall = {
+        ...sharedPrimary.directCall,
         internalArgs: {
-          ...sharedPrimary.compilerRoute.internalArgs,
+          ...sharedPrimary.directCall.internalArgs,
           ...childValueWitnessArgs,
         },
       };
@@ -119,11 +119,11 @@ export function publishCreateBuilderNestedComposeGroup(
   if (delegateCallGroupIndex !== undefined && childHasInternalArgs) {
     const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
     delegate.internalArgs = { ...delegate.internalArgs, ...childCompilerInternalArgs };
-    const delegateRoute = delegate.compilerRoute ?? childCompilerRoute;
+    const delegateRoute = delegate.directCall ?? childCompilerRoute;
     if (delegateRoute) {
       const previous = (delegateRoute as { internalArgs?: Record<string, FunctionArgument> })
         .internalArgs;
-      delegate.compilerRoute = {
+      delegate.directCall = {
         ...delegateRoute,
         internalArgs: { ...previous, ...childCompilerInternalArgs },
       };
@@ -143,7 +143,7 @@ export function publishCreateBuilderNestedComposeGroup(
     logicalFunctionArgs: nestedArgs,
     logicalContract: callee,
     logicalArtifact: proxyCallee?.implementation.inner.artifact ?? callee.inner.artifact,
-    ...(childCompilerRoute && { compilerRoute: {
+    ...(childCompilerRoute && { directCall: {
       ...childCompilerRoute,
       ...(childHasInternalArgs && {
         internalArgs: childCompilerInternalArgs,

@@ -43,7 +43,7 @@ export interface MaterializeRuntimeLoopTrailingHost {
   readonly kernelJournalEagerOutputPlan: readonly unknown[];
   readonly loopEntriesBeforeDynamicChunks: boolean;
   readonly delegateEntriesAfterLowLevel: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   trailingLoopEntryVars(): readonly LoopEntryVar[];
   delegateLoopEntryVars(): readonly LoopEntryVar[];
   validateKernelJournalSettlementOutputPlan(): void;
@@ -248,7 +248,7 @@ export function materializeRuntimeLoopTrailing(
       // `_reassertDelegateLoopEntries`. Appending them here as well would duplicate their outputs and shift
       // the indexed P'/NEW lane. Compiler-routed delegates instead own these entries inside their authenticated
       // participant frame, so they must be emitted here exactly once.
-      const delegateCollections = new Set((host.compilerRouteDelegateBlock
+      const delegateCollections = new Set((host.directCallDelegateBlock
         ? [] : host.delegateLoopEntryVars()).map((variable) => variable.collection));
       for (const lv of host.trailingLoopEntryVars()) {
         if (delegateCollections.has(lv.collection)) continue;

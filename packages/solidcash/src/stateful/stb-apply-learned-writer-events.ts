@@ -107,7 +107,7 @@ export function learnFinalizedDelegateEvents(
     );
     const owner = owners.find((group) => group.sharedGroupIndex === undefined) ?? owners[0];
     if (!owner) continue;
-    const fn = delegate.compilerRoute?.abiFunction
+    const fn = delegate.directCall?.abiFunction
       ?? (delegate.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
         ?.find((candidate) => candidate.name === delegate.functionName);
     const eventSlots = fn?.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
@@ -262,7 +262,7 @@ export function applyLearnedWriterEvents(
           relocatedPredOutBase: group.relocatedPredOutBase,
           batchPredecessorOutputs: group.batchPredecessorOutputs,
           predOutArgs: Object.fromEntries(Object.entries({
-            ...group.compilerRoute?.internalArgs,
+            ...group.directCall?.internalArgs,
             ...group.internalArgs,
           }).filter(([name]) => /^__internal__vmapBatchPredOut_\d+$/.test(name))
             .map(([name, value]) => [name, String(value)])),

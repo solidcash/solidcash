@@ -81,7 +81,7 @@ export interface PushCreateBuilderDirectExternalCallGroupHost {
 
 export interface PushCreateBuilderDirectExternalCallGroupInput {
   externalCallUtxoGroups: ExternalCallUtxoGroup[];
-  compilerRoute: ExternalCallUtxoGroup['compilerRoute'] | undefined;
+  directCall: ExternalCallUtxoGroup['directCall'] | undefined;
   bBlockInputs: UnlockableUtxo[] | undefined;
   bBlockLayout: NonNullable<AbiFunction['blockLayout']> | undefined;
   bAbiFunc: AbiFunction | undefined;
@@ -127,7 +127,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
 ): Promise<void> {
   const {
     externalCallUtxoGroups,
-    compilerRoute,
+    directCall,
     bBlockInputs,
     bBlockLayout,
     bAbiFunc,
@@ -158,7 +158,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     callValue,
   } = input;
 
-  if (compilerRoute && bBlockInputs && bBlockLayout) {
+  if (directCall && bBlockInputs && bBlockLayout) {
     const seenEntries = new Map<string, number>();
     for (const slot of bBlockLayout.slots) {
       if (slot.kind !== 'entry') continue;
@@ -217,7 +217,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   // transaction into a late VM failure (or, for some schemas, an ambiguous provisional result).
   if (!returnProbeOnly && ec.hasReturnValues && sharedPhysical && !directBatch
     && sharedPhysical.functionName !== callInfo.functionName
-    && !compilerRoute && !sharedPhysical.compilerRoute) {
+    && !directCall && !sharedPhysical.directCall) {
     const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
       ?.find((candidate) => candidate.name === sharedPhysical.functionName);
     if ((priorAbi?.outputs?.length ?? 0) > 0) {
@@ -359,7 +359,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     functionName: callInfo.functionName,
     functionArgs: callInfo.args,
     ...(callValue !== undefined && { callValue }),
-    ...(!compilerRoute && ec.readonlyReturnBinding?.version === 1
+    ...(!directCall && ec.readonlyReturnBinding?.version === 1
       && bAbiFunc?.writesState === false && bAbiFunc.selector !== undefined
       && ec.readonlyReturnBinding.selector.toLowerCase() === bAbiFunc.selector.toLowerCase()
       && (bAbiFunc.outputs?.length ?? 0) > 0 && callInfo.args.length === 0
@@ -374,9 +374,9 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(bRelativeOutputInternalArgs.size > 0 && {
       relativeOutputInternalArgs: [...bRelativeOutputInternalArgs],
     }),
-    ...(compilerRoute && {
-      compilerRoute: {
-        ...compilerRoute,
+    ...(directCall && {
+      directCall: {
+        ...directCall,
         ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && {
           internalArgs: {
             ...bCompilerInternalArgs,
@@ -472,7 +472,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     const write = directGroup.valueChunkWrites[0]!;
     const access = bAbiFunc?.entryAccesses?.[write.entryAccessSlot];
     const owner = { categoryId: externalCategoryId, lockingBytecode: callInfo.externalContract.inner.lockingBytecode };
-    const claim = !compilerRoute && bAbiFunc && access?.arrayMutation === 'push'
+    const claim = !directCall && bAbiFunc && access?.arrayMutation === 'push'
       && access.storedElementSource?.version === 1 && ordinaryProducerPath?.status === 'complete'
       ? terminalValueChunkProducerClaim({
         rows: [{ handler: bAbiFunc, selector: bAbiFunc.selector, producerPath: ordinaryProducerPath }],

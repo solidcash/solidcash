@@ -26,7 +26,7 @@ import {
 } from './value-chunk-write-geometry.js';
 
 export interface BuildStatefulFunctionCallHost {
-  compilerRoute?: {
+  directCall?: {
     abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
     emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
     logicalIdentity?: ResolvedLogicalIdentity;
@@ -77,7 +77,7 @@ export async function buildStatefulFunctionCall(
       }
     }
     const built = stb.build();
-    stb.bindMaterializedValueChunkWitnesses(built, host.compilerRoute?.blockBase ?? 0);
+    stb.bindMaterializedValueChunkWitnesses(built, host.directCall?.blockBase ?? 0);
     const composedBlockBase = stb.getComposedBlockBase();
     const compilerValueChunkWrites = resolveValueChunkWriteGeometry(
       stb.getValueChunkWriteDescriptors(),

@@ -80,7 +80,7 @@ export function rebaseValueChunkWriteDescriptors(
 /** Rebind a continuation coordinate only on the concrete unlocker ABI which captured that hidden argument. */
 export function ownsCapturedValueChunkOutputBase(group: ExternalCallUtxoGroup): boolean {
   const inputNames = group.internalArgNames
-    ?? group.compilerRoute?.abiFunction.inputs.map((input) => input.name);
+    ?? group.directCall?.abiFunction.inputs.map((input) => input.name);
   if (inputNames?.includes('__internal__valueChunkOutputBase') === true) return true;
   const masterUnlocker = (group.masterUtxo as UnlockableUtxo | undefined)?.unlocker as {
     abiFunction?: { inputs?: readonly { name: string }[] };
@@ -129,7 +129,7 @@ export type ProtectedLoopEntryCollectionSelection =
 /** Select collection locks which same-index INSERT repair must not use as disposable relocation pads. */
 export function selectProtectedLoopEntryCollections(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
+  'functionName' | 'logicalFunctionName' | 'directCall' | 'logicalArtifact' | 'externalContract'
   | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites' | 'stateLayout'>>,
   ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): ProtectedLoopEntryCollectionSelection {
@@ -157,7 +157,7 @@ export function selectProtectedLoopEntryCollections(
     described = true;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
-    const abiFunction = group.compilerRoute?.abiFunction
+    const abiFunction = group.directCall?.abiFunction
       ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
     const layout = abiFunction?.blockLayout ?? group.blockLayout;
     if (!abiFunction?.entryAccesses || !layout) {
@@ -211,7 +211,7 @@ export function selectExternalEventProbeInput(
 }
 
 export type CompilerWriterEventCandidate = Pick<ExternalCallUtxoGroup,
-'categoryId' | 'blockLayout' | 'compilerRoute' | 'eventOutputs'>;
+'categoryId' | 'blockLayout' | 'directCall' | 'eventOutputs'>;
 
 export type CompilerWriterEventSelection =
   | { status: 'absent' }
@@ -227,10 +227,10 @@ export function selectCompilerWriterEvent(
 ): CompilerWriterEventSelection {
   const claims = new Map<string, Extract<CompilerWriterEventSelection, { status: 'exact' }>>();
   for (const candidate of candidates) {
-    const fn = candidate.compilerRoute?.abiFunction;
+    const fn = candidate.directCall?.abiFunction;
     const layout = fn?.blockLayout ?? candidate.blockLayout;
     const slots = layout?.slots.filter((slot) => slot.kind === 'event') ?? [];
-    const routedSignatures = candidate.compilerRoute?.eventSignaturesBySlot;
+    const routedSignatures = undefined;
     for (const [ordinal, slot] of slots.entries()) {
       const declared = routedSignatures !== undefined
         ? routedSignatures[ordinal]
@@ -360,7 +360,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   /** Absolute input offset selected by the caller's encoded low-level-call index. */
   lowLevelCallInputBase?: number;
   /** The first low-level input is a compiler-route delegate implementation placed after the balanced root block. */
-  compilerRouteDelegateBlock?: boolean;
+  directCallDelegateBlock?: boolean;
   /** Preserve every compiler-published block coordinate, including inactive union-route resource slots. */
   preserveBlockLayoutWidth?: boolean;
   /** Place runtime mapping-entry outputs before newly written dynamic-storage chunks in the trailing frame. */
@@ -400,7 +400,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
 /** Absolute event coordinates owned by materialized external-call blocks. */
 export function externalCallEventDestinations(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'sharedGroupIndex' | 'blockLayout' | 'compilerRoute' | 'streamedEventPlan'>>,
+  'sharedGroupIndex' | 'blockLayout' | 'directCall' | 'streamedEventPlan'>>,
   outputBaseForGroup: (groupIndex: number) => number,
 ): number[] {
   const destinations: number[] = [];
@@ -410,7 +410,7 @@ export function externalCallEventDestinations(
     if (group.sharedGroupIndex !== undefined) continue;
     const base = outputBaseForGroup(groupIndex);
     if (base < 0) continue;
-    const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
+    const layout = group.blockLayout ?? group.directCall?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'eventChunk') destinations.push(base + slot.offset);
     }
@@ -426,10 +426,10 @@ export type ParticipantImmutableEventDestination = {
 
 /** Event signatures follow compiler-published physical slot identities when present. */
 export function groupEventSignatures(
-  group: Pick<ExternalCallUtxoGroup, 'compilerRoute'>,
+  group: Pick<ExternalCallUtxoGroup, 'directCall'>,
   abiFunction?: Pick<AbiFunction, 'emits'>,
 ): Array<string | undefined> {
-  const published = group.compilerRoute?.eventSignaturesBySlot ?? [];
+  const published: Array<string | undefined> = [];
   const declared = abiFunction?.emits ?? [];
   return Array.from({ length: Math.max(published.length, declared.length) }, (_, index) => (
     published[index] ?? declared[index]?.eventSignature
@@ -467,7 +467,7 @@ export function lowLevelCallStateOwnerCategory(
  */
 export function lowLevelCallImmutableEventDestinations(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'categoryId' | 'callMode' | 'blockLayout' | 'compilerRoute'>>,
+  'categoryId' | 'callMode' | 'blockLayout' | 'directCall'>>,
   proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
   'categoryId' | 'delegateCallGroupIndex' | 'sharedGroupIndex'>>,
   inputBaseForGroup: (groupIndex: number) => number,
@@ -477,7 +477,7 @@ export function lowLevelCallImmutableEventDestinations(
     const base = inputBaseForGroup(groupIndex);
     if (base < 0) continue;
     const categoryId = lowLevelCallStateOwnerCategory(groupIndex, group, proxyGroups);
-    const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
+    const layout = group.blockLayout ?? group.directCall?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'returnEvent') {
         destinations.push({ categoryId, destination: base + slot.offset });

@@ -87,7 +87,7 @@ export function relocateCreateBuilderPredOutBases(params: {
           group, true,
           undefined,
         )) continue;
-        const tokenName = group.functionName ?? group.compilerRoute?.abiFunction.name;
+        const tokenName = group.functionName ?? group.directCall?.abiFunction.name;
         const start = nestedMasterIndices[groupIdx];
         if (start === undefined || start < 0) continue;
         let tokenWidth = 0;
@@ -154,7 +154,7 @@ export function relocateCreateBuilderPredOutBases(params: {
         (candidate.sharedGroupIndex ?? index) === groupIdx
         && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
           || (candidate.plannedEntryInserts?.length ?? 0) > 0
-          || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
+          || Object.entries({ ...candidate.directCall?.internalArgs, ...candidate.internalArgs })
             .some(([name]) => isWriterBatchWitnessName(name))));
       for (const writer of writers) {
         if (!writerBatchPlanMatchesPhysicalCarrier(group, writer)) continue;

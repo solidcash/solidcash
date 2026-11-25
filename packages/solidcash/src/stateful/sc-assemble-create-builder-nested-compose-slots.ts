@@ -741,8 +741,8 @@ export async function assembleCreateBuilderNestedComposeSlots(
       const sharedDelegate = delegateCallGroupIndex !== undefined
         ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : undefined;
       const inheritedRouteInternalArgs = {
-        ...(sharedPrimary?.compilerRoute?.internalArgs ?? sharedPrimary?.internalArgs),
-        ...(sharedDelegate?.compilerRoute?.internalArgs ?? sharedDelegate?.internalArgs),
+        ...(sharedPrimary?.directCall?.internalArgs ?? sharedPrimary?.internalArgs),
+        ...(sharedDelegate?.directCall?.internalArgs ?? sharedDelegate?.internalArgs),
       };
       const priorFunctionName = sharedPriorAtomicNode?.functionName
         ?? sharedPriorDelegateFunctionName ?? sharedPriorFunctionName;

@@ -120,7 +120,7 @@ import {
   KERNEL_JOURNAL_RECORDS,
   assertKernelJournalRecordBudget,
   defaultInternalFunctionArg,
-  compilerRouteUsesPhysicalWrapper,
+  directCallUsesPhysicalWrapper,
   kernelJournalAccessStreamPlaceholders,
   kernelJournalRecordSegmentWitnesses,
   kernelReadCarrierOwnsDuplicateProof,
@@ -350,9 +350,6 @@ import {
   createBuilderLoadDelegatedDynamicChunks as createBuilderLoadDelegatedDynamicChunksImpl,
 } from './sc-create-builder-delegated-dynamic-chunks.js';
 import {
-  orchestrateCreateBuilderNestedComposeCallsite as orchestrateCreateBuilderNestedComposeCallsiteImpl,
-} from './sc-orchestrate-create-builder-nested-compose-callsite.js';
-import {
   orchestrateCreateBuilderExternalCalls as orchestrateCreateBuilderExternalCallsImpl,
 } from './sc-orchestrate-create-builder-external-calls.js';
 import {
@@ -370,26 +367,13 @@ import {
 import {
   prepareCreateBuilderUpsertLoopKeyTopology as prepareCreateBuilderUpsertLoopKeyTopologyImpl,
 } from './sc-prepare-create-builder-upsert-loop-key-topology.js';
-import {
-  expandCreateBuilderLateTransitive as expandCreateBuilderLateTransitiveImpl,
-} from './sc-expand-create-builder-late-transitive.js';
 import { planCreateBuilderNestedBases as planCreateBuilderNestedBasesImpl } from './sc-plan-create-builder-nested-bases.js';
 import {
   relocateCreateBuilderPredOutBases as relocateCreateBuilderPredOutBasesImpl,
 } from './sc-relocate-create-builder-pred-out-bases.js';
 import {
-  completeCreateBuilderNestedUnlockers as completeCreateBuilderNestedUnlockersImpl,
-} from './sc-complete-create-builder-nested-unlockers.js';
-import {
   projectCreateBuilderDelegateSlots as projectCreateBuilderDelegateSlotsImpl,
 } from './sc-project-create-builder-delegate-slots.js';
-import {
-  callerIdentityAnchorBand,
-  fixCreateBuilderDelegateUnlockers as fixCreateBuilderDelegateUnlockersImpl,
-  isRoutePushValueWitnessName,
-  resolveDelegatePushValueWitness,
-} from './sc-fix-create-builder-delegate-unlockers.js';
-export { callerIdentityAnchorBand, isRoutePushValueWitnessName, resolveDelegatePushValueWitness };
 import {
   loadCreateBuilderTokenContainers as loadCreateBuilderTokenContainersImpl,
 } from './sc-load-create-builder-token-containers.js';
@@ -773,7 +757,7 @@ export {
   type KernelJournalEagerOutputOccurrence,
   assertKernelReadCarrierAuthenticatedRows,
   anchorRoutedDynamicResourcesAtOwner,
-  compilerRouteUsesPhysicalWrapper,
+  directCallUsesPhysicalWrapper,
   rebaseRoutedBatchProofOffsets,
 } from './kernel-route-planning.js';
 
@@ -1068,7 +1052,7 @@ export type CallInfo = {
   functionName: string;
   args: FunctionArgument[];
   /** Compiler-owned route selected for this physical callee (used by atomic delegate composition). */
-  compilerRoute?: NonNullable<ExternalCallUtxoGroup['compilerRoute']>;
+  directCall?: NonNullable<ExternalCallUtxoGroup['directCall']>;
   /** For delegatecall: the proxy's master input index in the transaction. Defaults to 0. */
   proxyMasterIndex?: number;
   /**
@@ -1547,7 +1531,7 @@ export function permitsRouteValueChunkDerivation(
 /** The exact ABI body carried by a physical participant. Compiler routes outrank source-level names because
  * overloads and shared participants can execute a different body than the logical call which introduced them. */
 function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
-  return group.compilerRoute?.abiFunction
+  return group.directCall?.abiFunction
     ?? (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
       ?.find((candidate) => candidate.name === group.functionName);
 }
@@ -1577,7 +1561,7 @@ export function computedStateWriterGroupIndex(
   }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
-    const name = groups[index]?.compilerRoute?.abiFunction.name ?? groups[index]?.functionName;
+    const name = groups[index]?.directCall?.abiFunction.name ?? groups[index]?.functionName;
     return name === 'transferFrom' || name === 'transfer' || name === 'approve';
   });
 }
@@ -1623,15 +1607,12 @@ export function describeValueChunkWrites(
   stateOwnerCategoryId?: string,
 ): ValueChunkWriteDescriptor[] {
   const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-  const abiFunction = group.compilerRoute?.abiFunction
+  const abiFunction = group.directCall?.abiFunction
     ?? artifact?.abi.find((candidate) => candidate.name === group.functionName);
   if (!abiFunction) return [];
   const layout = abiFunction.blockLayout ?? group.blockLayout;
   if (!layout) return [];
-  const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
-    && (group.compilerRoute.rowArguments?.length ?? 0) > 0
-    ? group.compilerRoute.rowArguments!.map((row) => row.handler)
-    : [abiFunction];
+  const activeFunctions = [abiFunction];
   const writes: ValueChunkWriteDescriptor[] = [];
   for (const activeFunction of activeFunctions) {
     for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
@@ -1671,10 +1652,7 @@ function chunkableValueWriteCollections(
   group: ExternalCallUtxoGroup,
   abiFunction: AbiFunction,
 ): string[] {
-  const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
-    && (group.compilerRoute.rowArguments?.length ?? 0) > 0
-    ? group.compilerRoute.rowArguments!.map((row) => row.handler)
-    : [abiFunction];
+  const activeFunctions = [abiFunction];
   return [...new Set(activeFunctions.flatMap((activeFunction) => (
     activeFunction.entryAccesses ?? []
   ).flatMap((access) => {
@@ -2942,7 +2920,7 @@ type PhysicalSelectorGroup = {
   sharedGroupIndex?: number;
   delegateCallGroupIndex?: number;
   functionName: string;
-  compilerRoute?: { selector: Uint8Array };
+  directCall?: { selector: Uint8Array };
   externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
 };
 
@@ -3007,7 +2985,7 @@ export function physicalExternalCallSelectorHex(
   const delegate = physical.delegateCallGroupIndex === undefined
     ? undefined : delegateGroups[physical.delegateCallGroupIndex];
   const selected = delegate ?? physical;
-  if (selected.compilerRoute?.selector) return binToHex(selected.compilerRoute.selector);
+  if (selected.directCall?.selector) return binToHex(selected.directCall.selector);
   return selected.externalContract.inner.artifact.abi
     .find((candidate) => candidate.name === selected.functionName)?.selector;
 }
@@ -5730,9 +5708,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             functionName: group.functionName,
             required: group.requiredDataNftIndices,
             dataNfts: group.dataNftUtxos.length,
-            routeRows: group.compilerRoute?.rowArguments?.map((row) => ({
-              selector: row.selector, handler: row.handler.name, required: row.handler.requiredNftIndices,
-            })),
+            routeRows: [],
             precomputed: group.precomputedReturnCommitment
               ? binToHex(group.precomputedReturnCommitment) : undefined,
           })));
@@ -6581,10 +6557,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const logicalFunctionNames = [
             executedUnlocker?.abiFunction?.name,
             ...stb.getLowLevelCallUtxoGroups().flatMap((group) => [
-              group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name,
+              group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name,
             ]),
             ...stb.getExternalCallUtxoGroups().flatMap((group) => [
-              group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name,
+              group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name,
             ]),
           ].filter((name): name is string => !!name);
           const activeInstructions = (lastStep as {
@@ -6907,7 +6883,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
       returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
-      compilerRouteSelector?: Uint8Array;
+      directCallSelector?: Uint8Array;
       signerUtxos?: Utxo[];
       logicalIdentity?: Awaited<ReturnType<typeof resolveLogicalIdentity>>;
       /** Absolute base when this local balanced block is concatenated after another participant. */
@@ -6930,7 +6906,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Stateful derivation can copy a supplied value into a larger state/row blob. Validate first so an invalid
     // bytesN reports its ABI error rather than an incidental PUSHDATA limit reached by that derived blob.
     if (abiFunction) args = this._validateAbiFrame(abiFunction, args, {
-      implicitMsgSenderCategory: overrides?.compilerRouteSelector !== undefined,
+      implicitMsgSenderCategory: overrides?.directCallSelector !== undefined,
     });
     const valueChunkWriteStagingSession = new ValueChunkWriteStagingSession();
     const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -7004,7 +6980,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && binToHex(storedLogicalLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase()
       ? storedLogicalLock : undefined;
     const authenticatesOwnSelf = usesOrdinarySelfIdentity(abiFunction)
-      && !compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction);
+      && !directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction);
     const publicSelfAddress = authenticatesOwnSelf && logicalCreateLock !== undefined
       ? logicalCreateLock : authenticatedSelfAddress;
     // The identity a CHILD callee observes as `msg.sender` (anchor witness and msg.sender-keyed entries). A plain
@@ -11508,7 +11484,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       access.keyParams.map((name) => name.startsWith('id:') ? name.slice(3) : name)));
     const replaceJournalArgument = (argumentIndex: number, records: Uint8Array[] | Uint8Array): void => {
       if (entryCompilerRoute) {
-        // A delegated route's complete argument frame belongs to the nested OP_INVOKE call. Its compilerRoute
+        // A delegated route's complete argument frame belongs to the nested OP_INVOKE call. Its directCall
         // metadata is published below and later re-encodes the proxy payload; extending the outer __forward
         // arguments with route witnesses would instead corrupt that two-argument ABI.
         entryArgs[argumentIndex] = records;
@@ -11869,7 +11845,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         rootOwned: !nestedDelegateProxyGroupByLowLevel.has(groupIndex),
         reader: group.externalContract.inner,
         callMode: group.callMode,
-        abiFunction: group.compilerRoute?.abiFunction
+        abiFunction: group.directCall?.abiFunction
           ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
             .find((candidate) => candidate.name === group.functionName),
       })));
@@ -11947,90 +11923,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const graphPlanningResults = materializedLlc.graphPlanningResults;
             let nestedIndices = materializedLlc.nestedIndices;
             const nestedByCallsite = materializedLlc.nestedByCallsite;
-            for (const nested of nestedExternalCalls) {
-              const orchestrated = await orchestrateCreateBuilderNestedComposeCallsiteImpl(
-                {
-                  categoryId: this.categoryId,
-                  inner: this.inner,
-                  sharedBlockOraclePools: nestedBlockOraclePools,
-                  signer: this._signer,
-                  logicalNonceSigner: this._logicalNonceSigner,
-                  externalRegistry: this._externalRegistry,
-                  resolveExternalArgs: (...a: any[]) => (this as any)._resolveExternalArgs(...a),
-                  resolveExternalExpressionReturns: (...a: any[]) => (
-                    this as any
-                  )._resolveExternalExpressionReturns(...a),
-                  encodeStoredElementSource: (...a: any[]) => (this as any)._encodeStoredElementSource(...a),
-                  encodeStoredValueSource: (...a: any[]) => (this as any)._encodeStoredValueSource(...a),
-                  nestedIdentity,
-                  nestedFullState,
-                  nestedMasterState,
-                  nestedAddressUtxos,
-                  markSharedFunder: (utxo: UnlockableUtxo) => markSharedFunder(utxo),
-                  shiftSharedFunder: () => sharedFunderPool?.shift(),
-                  nextNestedFunderIndex: () => nestedFunderIndex++,
-                  describeValueChunkWrites,
-                  preparedChildProducerPath,
-                  selectProxyForwardInput,
-                  resolvePreparedProducerEntry,
-                  externalReturnsForCallsites,
-                  externalCallReachedOccurrenceIndices: (...a: any[]) => (
-                    externalCallReachedOccurrenceIndices as any
-                  )(...a),
-                  planExternalCallOccurrences: (...a: any[]) => (
-                    this as any
-                  )._planExternalCallOccurrences(...a),
-                  concatBytes: (...a: any[]) => (StatefulContract as any)._concatBytes(...a),
-                },
-                {
-                  nested,
-                  delegateGroupIndex,
-                  delegateFn,
-                  nestedExternalCalls,
-                  publishedNestedExternalCalls,
-                  delegateVisibleArgs,
-                  delegateVisibleInputs,
-                  delegateSelfAddress,
-                  delegateCallerIdentity,
-                  graphPlanningResults,
-                  callInfo,
-                  // The delegate's calls read the owner's state and the clock its implementation reads.
-                  onChainState: { ...onChainState, state: materializedLlc.delegateState },
-                  preparedAtomicNodes,
-                  rootProducerPath,
-                  nestedIndices,
-                  nestedByCallsite,
-                  externalCallUtxoGroups,
-                  lowLevelCallUtxoGroups,
-                  groupProxyMasterIndices,
-                  nestedDelegateProxyGroupByLowLevel,
-                  timingEnabled,
-                  functionName,
-                  allGroupEcSlots,
-                  allGroupParentIndices,
-                  routeValueChunkProducerEpochByPhysicalGroup,
-                  preparedAtomicNodeByExternalGroup,
-                  latestPreparedAtomicNodeByPhysicalGroup,
-                  nestedSortedListCache,
-                  valueChunkWriteStagingSession,
-                  sharedFunderPool,
-                  nestedFunderIndex,
-                  publicSelfAddress,
-                  nestedProxyReadCache,
-                  memoizeGraphPlanningProducerResult,
-                  routeValueChunkProducerAliases: undefined,
-                  routeValueChunkProducerPhysicalGroup: undefined,
-                  routeValueChunkProducerEpoch: undefined,
-                  latestRouteValueChunkProducerBinding: undefined,
-                  refreshChunkableRouteWitnesses: undefined,
-                },
-              );
-              if (orchestrated.skipped) continue;
-              allGroupEcSlots = orchestrated.allGroupEcSlots;
-              allGroupParentIndices = orchestrated.allGroupParentIndices;
-              nestedIndices = orchestrated.nestedIndices;
-              // nestedByCallsite mutated in place via Map reference
-            }
+
             // nested-compose-callsite-orch-complete (size-guarded end marker)
 
             delegateExternalGroupIndices.set(delegateGroupIndex, nestedIndices);
@@ -12043,39 +11936,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       timing('nested-compose-all-complete');
-      {
-        const lateBags = await expandCreateBuilderLateTransitiveImpl(
-          {
-            categoryId: this.categoryId,
-            inner: this.inner,
-            signer: this._signer,
-            externalRegistry: this._externalRegistry,
-            nestedFullState: (contract: any) => nestedFullState(contract),
-            nestedAddressUtxos,
-            markSharedFunder: (utxo: UnlockableUtxo) => markSharedFunder(utxo),
-            shiftSharedFunder: () => sharedFunderPool?.shift(),
-            nextNestedFunderIndex: () => nestedFunderIndex++,
-            selectProxyForwardInput: (...a: any[]) => (selectProxyForwardInput as any)(...a),
-            preparedChildProducerPath,
-            timing: (label: string) => timing(label),
-          },
-          {
-            externalCallUtxoGroups,
-            lowLevelCallUtxoGroups,
-            preparedAtomicNodes,
-            preparedAtomicNodeByExternalGroup,
-            publicSelfAddress,
-            bags: {
-              allGroupEcSlots,
-              allGroupParentIndices,
-              lateTransitiveGroupIndices,
-            },
-          },
-        );
-        allGroupEcSlots = lateBags.allGroupEcSlots;
-        allGroupParentIndices = lateBags.allGroupParentIndices;
-        // lateTransitiveGroupIndices mutated in place via Set reference
-      }
+
       const delegatedDyn = await createBuilderLoadDelegatedDynamicChunksImpl(
         {
           categoryId: this.categoryId,
@@ -12131,23 +11992,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && physicalAbiFunction.blockLayout?.slots.some((slot) => slot.kind === 'lowLevelCall') === true;
       const authenticatedDelegateGroup = activeDelegateGroupIndex === undefined
         ? undefined : lowLevelCallUtxoGroups[activeDelegateGroupIndex];
-      const compilerRouteDelegate = authenticatedDelegateGroup?.compilerRoute?.abiFunction.blockLayout
+      const directCallDelegate = authenticatedDelegateGroup?.directCall?.abiFunction.blockLayout
         ? authenticatedDelegateGroup
         : lowLevelCallUtxoGroups.find(
           (g, groupIndex) => g.callMode === 'delegatecall'
             && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
-            && g.compilerRoute?.abiFunction.blockLayout,
+            && g.directCall?.abiFunction.blockLayout,
         );
-      const compilerRouteDelegateLayout = compilerRouteDelegate?.compilerRoute?.abiFunction.blockLayout
+      const directCallDelegateLayout = directCallDelegate?.directCall?.abiFunction.blockLayout
         ?? (physicalAbiFunction?.delegateForwarding || physicalDelegateCarrierOwnsCallSlot
           ? undefined
           : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel));
       timing('delegate-route-selected');
-      lowLevelCallInputBase = compilerRouteDelegateLayout
+      lowLevelCallInputBase = directCallDelegateLayout
         // A compiler-owned route executes against the proxy's state, but its entry/proof resources still occupy
         // the complete balanced route block rooted at the proxy master. As for nested proxies, the implementation
         // follows that physical block; placing it after only the proxy data NFTs overwrites route slot 3.
-        ? compilerRouteDelegateLayout.blockSize
+        ? directCallDelegateLayout.blockSize
         : hasDelegatecallGroup
         // Delegate bytecode binds its proxy-master witness to the physical relation
         // `delegateInput - (1 + proxyDataNftCount)`. Nested callees therefore follow the implementation.
@@ -12158,10 +12019,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && !nestedDelegateProxyGroupByLowLevel.has(groupIndex))
         .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
       const hasNestedDelegate = delegateInputCount > 0;
-      const legacyRouteDelegate = authenticatedDelegateGroup ?? compilerRouteDelegate ?? lowLevelCallUtxoGroups.find(
+      const legacyRouteDelegate = authenticatedDelegateGroup ?? directCallDelegate ?? lowLevelCallUtxoGroups.find(
         (group) => group.callMode === 'delegatecall' && group.externalContract,
       );
-      const legacyRouteDelegateFn = legacyRouteDelegate?.compilerRoute?.abiFunction
+      const legacyRouteDelegateFn = legacyRouteDelegate?.directCall?.abiFunction
         ?? (legacyRouteDelegate?.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === legacyRouteDelegate?.functionName);
       const legacyRouteTrailingBase = legacyRouteDelegateFn?.blockLayout?.trailingBase
@@ -12188,7 +12049,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
       timing('low-level-input-count');
       const nestedBases = planCreateBuilderNestedBasesImpl({
-        compilerRouteDelegateLayout,
+        directCallDelegateLayout,
         lowLevelCallInputBase,
         allLowLevelInputCount,
         hasNestedDelegate,
@@ -12250,7 +12111,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             plannedInserts: group.plannedEntryInserts,
             predecessorOutputs: group.batchPredecessorOutputs,
             internalArgs: Object.fromEntries(Object.entries({
-              ...group.compilerRoute?.internalArgs,
+              ...group.directCall?.internalArgs,
               ...group.internalArgs,
             }).filter(([name]) => name.includes('vmapBatch')).map(([name, value]) => [
               name,
@@ -12272,41 +12133,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       }
 
-      await completeCreateBuilderNestedUnlockersImpl(
-        {
-          categoryId: this.categoryId,
-          timing: (label: string) => timing(label),
-          ensureNestedIdentityAnchorBand: lowLevelNestedCaches.ensureNestedIdentityAnchorBand,
-          resolveNestedIdentityAnchorBands,
-          nestedFullState: (contract: any) => nestedFullState(contract),
-          selectProxyForwardInput: (...a: any[]) => (selectProxyForwardInput as any)(...a),
-          directNestedIdentityWitness: (...a: any[]) =>
-            (directNestedIdentityWitness as any)(...a),
-        },
-        {
-          externalCallUtxoGroups,
-          lowLevelCallUtxoGroups,
-          returningExternalGroups,
-          physicalReturnIndexForGroup,
-          nestedMasterIndices,
-          nestedOutputBases,
-          relocatedPredOutBase,
-          allGroupParentIndices,
-          allGroupEcSlots,
-          delegateExternalGroupIndices,
-          delegateExternalGroupByCallsite,
-          lateTransitiveGroupIndices,
-          pendingDelegateInputFills,
-          pendingAnchorFills,
-          pendingExternalCallInputFills,
-          entryAbiFunction,
-          identityAnchors,
-          publicSelfAddress,
-          authenticatedSelfAddress,
-          physicalSelfAddress: executionSelfAddress,
-          logicalCreateLock,
-        },
-      );
+
       {
         const projected = projectCreateBuilderDelegateSlotsImpl({
           lowLevelCallUtxoGroups,
@@ -12328,51 +12155,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         returnMaterializationOutputIndex =
           projected.returnMaterializationOutputIndex as typeof returnMaterializationOutputIndex;
       }
-      await fixCreateBuilderDelegateUnlockersImpl(
-        {
-          categoryId: this.categoryId,
-          selfContract: this,
-          timing: (label: string) => timing(label),
-          resolveNestedIdentityAnchorBands,
-          nestedFullState: (contract: any) => nestedFullState(contract),
-          selectProxyForwardInput: (...a: any[]) => (selectProxyForwardInput as any)(...a),
-          directNestedIdentityWitness: (...a: any[]) => (directNestedIdentityWitness as any)(...a),
-        },
-        {
-          lowLevelCallUtxoGroups,
-          externalCallUtxoGroups,
-          nestedDelegateProxyGroupByLowLevel,
-          lowLevelCallInputBase,
-          delegateExternalGroupIndices,
-          delegateExternalGroupByCallsite,
-          allGroupEcSlots,
-          allGroupParentIndices,
-          physicalReturnIndexForGroup,
-          nestedMasterIndices,
-          nestedOutputBases,
-          relocatedPredOutBase,
-          pendingDelegateInputFills,
-          pendingAnchorFills,
-          pendingExternalCallInputFills,
-          entryAbiFunction,
-          timingEnabled,
-          publicSelfAddress,
-          authenticatedSelfAddress,
-          compilerRouteDelegateLayout,
-          returnEmitOutputIndex,
-          groupProxyMasterIndices,
-          overrides,
-          entryBatchWitnesses,
-          entryValueWitnesses,
-          pendingDynamicChunkInputFills,
-          pendingTokenCallInputFills,
-          identityAnchors,
-          entryArgs,
-          entryArtifact,
-          physicalSelfAddress: executionSelfAddress,
-          logicalCreateLock,
-        },
-      );
+
 
     }
 
@@ -12500,7 +12283,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const rootOracleReader = selectRootOracleReader();
     const oracleDelegate = rootOracleReader?.delegateIndex === undefined
       ? undefined : lowLevelCallUtxoGroups[rootOracleReader.delegateIndex];
-    delegateBlockInfoOracle = oracleDelegate !== undefined && oracleDelegate.compilerRoute === undefined;
+    delegateBlockInfoOracle = oracleDelegate !== undefined && oracleDelegate.directCall === undefined;
     if (rootOracleReader !== undefined) {
       const { reader } = rootOracleReader;
       const pool = reader.oraclePool;
@@ -12615,7 +12398,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const ecrecoverExecutingGroup = ecrecoverAbiFunction !== abiFunction
         ? lowLevelCallUtxoGroups.find((group) => (
           group.callMode === 'delegatecall'
-          && (group.compilerRoute?.abiFunction === ecrecoverAbiFunction
+          && (group.directCall?.abiFunction === ecrecoverAbiFunction
             || group.functionName === ecrecoverAbiFunction.name)
         ))
         : undefined;
@@ -12736,7 +12519,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // side-cars, with the witness naming them there as the build encodes it, so a read made before the loop
       // reaches them. The probe's master is input 0.
       const readChunks = readChunksFollowKeccakSideCars(abiFunction) && dynamicReadChunkInputs.length > 0
-        && topLevelDynamicChunkArgumentIndex >= 0 && overrides?.compilerRouteSelector === undefined
+        && topLevelDynamicChunkArgumentIndex >= 0 && overrides?.directCallSelector === undefined
         ? keccakLoopReadSuccessors(dynamicReadChunkInputs, (firstInputIndex) => {
           const witness = finalArgs[topLevelDynamicChunkArgumentIndex];
           finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(firstInputIndex, 0, false);
@@ -12776,7 +12559,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const executingGroup = keccakAbiFunction !== abiFunction
         ? lowLevelCallUtxoGroups.find((group) => (
           group.callMode === 'delegatecall'
-          && (group.compilerRoute?.abiFunction === keccakAbiFunction
+          && (group.directCall?.abiFunction === keccakAbiFunction
             || group.functionName === keccakAbiFunction.name)
         ))
         : undefined;
@@ -12909,21 +12692,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const delegateDynamicWrites = new Set<string>();
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
-      const gFn = g.compilerRoute?.abiFunction ?? (g.externalContract.inner.artifact.abi as readonly {
+      const gFn = g.directCall?.abiFunction ?? (g.externalContract.inner.artifact.abi as readonly {
         name: string;
         dynamicWrites?: readonly string[];
       }[]).find((f) => f.name === g.functionName);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_INPUTS === '1') {
         console.error('delegate-dynamic-write-source', {
           groupFunction: g.functionName,
-          routeFunction: g.compilerRoute?.abiFunction.name,
+          routeFunction: g.directCall?.abiFunction.name,
           resolvedFunction: gFn?.name,
           writes: gFn?.dynamicWrites,
         });
       }
       const routeWrites = [...(gFn?.dynamicWrites ?? [])];
       const effectiveSelectedWrites = resolveSelectedDynamicWrites(
-        routeWrites, g.compilerRoute?.rowArguments?.map((row) => row.handler),
+        routeWrites, [],
       );
       for (const name of effectiveSelectedWrites) activeDynamicWrites.add(name);
       for (const name of routeWrites) {
@@ -13036,7 +12819,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         timing,
       },
     );
-    const compilerRouteDelegateLayout = layoutResolved.compilerRouteDelegateLayout;
+    const directCallDelegateLayout = layoutResolved.directCallDelegateLayout;
     let effectiveBlockLayout = layoutResolved.effectiveBlockLayout;
     const logicalIdentity = layoutResolved.logicalIdentity;
     const usesComposedDelegateDynamicTail = layoutResolved.usesComposedDelegateDynamicTail;
@@ -13118,7 +12901,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         lowLevelCallUtxoGroups,
         activeDelegateGroupIndex,
         lowLevelCallRawInputs,
-        compilerRouteDelegateLayout,
+        directCallDelegateLayout,
         hasDelegatedDynamicReadChunks,
         delegateReturnEventOffset,
         delegateEventSlots,
@@ -13169,7 +12952,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         batchTargetPlaceholders,
         exactBatchTargetSlots,
         sortedInserts,
-        compilerRouteDelegateLayout,
+        directCallDelegateLayout,
         activeDynamicWrites,
         usesComposedDelegateDynamicTail,
         computedValueChunkRuns,
@@ -13227,7 +13010,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         sharedFunderSnapshot,
         functionName,
         timing,
-        compilerRouteDelegateLayout,
+        directCallDelegateLayout,
         blockhashCoSpendSlotOrdinals,
         keccakComputeCoSpendUtxos,
         ecrecoverComputeCoSpendUtxos,
@@ -14190,7 +13973,7 @@ export class StatefulFunctionCall {
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
   private consumesLogicalNonce = true;
-  private compilerRoute?: {
+  private directCall?: {
     abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
     emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
     logicalIdentity?: ResolvedLogicalIdentity;
@@ -14217,7 +14000,7 @@ export class StatefulFunctionCall {
     parentContract?: StatefulContract,
     functionName?: string,
     functionArgs?: any[],
-    compilerRoute?: {
+    directCall?: {
       abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
       emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
       logicalIdentity?: ResolvedLogicalIdentity;
@@ -14234,7 +14017,7 @@ export class StatefulFunctionCall {
     this.parentContract = parentContract;
     this.functionName = functionName;
     this.functionArgs = functionArgs;
-    this.compilerRoute = compilerRoute;
+    this.directCall = directCall;
     if (functionName === '__forward' && parentContract?._signer) {
       this.signerUtxosPromise = signerUtxoSnapshot(parentContract._signer);
     }
@@ -14486,14 +14269,14 @@ export class StatefulFunctionCall {
   /** @internal Attach a compiler-owned delegate route while retaining the public proxy's physical state owner. */
   _withCompilerRouteDelegatecall(
     contract: StatefulContract,
-    compilerRoute: NonNullable<ExternalCallUtxoGroup['compilerRoute']>,
+    directCall: NonNullable<ExternalCallUtxoGroup['directCall']>,
   ): this {
     this.callInfos.push({
       type: 'stateful',
       contract,
-      functionName: compilerRoute.abiFunction.name,
-      args: compilerRoute.args as FunctionArgument[],
-      compilerRoute,
+      functionName: directCall.abiFunction.name,
+      args: directCall.args as FunctionArgument[],
+      directCall,
       // The implementation frame this CallInfo later materializes executes for THIS call object's contract, so
       // that contract's identity is the frame's caller - the authority its `msg.sender`-keyed mappings must hash.
       ...(this.parentContract !== undefined && {
@@ -14720,7 +14503,7 @@ export class StatefulFunctionCall {
 
   async build(): Promise<TransactionBuilder> {
     const builder = await buildStatefulFunctionCallImpl({
-      compilerRoute: this.compilerRoute,
+      directCall: this.directCall,
       functionName: this.functionName,
       sequenceOverride: this.sequenceOverride,
       parentContract: this.parentContract,
@@ -15014,7 +14797,7 @@ export class StatefulFunctionCall {
 
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
     // A compiler-route call is not the ordinary call path.
-    if (this.compilerRoute === undefined && this.parentContract) {
+    if (this.directCall === undefined && this.parentContract) {
       refuseOrdinarySelfdestructCall(this.parentContract.inner.artifact, this._selectedAbiFunction());
     }
     return applyOverridesImpl(this._applyOverridesHost());

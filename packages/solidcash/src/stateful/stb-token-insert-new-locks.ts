@@ -80,7 +80,7 @@ export function reassertTokenInsertNewLocks(
           commit: String(predecessor.commitment).slice(0, 80),
         })),
         predOutArgs: Object.entries({
-          ...repairGroup.compilerRoute?.internalArgs,
+          ...repairGroup.directCall?.internalArgs,
           ...repairGroup.internalArgs,
         }).filter(([name]) => name.includes('PredOut')),
         locks: [2, 3, 4, 8, 9].map((rel) => {
@@ -95,7 +95,7 @@ export function reassertTokenInsertNewLocks(
     // leaving NEW on a predecessor output. Restore only coordinates published by the repair descriptor.
     let repaired = false;
     const predOutArgs = Object.entries({
-      ...repairGroup.compilerRoute?.internalArgs,
+      ...repairGroup.directCall?.internalArgs,
       ...repairGroup.internalArgs,
     });
     const hasTrailingPred = (repairGroup.batchPredecessorOutputs?.length ?? 0) > 0
@@ -155,7 +155,7 @@ export function reassertTokenInsertNewLocks(
               masterIndex: master,
               batchPredecessorOutputs: repairGroup.batchPredecessorOutputs,
               internalArgs: repairGroup.internalArgs as Record<string, unknown> | undefined,
-              compilerInternalArgs: repairGroup.compilerRoute?.internalArgs as
+              compilerInternalArgs: repairGroup.directCall?.internalArgs as
                 Record<string, unknown> | undefined,
               refreshInternalArgs: repairGroup.refreshInternalArgs as
                 | ((updates: Record<string, unknown>, options?: { shiftPredOut?: boolean }) => void)
@@ -171,7 +171,7 @@ export function reassertTokenInsertNewLocks(
         // For 1:1 entry slots overwritten by another collection, restore the authenticated input lock and a
         // value-bearing post-debit UPDATE. Slot||next-only batch seeds are not post-state values.
         const balancesLock = builder.outputs[master + repair.predecessorOffset]?.to;
-        const layoutSlots = repairGroup.compilerRoute?.abiFunction?.blockLayout?.slots
+        const layoutSlots = repairGroup.directCall?.abiFunction?.blockLayout?.slots
           ?? repairGroup.blockLayout?.slots
           ?? [];
         // INSERT NEW at predecessorOffset credits the compiler-bound mutation value when available.

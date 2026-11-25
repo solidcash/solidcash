@@ -365,7 +365,7 @@ export function finishCreateBuilderNestedCompose(
   if (nestedSources && needsExpressionReturns && preparedAtomicNodes) {
     const atomicNodeIndex = preparedAtomicNodeByExternalGroup.get(childExternalGroupIndex);
     let currentLogicalArgs = nestedArgs;
-    let currentCompilerRoute: NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined =
+    let currentCompilerRoute: NonNullable<ExternalCallUtxoGroup['directCall']> | undefined =
       childCompilerRoute;
     if (atomicNodeIndex !== undefined) {
       preparedAtomicNodes[atomicNodeIndex].refreshArgsFromResults = (results: any) => {
@@ -394,8 +394,8 @@ export function finishCreateBuilderNestedCompose(
             === routeValueChunkProducerEpoch;
         const activeCompilerRoute = currentCompilerRoute
           ?? (proxyCallee && delegateCallGroupIndex !== undefined
-            ? lowLevelCallUtxoGroups[delegateCallGroupIndex]?.compilerRoute
-            : externalCallUtxoGroups[physicalGroupIndex]?.compilerRoute);
+            ? lowLevelCallUtxoGroups[delegateCallGroupIndex]?.directCall
+            : externalCallUtxoGroups[physicalGroupIndex]?.directCall);
         const nextCompilerRoute = currentCompilerRoute
           ? host.buildRepeatedExternalBatch(
             nested, delegateVisibleArgs, callee, callInfo.contract.inner.artifact,
@@ -414,9 +414,7 @@ export function finishCreateBuilderNestedCompose(
         const logicalArgsChanged = !functionArgumentListsEqual(
           currentLogicalArgs, nextLogicalArgs,
         );
-        const routeChanged = nextCompilerRoute !== undefined && activeCompilerRoute !== undefined
-          && (!binsAreEqual(nextCompilerRoute.blob, activeCompilerRoute.blob)
-            || !functionArgumentListsEqual(nextCompilerRoute.args, activeCompilerRoute.args));
+        const routeChanged = false;
         if (!logicalArgsChanged && !routeChanged) return false;
         const refreshedRouteInternalArgs = routeDerivedRefresher
           ? routeDerivedRefresher(
@@ -442,10 +440,10 @@ export function finishCreateBuilderNestedCompose(
           currentCompilerRoute = nextCompilerRoute;
           if (logicalGroup !== physicalGroup || ownsPhysicalRefresh) {
             const logicalInternalArgs = {
-              ...(logicalGroup.compilerRoute?.internalArgs ?? logicalGroup.internalArgs),
+              ...(logicalGroup.directCall?.internalArgs ?? logicalGroup.internalArgs),
               ...refreshedRouteInternalArgs,
             };
-            logicalGroup.compilerRoute = {
+            logicalGroup.directCall = {
               ...nextCompilerRoute,
               ...(Object.keys(logicalInternalArgs).length > 0 && { internalArgs: logicalInternalArgs }),
             };
@@ -459,11 +457,11 @@ export function finishCreateBuilderNestedCompose(
           const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
           if (nextCompilerRoute) {
             const internalArgs = {
-              ...(delegate.compilerRoute?.internalArgs ?? delegate.internalArgs),
+              ...(delegate.directCall?.internalArgs ?? delegate.internalArgs),
               ...refreshedRouteInternalArgs,
             };
             delegate.functionName = selectedFunctionName;
-            delegate.compilerRoute = {
+            delegate.directCall = {
               ...nextCompilerRoute,
               ...(internalArgs && { internalArgs }),
             };
@@ -478,11 +476,11 @@ export function finishCreateBuilderNestedCompose(
         } else {
           if (nextCompilerRoute) {
             const internalArgs = {
-              ...(physicalGroup.compilerRoute?.internalArgs ?? physicalGroup.internalArgs),
+              ...(physicalGroup.directCall?.internalArgs ?? physicalGroup.internalArgs),
               ...refreshedRouteInternalArgs,
             };
             physicalGroup.functionName = selectedFunctionName;
-            physicalGroup.compilerRoute = {
+            physicalGroup.directCall = {
               ...nextCompilerRoute,
               ...(internalArgs && { internalArgs }),
             };

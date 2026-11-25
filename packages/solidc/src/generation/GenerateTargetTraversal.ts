@@ -7991,7 +7991,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // compiling an ordinary entry as a parameter-less subroutine can itself be invalid.
       // Cheap admission is throwaway: skip user/clone bodies that are not the verifier/route closure. The
       // binder pass still compiles every body for diagnostics and the shipped artifact.
-      if (cheapAdmission && !keepAdmissionBody(f)) continue;
       // A framed master holds the definitions its own program can reach. A body the lowering already folded into
       // its call sites has no invocation left, and a definition of it would be compiled with no entry whose call
       // descriptors its own calls could be bound to, so it is left out rather than compiled against a frame this
@@ -8047,9 +8046,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !soleFnNeedsSelectorDispatch && !this.currentContractCarriesCallBatch)) {
       this.dispatchHandsCallPrefix = false;
       this.outlineSharedFunctionBodies(outlineLoc);
-      if (cheapAdmission && !keepAdmissionBody(dispatchFunctions[0])) {
-        // Throwaway admission omitted the only entry body; helper defines already emitted.
-      } else {
+      {
         this.emittedArmHead = undefined;
         const visited = this.visitList(dispatchFunctions) as FunctionDefinitionNode[];
         // O8: the arm the program runs inline, for the walk over the finished code.
@@ -8074,16 +8071,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !dispatchFunctions.some((fn) => this.isCompilerRouteMetaRoute(fn));
       // OP_DEFINE each entry-point function with its 4-byte hash selector, then dispatch
       dispatchFunctions.forEach((f) => {
-        if (cheapAdmission && f.isEntryPoint && !keepAdmissionBody(f)) return;
         this.emitEntryPointFunctionDefine(f, node.parameters);
       });
       this.outlineSharedFunctionBodies(outlineLoc);
-      const frames = this.currentContractCarriesCallBatch && !cheapAdmission
+      const frames = this.currentContractCarriesCallBatch
         ? dispatchFunctions.filter((fn) => fn.callBatchRow === true) : [];
       if (frames.length > 0) this.emitCallBatchDefine(node, frames, outlineLoc);
       // Cheap admission does not ship this script; skip the selector dispatcher once every user/route
       // entry body has been omitted. Helper OP_DEFINEs above are enough to extract verifierProgram.
-      if (!cheapAdmission) this.emitDispatch(node, allFunctions, hasFallback, hasReceive, frames.length > 0);
+      this.emitDispatch(node, allFunctions, hasFallback, hasReceive, frames.length > 0);
     }
   }
 

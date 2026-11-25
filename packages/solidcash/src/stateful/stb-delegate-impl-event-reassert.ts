@@ -168,7 +168,7 @@ export function reassertDelegateImplEvents(
   );
   for (const [groupIndex, group] of host.lowLevelCallUtxoGroups.entries()) {
     if (group.callMode !== 'delegatecall') continue;
-    const fn = group.compilerRoute?.abiFunction
+    const fn = group.directCall?.abiFunction
       ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
     const implIndex = host.getLowLevelCallMasterInputIndex(groupIndex);

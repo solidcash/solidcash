@@ -34,7 +34,7 @@ export interface AppendDelegateOutputHelpersHost {
   readonly externalCallEntryOutputsByIndex: ReadonlyMap<number, { categoryId: string; commitment: string }>;
   readonly externalCallEntryOutputs: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly delegateComputeResources: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   /** Set only when the delegated implementation, not the owner, co-spends the block-info oracle. */
   readonly blockInfoCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCoSpendUtxos: readonly UnlockableUtxo[];
@@ -81,7 +81,7 @@ export function createAppendDelegateOutputHelpers(
     const group = host.lowLevelCallUtxoGroups[groupIndex];
     if (!group || group.callMode !== 'delegatecall') return;
     const bMaster = group.masterUtxo as UnlockableUtxo;
-    const delegateFn = group.compilerRoute?.abiFunction
+    const delegateFn = group.directCall?.abiFunction
     ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName);
     const layout = lowLevelCallBlockLayout(group) ?? delegateFn?.blockLayout;
@@ -188,7 +188,7 @@ export function createAppendDelegateOutputHelpers(
       .reduce((max, slot) => Math.max(max, slot.offset), -1) ?? -1;
     // A compiler-route delegate's side-cars are slots of the proxy-owned balanced route and were recreated at
     // those route offsets above. Only legacy delegate geometry places compute resources after the executor.
-    const lastComputeOffset = host.delegateComputeResources && !host.compilerRouteDelegateBlock
+    const lastComputeOffset = host.delegateComputeResources && !host.directCallDelegateBlock
       ? delegateFn?.blockLayout?.slots
         .filter((slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar')
         .reduce((max, slot) => Math.max(max, slot.offset), -1) ?? -1
@@ -243,7 +243,7 @@ export function createAppendDelegateOutputHelpers(
     const delegateLoopVars = host.delegateLoopEntryVars();
     if (delegateLoopVars.length === 0) return;
     const delegateFunction = (group: ExternalCallUtxoGroup): AbiFunction | undefined => (
-      group.compilerRoute?.abiFunction
+      group.directCall?.abiFunction
     ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName)
     );

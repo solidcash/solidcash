@@ -45,7 +45,7 @@ import {
 import type { FunctionBlockLayout } from '@solidcash/utils';
 
 export interface PersistedValueChunkOneToOneHost extends ScaledPreserveEmitHost {
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly preserveBlockLayoutWidth: boolean;
   readonly pendingValueChunkPredecessors: readonly UnlockableUtxo[];
   readonly valueChunkRedeemLock?: Uint8Array;
@@ -73,7 +73,7 @@ export function reassertPersistedValueChunkOneToOnes(
   // persistence recovery infers ownership from input shape and cached collection state, so it must
   // never rewrite those declared outputs. Any required predecessor or value-chunk recreation is
   // represented by the route's entry/chunk slots and handled by their ordinary materializers.
-  if (host.compilerRouteDelegateBlock || host.preserveBlockLayoutWidth) return;
+  if (host.directCallDelegateBlock || host.preserveBlockLayoutWidth) return;
   const eventDestinations = new Set(emitDestinationIndices(host));
   if (emitDest >= 0) eventDestinations.add(emitDest);
   const destCategory = emitDest >= 0 && builder.outputs[emitDest]?.token?.category

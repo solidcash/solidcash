@@ -169,17 +169,17 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     // Build hidden args by scanning the function's ABI inputs for hidden param names
     type AbiEntry = AbiFunction;
     const bAbiAll = group.externalContract.inner.artifact.abi as readonly AbiEntry[];
-    const bAbiFunc = group.compilerRoute?.abiFunction
+    const bAbiFunc = group.directCall?.abiFunction
       ?? bAbiAll.find((f) => f.name === group.functionName);
     const bAbiInputs = bAbiFunc?.inputs ?? [];
-    const selfIdentityBand = !group.compilerRoute && usesOrdinarySelfIdentity(bAbiFunc)
+    const selfIdentityBand = !group.directCall && usesOrdinarySelfIdentity(bAbiFunc)
       ? await host.ensureOrdinarySelfIdentityBand(group.externalContract, bAbiFunc!) : undefined;
     const routeArgs = argumentsForPhysicalAbiFrame({
       abiFunction: bAbiFunc,
       physicalFunctionArgs: group.functionArgs,
       logicalFunctionName: group.logicalFunctionName ?? group.functionName,
       logicalFunctionArgs: group.logicalFunctionArgs,
-      compilerRoute: group.compilerRoute,
+      directCall: group.directCall,
     });
     const userArgCount = routeArgs.length;
     const callerLock = group.callerIdentity?.lockingBytecode.toLowerCase();
@@ -200,7 +200,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     // __internal__msgSenderCategory immediately after batchBlob). Treating all visible args as an ABI prefix
     // shifts every later witness into the preceding hidden slot. Assemble routed calls in exact ABI order;
     // ordinary function calls retain their existing visible-prefix behavior.
-    let bFinalArgs = group.compilerRoute ? [] : [...routeArgs];
+    let bFinalArgs = group.directCall ? [] : [...routeArgs];
     let routeArgIndex = 0;
     let bReturningSlotIdx = 0;
 
@@ -221,7 +221,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     // slot of the root's block that a plain send compacts or a published record holds open. The builder re-reads them
     // from the assembled transaction, as it does the root's and a low-level call's nested callers': the masters and
     // records of its callees, the first old chunk its write consumes and its first block-hash slot.
-    const rebindsAssembledCoordinates = !group.compilerRoute && group.callBatch === undefined
+    const rebindsAssembledCoordinates = !group.directCall && group.callBatch === undefined
       && group.callBatchUnit === undefined && group.delegateCallGroupIndex === undefined;
     const bindToCoin = (paramName: string, coin: Pick<Utxo, 'txid' | 'vout'>): void => {
       group.inputWitnessOutpoints = {
@@ -235,11 +235,11 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         : children.find((index) => groupMetas[index].ecSlot.callsiteId === callsiteId);
     };
 
-    for (let i = group.compilerRoute ? 0 : userArgCount; i < bAbiInputs.length; i++) {
+    for (let i = group.directCall ? 0 : userArgCount; i < bAbiInputs.length; i++) {
       const paramName = bAbiInputs[i].name;
       const argumentCountBefore = bFinalArgs.length;
 
-      if (group.compilerRoute && !paramName.startsWith('__internal__')) {
+      if (group.directCall && !paramName.startsWith('__internal__')) {
         if (routeArgIndex >= routeArgs.length) {
           throw new Error(`Compiler route '${group.functionName}' is missing visible ABI argument '${paramName}'`);
         }
@@ -247,7 +247,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         continue;
       }
 
-      if (!group.compilerRoute && usesOrdinarySelfIdentity(bAbiFunc)
+      if (!group.directCall && usesOrdinarySelfIdentity(bAbiFunc)
         && paramName === '__internal__graphSelfIdentityInput') {
         bFinalArgs.push(-1n);
         if (selfIdentityBand !== undefined) host.pendingAnchorFills.push({
@@ -257,7 +257,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         });
         continue;
       }
-      const resolvedInternalArgs = group.compilerRoute?.internalArgs ?? group.internalArgs;
+      const resolvedInternalArgs = group.directCall?.internalArgs ?? group.internalArgs;
       if (resolvedInternalArgs
         && Object.prototype.hasOwnProperty.call(resolvedInternalArgs, paramName)) {
         const value = resolvedInternalArgs[paramName];
@@ -485,24 +485,24 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     }
 
     // Create master unlocker
-    const hasResolvedHiddenArgs = !group.compilerRoute && bFinalArgs.length !== routeArgs.length;
-    let bMasterUnlocker = group.compilerRoute
+    const hasResolvedHiddenArgs = !group.directCall && bFinalArgs.length !== routeArgs.length;
+    let bMasterUnlocker = group.directCall
       ? group.externalContract.inner.createCompilerRouteUnlocker(
-        group.compilerRoute.abiFunction, group.compilerRoute.selector,
+        group.directCall.abiFunction, group.directCall.selector,
       )(...bFinalArgs)
       : hasResolvedHiddenArgs && bAbiFunc
         ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...bFinalArgs)
         : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
 
 
-    if (group.compilerRoute && routeArgIndex !== routeArgs.length) {
+    if (group.directCall && routeArgIndex !== routeArgs.length) {
       throw new Error(
         `Compiler route '${group.functionName}' supplied ${routeArgs.length} visible arguments, `
         + `but its ABI consumed ${routeArgIndex}`,
       );
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_VMAP_PROOF === '1' && group.compilerRoute) {
+      ?.SOLIDC_DEBUG_VMAP_PROOF === '1' && group.directCall) {
       console.error('delegate-route-final-args', {
         contract: group.externalContract.inner.artifact.contractName,
         function: group.functionName,
@@ -565,9 +565,9 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           trailing += 1n;
         }
       }
-      const unlocker = group.compilerRoute
+      const unlocker = group.directCall
         ? group.externalContract.inner.createCompilerRouteUnlocker(
-          group.compilerRoute.abiFunction, group.compilerRoute.selector,
+          group.directCall.abiFunction, group.directCall.selector,
         )(...capturedUnlockerArgs)
         : hasResolvedHiddenArgs && bAbiFunc
           ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...capturedUnlockerArgs)

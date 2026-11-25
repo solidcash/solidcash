@@ -17,7 +17,7 @@ type StatefulCallInfo = {
   contract: { inner: { artifact: Artifact } };
   functionName: string;
   args: FunctionArgument[];
-  compilerRoute?: unknown;
+  directCall?: unknown;
 };
 
 export interface CompatCalleeBlockCall {
@@ -46,7 +46,7 @@ export function selectCompatCalleeBlockCalls(
   const selected: CompatCalleeBlockCall[] = [];
   rows.forEach((row, callIndex) => {
     const call = calls?.[callIndex] as StatefulCallInfo | { type: 'raw' } | undefined;
-    if (row.callMode !== 'call' || call?.type !== 'stateful' || call.compilerRoute !== undefined) return;
+    if (row.callMode !== 'call' || call?.type !== 'stateful' || call.directCall !== undefined) return;
     const witness = rows.length === 1 ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
     if (!abiFunction!.inputs.some((input) => input.name === witness)) return;
     let callee: AbiFunction;

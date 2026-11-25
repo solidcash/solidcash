@@ -14,7 +14,7 @@ export type ExternalCallEntryInsert = {
 
 export interface PatchRelocatedDelegateOutputBasesHost {
   readonly delegateEntriesAfterLowLevel: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly blockLayout?: FunctionBlockLayout;
   readonly requiredNftIndices: readonly number[];
   readonly readOnlyDataNftUtxos: readonly UnlockableUtxo[];
@@ -38,13 +38,13 @@ export function patchRelocatedDelegateOutputBases(
   host: PatchRelocatedDelegateOutputBasesHost,
 ): Map<number, { value: number }> {
   const relocatedDelegateOutputBases = new Map<number, { value: number }>();
-  if (!host.delegateEntriesAfterLowLevel && !host.compilerRouteDelegateBlock) {
+  if (!host.delegateEntriesAfterLowLevel && !host.directCallDelegateBlock) {
     return relocatedDelegateOutputBases;
   }
   const associated = new Set(host.externalCallUtxoGroups
     .map((group) => group.delegateCallGroupIndex)
     .filter((index): index is number => index !== undefined));
-  let outputCursor = host.compilerRouteDelegateBlock && host.blockLayout
+  let outputCursor = host.directCallDelegateBlock && host.blockLayout
     ? host.blockLayout.blockSize
     : 1 + host.requiredNftIndices.length + host.readOnlyDataNftUtxos.length
       + host.blockhashCoSpendUtxos.length + host.keccakComputeCoSpendUtxos.length

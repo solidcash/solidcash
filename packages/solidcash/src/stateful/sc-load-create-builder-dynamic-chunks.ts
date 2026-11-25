@@ -395,12 +395,12 @@ export async function loadCreateBuilderDynamicChunks(
   // include its loop writes too or a graph-handler `mapping(K => V[]).push(...)` is funded as a generic
   // trailing placeholder rather than an entry-covenant NFT.
   const delegateRouteGroupIndex = activeDelegateGroupIndex !== undefined
-    && lowLevelCallUtxoGroups[activeDelegateGroupIndex]?.compilerRoute?.abiFunction
+    && lowLevelCallUtxoGroups[activeDelegateGroupIndex]?.directCall?.abiFunction
     ? activeDelegateGroupIndex
     : lowLevelCallUtxoGroups.findIndex(
       (group, groupIndex) => group.callMode === 'delegatecall'
         && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
-        && group.compilerRoute?.abiFunction,
+        && group.directCall?.abiFunction,
     );
   const delegateRouteGroup = delegateRouteGroupIndex >= 0
     ? lowLevelCallUtxoGroups[delegateRouteGroupIndex] : undefined;
@@ -411,8 +411,8 @@ export async function loadCreateBuilderDynamicChunks(
   // A delegate route writes its proxy's entries, which bind the proxy master's lock, not the implementation's.
   const delegateStateContract = delegateProxyGroupIndex === undefined
     ? host.inner : externalCallUtxoGroups[delegateProxyGroupIndex].externalContract.inner;
-  const delegateRouteAbi = delegateRouteGroup?.compilerRoute?.abiFunction;
-  const delegateRouteRows = delegateRouteGroup?.compilerRoute?.rowArguments;
+  const delegateRouteAbi = delegateRouteGroup?.directCall?.abiFunction;
+  const delegateRouteRows: any[] | undefined = undefined;
   const selectedRowsFor = (
     source: AbiFunction | undefined,
   ): RouteRuntimeAbiFunction['routeRowArguments'] => (
@@ -734,7 +734,7 @@ export async function loadCreateBuilderDynamicChunks(
       const offset = runtimeLoopEventOutputs.length;
       const rowIndex = routeRowIndex(row);
       if (rowIndex < 0) throw new Error('Message-bus runtime event row is missing from its route frame');
-      const rowArtifact = delegateRouteRows?.some((candidate) => candidate === row) && delegateRouteGroup
+      const rowArtifact = (delegateRouteRows as any[] | undefined)?.some((candidate: any) => candidate === row) && delegateRouteGroup
         ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
       await appendRuntimeEvents(row.handler, [...row.args], rowArtifact, (name) =>
         row.internalArgs?.[name] ?? selectedRowArgument(row, name), rowIndex);
@@ -782,7 +782,7 @@ export async function loadCreateBuilderDynamicChunks(
       const offset = runtimeLoopTransferOutputs.length;
       const rowIndex = routeRowIndex(row);
       if (rowIndex < 0) throw new Error('Message-bus runtime transfer row is missing from its route frame');
-      const rowArtifact = delegateRouteRows?.some((candidate) => candidate === row) && delegateRouteGroup
+      const rowArtifact = (delegateRouteRows as any[] | undefined)?.some((candidate: any) => candidate === row) && delegateRouteGroup
         ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
       await appendRuntimeTransfers(row.handler, [...row.args], rowArtifact, (name) =>
         row.internalArgs?.[name] ?? selectedRowArgument(row, name), rowIndex);

@@ -44,7 +44,7 @@ export function deriveFullPhase1CalleeDynamicChunks(
   group: ExternalCallUtxoGroup,
   bMasterIdx: number,
 ): AuthenticationProgramStateCommon[] | undefined {
-  if (group.compilerRoute !== undefined || group.callBatch !== undefined
+  if (group.directCall !== undefined || group.callBatch !== undefined
     || group.delegateCallGroupIndex !== undefined || group.blockInputs === undefined) return undefined;
   const contract = group.externalContract?.inner;
   const artifact = group.logicalArtifact ?? contract?.artifact;

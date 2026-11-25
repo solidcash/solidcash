@@ -57,7 +57,7 @@ export function deriveFullPhase1ProgressiveEntries(
   debugTargetDerivation: boolean,
 ): void {
   if (group.blockLayout && group.blockInputs) {
-    const bEntryMap = group.compilerRoute
+    const bEntryMap = group.directCall
       ? new Map<number, string>()
       : extractCommitmentMapFromTrace(fullTrace,
         { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
@@ -77,7 +77,7 @@ export function deriveFullPhase1ProgressiveEntries(
     let entryTrace = fullTrace;
     let entryTransaction = transaction;
     const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
-    const requiresFreshEntryProbe = group.compilerRoute !== undefined
+    const requiresFreshEntryProbe = group.directCall !== undefined
       || group.delegateEmbeddedInBlock === true || valueChunkWitness !== undefined
       || (entrySlotCount > 0 && group.requiredDataNftIndices.length > 0);
     if (requiresFreshEntryProbe) {
@@ -167,7 +167,7 @@ export function deriveFullPhase1ProgressiveEntries(
         ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
       const delegateImplIndex = group.delegateCallGroupIndex === undefined
         ? -1 : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
-      const delegateImplFn = delegateLlc?.compilerRoute?.abiFunction
+      const delegateImplFn = delegateLlc?.directCall?.abiFunction
         ?? delegateLlc?.externalContract?.inner.artifact.abi.find(
           (candidate: AbiFunction) => candidate.name === delegateLlc.functionName,
         );
@@ -244,7 +244,7 @@ export function deriveFullPhase1ProgressiveEntries(
     }
     if (group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined) {
       const delegateGroup = stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
-      const delegateFn = delegateGroup?.compilerRoute?.abiFunction
+      const delegateFn = delegateGroup?.directCall?.abiFunction
         ?? delegateGroup?.externalContract.inner.artifact.abi.find(
           (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
         );
@@ -315,7 +315,7 @@ export function deriveFullPhase1ProgressiveEntries(
       }
       const currentWitness = witnessInput
         ? delegateGroup?.internalArgs?.[witnessInput.name]
-          ?? delegateGroup?.compilerRoute?.internalArgs?.[witnessInput.name]
+          ?? delegateGroup?.directCall?.internalArgs?.[witnessInput.name]
         : undefined;
       if (currentWitness instanceof Uint8Array && currentWitness.length > 60
         && isCompleteCollectionValue(currentWitness, witnessValueType, witnessLayout?.structs)) {
@@ -367,13 +367,13 @@ export function deriveFullPhase1ProgressiveEntries(
       // not a trailing INSERT. Treating it as one clones the collection lock past blockSize
       // and fails the output-cardinality EQUALVERIFY (expected 2, got 3).
       const trailingCountRaw = group.internalArgs?.__internal__vmapBatchTrailingCount
-        ?? group.compilerRoute?.internalArgs?.__internal__vmapBatchTrailingCount;
+        ?? group.directCall?.internalArgs?.__internal__vmapBatchTrailingCount;
       const trailingCount = typeof trailingCountRaw === 'bigint' ? Number(trailingCountRaw)
         : typeof trailingCountRaw === 'number' ? trailingCountRaw
           : typeof trailingCountRaw === 'string' && trailingCountRaw !== ''
             ? Number(trailingCountRaw)
             : -1;
-      const abiFn = group.compilerRoute?.abiFunction
+      const abiFn = group.directCall?.abiFunction
         ?? (group.externalContract?.inner?.artifact?.abi as {
           name?: string; sortedBatchInfo?: Array<{ linear?: boolean }>;
         }[] | undefined)
@@ -382,7 +382,7 @@ export function deriveFullPhase1ProgressiveEntries(
         && trailingCount === 0;
       if (inCommit && inCommit.length >= 128 && commit.length >= 128
         && inCommit.slice(64, 128) !== commit.slice(64, 128)
-        && (!group.compilerRoute || plannedIndex >= 0)
+        && (!group.directCall || plannedIndex >= 0)
         && !(linearInBlock && plannedIndex < 0)) {
         const handle = plannedIndex >= 0
           ? group.plannedEntryInsertHandles![plannedIndex]

@@ -106,7 +106,7 @@ export function sameOutpoint(
 /** Resolve the compiler-owned physical block layout for a low-level call group. */
 export function lowLevelCallBlockLayout(group: ExternalCallUtxoGroup): AbiFunction['blockLayout'] {
   return group.blockLayout
-    ?? group.compilerRoute?.abiFunction.blockLayout
+    ?? group.directCall?.abiFunction.blockLayout
     ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName)?.blockLayout;
 }
@@ -309,27 +309,12 @@ export interface ExternalCallUtxoGroup {
    */
   broadcastIdxList?: { witness: string; element: number };
   /** Compiler-owned hidden route used for a grouped logical invocation. */
-  compilerRoute?: {
+  /** A direct co-spend of one callee entry: its ABI, selector and positional arguments. */
+  directCall?: {
     abiFunction: AbiFunction;
     selector: Uint8Array;
-    blob: Uint8Array;
     args: any[];
-    /** Logical handler selectors already executed by this physical route owner. */
-    logicalSelectors: string[];
-    /** Decoded Solidity-visible arguments for each authenticated logical row. */
-    rowArguments?: Array<{
-      selector: string;
-      args: any[];
-      handler: AbiFunction;
-      internalArgs?: Readonly<Record<string, any>>;
-      sourceLogicalIndex?: number;
-      sourceCallsiteId?: number;
-      occurrenceIndex?: number;
-      sourceEffectOrdinal?: number;
-      producerPath?: ValueChunkProducerPathDisposition;
-    }>;
     internalArgs?: Record<string, any>;
-    eventSignaturesBySlot?: Array<string | undefined>;
   };
   /** ABI-named hidden witnesses resolved while assembling this callee's physical block. */
   internalArgs?: Record<string, any>;
@@ -460,7 +445,7 @@ export interface ExternalCallUtxoGroup {
  * witness, so the run need not follow the callee's block.
  */
 export function calleeWitnessesDynamicRun(group: ExternalCallUtxoGroup): boolean {
-  return group.compilerRoute === undefined && group.callBatch === undefined
+  return group.directCall === undefined && group.callBatch === undefined
     && group.delegateCallGroupIndex === undefined
     && group.internalArgNames?.includes('__internal__dynamicChunkOutputBase') === true;
 }

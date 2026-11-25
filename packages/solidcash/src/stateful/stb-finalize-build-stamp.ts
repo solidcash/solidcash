@@ -29,7 +29,7 @@ export interface FinalizeBuildStampHost {
   readonly valueChunkOutputs: readonly unknown[];
   readonly lateValueChunkOutputs: readonly unknown[];
   readonly delegateDynamicChunksAtSuffix: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly delegateEntriesAfterLowLevel: boolean;
   readonly authenticatedViewReturnByGroup: ReadonlyMap<number, { categoryId: string; commitment: string }>;
   applyDerivedValueChunks(builder: TransactionBuilder): boolean | void;
@@ -81,7 +81,7 @@ export function finalizeBuildStamp(
       valueChunks: host.valueChunkOutputs.length,
       lateValueChunks: host.lateValueChunkOutputs.length,
       delegateDynamicChunksAtSuffix: host.delegateDynamicChunksAtSuffix,
-      compilerRouteDelegateBlock: host.compilerRouteDelegateBlock,
+      directCallDelegateBlock: host.directCallDelegateBlock,
       delegateEntriesAfterLowLevel: host.delegateEntriesAfterLowLevel,
     });
   }

@@ -107,7 +107,7 @@ export async function allocateCreateBuilderFunders(
     lowLevelCallUtxoGroups,
     functionName,
     timing,
-    compilerRouteDelegateLayout = undefined,
+    directCallDelegateLayout = undefined,
     blockhashCoSpendSlotOrdinals = undefined,
     keccakComputeCoSpendUtxos = [] as any[],
     ecrecoverComputeCoSpendUtxos = [] as any[],
@@ -231,7 +231,7 @@ export async function allocateCreateBuilderFunders(
     neededFunders += sortedLoopSurplusFunderCount(
       builder.getTrailingLoopEntryOutputCount(),
       insertLoopPredecessors.length,
-      !!compilerRouteDelegateLayout || (effectiveBlockLayout.trailingCapacity ?? 0) > 0,
+      !!directCallDelegateLayout || (effectiveBlockLayout.trailingCapacity ?? 0) > 0,
     );
     neededFunders += effectiveBlockLayout.slots.filter(
       (s) => s.kind === 'entry'
@@ -300,7 +300,7 @@ export async function allocateCreateBuilderFunders(
       // a native signer input. Inspect every such delegate, not only the subset promoted to entryAbiFunction
       // because it happens to access a mapping.
       if (nestedDelegateProxyGroupByLowLevel.has(groupIndex)) return false;
-      const gFn = group.compilerRoute?.abiFunction
+      const gFn = group.directCall?.abiFunction
         ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === group.functionName);
       return gFn !== undefined && lowLevelRunNeedsSignerInput(gFn, group.callMode);
@@ -410,21 +410,21 @@ export async function allocateCreateBuilderFunders(
             (claim) => claim.resourceIdentity,
           ),
           valueChunkStateOwner: group.valueChunkStateOwner?.categoryId,
-          entryWrites: group.compilerRoute?.abiFunction.entryAccesses?.filter((access) =>
+          entryWrites: group.directCall?.abiFunction.entryAccesses?.filter((access) =>
             access.operations.includes('write')).map((access) => access.collection),
         })),
         lowLevelGroups: lowLevelCallUtxoGroups.map((group) => ({
           functionName: group.functionName,
           logicalFunctionName: group.logicalFunctionName,
           blockSize: group.blockLayout?.blockSize
-            ?? group.compilerRoute?.abiFunction.blockLayout?.blockSize,
+            ?? group.directCall?.abiFunction.blockLayout?.blockSize,
           valueChunkOutputCount: group.valueChunkOutputCount,
           valueChunkWrites: group.valueChunkWrites?.map(valueChunkWriteResourceIdentity),
           valueChunkProducerClaims: group.valueChunkProducerClaims?.map(
             (claim) => claim.resourceIdentity,
           ),
           valueChunkStateOwner: group.valueChunkStateOwner?.categoryId,
-          entryWrites: group.compilerRoute?.abiFunction.entryAccesses?.filter((access) =>
+          entryWrites: group.directCall?.abiFunction.entryAccesses?.filter((access) =>
             access.operations.includes('write')).map((access) => access.collection),
         })),
       });

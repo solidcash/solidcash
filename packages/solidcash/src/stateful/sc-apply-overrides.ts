@@ -70,7 +70,7 @@ export interface ApplyOverridesHost {
   callInfos: CallInfo[];
   registryExternalStateOverrides: Map<string, Record<string, StateValueType>>;
   emitReturnFlag: boolean;
-  compilerRoute?: {
+  directCall?: {
     abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
     emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
     logicalIdentity?: ResolvedLogicalIdentity;
@@ -152,21 +152,21 @@ export async function applyOverrides(
   // delaying their validation lets provider/state derivation serialize invalid fixed-width values first.
   const validatePreparedFrames = (): void => {
     if (host.parentContract && host.functionArgs) {
-      const selected = host.compilerRoute?.abiFunction ?? host.selectedAbiFunction();
+      const selected = host.directCall?.abiFunction ?? host.selectedAbiFunction();
       if (selected) host.functionArgs = host.parentContract._validateAbiFrame(selected, host.functionArgs, {
         implicitMsgSenderCategory: false,
       });
     }
     for (const call of host.callInfos) {
       if (call.type !== 'stateful') continue;
-      const callArgs = (call.compilerRoute?.args ?? call.args) as FunctionArgument[];
-      const selected = call.compilerRoute?.abiFunction
+      const callArgs = (call.directCall?.args ?? call.args) as FunctionArgument[];
+      const selected = call.directCall?.abiFunction
         ?? call.contract._resolveCallAbi(call.functionName, callArgs);
       if (selected) {
         const normalized = call.contract._validateAbiFrame(selected, callArgs);
         // Keep the validated frame for materialization too; a delegate's semantic arguments do not pass
         // through its proxy forwarder's _createBuilder argument normalization.
-        if (call.compilerRoute) call.compilerRoute.args = normalized;
+        if (call.directCall) call.directCall.args = normalized;
         else call.args = normalized;
       }
     }
@@ -215,15 +215,15 @@ export async function applyOverrides(
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
         ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
         ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
-        ...(host.compilerRoute && {
-          abiFunction: host.compilerRoute.abiFunction,
-          compilerRouteSelector: host.compilerRoute.selector,
-          blockBase: host.compilerRoute.blockBase,
-          emitReturn: host.compilerRoute.emitReturn,
-          returnBlob: host.compilerRoute.returnBlob,
-          omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
-          logicalIdentity: host.compilerRoute.logicalIdentity,
-          valueChunkProductions: host.compilerRoute.valueChunkProductions,
+        ...(host.directCall && {
+          abiFunction: host.directCall.abiFunction,
+          directCallSelector: host.directCall.selector,
+          blockBase: host.directCall.blockBase,
+          emitReturn: host.directCall.emitReturn,
+          returnBlob: host.directCall.returnBlob,
+          omitLocalFeeTail: host.directCall.omitLocalFeeTail,
+          logicalIdentity: host.directCall.logicalIdentity,
+          valueChunkProductions: host.directCall.valueChunkProductions,
         }),
       },
     );
@@ -325,15 +325,15 @@ export async function applyOverrides(
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
         ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
         ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
-        ...(host.compilerRoute && {
-          abiFunction: host.compilerRoute.abiFunction,
-          compilerRouteSelector: host.compilerRoute.selector,
-          blockBase: host.compilerRoute.blockBase,
-          emitReturn: host.compilerRoute.emitReturn,
-          returnBlob: host.compilerRoute.returnBlob,
-          omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
-          logicalIdentity: host.compilerRoute.logicalIdentity,
-          valueChunkProductions: host.compilerRoute.valueChunkProductions,
+        ...(host.directCall && {
+          abiFunction: host.directCall.abiFunction,
+          directCallSelector: host.directCall.selector,
+          blockBase: host.directCall.blockBase,
+          emitReturn: host.directCall.emitReturn,
+          returnBlob: host.directCall.returnBlob,
+          omitLocalFeeTail: host.directCall.omitLocalFeeTail,
+          logicalIdentity: host.directCall.logicalIdentity,
+          valueChunkProductions: host.directCall.valueChunkProductions,
         }),
       },
     );
@@ -369,15 +369,15 @@ export async function applyOverrides(
           ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
           ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
           drainTokenContainers: drainedTokenContainers,
-          ...(host.compilerRoute && {
-            abiFunction: host.compilerRoute.abiFunction,
-            compilerRouteSelector: host.compilerRoute.selector,
-            blockBase: host.compilerRoute.blockBase,
-            emitReturn: host.compilerRoute.emitReturn,
-            returnBlob: host.compilerRoute.returnBlob,
-            omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
-            logicalIdentity: host.compilerRoute.logicalIdentity,
-            valueChunkProductions: host.compilerRoute.valueChunkProductions,
+          ...(host.directCall && {
+            abiFunction: host.directCall.abiFunction,
+            directCallSelector: host.directCall.selector,
+            blockBase: host.directCall.blockBase,
+            emitReturn: host.directCall.emitReturn,
+            returnBlob: host.directCall.returnBlob,
+            omitLocalFeeTail: host.directCall.omitLocalFeeTail,
+            logicalIdentity: host.directCall.logicalIdentity,
+            valueChunkProductions: host.directCall.valueChunkProductions,
           }),
         },
       );
@@ -498,7 +498,7 @@ export async function applyOverrides(
       // update depends on a callee result cannot derive its chunks in the first owner-local probe. The composer
       // builds those probes without a local fee tail, evaluates the complete graph, and independently refuses
       // a stable/final assembly containing any unresolved chunk. Standalone sends retain this fail-closed gate.
-      if (transparentAtomicPromotion || host.compilerRoute?.omitLocalFeeTail) continue;
+      if (transparentAtomicPromotion || host.directCall?.omitLocalFeeTail) continue;
       const derivationError = (builder as any).__derivationError;
       // A covenant OP_VERIFY is the function rejecting (e.g. registerUser pubkey length).
       // Do not wrap that as a chunk-layout construction failure — revertedWith cannot match.

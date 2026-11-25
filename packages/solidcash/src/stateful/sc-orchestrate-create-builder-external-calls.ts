@@ -98,7 +98,7 @@ const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
  * as late expansion plans it.
  */
 function directGroupEcSlot(ec: ExternalCallAbi, group: ExternalCallUtxoGroup | undefined): ExternalCallAbi {
-  if (ec.interfaceName !== '__raw__' || !ec.hasReturnValues || !group || group.compilerRoute) return ec;
+  if (ec.interfaceName !== '__raw__' || !ec.hasReturnValues || !group || group.directCall) return ec;
   return calleePinsNoRecord(group) ? { ...ec, hasReturnValues: false } : ec;
 }
 
@@ -631,7 +631,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       );
       const {
         externalCategoryId,
-        compilerRoute,
+        directCall,
         bGraphBlockhashSelections,
         bState,
         bStatelayout,
@@ -685,7 +685,7 @@ export async function orchestrateCreateBuilderExternalCalls(
           bValueChunkOutputCount,
           bDirectChunkValue,
           bKeccak,
-          compilerRoute,
+          directCall,
           callInfo,
           externalCategoryId,
           slotIndex,
@@ -702,7 +702,7 @@ export async function orchestrateCreateBuilderExternalCalls(
 
       // A direct callee that iterates a collection reads the walk right after its block, before any dynamic state
       // it reads: co-spend the walk there, each entry kept at its own index.
-      if (bAbiFunc !== undefined && compilerRoute === undefined && bSc && callInfo
+      if (bAbiFunc !== undefined && directCall === undefined && bSc && callInfo
         && (bAbiFunc.collectionIterations?.length ?? 0) > 0) {
         bBlockInputs = await appendCreateBuilderNestedCalleeIterationsImpl({
           bBlockInputs,
@@ -721,7 +721,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       // callee covenant authenticates their address and order; omitting them leaves its hidden
       // dynamic-input base pointing into another participant's inputs.
       const bReadChunks: Array<{ input: UnlockableUtxo; name: string; type: string }> = [];
-      if (bBlockInputs !== undefined && bAbiFunc !== undefined && compilerRoute === undefined) {
+      if (bBlockInputs !== undefined && bAbiFunc !== undefined && directCall === undefined) {
         const written = new Set(bAbiFunc.dynamicWrites ?? []);
         for (const name of bAbiFunc.dynamicReads ?? []) {
           if (written.has(name)) continue;
@@ -756,7 +756,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       // A direct callee's keccak256 loop reads one shared side-car per iteration right after its block; the chunks it
       // reads follow them, found through the witness that names the first chunk's input.
       let bKeccakLoop: { start: number; recreates: Output[] } | undefined;
-      if (bBlockInputs !== undefined && bAbiFunc?.keccakLoopReads === true && compilerRoute === undefined && bSc) {
+      if (bBlockInputs !== undefined && bAbiFunc?.keccakLoopReads === true && directCall === undefined && bSc) {
         const label = `${callInfo!.externalContract.inner.artifact.contractName}.${bAbiFunc.name}`;
         const spent = [
           ...externalCallUtxoGroups.flatMap((group) => [...(group.blockInputs ?? []), ...(group.keccakInputs ?? [])]),
@@ -846,7 +846,7 @@ export async function orchestrateCreateBuilderExternalCalls(
           },
           {
             externalCallUtxoGroups,
-            compilerRoute,
+            directCall,
             bBlockInputs,
             bBlockLayout,
             bAbiFunc,
@@ -867,7 +867,7 @@ export async function orchestrateCreateBuilderExternalCalls(
             bEntryLoopCollection,
             bValueChunkOutputCount,
             bDirectChunkValue,
-            ordinaryProducerPath: !compilerRoute && !ec.batchInvocations
+            ordinaryProducerPath: !directCall && !ec.batchInvocations
               && (ec.occurrence === 'once' || (ec.occurrence === 'conditional' && ec.maximumOccurrences === 1))
               ? deriveValueChunkProducerChildPath({
                 parent: rootProducerPath,

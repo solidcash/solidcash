@@ -36,7 +36,7 @@ export function stripSurplusLinearBatchEntryClones(
     if (group.sharedGroupIndex !== undefined || !group.categoryId) continue;
     const fnName = group.logicalFunctionName ?? group.functionName;
     const trailingCountRaw = group.internalArgs?.__internal__vmapBatchTrailingCount
-      ?? group.compilerRoute?.internalArgs?.__internal__vmapBatchTrailingCount;
+      ?? group.directCall?.internalArgs?.__internal__vmapBatchTrailingCount;
     const trailingCount = typeof trailingCountRaw === 'bigint' ? Number(trailingCountRaw)
       : typeof trailingCountRaw === 'number' ? trailingCountRaw
         : typeof trailingCountRaw === 'string' && trailingCountRaw !== ''
@@ -48,7 +48,7 @@ export function stripSurplusLinearBatchEntryClones(
     // plannedCount). Running it again here while master/output-base still drift caused
     // strip/materialize thrash during multi-entry growth. Pure UPDATE only below.
     if (trailingCount !== 0) continue;
-    const abiFn = group.compilerRoute?.abiFunction
+    const abiFn = group.directCall?.abiFunction
       ?? (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
         ?.find((candidate) => candidate.name === fnName);
     const linearBands = linearSortedBatchEntryBands(group);

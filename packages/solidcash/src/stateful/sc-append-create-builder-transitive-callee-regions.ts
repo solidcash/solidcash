@@ -98,7 +98,7 @@ export async function appendCreateBuilderTransitiveCalleeRegions(
     // The ordinary convention only: a route route carries its own callee layout.
     if (meta === undefined || parent === undefined || artifact === undefined || parentArtifact === undefined
       || !isDirectConventionArtifact(artifact) || !isDirectConventionArtifact(parentArtifact)
-      || group.compilerRoute !== undefined || parent.compilerRoute !== undefined) continue;
+      || group.directCall !== undefined || parent.directCall !== undefined) continue;
     const fn = selectedFunction(artifact, group);
     if (fn === undefined || group.blockInputs !== undefined) continue;
     // The record is published for a caller that reads it, and always for a function that returns.
@@ -165,7 +165,7 @@ export async function appendCreateBuilderTransitiveCalleeRegions(
       bRequiredNftIndices: group.requiredDataNftIndices,
       bValueChunkOutputCount: 0,
       bKeccak: { inputs: [] },
-      compilerRoute: undefined,
+      directCall: undefined,
       callInfo: { args: group.functionArgs, functionName: group.functionName, externalContract: contract },
       externalCategoryId: group.categoryId,
       slotIndex: 0,

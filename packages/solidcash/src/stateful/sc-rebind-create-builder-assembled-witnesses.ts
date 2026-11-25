@@ -114,18 +114,18 @@ export function rebindCreateBuilderAssembledWitnesses(
         (candidate.sharedGroupIndex ?? index) === groupIdx
       && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
         || (candidate.plannedEntryInserts?.length ?? 0) > 0
-        || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
+        || Object.entries({ ...candidate.directCall?.internalArgs, ...candidate.internalArgs })
           .some(([name]) => isWriterBatchWitnessName(name))));
       for (const writer of writers) {
         if (!writerBatchPlanMatchesPhysicalCarrier(group, writer)) continue;
         inheritWriterBatchPlan(group, writer);
       }
       const hasPred = (group.batchPredecessorOutputs?.length ?? 0) > 0
-      || Object.entries({ ...group.internalArgs, ...group.compilerRoute?.internalArgs })
+      || Object.entries({ ...group.internalArgs, ...group.directCall?.internalArgs })
         .some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
           && typeof value === 'bigint' && value >= 0n)
       || writers.some((writer) => Object.entries({
-        ...writer.internalArgs, ...writer.compilerRoute?.internalArgs,
+        ...writer.internalArgs, ...writer.directCall?.internalArgs,
       }).some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
         && typeof value === 'bigint' && value >= 0n));
       if (!hasPred) continue;

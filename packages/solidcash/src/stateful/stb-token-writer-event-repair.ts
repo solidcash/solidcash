@@ -105,7 +105,7 @@ export function synthesizeTransferFromEventCommitments(
       : undefined;
   if (!(fromBin instanceof Uint8Array) || fromBin.length === 0) return undefined;
   const slotRaw = group.internalArgs?.__internal__vmapBatchSlot_1
-    ?? group.compilerRoute?.internalArgs?.__internal__vmapBatchSlot_1;
+    ?? group.directCall?.internalArgs?.__internal__vmapBatchSlot_1;
   const allowanceSlot = (
     slotRaw instanceof Uint8Array ? binToHex(slotRaw)
       : typeof slotRaw === 'string' ? slotRaw.replace(/^0x/i, '')

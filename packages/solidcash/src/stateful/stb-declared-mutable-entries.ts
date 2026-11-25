@@ -64,13 +64,13 @@ export function declaredMutableEntrySlots(
     if (group.sharedGroupIndex !== undefined) continue;
     addLayout(
       host.getExternalCallOutputBase(groupIndex),
-      group.blockLayout ?? group.compilerRoute?.abiFunction?.blockLayout,
+      group.blockLayout ?? group.directCall?.abiFunction?.blockLayout,
       group.categoryId,
       (slot) => host.externalEntryLockingBytecode(group, slot),
     );
   }
   for (const [groupIndex, group] of host.lowLevelCallUtxoGroups.entries()) {
-    const fn = group.compilerRoute?.abiFunction
+    const fn = group.directCall?.abiFunction
       ?? group.externalContract?.inner?.artifact.abi.find((candidate: AbiFunction) =>
         candidate.name === (group.logicalFunctionName ?? group.functionName));
     const proxyOwner = host.externalCallUtxoGroups.find((candidate) => (

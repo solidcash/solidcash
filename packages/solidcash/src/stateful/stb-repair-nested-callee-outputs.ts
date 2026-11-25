@@ -56,7 +56,7 @@ export interface RepairNestedCalleeOutputsHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly allInputs: readonly UnlockableUtxo[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly builderOptions: TransactionBuilderOptions;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly delegateDynamicChunksAtSuffix: boolean;
@@ -219,7 +219,7 @@ export function repairNestedCalleeOutputs(
   }> = [];
   const permitsLegacyNestedDelegateEventRepair = permitsLegacyDelegateEventRepair([
     ...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups,
-  ], host.compilerRouteDelegateBlock, undefined);
+  ], host.directCallDelegateBlock, undefined);
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
     // Compiler-owned delegate routes materialize every declared event and entry inside their balanced frame.
     // The legacy nested-delegate repair below is only for layouts without that physical ownership boundary.
@@ -230,8 +230,8 @@ export function repairNestedCalleeOutputs(
     const proxyGroup = host.externalCallUtxoGroups.find(
       (group) => group.delegateCallGroupIndex === llcIndex,
     );
-    const fn = llc.compilerRoute?.abiFunction
-      ?? proxyGroup?.compilerRoute?.abiFunction
+    const fn = llc.directCall?.abiFunction
+      ?? proxyGroup?.directCall?.abiFunction
       ?? llc.externalContract?.inner.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName)
       ?? proxyGroup?.externalContract?.inner.artifact.abi.find(
         (candidate: AbiFunction) => candidate.name === (llc.functionName ?? proxyGroup.functionName),
@@ -418,7 +418,7 @@ export function repairNestedCalleeOutputs(
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
     // The balanced compiler route owns its trailing dynamic-resource frame. Replaying the legacy absolute
     // delegate placement would duplicate those chunks beyond the route block.
-    if (host.compilerRouteDelegateBlock) continue;
+    if (host.directCallDelegateBlock) continue;
     if (llc.callMode !== 'delegatecall') continue;
     const implIndex = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (implIndex < 0) continue;
@@ -428,7 +428,7 @@ export function repairNestedCalleeOutputs(
     const masterIndex = proxyGroupIndex >= 0
       ? host.getExternalCallMasterInputIndex(proxyGroupIndex)
       : implIndex;
-    const fn = llc.compilerRoute?.abiFunction
+    const fn = llc.directCall?.abiFunction
       ?? llc.externalContract?.inner.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName);
     const blockSize = fn?.blockLayout?.blockSize ?? 1;
     // Executing impl verifies chunks at INPUTINDEX+trailingBase (15+5=20).

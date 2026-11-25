@@ -151,7 +151,7 @@ export function chunkableValueWriteAbi(host: ChunkableWritePlanningHost): AbiFun
     const abi = (group.externalContract?.inner?.artifact?.abi ?? []) as AbiFunction[];
     const fromAbi = abi.find((fn) => legacyIsPublishJobEventName(fn.name));
     if (fromAbi) return fromAbi;
-    const routed = group.compilerRoute?.abiFunction;
+    const routed = group.directCall?.abiFunction;
     if (legacyIsPublishJobEventName(routed?.name)) return routed;
   }
   return undefined;
@@ -212,7 +212,7 @@ export function shouldRematerializePersistUpdateForHost(host: ChunkableWritePlan
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return false;
   // Compatibility only for plans predating compiler/planner value-chunk descriptors.
   for (const group of [...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups]) {
-    const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
+    const names = [group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name];
     if (!names.some((n) => legacyIsPublishJobEventName(n))) continue;
     const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
     if (shouldRematerializePersistUpdate({
@@ -242,7 +242,7 @@ export function isInitialChunkableValueWriteForDigest(host: ChunkableWritePlanni
   );
   if (plannedInserts > 0) return true;
   for (const group of [...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups]) {
-    const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
+    const names = [group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name];
     if (!names.some((n) => legacyIsPublishJobEventName(n))) continue;
     const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
     if (isInsertShapedJobEvent(event)) return true;

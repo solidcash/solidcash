@@ -88,7 +88,7 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   bValueChunkOutputCount: number;
   bDirectChunkValue?: Uint8Array;
   bKeccak: { inputs: UnlockableUtxo[] };
-  compilerRoute: ExternalCallUtxoGroup['compilerRoute'] | undefined;
+  directCall: ExternalCallUtxoGroup['directCall'] | undefined;
   callInfo: {
     args: FunctionArgument[];
     functionName: string;
@@ -121,7 +121,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     bStatelayout,
     bRequiredNftIndices,
     bKeccak,
-    compilerRoute,
+    directCall,
     callInfo,
     externalCategoryId,
     slotIndex,
@@ -141,8 +141,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     // A loop-expanded slot shares ONE contiguous return-event band across its iterations, so its callees
     // keep the appended-tail shape and take no returnEvent funder.
     const bLoopExpanded = loopIdxRanges.some((r) => slotIndex >= r.start && slotIndex < r.start + r.count);
-    const hasStreamedEvents = compilerRoute?.rowArguments?.some((row) =>
-      row.handler.runtimeLoopEvents?.some((stream) => stream.stream || stream.chunked)) === true;
+    const hasStreamedEvents = false;
     const physicalFixedSize = hasStreamedEvents
       ? bBlockLayout.trailingBase ?? bBlockLayout.blockSize : bBlockLayout.blockSize;
     const hasExtraSlots = hadFullBlockKinds || hasStreamedEvents
@@ -156,12 +155,12 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
       // Create proper unlocker for B's master (not just a type cast). If B's function reads msg.sender, append
       // OUR category (docs/deferrals.md #1): B is called BY us, so B's msg.sender = this contract - B's covenant
       // resolves it (emitMsgSenderMintingVerification) from OUR co-spent minting master at that category.
-      const bRouteArgs = compilerRoute?.args ?? (callInfo.args ?? []);
+      const bRouteArgs = directCall?.args ?? (callInfo.args ?? []);
       // This provisional unlocker is replaced below once the complete hidden frame is known.
       const bBlockArgs = bRouteArgs;
-      const bMasterUnlocker = compilerRoute
+      const bMasterUnlocker = directCall
         ? callInfo.externalContract.inner.createCompilerRouteUnlocker(
-          compilerRoute.abiFunction, compilerRoute.selector,
+          directCall.abiFunction, directCall.selector,
         )(...bBlockArgs)
         : ((callInfo.externalContract.inner.unlock as any)[callInfo.functionName]
           ? (callInfo.externalContract.inner.unlock as any)[callInfo.functionName](...bBlockArgs)
@@ -269,7 +268,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
               process?: { env?: Record<string, string> };
             }).process?.env?.SOLIDC_DEBUG_EXTERNAL_ENTRY === '1' ? {
                 callee: callInfo.externalContract?.inner.artifact.contractName,
-                frame: compilerRoute ? 'route' : 'concrete',
+                frame: directCall ? 'route' : 'concrete',
                 calleeFunction: callInfo.functionName,
                 blockSlot: slot.offset,
                 slotIndex: slot.slotIndex,
@@ -360,8 +359,8 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                 let unsupportedColdEntry = false;
                 try {
                   const exact = bList.find(bSlot);
-                  if (compilerRoute && !exact) unsupportedColdEntry = true;
-                  matchUtxo = compilerRoute
+                  if (directCall && !exact) unsupportedColdEntry = true;
+                  matchUtxo = directCall
                     ? (exact ?? bList.predecessorOf(bSlot))?.utxo
                     : (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
                   if (bAbiFunc?.sortedBatchInfo?.some((batch) =>
@@ -530,7 +529,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   const targetSlot = ctx.bCompilerInternalArgs[
                     `__internal__vmapBatchSlot_${slot.slotIndex ?? 0}`
                   ];
-                  if (!compilerRoute && ctx.bDirectChunkValue === undefined
+                  if (!directCall && ctx.bDirectChunkValue === undefined
                     && bAbiFunc.sourceEffectOrder === 'linear' && writtenChunkable.length === 1
                     && writtenChunkable[0] === bEntryAccess && bEntryAccess.activation === undefined
                     && bEntryAccess.chunkableArrayValue && bEntryAccess.arrayMutation === 'push'
@@ -777,9 +776,9 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           rows.flatMap((row) => [...row.slot, ...row.next]),
         );
       }
-      if (compilerRoute && ctx.bBlockInputs) {
+      if (directCall && ctx.bBlockInputs) {
         const plan = planNestedStreamedEvents(
-          compilerRoute, callInfo.externalContract.inner.artifact, externalCategoryId,
+          directCall, callInfo.externalContract.inner.artifact, externalCategoryId,
           ctx.bBlockInputs.length, makeFunder,
         );
         if (plan) {

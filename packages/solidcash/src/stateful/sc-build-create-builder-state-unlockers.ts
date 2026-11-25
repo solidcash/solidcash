@@ -66,7 +66,7 @@ export function buildCreateBuilderStateUnlockers(
   const topLevelDynamicChunkArgumentIndex = abiFunction?.inputs.findIndex(
     (input) => input.name === '__internal__dynamicChunkInputBase',
   ) ?? -1;
-  if (overrides?.compilerRouteSelector && abiFunction && physicalAbiFunction
+  if (overrides?.directCallSelector && abiFunction && physicalAbiFunction
     && physicalAbiFunction !== abiFunction) {
     // A compiler route executed through a proxy has two distinct ABIs: the route ABI determines the complete
     // participant layout, while the physical proxy ABI determines the master input's unlocking stack. Encode
@@ -122,8 +122,8 @@ export function buildCreateBuilderStateUnlockers(
       };
     }
   } else {
-    const unlockFn = overrides?.compilerRouteSelector && abiFunction
-      ? host.inner.createCompilerRouteUnlocker(abiFunction, overrides.compilerRouteSelector)
+    const unlockFn = overrides?.directCallSelector && abiFunction
+      ? host.inner.createCompilerRouteUnlocker(abiFunction, overrides.directCallSelector)
       : ((exactUnlockName && (host.inner.unlock as any)[exactUnlockName])
         ?? (host.inner.unlock as any)[unlockName] ?? (host.inner.unlock as any)[functionName]);
     buildStateInputUnlocker = () => unlockFn(...finalArgs);

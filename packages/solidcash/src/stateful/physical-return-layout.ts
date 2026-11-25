@@ -181,7 +181,7 @@ export function assignPhysicalReturnIndices(
     const master = findMintingInputIndex(group.categoryId);
     if (master < 0) continue;
     const layoutSize = group.blockLayout?.blockSize
-      ?? group.compilerRoute?.abiFunction?.blockLayout?.blockSize
+      ?? group.directCall?.abiFunction?.blockLayout?.blockSize
       ?? 0;
     const trailingPred = (group.batchPredecessorOutputs ?? [])
       .filter((pred) => pred.outputBlockSlot >= layoutSize).length;

@@ -62,7 +62,7 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     && logicalSelector !== undefined
     && sharedPhysicalFunction?.selector === logicalSelector
     && sharedPhysicalFunction.writesState === true
-    && !externalCallUtxoGroups[sharedGroupIndex].compilerRoute;
+    && !externalCallUtxoGroups[sharedGroupIndex].directCall;
   if (sharedGroupIndex >= 0
     && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1') {

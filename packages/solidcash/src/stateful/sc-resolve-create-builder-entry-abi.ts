@@ -7,7 +7,7 @@ import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 
-export type CreateBuilderEntryCompilerRoute = NonNullable<ExternalCallUtxoGroup['compilerRoute']>;
+export type CreateBuilderEntryCompilerRoute = NonNullable<ExternalCallUtxoGroup['directCall']>;
 
 export type CreateBuilderEntryResolvedCall = {
   type?: string;
@@ -16,7 +16,7 @@ export type CreateBuilderEntryResolvedCall = {
   };
   functionName?: string;
   args?: FunctionArgument[];
-  compilerRoute?: CreateBuilderEntryCompilerRoute;
+  directCall?: CreateBuilderEntryCompilerRoute;
 };
 
 export interface ResolveCreateBuilderEntryAbiResult {
@@ -56,7 +56,7 @@ export function resolveCreateBuilderEntryAbi(
       // Compiler-owned route routes are intentionally removed from the public artifact ABI. The exact
       // route survives on the delegate call descriptor, so prefer it here; looking only in `artifact.abi`
       // silently reduced every route entry slot to a generic funding placeholder.
-      const implFn = ci.compilerRoute?.abiFunction
+      const implFn = ci.directCall?.abiFunction
         ?? (ci.contract.inner.artifact.abi as readonly AbiFunction[]).find((f) => f.name === ci.functionName);
       // Dynamic mapping writes (including mapping(K => V[]).push()) may have no fixed entryAccesses at all.
       // They still own the trailing entry-NFT region, so promote their ABI metadata just like a fixed access.
@@ -73,9 +73,9 @@ export function resolveCreateBuilderEntryAbi(
         entryAccesses = implFn.entryAccesses;
         entryAbiFunction = implFn;
         entryArtifact = ci.contract.inner.artifact;
-        entryCompilerRoute = ci.compilerRoute;
+        entryCompilerRoute = ci.directCall;
         if (entryCompilerRoute) {
-          const compilerRoute = entryCompilerRoute;
+          const directCall = entryCompilerRoute;
           // Compiler routes retain a compact visible-only argument frame. Entry planning indexes arguments by
           // the complete route ABI, so expand that frame by name before resolving collection keys/values.
           // Treating the compact vector as ABI-positioned makes every witness after the first hidden input
@@ -83,9 +83,9 @@ export function resolveCreateBuilderEntryAbi(
           let visibleIndex = 0;
           entryArgs = implFn.inputs.map((input) => {
             if (input.name.startsWith('__internal__')) {
-              return compilerRoute.internalArgs?.[input.name];
+              return directCall.internalArgs?.[input.name];
             }
-            const value = compilerRoute.args[visibleIndex];
+            const value = directCall.args[visibleIndex];
             visibleIndex += 1;
             return value;
           }) as FunctionArgument[];

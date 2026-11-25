@@ -78,14 +78,14 @@ export function isRoutePushValueWitnessName(name: string): boolean {
 /** Resolve a route-fold witness without relying on its position among other hidden ABI arguments. */
 export function resolveDelegatePushValueWitness(
   name: string,
-  compilerRouteArgs: Readonly<Record<string, FunctionArgument>> | undefined,
+  directCallArgs: Readonly<Record<string, FunctionArgument>> | undefined,
   groupArgs: Readonly<Record<string, FunctionArgument>> | undefined,
   activeEntry: {
     inputs: readonly { name: string }[];
     args: readonly FunctionArgument[];
   } | undefined,
 ): FunctionArgument {
-  const published = compilerRouteArgs?.[name] ?? groupArgs?.[name];
+  const published = directCallArgs?.[name] ?? groupArgs?.[name];
   if (published !== undefined) return published;
   const entryIndex = activeEntry?.inputs.findIndex((input) => input.name === name) ?? -1;
   return entryIndex < 0 ? new Uint8Array() : activeEntry!.args[entryIndex] ?? new Uint8Array();
@@ -168,7 +168,7 @@ export async function fixCreateBuilderDelegateUnlockers(
   const publicSelfAddress = params.publicSelfAddress;
   const authenticatedSelfAddress = params.authenticatedSelfAddress as Uint8Array | undefined
     ?? publicSelfAddress;
-  const compilerRouteDelegateLayout = params.compilerRouteDelegateLayout;
+  const directCallDelegateLayout = params.directCallDelegateLayout;
   const returnEmitOutputIndex = params.returnEmitOutputIndex as number;
   const groupProxyMasterIndices = params.groupProxyMasterIndices as any;
   const overrides = params.overrides as { blockBase?: number } | undefined;
@@ -191,10 +191,10 @@ export async function fixCreateBuilderDelegateUnlockers(
     if (timingEnabled) console.error('delegate-unlocker-group-start', {
       groupLocalIdx,
       functionName: group.functionName,
-      route: group.compilerRoute?.abiFunction.name,
-      routeRows: group.compilerRoute?.rowArguments?.length,
-      routeBlobBytes: group.compilerRoute?.blob.length,
-      routeArgs: group.compilerRoute?.args.length,
+      route: group.directCall?.abiFunction.name,
+      routeRows: undefined,
+      routeBlobBytes: undefined,
+      routeArgs: group.directCall?.args.length,
     });
     const delegateProxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
     const proxyPhysicalSize = delegateProxyExternalGroup === undefined ? 0
@@ -215,7 +215,7 @@ export async function fixCreateBuilderDelegateUnlockers(
       : undefined;
     const masterInputIndex = embeddedDelegateOffset !== undefined && embeddedDelegateOffset >= 0
       ? nestedMasterIndices[delegateProxyExternalGroup!] + embeddedDelegateOffset
-      : delegateProxyExternalGroup === undefined || compilerRouteDelegateLayout
+      : delegateProxyExternalGroup === undefined || directCallDelegateLayout
         ? currentBase : nestedMasterIndices[delegateProxyExternalGroup] + proxyPhysicalSize;
     group.dataNftUtxos = group.dataNftUtxos.map((nftUtxo) => ({
       ...nftUtxo,
@@ -237,12 +237,12 @@ export async function fixCreateBuilderDelegateUnlockers(
       console.error('delegate-function-selection', {
         groupLocalIdx, contract: bArt.contractName, functionName: group.functionName,
         functionArgCount: group.functionArgs.length,
-        compilerRouteArgCount: group.compilerRoute?.args.length,
+        directCallArgCount: group.directCall?.args.length,
         candidates: bSameName.map((f) => f.inputs
           .filter((inp) => !inp.name.startsWith('__internal__')).length),
       });
     }
-    const bFunc = group.compilerRoute?.abiFunction ?? bSameName.find((f) => f.inputs
+    const bFunc = group.directCall?.abiFunction ?? bSameName.find((f) => f.inputs
       .filter((inp) => !inp.name.startsWith('__internal__')).length === group.functionArgs.length)
       ?? bSameName[0];
     if (bFunc) {
@@ -254,14 +254,14 @@ export async function fixCreateBuilderDelegateUnlockers(
         && (group.logicalArtifact ?? bArt).contractName === entryArtifact.contractName
         ? { inputs: entryAbiFunction.inputs, args: entryArgs }
         : undefined;
-      // Persist UPDATE can seed compilerRoute.args from the last stored JobEvent
+      // Persist UPDATE can seed directCall.args from the last stored JobEvent
       // (Closed). Compiler-published argSources / logicalFunctionArgs are the emit
       // identity (withdrawCollateral type 16, not closeJob type 7).
       const visibleFunctionArgs = ((group.logicalFunctionArgs?.length ?? 0) > 0
         ? group.logicalFunctionArgs
         : (group.functionArgs?.length ?? 0) > 0
           ? group.functionArgs
-          : group.compilerRoute?.args) ?? [];
+          : group.directCall?.args) ?? [];
       let visibleIndex = 0;
       let delegateReturnWitnessIndex = 0;
       let delegateCallInputWitnessIndex = 0;
@@ -376,12 +376,12 @@ export async function fixCreateBuilderDelegateUnlockers(
             );
             if (planned !== undefined) return BigInt(planned);
           }
-          const graphOwned = group.compilerRoute?.internalArgs?.[inp.name]
-            ?? group.compilerRoute?.args[inpIndex];
+          const graphOwned = group.directCall?.internalArgs?.[inp.name]
+            ?? group.directCall?.args[inpIndex];
           if (graphOwned !== undefined) return graphOwned;
           return -1n;
         }
-        const graphFixedSize = group.compilerRoute?.internalArgs?.__internal__graphFixedSize;
+        const graphFixedSize = group.directCall?.internalArgs?.__internal__graphFixedSize;
         // Repeated routes are first built with a -1 graph sentinel while the SDK discovers their call tree.
         // Only the atomic composer publishes a non-negative fixed size and a complete ABI-positioned frame.
         // Before that point, resolve visible and storage witnesses through the ordinary compact route path.
@@ -392,7 +392,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           // Atomic routes already carry a complete ABI-positioned argument vector. Treating it as the
           // visible-only argument list shifts every non-internal witness following the first graph field
           // (an address key then receives a bigint). Graph-owned internal values may be refreshed by name;
-          // every other position remains exactly compilerRoute.args[inpIndex].
+          // every other position remains exactly directCall.args[inpIndex].
           // Compiler-route args retain the compact visible-only frame during graph discovery. Consume every
           // visible argument sequentially; graph-owned internal values are addressed by name below. Treating
           // the compact frame as ABI-positioned shifts the first route witness by the graph-field count.
@@ -404,14 +404,14 @@ export async function fixCreateBuilderDelegateUnlockers(
           // by name; otherwise inactive route defaults overwrite authenticated vmap and chunk witnesses.
           // Physical external-call coordinates are excluded above and retain their late-layout resolver.
           const owned = group.internalArgs?.[inp.name]
-            ?? group.compilerRoute?.internalArgs?.[inp.name]
-            ?? group.compilerRoute?.args[inpIndex];
+            ?? group.directCall?.internalArgs?.[inp.name]
+            ?? group.directCall?.args[inpIndex];
           return inp.name.startsWith('__internal__') ? owned : encodeVisibleArg(owned, inp.type);
         }
         if (!inp.name.startsWith('__internal__')) {
           return encodeVisibleArg(visibleFunctionArgs[visibleIndex++], inp.type);
         }
-        const compilerOwnedWitness = group.compilerRoute?.internalArgs?.[inp.name];
+        const compilerOwnedWitness = group.directCall?.internalArgs?.[inp.name];
         if (compilerOwnedWitness !== undefined
           && inp.name !== '__internal__graphSelfIdentityInput'
           && !isSdkResolvedExternalCallTopologyWitness(inp.name)
@@ -441,7 +441,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           // The builder's own forwarded call is read by no contract: only a returning entry pins its result, where
           // `emitReturn` asks for it.
           if (proxyExternalGroup === undefined) {
-            return BigInt(group.compilerRoute !== undefined || ((bFunc as AbiFunction).outputs?.length ?? 0) > 0
+            return BigInt(group.directCall !== undefined || ((bFunc as AbiFunction).outputs?.length ?? 0) > 0
               ? returnEmitOutputIndex : -1);
           }
           // A nested proxy's implementation pins the record of the call its proxy forwarded where the caller reads it,
@@ -581,7 +581,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
           if (debugEnv()?.SOLIDC_DEBUG_VMAP_PROOF === '1') {
             debugLog('proxy-master-output-context', {
-              groupLocalIdx, compilerRoute: !!compilerRouteDelegateLayout,
+              groupLocalIdx, directCall: !!directCallDelegateLayout,
               blockBase: overrides?.blockBase,
               proxyExternalGroup,
               nestedOutputBases,
@@ -599,7 +599,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           // A compiler-route delegate is the implementation of THIS builder's proxy block. Its balanced
           // state outputs are rooted at the caller-supplied physical block base, not at any nested external
           // group which happens to carry one of the route's logical calls.
-          if (compilerRouteDelegateLayout) {
+          if (directCallDelegateLayout) {
             return BigInt(overrides?.blockBase ?? nestedOutputBases[0] ?? 0);
           }
           return BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0);
@@ -666,28 +666,28 @@ export async function fixCreateBuilderDelegateUnlockers(
         if (inp.name.startsWith('__internal__vmapBatch')) {
           // Atomic graph routes are first compiled with placeholder storage proofs. Only standalone routes
           // can own these values; graph participants resolve them from the final materialized UTXO block.
-          const compilerRouteValue = graphCompilerRoute
+          const directCallValue = graphCompilerRoute
             ? undefined
-            : group.compilerRoute?.internalArgs?.[inp.name];
-          if (compilerRouteValue !== undefined) {
+            : group.directCall?.internalArgs?.[inp.name];
+          if (directCallValue !== undefined) {
             // Route batch proof offsets stay proxy-master-relative: the covenant adds its authenticated
             // proxy input index. Predecessor outputs are consumed directly by OP_OUTPUT*, so convert their
             // block-relative trailing offsets to absolute transaction output indices here.
             if (/^__internal__vmapBatchPredOut_\d+$/.test(inp.name)
-              && typeof compilerRouteValue === 'bigint' && compilerRouteValue >= 0n) {
+              && typeof directCallValue === 'bigint' && directCallValue >= 0n) {
               // PredOut is an OP_OUTPUT* index. Proofs stay proxy-relative because the
               // covenant adds INPUTINDEX; predecessor outputs do not. Use the implementation
               // implementation master, not the proxy minting UTXO.
               const outputBase = masterInputIndex;
               const trailingBase = groupLayoutTrailingBase(group);
               return resolveAbsolutePredOut(
-                compilerRouteValue,
+                directCallValue,
                 outputBase,
                 trailingBase,
                 group.relocatedPredOutBase,
               );
             }
-            return compilerRouteValue;
+            return directCallValue;
           }
           // An ordinary nested callee owns its own batch witnesses. Do not consume the enclosing
           // contract's `entryBatchWitnesses`: those describe a different block (and can coincidentally
@@ -752,7 +752,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           // A probe-learned witness is persisted on the physical delegate group. It is newer than the
           // compiler-route seed (often the empty/default value), so preserve it across later input refreshes.
           const routeWitness = group.internalArgs?.[inp.name]
-            ?? (graphCompilerRoute ? undefined : group.compilerRoute?.internalArgs?.[inp.name]);
+            ?? (graphCompilerRoute ? undefined : group.directCall?.internalArgs?.[inp.name]);
           if (routeWitness !== undefined) return routeWitness;
           if (['SOLIDC_DEBUG_COLLECTION_FETCH', 'SOLIDC_DEBUG_VALUE_WITNESS'].some((name) =>
             debugEnv()?.[name] === '1')) {
@@ -767,7 +767,7 @@ export async function fixCreateBuilderDelegateUnlockers(
         if (isRoutePushValueWitnessName(inp.name)) {
           return resolveDelegatePushValueWitness(
             inp.name,
-            group.compilerRoute?.internalArgs,
+            group.directCall?.internalArgs,
             group.internalArgs,
             activeEntryDelegate,
           );
@@ -886,12 +886,12 @@ export async function fixCreateBuilderDelegateUnlockers(
         throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
       });
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_FORWARD_ARGS === '1' && group.compilerRoute) {
+        ?.SOLIDC_DEBUG_FORWARD_ARGS === '1' && group.directCall) {
         const proxyMasterIndex = bFunc.inputs.findIndex((input) =>
           input.name === '__internal__proxyMasterIndex');
         console.error('delegate-route-proxy-master', {
           groupLocalIdx, functionName: group.functionName, masterInputIndex,
-          compilerOwned: group.compilerRoute.internalArgs?.__internal__proxyMasterIndex,
+          compilerOwned: group.directCall.internalArgs?.__internal__proxyMasterIndex,
           encoded: proxyMasterIndex < 0 ? undefined : encodedArgs[proxyMasterIndex],
         });
       }
@@ -912,7 +912,7 @@ export async function fixCreateBuilderDelegateUnlockers(
       }
       if (timingEnabled) console.error('delegate-args-map-complete', { groupLocalIdx });
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_VMAP_PROOF === '1' && group.compilerRoute) {
+        ?.SOLIDC_DEBUG_VMAP_PROOF === '1' && group.directCall) {
         console.error('delegate-lowlevel-route-final-args', {
           contract: bArt.contractName,
           bytecodeLength: bArt.bytecode.length,
@@ -973,9 +973,9 @@ export async function fixCreateBuilderDelegateUnlockers(
         }
         group.masterUtxo = {
           ...(group.masterUtxo as UnlockableUtxo),
-          unlocker: group.compilerRoute
+          unlocker: group.directCall
             ? group.externalContract.inner.createCompilerRouteUnlocker(
-              group.compilerRoute.abiFunction, group.compilerRoute.selector,
+              group.directCall.abiFunction, group.directCall.selector,
             )(...encodedArgs)
             : group.externalContract.inner.unlockerFor(bFunc as AbiFunction)(...encodedArgs),
         };

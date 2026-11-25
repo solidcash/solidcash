@@ -26,7 +26,7 @@ export interface AssembleConstructorInputsHost {
   readonly pendingValueChunkPredecessors: readonly UnlockableUtxo[];
   readonly blockLayout?: FunctionBlockLayout;
   readonly preserveBlockLayoutWidth: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   requiredNftIndices: readonly number[];
   allInputs: UnlockableUtxo[];
   buildInputs(
@@ -123,7 +123,7 @@ export function assembleConstructorInputs(
       routeBlockSize: host.blockLayout?.blockSize,
       trailingCapacity: host.blockLayout?.trailingCapacity,
       preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
-      compilerRouteDelegateBlock: host.compilerRouteDelegateBlock,
+      directCallDelegateBlock: host.directCallDelegateBlock,
       lowLevelCallInputs: lowLevelCallInputs.length,
       externalIdentityAnchors: host.externalIdentityAnchorUtxos.length,
       logicalIdentityAnchor: host.logicalIdentityUtxo !== undefined,

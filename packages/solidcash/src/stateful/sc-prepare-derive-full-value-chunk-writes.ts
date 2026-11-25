@@ -140,7 +140,7 @@ export function prepareDeriveFullValueChunkWrites(
       ));
       const claim = group.valueChunkProducerClaims?.length ? undefined : write
         && terminalValueChunkProducerClaim({
-          rows: group.compilerRoute?.rowArguments ?? [],
+          rows: [] as any[],
           collectionIdentities: [write.collection, write.collectionSignature],
           fixedChunkableWriteSelectors: undefined,
           executionLockingBytecode: group.externalContract?.inner?.lockingBytecode ?? '',
@@ -155,7 +155,7 @@ export function prepareDeriveFullValueChunkWrites(
           valueChunkWriteResourceIdentity(candidate) === transportedClaim.resourceIdentity
         ));
         const derived = matchingWrites.length === 1 && terminalValueChunkProducerClaim({
-          rows: group.compilerRoute?.rowArguments ?? [],
+          rows: [] as any[],
           collectionIdentities: [matchingWrites[0]!.collection, matchingWrites[0]!.collectionSignature],
           fixedChunkableWriteSelectors: undefined,
           executionLockingBytecode: group.externalContract?.inner?.lockingBytecode ?? '',
@@ -179,15 +179,11 @@ export function prepareDeriveFullValueChunkWrites(
           owner: group.valueChunkStateOwner,
           functionName: group.functionName,
           callMode: group.callMode,
-          hasCompilerRoute: group.compilerRoute !== undefined,
-          rowCount: group.compilerRoute?.rowArguments?.length ?? 0,
+          hasCompilerRoute: group.directCall !== undefined,
+          rowCount: 0,
           claim: claim?.producer,
           transportedClaims: group.valueChunkProducerClaims?.map((candidate) => candidate.producer),
-          rows: group.compilerRoute?.rowArguments?.map((row) => ({
-            selector: row.selector,
-            sourceEffectOrder: row.handler.sourceEffectOrder,
-            producerPath: row.producerPath,
-          })),
+          rows: [],
         }));
       }
     }

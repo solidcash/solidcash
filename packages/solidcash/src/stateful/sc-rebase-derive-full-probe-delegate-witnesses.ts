@@ -26,9 +26,9 @@ export function rebaseDeriveFullProbeDelegateWitnesses(
     : stb.getLowLevelCallUtxoGroups().find((group, index) => (
       group.callMode === 'delegatecall'
         && stb.getLowLevelCallMasterInputIndex(index) === delegatecallInputIndex
-        && group.compilerRoute?.internalArgs?.__internal__graphFixedSize !== undefined
+        && group.directCall?.internalArgs?.__internal__graphFixedSize !== undefined
     ));
-  const probeRoute = probeDelegate?.compilerRoute?.abiFunction;
+  const probeRoute = probeDelegate?.directCall?.abiFunction;
   const probeRouteBlockSize = probeRoute?.blockLayout?.blockSize;
   const localProxyMasterIndex = delegatecallInputIndex !== undefined && probeRouteBlockSize !== undefined
     ? delegatecallInputIndex - probeRouteBlockSize : -1;
@@ -47,8 +47,8 @@ export function rebaseDeriveFullProbeDelegateWitnesses(
       const argumentIndex = probeRoute.inputs.findIndex((input) => input.name === name);
       if (argumentIndex < 0) continue;
       const original = probeDelegate.internalArgs?.[name]
-        ?? probeDelegate.compilerRoute?.internalArgs?.[name]
-        ?? probeDelegate.compilerRoute?.args[argumentIndex];
+        ?? probeDelegate.directCall?.internalArgs?.[name]
+        ?? probeDelegate.directCall?.args[argumentIndex];
       if (original === undefined) continue;
       restoreProbeWitnesses[name] = original;
       rebasedProbeWitnesses[name] = BigInt(localProxyMasterIndex);

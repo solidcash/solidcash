@@ -95,7 +95,7 @@ interface EdgeGroup {
   readonly logicalFunctionArgs?: readonly unknown[];
   readonly externalContract?: { readonly inner?: { readonly artifact?: Artifact } };
   readonly logicalArtifact?: Artifact;
-  readonly compilerRoute?: unknown;
+  readonly directCall?: unknown;
   readonly categoryId?: string;
   readonly masterUtxo?: { readonly txid: string; readonly vout: number };
   readonly edgeParentIndex?: number;
@@ -224,7 +224,7 @@ function calleeReadsSender(group: EdgeGroup): boolean {
  * the reader its witness names; whether the callee's entry takes that witness does not change the caller's digest.
  */
 function edgeCommitment(group: EdgeGroup, reader: number, namesReader: boolean): Uint8Array | undefined {
-  if (group.compilerRoute !== undefined) return undefined;
+  if (group.directCall !== undefined) return undefined;
   const callee = calleeOf(group);
   if (callee === undefined) return undefined;
   const args = group.logicalFunctionArgs ?? group.functionArgs;

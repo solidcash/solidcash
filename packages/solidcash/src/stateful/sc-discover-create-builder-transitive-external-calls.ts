@@ -123,7 +123,7 @@ export type SharedMethodBatchBuilder = (
   shared: ExternalCallUtxoGroup,
   next: ExternalCallUtxoGroup,
   callee: TransitiveExternalContract,
-) => Promise<NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined>;
+) => Promise<NonNullable<ExternalCallUtxoGroup['directCall']> | undefined>;
 
 /**
  * For each direct nested callee with its own externalCalls, resolve C from B's
@@ -143,12 +143,12 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
     const directGroup = externalCallUtxoGroups[directIdx];
     const bContract = directGroup.externalContract as TransitiveExternalContract;
     const bAbi = bContract.inner.artifact.abi;
-    const bAbiFunc = directGroup.compilerRoute
+    const bAbiFunc = directGroup.directCall
       ? bAbi.find((f) => f.name === directGroup.functionName)
       : resolveStatefulAbiFunction(bContract.inner.artifact, directGroup.functionName, directGroup.functionArgs);
 
     if (!bAbiFunc?.externalCalls?.length) continue;
-    const bSelfIdentity = directGroup.compilerRoute ? undefined : await resolveOrdinarySelfIdentity(bContract, bAbiFunc);
+    const bSelfIdentity = directGroup.directCall ? undefined : await resolveOrdinarySelfIdentity(bContract, bAbiFunc);
     const bSelfAddress = bSelfIdentity?.unlocker.generateLockingBytecode() ?? hexToBin(bContract.inner.lockingBytecode);
     // B's msg.sender is the caller that CALLs it, not the transaction's signer: an argument msg.sender gives C is that
     // caller's lock. A delegatecall runs B for its caller's own caller, which this group does not name.
@@ -245,7 +245,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       // no msg.sender would settle it. B counts the caller edges it pins, so a call that carries one (a typed call
       // under a guard the compiler could not publish) is kept: B's own covenant refuses the edge the build laid for a
       // call B skips. A route route binds each row it runs instead.
-      if (reach !== 'reached' && !directGroup.compilerRoute
+      if (reach !== 'reached' && !directGroup.directCall
         && (directGroup.callMode === 'delegatecall' || !callCountsCallerEdge(bEc, bAbiFunc, cContract))) {
         const callee = cContract.inner.artifact.contractName;
         const rawName = bEc.rawFunctionName ?? cContract.inner.artifact.abi.find((candidate) => bEc.rawSelector
@@ -400,7 +400,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === sharedPhysical.functionName);
         if ((priorAbi?.outputs?.length ?? 0) > 0) {
-          const route = sharedPhysical.compilerRoute === undefined && buildSharedMethodBatch !== undefined
+          const route = sharedPhysical.directCall === undefined && buildSharedMethodBatch !== undefined
             ? await buildSharedMethodBatch(sharedPhysical, newGroup, cContract)
             : undefined;
           if (route === undefined) {
@@ -409,8 +409,8 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
               + 'owner but both return values. Use route.compose() to authenticate both logical invocations.',
             );
           }
-          sharedPhysical.compilerRoute = route;
-          newGroup.compilerRoute = route;
+          sharedPhysical.directCall = route;
+          newGroup.directCall = route;
         }
       }
       externalCallUtxoGroups.push(newGroup);

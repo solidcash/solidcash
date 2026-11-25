@@ -121,7 +121,7 @@ export function materializeExternalCallOutputs(
     const groupOutputStart = builder.outputs.length;
     // B's master output: preserved unchanged
     const bMaster = group.masterUtxo as UnlockableUtxo;
-    if (group.compilerRoute && group.delegateCallGroupIndex !== undefined) {
+    if (group.directCall && group.delegateCallGroupIndex !== undefined) {
     // A routed delegate's proxy master is displaced from its packed physical block. Slot zero is only a
     // balanced spacer; the master covenant requires the real minting NFT to be recreated at INPUTINDEX.
       builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
@@ -137,7 +137,7 @@ export function materializeExternalCallOutputs(
     // proxy group still owns a balanced output block (entries, events, and its return slot), even
     // when its implementation is invoked with delegatecall, so it must continue through the full
     // block materialization below.
-    if (!group.compilerRoute
+    if (!group.directCall
     && (group.callMode === 'staticcall' || group.callMode === 'delegatecall')) {
       for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
         const nftUtxo = group.dataNftUtxos[i];
@@ -181,8 +181,7 @@ export function materializeExternalCallOutputs(
       console.error('external-dynamic-plan', {
         categoryId: group.categoryId,
         functionName: group.functionName,
-        compilerRoute: group.compilerRoute?.abiFunction.name,
-        logicalSelectors: group.compilerRoute?.logicalSelectors,
+        directCall: group.directCall?.abiFunction.name,
         blockInputs: group.blockInputs?.length,
         blockSize: group.blockLayout?.blockSize,
         trailingBase: group.blockLayout?.trailingBase,
@@ -271,7 +270,7 @@ export function materializeExternalCallOutputs(
           },
         },
       };
-      if (group.compilerRoute && group.delegateCallGroupIndex !== undefined) {
+      if (group.directCall && group.delegateCallGroupIndex !== undefined) {
         displacedRouteStateOutputs.push(stateOutput);
         builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
       } else {
@@ -282,15 +281,15 @@ export function materializeExternalCallOutputs(
     // Full block: output B's remaining slots (entries, SC, TCs, transfers, events, etc.)
     if (group.blockInputs && group.blockLayout) {
       // Only a compiler route reserves a trailing band, so only a route can run out of capacity.
-      const runBlocker = group.compilerRoute === undefined ? directRunBlocker(group, group.blockLayout) : undefined;
-      const chunksFollowBlock = group.compilerRoute === undefined && runBlocker === undefined;
+      const runBlocker = group.directCall === undefined ? directRunBlocker(group, group.blockLayout) : undefined;
+      const chunksFollowBlock = group.directCall === undefined && runBlocker === undefined;
       if (runBlocker !== undefined && externalDynamicChunks.length > 0) {
         throw new Error(
           `External dynamic state of '${group.functionName}' has no output coordinate: `
         + `a direct callee's run follows its block, and the SDK cannot place one beside ${runBlocker}`,
         );
       }
-      if (group.compilerRoute !== undefined
+      if (group.directCall !== undefined
         && externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
         throw new Error(
           'External dynamic state exceeds balanced trailing capacity '
@@ -427,7 +426,7 @@ export function materializeExternalCallOutputs(
           // original collection entry whose lock P' must recreate.
           const proofOffset = plannedInsert.slotIndex === undefined ? undefined
             : (group.internalArgs?.[`__internal__vmapBatchProof_${plannedInsert.slotIndex}`]
-              ?? group.compilerRoute?.internalArgs?.[`__internal__vmapBatchProof_${plannedInsert.slotIndex}`]);
+              ?? group.directCall?.internalArgs?.[`__internal__vmapBatchProof_${plannedInsert.slotIndex}`]);
           const predecessor = typeof proofOffset === 'bigint' && proofOffset >= 0n
             ? group.blockInputs[Number(proofOffset)]
             : group.blockInputs[plannedInsert.blockSlot];
@@ -510,7 +509,7 @@ export function materializeExternalCallOutputs(
           ?? input.unlocker.generateLockingBytecode();
           const plannedEntryCommitment = bEntryOut
           ?? group.batchEntryCommitments?.get(si);
-          if (debugRouteOutputs && group.compilerRoute && si < 12) {
+          if (debugRouteOutputs && group.directCall && si < 12) {
             console.error('builder-route-entry-output', {
               groupIndex, si, absoluteOutput: builder.outputs.length,
               callMode: group.callMode, hasCommitment: bEntryOut !== undefined,
@@ -634,7 +633,7 @@ export function materializeExternalCallOutputs(
           // advance. Once authenticated (including a legitimate `false`), the exact result wins.
           const re = exact?.provisional && first?.commitment.some((byte) => byte !== 0)
             ? first : exact ?? first;
-          const writerAbi = group.compilerRoute?.abiFunction
+          const writerAbi = group.directCall?.abiFunction
           ?? (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
             ?.find((fn) => fn.name === group.functionName);
           const writerReturnsBool = writerAbi?.outputs?.length === 1 && writerAbi.outputs[0].type === 'bool';
@@ -686,7 +685,7 @@ export function materializeExternalCallOutputs(
               groupIndex,
               physicalFunction: group.functionName,
               logicalFunction: group.logicalFunctionName,
-              routeFunction: group.compilerRoute?.abiFunction.name,
+              routeFunction: group.directCall?.abiFunction.name,
               contract: group.externalContract?.inner?.artifact?.contractName,
               logicalContract: group.logicalContract?.inner?.artifact?.contractName,
               categoryId: group.categoryId,
@@ -709,7 +708,7 @@ export function materializeExternalCallOutputs(
                 nft: { capability: 'none', commitment: eo.commitment },
               },
             });
-          } else if (group.compilerRoute
+          } else if (group.directCall
           && !isCompilerDescribedMintingBandWriter(group, true, undefined)) {
           // A route route reserves the union of every handler's event slots. Slots not reached by
           // this dispatch are ordinary balanced funding slots and the route covenant binds them by
@@ -791,7 +790,7 @@ export function materializeExternalCallOutputs(
     }
     if (group.delegateCallGroupIndex !== undefined) {
       if (!group.delegateEmbeddedInBlock) appendDelegateGroupOutputs(group.delegateCallGroupIndex);
-      if (group.compilerRoute) {
+      if (group.directCall) {
       // Preserve the displaced proxy master immediately after its associated implementation band, which
       // is the same absolute coordinate as the proxy-master input in the routed input layout.
         builder.addOutput({

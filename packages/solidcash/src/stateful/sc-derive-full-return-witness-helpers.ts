@@ -69,11 +69,11 @@ export function rebindDeriveFullExternalResourceMaster(
     ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
   // A delegated group's records bind its proxy master's lock, not the implementation's.
   const entryContract = stateContract;
-  const abiFunction: AbiFunction | undefined = delegateGroup?.compilerRoute?.abiFunction
+  const abiFunction: AbiFunction | undefined = delegateGroup?.directCall?.abiFunction
     ?? delegateGroup?.externalContract.inner.artifact.abi?.find(
       (candidate: { name: string }) => candidate.name === delegateGroup.functionName,
     )
-    ?? group.compilerRoute?.abiFunction
+    ?? group.directCall?.abiFunction
     ?? stateContract?.inner.artifact.abi?.find(
       (candidate: { name: string }) => candidate.name === group.functionName,
     ) as AbiFunction | undefined;

@@ -39,7 +39,7 @@ function emptyLiteralPayload(source: ArgSource | undefined): boolean {
 export async function refuseCreateBuilderNestedLowLevelCalls(groups: readonly ExternalCallUtxoGroup[]): Promise<void> {
   for (const group of groups) {
     const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-    if (group.compilerRoute !== undefined || artifact === undefined) continue;
+    if (group.directCall !== undefined || artifact === undefined) continue;
     let fn: AbiFunction | undefined;
     try {
       fn = resolveStatefulAbiFunction(artifact, group.functionName, group.functionArgs);

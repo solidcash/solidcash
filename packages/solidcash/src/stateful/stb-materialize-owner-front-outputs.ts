@@ -27,7 +27,7 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly categoryId: string;
   readonly readOnlyDataNftUtxos: readonly UnlockableUtxo[];
   readonly delegateComputeResources: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly blockhashCoSpendUtxos: readonly UnlockableUtxo[];
   readonly blockInfoCoSpendUtxos?: readonly UnlockableUtxo[];
   /** The oracle belongs to the delegated implementation; its recreate is emitted with that band. */
@@ -102,7 +102,7 @@ export function materializeOwnerFrontOutputs(
     amount: roUtxo.satoshis,
     token: roUtxo.token,
   }));
-  const ownsFrontComputeResources = !host.delegateComputeResources || host.compilerRouteDelegateBlock;
+  const ownsFrontComputeResources = !host.delegateComputeResources || host.directCallDelegateBlock;
   const blockhashOutput = (index: number): Output | undefined => {
     const bhUtxo = host.blockhashCoSpendUtxos[index];
     return bhUtxo ? {

@@ -57,7 +57,7 @@ export function registerCreateBuilderBuilderState(
     batchTargetPlaceholders: Map<number, string>;
     exactBatchTargetSlots: Set<number>;
     sortedInserts: readonly any[];
-    compilerRouteDelegateLayout: any;
+    directCallDelegateLayout: any;
     activeDynamicWrites: Set<string>;
     usesComposedDelegateDynamicTail: boolean;
     computedValueChunkRuns: readonly any[];
@@ -80,7 +80,7 @@ export function registerCreateBuilderBuilderState(
     builder, oldDynamicChunkCommitments, oldDynamicChunkCounts, overrides, masterUtxo,
     entryDeleteSlots, condSoftDeleteSlots, entryNfts,
     entryAbiFunction, batchTargetPlaceholders, exactBatchTargetSlots, sortedInserts,
-    compilerRouteDelegateLayout, activeDynamicWrites, usesComposedDelegateDynamicTail,
+    directCallDelegateLayout, activeDynamicWrites, usesComposedDelegateDynamicTail,
     computedValueChunkRuns, onChainState, pendingEntryValueTails,
     transportedProductions, valueChunkMints, maxBhLocktime, functionName, timing,
   } = params;
@@ -173,7 +173,7 @@ export function registerCreateBuilderBuilderState(
   // Compiler-route proxy callees (compose executionArtifact/executor) publish trailingCapacity for ChunkNft
   // co-spends, but empty first-writes have no pre-state chunks. Without a speculative placeholder the trailing
   // band stays OP_TRUE density pads and the executor EQUALVERIFYs ChunkNft P2SH32 against 0x51.
-  const compilerRouteEmptyDynamicMint = compilerRouteDelegateLayout !== undefined
+  const directCallEmptyDynamicMint = directCallDelegateLayout !== undefined
     && dynamicChunkVars.some((variable: any) => variable.delegate === true
       && activeDynamicWrites.has(variable.name)
       && (oldDynamicChunkCounts.get(variable.name) ?? 0) === 0);
@@ -181,7 +181,7 @@ export function registerCreateBuilderBuilderState(
     && dynamicChunkVars.some((variable: any) => activeDynamicWrites.has(variable.name)
       && (oldDynamicChunkCounts.get(variable.name) ?? 0) === 0);
   if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail || computedValueChunkRuns.length > 0
-    || compilerRouteEmptyDynamicMint || selectedBatchEmptyDynamicMint) {
+    || directCallEmptyDynamicMint || selectedBatchEmptyDynamicMint) {
     for (const dv of builder.getDynamicChunkVars()) {
       // The route-wide layout can contain an inactive sibling's dynamic write. Its empty pre-state is already
       // the exact zero-width run; a speculative chunk could never be pinned because no authenticated row
@@ -409,7 +409,7 @@ export function registerCreateBuilderBuilderState(
     // nested groups' outputBlockSlot coordinates belong to their own blocks, not this one.
     for (const variable of builder.getLoopEntryVars()) {
       if ((variable.categoryId !== undefined && variable.categoryId !== host.categoryId)
-        || (variable.delegate === true && compilerRouteDelegateLayout === undefined)) continue;
+        || (variable.delegate === true && directCallDelegateLayout === undefined)) continue;
       const count = builder.getLoopEntryCommitments(variable.collection).length;
       for (let ordinal = 0; ordinal < count; ordinal += 1) {
         const offset = builder.getLoopEntryOutputIndex(variable.collection, ordinal);

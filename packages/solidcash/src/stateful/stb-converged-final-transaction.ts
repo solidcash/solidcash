@@ -164,7 +164,7 @@ export function assertConvergedFinalTransaction(
         contract: group.externalContract?.inner?.artifact?.contractName,
         function: group.functionName,
         logicalFunction: group.logicalFunctionName,
-        routeFunction: group.compilerRoute?.abiFunction.name,
+        routeFunction: group.directCall?.abiFunction.name,
         callMode: group.callMode,
       });
     }
@@ -257,7 +257,7 @@ export function assertConvergedFinalTransaction(
             extras,
             inserts: host.externalCallEntryInserts?.length,
             predOuts: Object.fromEntries(Object.entries({
-              ...group.compilerRoute?.internalArgs,
+              ...group.directCall?.internalArgs,
               ...group.internalArgs,
             }).filter(([n]) => /vmapBatchPredOut|TrailingCount/.test(n))
               .map(([n, v]) => [n, String(v)])),

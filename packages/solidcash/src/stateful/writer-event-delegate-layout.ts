@@ -134,22 +134,22 @@ export function placePublishJobEventOutput(
  */
 export function groupLayoutBlockSize(group: {
   blockLayout?: { blockSize?: number };
-  compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number } } };
+  directCall?: { abiFunction?: { blockLayout?: { blockSize?: number } } };
 }): number {
   return group.blockLayout?.blockSize
-    ?? group.compilerRoute?.abiFunction?.blockLayout?.blockSize
+    ?? group.directCall?.abiFunction?.blockLayout?.blockSize
     ?? 8;
 }
 
 export type DelegateExecutionLayoutGroup = {
   callMode?: string;
   blockLayout?: FunctionBlockLayout;
-  compilerRoute?: { abiFunction?: { blockLayout?: FunctionBlockLayout } };
+  directCall?: { abiFunction?: { blockLayout?: FunctionBlockLayout } };
 };
 
 /**
  * Physical block of a proxy-forwarded implementation. Kernel-eligible handlers publish this on
- * `compilerRoute`; ineligible handlers still compile a native body with ABI `blockLayout`, and the
+ * `directCall`; ineligible handlers still compile a native body with ABI `blockLayout`, and the
  * proxy must materialize that geometry even without a route descriptor.
  */
 export function selectDelegateExecutionLayout(
@@ -158,8 +158,8 @@ export function selectDelegateExecutionLayout(
 ): FunctionBlockLayout | undefined {
   const group = groups.find((candidate, index) => candidate.callMode === 'delegatecall'
     && !nestedDelegateProxyGroupIndexes?.has(index)
-    && (candidate.compilerRoute?.abiFunction?.blockLayout ?? candidate.blockLayout));
-  return group?.compilerRoute?.abiFunction?.blockLayout ?? group?.blockLayout;
+    && (candidate.directCall?.abiFunction?.blockLayout ?? candidate.blockLayout));
+  return group?.directCall?.abiFunction?.blockLayout ?? group?.blockLayout;
 }
 
 /**
@@ -221,9 +221,9 @@ export function assignBalancedOutputAtOffset<T>(outputs: T[], offset: number, ou
 /** First physical slot available to bounded runtime resources in a participant block. */
 export function groupLayoutTrailingBase(group: {
   blockLayout?: { blockSize?: number; trailingBase?: number };
-  compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
+  directCall?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
 }): number {
-  const layout = group.blockLayout ?? group.compilerRoute?.abiFunction?.blockLayout;
+  const layout = group.blockLayout ?? group.directCall?.abiFunction?.blockLayout;
   return layout?.trailingBase ?? layout?.blockSize ?? 8;
 }
 
@@ -291,7 +291,7 @@ export function fixedDataNftOwnerInParticipantBlocks(
 export function materializedPredOutBase(group: {
   batchPredecessorOutputs?: Array<{ outputBlockSlot: number }>;
   blockLayout?: { blockSize?: number; trailingBase?: number };
-  compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
+  directCall?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
 }, masterIndex: number): number {
   const trailingBase = groupLayoutTrailingBase(group);
   const firstTrailingSlot = Math.min(
@@ -403,7 +403,7 @@ export function isWriterBatchWitnessName(name: string): boolean {
 }
 
 /**
- * A view fused onto the same physical token group keeps its compilerRoute. The
+ * A view fused onto the same physical token group keeps its directCall. The
  * later writer owns the INSERT/UPDATE batch plan; copy those witnesses over the
  * view's leftovers so PredOut remapping does not mint a second P'.
  */
@@ -426,7 +426,7 @@ export function inheritWriterBatchWitnesses<T>(
 export type PromotableWriterBatchPlan<T, P, I> = {
   blockLayout?: { blockSize?: number; trailingBase?: number };
   internalArgs?: Record<string, T>;
-  compilerRoute?: {
+  directCall?: {
     internalArgs?: Record<string, T>;
     abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } };
   };
@@ -577,7 +577,7 @@ export function inheritWriterBatchPlan<T, P, I = never>(
   target.batchEntryCommitments = mergeMap(
     target.batchEntryCommitments, writer.batchEntryCommitments, 'batchEntryCommitments',
   );
-  const writerArgs = { ...writer.compilerRoute?.internalArgs, ...writer.internalArgs };
+  const writerArgs = { ...writer.directCall?.internalArgs, ...writer.internalArgs };
   if (targetTrailingBase !== writerTrailingBase) {
     for (const [name, value] of Object.entries(writerArgs)) {
       if (/^__internal__vmapBatchPredOut_\d+$/.test(name)
@@ -588,9 +588,9 @@ export function inheritWriterBatchPlan<T, P, I = never>(
   }
   if (!Object.keys(writerArgs).some(isWriterBatchWitnessName)) return changed;
   target.internalArgs = inheritWriterBatchWitnesses(target.internalArgs, writerArgs);
-  if (target.compilerRoute) {
-    target.compilerRoute.internalArgs = inheritWriterBatchWitnesses(
-      target.compilerRoute.internalArgs,
+  if (target.directCall) {
+    target.directCall.internalArgs = inheritWriterBatchWitnesses(
+      target.directCall.internalArgs,
       writerArgs,
     );
   }
@@ -603,12 +603,12 @@ export function inheritWriterBatchPlan<T, P, I = never>(
  * contribute its sorted-batch write plan. Routed calls may aggregate multiple handlers.
  */
 export function writerBatchPlanMatchesPhysicalCarrier(
-  physical: { functionName?: string; compilerRoute?: unknown },
-  writer: { functionName?: string; sharedGroupIndex?: number; compilerRoute?: unknown },
+  physical: { functionName?: string; directCall?: unknown },
+  writer: { functionName?: string; sharedGroupIndex?: number; directCall?: unknown },
 ): boolean {
   return writer.sharedGroupIndex === undefined
-    || physical.compilerRoute !== undefined
-    || writer.compilerRoute !== undefined
+    || physical.directCall !== undefined
+    || writer.directCall !== undefined
     || writer.functionName === physical.functionName;
 }
 

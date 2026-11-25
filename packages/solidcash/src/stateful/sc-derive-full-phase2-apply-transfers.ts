@@ -85,7 +85,7 @@ export function deriveFullPhase2ApplyTransfers(
     const delegateGroup = delegatecallInputIndex === undefined ? undefined
       : stb.getLowLevelCallUtxoGroups().find((_group, groupIdx) =>
         stb.getLowLevelCallMasterInputIndex(groupIdx) === delegatecallInputIndex);
-    const delegateFn = delegateGroup?.compilerRoute?.abiFunction
+    const delegateFn = delegateGroup?.directCall?.abiFunction
       ?? (delegateGroup
         ? (delegateGroup.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === delegateGroup.functionName)

@@ -24,7 +24,7 @@ export interface SetFunderUtxosHost {
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly blockLayout?: FunctionBlockLayout;
   readonly preserveBlockLayoutWidth?: boolean;
-  readonly compilerRouteDelegateBlock?: boolean;
+  readonly directCallDelegateBlock?: boolean;
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
   readonly pendingValueChunkPredecessors: readonly UnlockableUtxo[];
@@ -99,7 +99,7 @@ export function setFunderUtxos(
       routeBlockSize: host.blockLayout?.blockSize,
       trailingCapacity: host.blockLayout?.trailingCapacity,
       preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
-      compilerRouteDelegateBlock: host.compilerRouteDelegateBlock,
+      directCallDelegateBlock: host.directCallDelegateBlock,
       lowLevelCallInputs: lowLevelCallInputs.length,
       externalIdentityAnchors: host.externalIdentityAnchorUtxos.length,
       logicalIdentityAnchor: host.logicalIdentityUtxo !== undefined,

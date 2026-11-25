@@ -239,7 +239,7 @@ export async function runCreateBuilderDerivePass(
             ? binToHex(group.precomputedReturnCommitment) : undefined,
           blockSize: group.blockInputs?.length,
           returnSlot: group.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset,
-          entries: group.compilerRoute ? group.blockLayout?.slots.flatMap((slot, index) => {
+          entries: group.directCall ? group.blockLayout?.slots.flatMap((slot, index) => {
             if (slot.kind !== 'entry') return [];
             const commitment = group.blockInputs?.[index]?.token?.nft?.commitment;
             return [{
@@ -250,7 +250,7 @@ export async function runCreateBuilderDerivePass(
                 : undefined,
             }];
           }) : undefined,
-          internalArgs: group.compilerRoute?.internalArgs,
+          internalArgs: group.directCall?.internalArgs,
         })),
       });
     }
@@ -292,7 +292,7 @@ export async function runCreateBuilderDerivePass(
     const publishedGraphBases = new Set([
       graphValueChunkArgument,
       ...valueChunkWitnessGroups.flatMap((group) => [
-        group.compilerRoute?.internalArgs?.__internal__valueChunkOutputBase,
+        group.directCall?.internalArgs?.__internal__valueChunkOutputBase,
         group.internalArgs?.__internal__valueChunkOutputBase,
       ]),
     ].flatMap((candidate) => typeof candidate === 'bigint'

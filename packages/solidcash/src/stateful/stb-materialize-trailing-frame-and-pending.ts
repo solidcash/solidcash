@@ -22,8 +22,8 @@ export function physicalBalancedTrailingOutputCount(
 }
 
 /** Compiler-routed delegates own their entry recreations inside the balanced block. */
-export const shouldReassertLegacyDelegateLoopEntries = (compilerRouteDelegateBlock: boolean): boolean => (
-  !compilerRouteDelegateBlock
+export const shouldReassertLegacyDelegateLoopEntries = (directCallDelegateBlock: boolean): boolean => (
+  !directCallDelegateBlock
 );
 
 /** Source-ordered segment materialization owns its loop entries; do not emit a second unsegmented run. */
@@ -56,7 +56,7 @@ export interface MaterializeTrailingFrameAndPendingHost {
   readonly valueChunkOutputs: readonly unknown[];
   readonly valueChunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly loopEntryVars: readonly LoopEntryVarLike[];
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly composedParticipant: boolean;
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly pendingOutputs: readonly Output[];
@@ -176,7 +176,7 @@ export function materializeTrailingFrameAndPending(
   }
   debugAtomicOutputStage('balanced-trailing-frame');
 
-  if (host.compilerRouteDelegateBlock && !host.composedParticipant) {
+  if (host.directCallDelegateBlock && !host.composedParticipant) {
     host.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
       if (group.callMode === 'delegatecall' && !associatedDelegateOutputs.has(groupIndex)) {
         appendDelegateGroupOutputs(groupIndex);

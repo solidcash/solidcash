@@ -18,7 +18,7 @@ export function groupPoolReader(group: ExternalCallUtxoGroup): PoolReaderPartici
   const inner = group.externalContract?.inner;
   if (inner?.artifact === undefined) return [];
   return [{
-    abiFunction: group.compilerRoute?.abiFunction
+    abiFunction: group.directCall?.abiFunction
       ?? (inner.artifact.abi as readonly AbiFunction[]).find((fn) => fn.name === group.functionName),
     pool: inner.oraclePool,
     name: inner.name,

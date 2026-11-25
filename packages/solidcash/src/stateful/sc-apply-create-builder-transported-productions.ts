@@ -63,7 +63,7 @@ export function applyCreateBuilderTransportedProductions(params: {
   const carrier = activeDelegateGroupIndex === undefined
     ? undefined : lowLevelCallUtxoGroups[activeDelegateGroupIndex];
   const ordinaryRoute = activeDelegateGroupIndex === undefined ? params.ordinaryRoute : undefined;
-  const rows = carrier?.compilerRoute?.rowArguments ?? ordinaryRoute?.rows;
+  const rows = ordinaryRoute?.rows;
   if ((!carrier && !ordinaryRoute) || !rows?.length) {
     throw new Error('Compiler-authenticated value production has no routed execution carrier.');
   }

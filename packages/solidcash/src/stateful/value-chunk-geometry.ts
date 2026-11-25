@@ -18,7 +18,7 @@ export type InBlockReturnGroup = {
   blockLayout?: FunctionBlockLayout;
   functionName?: string;
   logicalFunctionName?: string;
-  compilerRoute?: { abiFunction?: AbiFunction };
+  directCall?: { abiFunction?: AbiFunction };
   externalContract?: { inner?: { artifact?: Artifact } };
   loopReturnCommitments?: Uint8Array[];
   callBatchUnit?: { readonly physical?: number };
@@ -51,8 +51,8 @@ export function groupOwnsInBlockReturnEvent(
     const logical = group.logicalFunctionName === '__forward' ? undefined
       : abiList.find((fn) => fn.name === group.logicalFunctionName);
     if (logical) return logical.writesState === true;
-    return group.compilerRoute?.abiFunction?.name === group.functionName
-      && group.compilerRoute?.abiFunction?.writesState === true;
+    return group.directCall?.abiFunction?.name === group.functionName
+      && group.directCall?.abiFunction?.writesState === true;
   };
   // A state-writing logical callsite owns the physical block's return slot. If a later writer is fused onto the
   // same master, earlier views keep dedicated tails so they cannot read that writer's result. A standalone view
@@ -223,7 +223,7 @@ export function isMintingBandSwapFunction(name: string | undefined): boolean {
 export type CompilerTokenWriterGroup = {
   functionName?: string;
   logicalFunctionName?: string;
-  compilerRoute?: { abiFunction?: AbiFunction };
+  directCall?: { abiFunction?: AbiFunction };
   logicalArtifact?: Artifact;
   externalContract?: { inner?: { artifact?: Artifact } };
 };
@@ -241,7 +241,7 @@ export function isCompilerDescribedMintingBandWriter(
 ): boolean {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
+  const abiFunction = group.directCall?.abiFunction
     ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
   if (abiFunction?.entryAccesses !== undefined) {
     const writtenEntries = abiFunction.entryAccesses.filter((access) => access.operations.includes('write'));
@@ -405,14 +405,14 @@ export function liveChunkWidthForGroup(
 
 /** A direct block that stops at its last slot, a record it does not carry: no input or output holds that slot. */
 function compactsRecordSlot(group: PhysicalReturnGroup, layout: FunctionBlockLayout | undefined): boolean {
-  if (group.compilerRoute !== undefined || group.returnEventInBlock === true || layout === undefined) return false;
+  if (group.directCall !== undefined || group.returnEventInBlock === true || layout === undefined) return false;
   const slot = layout.slots.find(({ kind }) => kind === 'returnEvent');
   return slot?.offset === layout.blockSize - 1 && group.blockInputs?.length === slot.offset;
 }
 
 /** Complete coordinate span reserved by a participant, including output-only slots. */
 export function physicalParticipantWidth(group: PhysicalReturnGroup): number {
-  const layout = group.blockLayout ?? group.compilerRoute?.abiFunction?.blockLayout;
+  const layout = group.blockLayout ?? group.directCall?.abiFunction?.blockLayout;
   const stateWidth = 1 + (group.dataNftUtxos?.length ?? 0);
   const assembledWidth = group.blockInputs?.length ?? 0;
   if (compactsRecordSlot(group, layout)) return Math.max(stateWidth, assembledWidth);

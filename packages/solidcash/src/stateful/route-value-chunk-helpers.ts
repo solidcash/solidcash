@@ -584,7 +584,7 @@ export function deriveRouteValueChunks(
   }
   if (allChunks.length > 0) {
     const observedCarrier = witness?.carrier ?? group;
-    const observedAbi = witness?.abiFunction ?? group.compilerRoute?.abiFunction
+    const observedAbi = witness?.abiFunction ?? group.directCall?.abiFunction
       ?? (group.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
         ?.find((candidate) => candidate.name === group.functionName);
     for (const collection of observedAbi
@@ -778,18 +778,18 @@ export function valueChunkOutputWitnessCarrier(
     : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
   if (!carrier) return undefined;
   const carrierFunctionName = carrier.logicalFunctionName
-    ?? carrier.compilerRoute?.abiFunction.name
+    ?? carrier.directCall?.abiFunction.name
     ?? carrier.functionName;
   const abiCandidates = [
-    carrier.compilerRoute?.abiFunction,
+    carrier.directCall?.abiFunction,
     ...((carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined) ?? []),
-    group.compilerRoute?.abiFunction,
+    group.directCall?.abiFunction,
     ...((group.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined) ?? []),
   ];
   const abiFunction = abiCandidates.find((candidate) => (
     candidate?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')
-      && (candidate === carrier.compilerRoute?.abiFunction
-        || candidate === group.compilerRoute?.abiFunction
+      && (candidate === carrier.directCall?.abiFunction
+        || candidate === group.directCall?.abiFunction
         || candidate.name === carrierFunctionName)
   ));
   // Several logical calls can share one delegated implementation input. The physical carrier's unlock bytecode,

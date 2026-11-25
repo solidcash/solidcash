@@ -32,7 +32,7 @@ export type ChunkableValueWriteGroup = {
   blockLayout?: FunctionBlockLayout;
   logicalArtifact?: Artifact;
   externalContract?: { inner?: { artifact?: Artifact } };
-  compilerRoute?: {
+  directCall?: {
     abiFunction?: AbiFunction;
     rowArguments?: readonly { handler: AbiFunction }[];
   };
@@ -80,7 +80,7 @@ export function permitsLegacyDelegateEventRepair(
 }
 
 export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGroup): string[] {
-  const route = group.compilerRoute;
+  const route = group.directCall;
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
   const direct = artifact?.abi?.find((candidate) => candidate.name === directName);
@@ -220,7 +220,7 @@ export const groupWritesSingleChunkableArrayCollection = groupWritesSingleChunka
 export function groupDeclaredAbiFunction(group: ChunkableValueWriteGroup): AbiFunction | undefined {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
-  return group.compilerRoute?.abiFunction
+  return group.directCall?.abiFunction
     ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === directName);
 }
 
@@ -266,7 +266,7 @@ export function legacyPlannedChunkableValueWriteCollection(
     return undefined;
   }
   if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
-  const routeFunction = group.compilerRoute?.abiFunction;
+  const routeFunction = group.directCall?.abiFunction;
   if ((routeFunction as (AbiFunction & { routeConvention?: string }) | undefined)
     ?.routeConvention === 'kernel-row-loop') return undefined;
   const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact]
@@ -324,7 +324,7 @@ export function selectChunkableValueWriteExecution(
     if (resource === undefined) continue;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
-    const abiFunction = group.compilerRoute?.abiFunction
+    const abiFunction = group.directCall?.abiFunction
       ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
     if (abiFunction) executions.set(`${inputIndex}:${resource.resourceOwnerIdentity
       ?? resource.resourceIdentity ?? resource.collection}`, {

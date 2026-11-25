@@ -50,12 +50,12 @@ export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown 
 }
 
 /** A compiler route needs the physical entry ABI only when an actual wrapper entry point carries it. */
-export function compilerRouteUsesPhysicalWrapper(
-  compilerRouteSelector: Uint8Array | undefined,
+export function directCallUsesPhysicalWrapper(
+  directCallSelector: Uint8Array | undefined,
   physicalAbiFunction: AbiFunction | undefined,
   effectiveAbiFunction: AbiFunction | undefined,
 ): boolean {
-  return compilerRouteSelector !== undefined
+  return directCallSelector !== undefined
     && physicalAbiFunction !== undefined
     && effectiveAbiFunction !== undefined
     && physicalAbiFunction !== effectiveAbiFunction;

@@ -137,7 +137,7 @@ export function applyDeriveFullNestedValueChunkPin(
     (group) => group.delegateCallGroupIndex === llcIndex,
   );
   const groupFunctionName = (group: ExternalCallUtxoGroup): string | undefined => (
-    group.logicalFunctionName ?? group.compilerRoute?.abiFunction.name ?? group.functionName
+    group.logicalFunctionName ?? group.directCall?.abiFunction.name ?? group.functionName
   );
   const matchingGroups = attachedGroups.filter((group) => groupFunctionName(group) === llc.functionName);
   const physicalProxyGroups = attachedGroups.filter((group) => group.sharedGroupIndex === undefined);
@@ -272,14 +272,14 @@ export function applyDeriveFullNestedValueChunkPin(
     undefined,
   );
   const publishName = llc.functionName ?? llc.logicalFunctionName
-  ?? llc.compilerRoute?.abiFunction?.name;
+  ?? llc.directCall?.abiFunction?.name;
   // legacy JobEvent name adapter: JobEvent value-candidate discovery only via legacy adapter under the gate above.
   if (permitsLegacyValueCandidate && (
     legacyIsPublishJobEventName(publishName)
   || legacyGroupLooksLikePublishJobEvent({
     functionName: llc.functionName,
     logicalFunctionName: llc.logicalFunctionName,
-    compilerRoute: llc.compilerRoute,
+    directCall: llc.directCall,
   })
   )) {
     const args = llc.logicalFunctionArgs ?? llc.functionArgs;
@@ -438,7 +438,7 @@ export function applyDeriveFullNestedValueChunkPin(
       ));
       if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
         [llc, ...(proxyGroup ? [proxyGroup] : [])],
-        (llc.compilerRoute?.abiFunction as RouteRuntimeAbiFunction | undefined)
+        (llc.directCall?.abiFunction as RouteRuntimeAbiFunction | undefined)
           ?.routeConvention,
       )) {
       // Compatibility only for descriptor-free artifacts.
@@ -456,7 +456,7 @@ export function applyDeriveFullNestedValueChunkPin(
     ));
     if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
       [llc, ...(proxyGroup ? [proxyGroup] : [])],
-      (llc.compilerRoute?.abiFunction as RouteRuntimeAbiFunction | undefined)
+      (llc.directCall?.abiFunction as RouteRuntimeAbiFunction | undefined)
         ?.routeConvention,
     )) {
     // Compatibility only for descriptor-free artifacts.

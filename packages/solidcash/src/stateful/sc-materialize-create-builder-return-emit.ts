@@ -28,7 +28,7 @@ export type MaterializeCreateBuilderReturnEmitHost = {
 /** Select the provisional result for a logical call sharing a physical return carrier. */
 export function selectPreparedAtomicReturnSeed(
   group: Pick<ExternalCallUtxoGroup,
-  'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'precomputedReturnCommitment'>,
+  'functionName' | 'logicalFunctionName' | 'directCall' | 'precomputedReturnCommitment'>,
   functionName: string,
   eventCommitment?: Uint8Array,
 ): Uint8Array | undefined {
@@ -36,7 +36,7 @@ export function selectPreparedAtomicReturnSeed(
   // identity then still has the read's group index but holds the writer's result, which can fit the same ABI word.
   const physicalMatches = group.functionName === functionName;
   const routedMatches = (group.functionName === '__forward'
-    || group.functionName === group.compilerRoute?.abiFunction.name)
+    || group.functionName === group.directCall?.abiFunction.name)
     && group.logicalFunctionName === functionName;
   return physicalMatches || routedMatches
     ? eventCommitment ?? group.precomputedReturnCommitment

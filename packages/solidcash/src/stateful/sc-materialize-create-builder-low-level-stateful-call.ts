@@ -100,7 +100,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   } = params;
   let preparedAtomicNodes = params.preparedAtomicNodes;
 
-  const compilerDelegateRoute = callInfo.compilerRoute !== undefined;
+  const compilerDelegateRoute = callInfo.directCall !== undefined;
   const bState = callInfo.contract.inner.artifact.delegateOnly || compilerDelegateRoute
     ? await host.getMasterOnlyState(callInfo.contract)
     : await host.getFullState(callInfo.contract);
@@ -137,17 +137,17 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     masterUtxo: bState.masterUtxo,
     dataNftUtxos: bDataNfts,
     requiredDataNftIndices: bRequiredNftIndices,
-    functionName: callInfo.compilerRoute?.abiFunction.name ?? callInfo.functionName,
-    functionArgs: callInfo.compilerRoute?.args ?? callInfo.args,
+    functionName: callInfo.directCall?.abiFunction.name ?? callInfo.functionName,
+    functionArgs: callInfo.directCall?.args ?? callInfo.args,
     externalContract: callInfo.contract,
     callMode,
     ...(callMode !== 'delegatecall' && { edgeLowLevelCallIndex: callIndex }),
-    ...(callInfo.compilerRoute && { compilerRoute: callInfo.compilerRoute }),
-    ...((callInfo.compilerRoute?.abiFunction.blockLayout
+    ...(callInfo.directCall && { directCall: callInfo.directCall }),
+    ...((callInfo.directCall?.abiFunction.blockLayout
     ?? (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
       .find((fn) => fn.name === callInfo.functionName)?.blockLayout)
     && {
-      blockLayout: callInfo.compilerRoute?.abiFunction.blockLayout
+      blockLayout: callInfo.directCall?.abiFunction.blockLayout
         ?? (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
           .find((fn) => fn.name === callInfo.functionName)?.blockLayout,
     }),
@@ -174,7 +174,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
 
   const delegateGroupIndex = lowLevelCallUtxoGroups.length - 1;
   const delegateAbi = callInfo.contract.inner.artifact.abi as readonly AbiFunction[];
-  let delegateFn = callInfo.compilerRoute?.abiFunction
+  let delegateFn = callInfo.directCall?.abiFunction
   ?? delegateAbi.find((f) => f.name === callInfo.functionName);
   let promotedDelegateOwnerFrame: ReturnType<
   typeof resolvePreparedKernelDelegateOwnerFrame
@@ -251,7 +251,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       functionName === delegateFn?.name ? args : undefined,
       named,
       callInfo.args,
-      callInfo.compilerRoute?.args,
+      callInfo.directCall?.args,
     ];
     for (const candidate of candidates) {
       if (candidate && candidate.length === delegateVisibleCount) return candidate;

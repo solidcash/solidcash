@@ -25,7 +25,7 @@ export type PlanCreateBuilderNestedBasesResult = {
  * indexes after low-level input counting completes.
  */
 export function planCreateBuilderNestedBases(params: {
-  compilerRouteDelegateLayout: FunctionBlockLayout | undefined;
+  directCallDelegateLayout: FunctionBlockLayout | undefined;
   lowLevelCallInputBase: number;
   allLowLevelInputCount: number;
   hasNestedDelegate: boolean;
@@ -54,7 +54,7 @@ export function planCreateBuilderNestedBases(params: {
   timing?: (label: string) => void;
 }): PlanCreateBuilderNestedBasesResult {
   const {
-    compilerRouteDelegateLayout, lowLevelCallInputBase, allLowLevelInputCount,
+    directCallDelegateLayout, lowLevelCallInputBase, allLowLevelInputCount,
     hasNestedDelegate, delegatedDynamicSuffix, legacyRouteTrailingBase,
     iterationEntryInputs, insertLoopPredecessors, delegatedDynamicWriteChunkCount,
     requiredNftIndices, delegateInputCount, externalReadUtxos, outStateInputCount,
@@ -63,7 +63,7 @@ export function planCreateBuilderNestedBases(params: {
     returnEmitOutputIndex, overrides, functionName, allGroupEcSlots, timing,
   } = params;
 
-  let nestedInputBase = compilerRouteDelegateLayout
+  let nestedInputBase = directCallDelegateLayout
     ? lowLevelCallInputBase + allLowLevelInputCount
     : hasNestedDelegate && delegatedDynamicSuffix && legacyRouteTrailingBase !== undefined
       // Legacy proxy composition still puts the implementation immediately after the proxy state band, but
@@ -86,7 +86,7 @@ export function planCreateBuilderNestedBases(params: {
   // Delegate implementation output-only slots are projected into the caller's balanced block below. Nested
   // outputs begin after that expanded block, not after only the caller's original state slots. Compute the same
   // maximum offset here so hidden absolute-output witnesses can be finalized before the builder is created.
-  let projectedRouteBlockSize = compilerRouteDelegateLayout?.blockSize
+  let projectedRouteBlockSize = directCallDelegateLayout?.blockSize
     ?? abiFunction?.blockLayout?.blockSize ?? 0;
   for (const delegate of lowLevelCallUtxoGroups) {
     if (delegate.callMode !== 'delegatecall') continue;
@@ -129,7 +129,7 @@ export function planCreateBuilderNestedBases(params: {
     + delegatedDynamicWriteChunkCount;
   // Upsert HEAD pads returnEvent + P' + NEW before nested callees. Output count+surplus can
   // over-shift nestedOutputBase relative to that input geometry; keep the bases aligned.
-  if (insertLoopPredecessors.length > 0 && !compilerRouteDelegateLayout) {
+  if (insertLoopPredecessors.length > 0 && !directCallDelegateLayout) {
     nestedOutputBase = nestedInputBase;
   }
   const nestedMasterIndices: number[] = [];
@@ -156,8 +156,8 @@ export function planCreateBuilderNestedBases(params: {
       const delegate = lowLevelCallUtxoGroups[child.delegateCallGroupIndex];
       if (delegate?.callMode === 'delegatecall') {
         nestedOutputBase += 1 + delegate.dataNftUtxos.length;
-        if (child.compilerRoute) nestedOutputBase += 1 + child.requiredDataNftIndices.length;
-        if (!compilerRouteDelegateLayout) nestedInputBase += 1 + delegate.dataNftUtxos.length;
+        if (child.directCall) nestedOutputBase += 1 + child.requiredDataNftIndices.length;
+        if (!directCallDelegateLayout) nestedInputBase += 1 + delegate.dataNftUtxos.length;
       }
     }
   }
@@ -193,7 +193,7 @@ export function planCreateBuilderNestedBases(params: {
   // Match _buildInputs' returnEvent pad before upsert HEAD when the active layout lacks
   // a returnEvent slot but the delegate implementation blockSize still includes one.
   // Without this, nested tail returns land one slot early.
-  if (insertLoopPredecessors.length > 0 && !compilerRouteDelegateLayout
+  if (insertLoopPredecessors.length > 0 && !directCallDelegateLayout
     && !(abiFunction?.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')
     && (legacyRouteDelegateFn?.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')) {
     delegateReturnOutputBase += 1;
@@ -273,7 +273,7 @@ export function planCreateBuilderNestedBases(params: {
         // established input-base reading.
         physicalReturnIndexForGroup.set(
           groupIdx,
-          (compilerRouteDelegateLayout || delegatedDynamicSuffix
+          (directCallDelegateLayout || delegatedDynamicSuffix
             // The builder balances a full routed block forward to its physical master coordinate. A dense
             // output prefix can therefore be earlier than the master, but never later; use the coordinate
             // the block will actually occupy rather than pointing the return witness into the preceding

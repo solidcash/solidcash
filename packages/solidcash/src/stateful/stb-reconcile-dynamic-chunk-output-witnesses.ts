@@ -132,7 +132,7 @@ export function reconcileDynamicChunkOutputWitnesses(
     const carrier = outputOwner.delegateCallGroupIndex === undefined
       ? outputOwner : lowLevelGroups[outputOwner.delegateCallGroupIndex];
     if (!carrier?.refreshInternalArgs) continue;
-    const route = carrier.compilerRoute?.abiFunction ?? ordinaryCalleeFrame(carrier);
+    const route = carrier.directCall?.abiFunction ?? ordinaryCalleeFrame(carrier);
     if (!route?.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase')) continue;
     const next = BigInt(resolveMaterializedDynamicWriteOutputBase({
       route,
@@ -150,7 +150,7 @@ export function reconcileDynamicChunkOutputWitnesses(
     group.delegateCallGroupIndex === undefined ? [] : [group.delegateCallGroupIndex]));
   for (const [index, carrier] of lowLevelGroups.entries()) {
     if (associatedDelegates.has(index) || !carrier.refreshInternalArgs) continue;
-    const route = carrier.compilerRoute?.abiFunction;
+    const route = carrier.directCall?.abiFunction;
     if (!route?.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase')) continue;
     // A root proxy implementation has no external-call output owner. Its direct-dynamic lock/category
     // identifies the run within this local transaction; duplicate runs fail the canonical-index proof.

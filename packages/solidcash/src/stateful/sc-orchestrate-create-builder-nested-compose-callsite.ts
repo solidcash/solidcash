@@ -315,8 +315,8 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     const logicalSelector = proxyTargetFn?.selector ?? selectedFn?.selector;
     const sharedCompilerRouteCoversCall = sharedGroupIndex >= 0
   && logicalSelector !== undefined
-  && externalCallUtxoGroups[sharedGroupIndex].compilerRoute
-    ?.logicalSelectors.includes(logicalSelector) === true;
+  && externalCallUtxoGroups[sharedGroupIndex].directCall
+    ?.abiFunction !== undefined && false;
     if (childCompilerRoute
   && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ROUTE === '1') {

@@ -55,7 +55,7 @@ export interface BuildInputsHost {
   delegateEntriesAfterLowLevel: boolean;
   delegatedValueChunkPad: number;
   lowLevelCallInputBase?: number;
-  compilerRouteDelegateBlock: boolean;
+  directCallDelegateBlock: boolean;
   preserveBlockLayoutWidth: boolean;
   /** A void entry whose call names no record: its returnEvent slot holds nothing, not even a spare funder. */
   voidRecordSlotCompacted: boolean;
@@ -155,7 +155,7 @@ export function orderedFrontRegionCoSpends(
 function llcBlockLayout(group: ExternalCallUtxoGroup): {
   blockSize?: number; slots?: ReadonlyArray<{ kind: string }>;
 } | undefined {
-  const abi = group.compilerRoute?.abiFunction
+  const abi = group.directCall?.abiFunction
     ?? (group.externalContract.inner.artifact.abi as ReadonlyArray<{
       name: string;
       blockLayout?: { blockSize?: number; slots?: ReadonlyArray<{ kind: string }> };
@@ -169,7 +169,7 @@ function llcBlockLayout(group: ExternalCallUtxoGroup): {
  * synchronous input build.
  */
 export function insertBandPadDemand(host: BuildInputsHost): number {
-  if (host.compilerRouteDelegateBlock || host.insertLoopPredecessorInputs.length === 0
+  if (host.directCallDelegateBlock || host.insertLoopPredecessorInputs.length === 0
     || host.delegateLoopEntryVars().length === 0) return 0;
   let demand = 2;
   for (const group of host.lowLevelCallUtxoGroups) {
@@ -227,7 +227,7 @@ export function buildInputs(
       outStateInputs: externalOutStateInputs.length,
       entries: entryInputs.length,
       blockhashOrdinals: host.blockhashCoSpendSlotOrdinals !== undefined,
-      compilerRouteDelegateBlock: host.compilerRouteDelegateBlock,
+      directCallDelegateBlock: host.directCallDelegateBlock,
       delegateEntriesAfterLowLevel: host.delegateEntriesAfterLowLevel,
       guardPasses: useDensePlacement,
     }));
@@ -250,7 +250,7 @@ export function buildInputs(
     // delegate is different: its published trailing capacity already owns both the predecessor and the neutral
     // input balancing any output-only expansion, so moving either beyond the block violates participant width.
     const earlyInsertPredecessors = host.delegateLoopEntryVars().length > 0
-      && !host.compilerRouteDelegateBlock
+      && !host.directCallDelegateBlock
       ? host.insertLoopPredecessorInputs
       : [];
     const trailingInsertPredecessors = earlyInsertPredecessors.length > 0
@@ -378,7 +378,7 @@ export function buildInputs(
           else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
           break;
         case 'lowLevelCall':
-          if (host.compilerRouteDelegateBlock) {
+          if (host.directCallDelegateBlock) {
             // These are logical handler call slots inside the route block. The physical delegate implementation
             // is the route owner and lives after the complete block; nested participant groups are appended next.
             const f = funderPool.shift();
@@ -476,7 +476,7 @@ export function buildInputs(
     // Keep the full block width when delegate upsert predecessors must sit at
     // INPUTINDEX+blockSize. Compacting away a missing dataNft (or similar) hole
     // parks the predecessor on the returnEvent funder and fails the writer's bytecode check.
-    if (host.compilerRouteDelegateBlock || earlyInsertPredecessors.length > 0) {
+    if (host.directCallDelegateBlock || earlyInsertPredecessors.length > 0) {
       for (let i = 0; i < positioned.length; i++) {
         if (positioned[i] !== undefined) continue;
         const funder = funderPool.shift();
@@ -526,7 +526,7 @@ export function buildInputs(
       console.error('balanced-input-return-parts', {
         positioned: positioned.length,
         result: result.length,
-        compilerRouteDelegateBlock: host.compilerRouteDelegateBlock,
+        directCallDelegateBlock: host.directCallDelegateBlock,
         lowLevelCallInputs: lowLevelCallInputs.length,
         gapOverflow: gapInputs.length - gapIdx,
         lowLevelCallRawInputs: host.lowLevelCallRawInputs.length,
@@ -546,14 +546,14 @@ export function buildInputs(
     // The executor covenant authenticates its owner by the fixed owner prefix, while delegated dynamic state is
     // addressed from the executor's published trailing base. Delaying the active executor until after dynamic
     // chunks or another participant makes both independently-authenticated coordinate systems disagree.
-    const remainingLlc = host.compilerRouteDelegateBlock ? [] : lowLevelCallInputs.slice(llcIdx);
+    const remainingLlc = host.directCallDelegateBlock ? [] : lowLevelCallInputs.slice(llcIdx);
     const embeddedDelegateGroups = new Set(host.externalCallUtxoGroups.flatMap((group) => (
       group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined
         ? [group.delegateCallGroupIndex] : []
     )));
     const immediateDelegateLlc: UnlockableUtxo[] = [];
     const nestedLlcAfterInsertBand: UnlockableUtxo[] = [];
-    const splitActiveDelegateBand = !host.compilerRouteDelegateBlock
+    const splitActiveDelegateBand = !host.directCallDelegateBlock
       && host.delegateEntriesAfterLowLevel;
     if (splitActiveDelegateBand) {
       let consumed = 0;
@@ -628,7 +628,7 @@ export function buildInputs(
       // Expand nested LLC masters so INPUTINDEX+offset introspection stays in-range
       // after the insert band shifts them past the value-chunk band.
       // Prefer each group's real blockInputs; only pad with funders when the band is short.
-      if (!host.compilerRouteDelegateBlock && nestedLlcAfterInsertBand.length > 0) {
+      if (!host.directCallDelegateBlock && nestedLlcAfterInsertBand.length > 0) {
         const expanded: UnlockableUtxo[] = [];
         let consumed = 0;
         let pastConsumed = false;
@@ -686,7 +686,7 @@ export function buildInputs(
         ?.SOLIDC_DEBUG_INSERT_BAND === '1') {
       const assembled = [
         ...result,
-        ...(host.compilerRouteDelegateBlock ? lowLevelCallInputs : []),
+        ...(host.directCallDelegateBlock ? lowLevelCallInputs : []),
         ...immediateDelegateCallsBeforeResourceBand,
         ...(returnEventPad ? [returnEventPad] : []),
         ...preInsertResourceBand,
@@ -715,7 +715,7 @@ export function buildInputs(
         slots: denseBlockLayout.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset })),
         preds: earlyInsertPredecessors.length,
         postBlock: postBlockParticipants.length,
-        llcRemaining: host.compilerRouteDelegateBlock ? 0 : lowLevelCallInputs.length - llcIdx,
+        llcRemaining: host.directCallDelegateBlock ? 0 : lowLevelCallInputs.length - llcIdx,
         preview: assembled.slice(0, 16).map((input, index) => ({
           index,
           cat: input.token?.category?.slice(0, 16),
@@ -727,10 +727,10 @@ export function buildInputs(
     const blockPadFunders: UnlockableUtxo[] = [];
     if (host.dynamicChunkInputs.some((input) => preInsertResourceBand.includes(input))) {
       const targetWidth = denseBlockLayout.blockSize
-        + (host.compilerRouteDelegateBlock ? lowLevelCallInputs.length : 0)
+        + (host.directCallDelegateBlock ? lowLevelCallInputs.length : 0)
         + immediateDelegateCallsBeforeResourceBand.length;
       const currentWidth = result.length
-        + (host.compilerRouteDelegateBlock ? lowLevelCallInputs.length : 0)
+        + (host.directCallDelegateBlock ? lowLevelCallInputs.length : 0)
         + immediateDelegateCallsBeforeResourceBand.length;
       while (currentWidth + blockPadFunders.length < targetWidth && funderPool.length > 0) {
         blockPadFunders.push(funderPool.shift()!);
@@ -738,7 +738,7 @@ export function buildInputs(
     }
     // Reuse old dynamic-chunk coordinates, then reserve one neutral input for each new chunk before any
     // following participant. Its one-to-one master output must start after the complete growing chunk run.
-    const dynamicGrowth = !host.compilerRouteDelegateBlock && !host.delegateEntriesAfterLowLevel
+    const dynamicGrowth = !host.directCallDelegateBlock && !host.delegateEntriesAfterLowLevel
       && host.dynamicChunkInputs.length > 0 && postBlockParticipants.length > 0
       ? Math.max(0, host.dynamicChunkOutputCount() - host.dynamicChunkInputs.length) : 0;
     if (dynamicGrowth > funderPool.length) {
@@ -748,7 +748,7 @@ export function buildInputs(
     const assembled = [
       ...result,
       ...blockPadFunders,
-      ...(host.compilerRouteDelegateBlock ? lowLevelCallInputs : []),
+      ...(host.directCallDelegateBlock ? lowLevelCallInputs : []),
       ...immediateDelegateCallsBeforeResourceBand,
       ...(returnEventPad ? [returnEventPad] : []),
       ...preInsertResourceBand,
@@ -838,7 +838,7 @@ export function buildInputs(
       ? prefix.findIndex((input) => input.txid.toLowerCase() === routeDelegate.masterUtxo!.txid.toLowerCase()
         && input.vout === routeDelegate.masterUtxo!.vout)
       : -1;
-    const delegateAbiFunction = routeDelegate?.compilerRoute?.abiFunction
+    const delegateAbiFunction = routeDelegate?.directCall?.abiFunction
       ?? routeDelegate?.externalContract?.inner.artifact.abi.find(
         (fn: AbiFunction) => fn.name === routeDelegate.functionName,
       );

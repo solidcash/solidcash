@@ -360,7 +360,7 @@ export function argumentsForPhysicalAbiFrame<T>(parts: {
   physicalFunctionArgs: readonly T[];
   logicalFunctionName?: string;
   logicalFunctionArgs?: readonly T[];
-  compilerRoute?: {
+  directCall?: {
     abiFunction: { name: string; inputs: readonly { name: string }[] };
     args: readonly T[];
   };
@@ -374,9 +374,9 @@ export function argumentsForPhysicalAbiFrame<T>(parts: {
     && logicalArgs.length === visibleInputCount) {
     return logicalArgs;
   }
-  if (parts.abiFunction && parts.compilerRoute
-    && parts.compilerRoute.abiFunction === parts.abiFunction) {
-    return parts.compilerRoute.args;
+  if (parts.abiFunction && parts.directCall
+    && parts.directCall.abiFunction === parts.abiFunction) {
+    return parts.directCall.args;
   }
   return parts.physicalFunctionArgs;
 }

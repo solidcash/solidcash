@@ -207,7 +207,7 @@ export function reconcileMaterializedValueChunkWitnesses(
       : [];
 
     if (expected.length === 0) {
-      const abiFunction = carrier.compilerRoute?.abiFunction
+      const abiFunction = carrier.directCall?.abiFunction
         ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === carrier.functionName);
       const observedRuns = (abiFunction?.entryAccesses ?? []).flatMap((access) => {

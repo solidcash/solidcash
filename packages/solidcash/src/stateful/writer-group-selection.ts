@@ -40,7 +40,7 @@ export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFu
 /** The exact ABI body carried by a physical participant. Compiler routes outrank source-level names because
  * overloads and shared participants can execute a different body than the logical call which introduced them. */
 export function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
-  return group.compilerRoute?.abiFunction
+  return group.directCall?.abiFunction
     ?? (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
       ?.find((candidate) => candidate.name === group.functionName);
 }
@@ -70,7 +70,7 @@ export function computedStateWriterGroupIndex(
   }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
-    const name = groups[index]?.compilerRoute?.abiFunction.name ?? groups[index]?.functionName;
+    const name = groups[index]?.directCall?.abiFunction.name ?? groups[index]?.functionName;
     return name === 'transferFrom' || name === 'transfer' || name === 'approve';
   });
 }
@@ -159,15 +159,12 @@ export function describeValueChunkWrites(
   stateOwnerCategoryId?: string,
 ): ValueChunkWriteDescriptor[] {
   const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-  const abiFunction = group.compilerRoute?.abiFunction
+  const abiFunction = group.directCall?.abiFunction
     ?? artifact?.abi.find((candidate) => candidate.name === group.functionName);
   if (!abiFunction) return [];
   const layout = abiFunction.blockLayout ?? group.blockLayout;
   if (!layout) return [];
-  const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
-    && (group.compilerRoute.rowArguments?.length ?? 0) > 0
-    ? group.compilerRoute.rowArguments!.map((row) => row.handler)
-    : [abiFunction];
+  const activeFunctions = [abiFunction];
   const activeWriteCollections = undefined;
   const writes: ValueChunkWriteDescriptor[] = [];
   const appendWrite = (access: EntryAccessAbi, entryAccessSlot: number, routeSlot: number): void => {
@@ -194,7 +191,7 @@ export function describeValueChunkWrites(
           && /^[0-9a-f]{64}$/.test(claimKeySlot ?? '')
         ? [claimKeySlot!] : [];
     }))];
-    const publishedSlot = group.compilerRoute?.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`]
+    const publishedSlot = group.directCall?.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`]
         ?? group.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`];
     const keySlot = bytes !== undefined && bytes.length >= 32
       ? decodeEntryCommitment(bytes).slot
@@ -242,10 +239,7 @@ export function chunkableValueWriteCollections(
   abiFunction: AbiFunction,
 ): string[] {
   const activeWriteCollections = undefined;
-  const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
-    && (group.compilerRoute.rowArguments?.length ?? 0) > 0
-    ? group.compilerRoute.rowArguments!.map((row) => row.handler)
-    : [abiFunction];
+  const activeFunctions = [abiFunction];
   return [...new Set(activeFunctions.flatMap((activeFunction) => (
     activeFunction.entryAccesses ?? []
   ).flatMap((access) => {

@@ -53,14 +53,11 @@ export function bindMaterializedValueChunkWitnesses(
   const occupiedBases = new Map<number, string>();
 
   for (const [carrierIndex, carrier] of carriers.entries()) {
-    const abiFunction = carrier.compilerRoute?.abiFunction
+    const abiFunction = carrier.directCall?.abiFunction
       ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
         ?.find((candidate) => candidate.name === carrier.functionName);
     if (!abiFunction?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')) continue;
-    const activeFunctions = carrier.compilerRoute?.abiFunction === abiFunction
-      && (carrier.compilerRoute.rowArguments?.length ?? 0) > 0
-      ? carrier.compilerRoute.rowArguments!.map((row) => row.handler)
-      : [abiFunction];
+    const activeFunctions = [abiFunction];
     const activeWriteCollections = (abiFunction as AbiFunction & {
     });
     const chunkableCollections = [...new Set(activeFunctions.flatMap((activeFunction) => (

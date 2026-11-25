@@ -233,7 +233,7 @@ export function linearSortedBatchEntryBands(group: CompilerTokenWriterGroup & {
 }): LinearSortedBatchEntryBand[] {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
+  const abiFunction = group.directCall?.abiFunction
     ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
   const layout = abiFunction?.blockLayout ?? group.blockLayout;
   if (!abiFunction?.entryAccesses || !layout) return [];
@@ -261,7 +261,7 @@ export function linearSortedBatchValueArgument(
 ): unknown {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
+  const abiFunction = group.directCall?.abiFunction
     ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
   if (!abiFunction || !linearSortedBatchEntryBands(group).some((band) => band.collection === collection)) {
     return undefined;
@@ -318,7 +318,7 @@ export function entryInsertLockRepairs(
 ): EntryInsertLockRepair[] {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
+  const abiFunction = group.directCall?.abiFunction
     ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
   const layout = abiFunction?.blockLayout ?? group.blockLayout;
   const planned = group.plannedEntryInserts;

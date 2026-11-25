@@ -53,7 +53,7 @@ ScaledPreserveEmitHost,
   funderUtxos: UnlockableUtxo[];
   pendingValueChunkPredecessors: UnlockableUtxo[];
   readonly preserveBlockLayoutWidth: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly entryNfts: readonly EntryNftInfo[];
   readonly externalCallEntryOutputs: ReadonlyMap<string, ReadonlyMap<number, string>>;
   /** Mutable groups — callers may rewrite `dataNftUtxos` after relocation. */
@@ -105,7 +105,7 @@ export function externalEntryLockingBytecode(
   const abiFunctions = artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
     .filter((candidate) => functionNames.has(candidate.name)));
   const entryAccess = physicalEntryAccessForSlot(
-    group.compilerRoute?.abiFunction, abiFunctions, slot.slotIndex ?? 0,
+    group.directCall?.abiFunction, abiFunctions, slot.slotIndex ?? 0,
   );
   const collections = [group.stateLayout, ...artifacts.map((artifact) => artifact.stateLayout)]
     .flatMap((layout) => layout?.collections ?? [])
@@ -117,7 +117,7 @@ export function externalEntryLockingBytecode(
       || candidate.signature === entryAccess.collection)
     // Interface artifacts can omit implementation entry-access metadata. A state layout with exactly one
     // collection still identifies an entry slot without ambiguity; refuse to guess when several exist.
-    : group.compilerRoute?.abiFunction?.entryAccesses === undefined && collections.length === 1
+    : group.directCall?.abiFunction?.entryAccesses === undefined && collections.length === 1
       ? collections[0] : undefined;
   const owner = group.logicalContract?.inner ?? group.externalContract?.inner;
   return collection?.signature ? scriptToLockingBytecode(
@@ -140,7 +140,7 @@ export function placeValueChunkPredecessorInputs(
   // destinations from cached input shape, so applying it after fixed-width assembly can replace a declared
   // route slot with an unrelated resource. Compiler routes must receive every live/disposal input through the
   // ordinary builder options and leave the materialized block immutable.
-  if (host.preserveBlockLayoutWidth || host.compilerRouteDelegateBlock
+  if (host.preserveBlockLayoutWidth || host.directCallDelegateBlock
     || host.blockLayout?.trailingCapacity !== undefined) return;
   const band = host.getChunkableValueWriteBand();
   if (!band) return;

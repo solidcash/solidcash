@@ -23,12 +23,12 @@ export interface NestedStreamedEventPlan {
 
 /** Seed one head per lifted emit; the callee's effect verifier supplies computed chunks and commitments. */
 export function planNestedStreamedEvents(
-  route: NonNullable<ExternalCallUtxoGroup['compilerRoute']>, artifact: Artifact, categoryId: string,
+  route: NonNullable<ExternalCallUtxoGroup['directCall']>, artifact: Artifact, categoryId: string,
   firstOutput: number, makeFunder: NestedStreamedEventPlan['makeFunder'],
 ): NestedStreamedEventPlan | undefined {
   const heads: RuntimeEffectStreamRecord[] = [];
   const locks = new Set<string>();
-  for (const row of route.rowArguments ?? []) {
+  for (const row of ([] as any[])) {
     for (const stream of row.handler.runtimeLoopEvents ?? []) {
       if (!stream.stream && !stream.chunked) continue;
       // These flags describe lifted top-level sites, whose source multiplicity is one. Other loop shapes

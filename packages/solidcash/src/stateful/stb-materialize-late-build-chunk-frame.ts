@@ -49,7 +49,7 @@ export function materializeLateBuildChunkFrame(
   };
   const master = host.valueDynamicHost.masterUnlocker();
   const independentlyWitnessedRoot = !host.trailingFrameHost.composedParticipant
-    && !host.trailingFrameHost.compilerRouteDelegateBlock
+    && !host.trailingFrameHost.directCallDelegateBlock
     && !host.valueDynamicHost.runtimeLoopOrComposed
     && isContractUnlocker(master)
     && !('routeConvention' in master.abiFunction)

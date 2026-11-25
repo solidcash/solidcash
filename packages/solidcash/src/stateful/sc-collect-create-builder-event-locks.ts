@@ -115,8 +115,8 @@ export function collectCreateBuilderEventLocks(
     ...(entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.routeRowArguments
       ?.map((row) => row.handler) ?? [],
     ...lowLevelCallUtxoGroups.flatMap((group) => [
-      group.compilerRoute?.abiFunction,
-      ...(group.compilerRoute?.rowArguments ?? []).map((row) => row.handler),
+      group.directCall?.abiFunction,
+      ...([] as any[]).map((row) => row.handler),
     ]),
   ].filter((candidate: AbiFunction | undefined): candidate is AbiFunction => candidate !== undefined);
   const runtimeEventSignatures = new Set(runtimeEventMetadataSources.flatMap((source) =>

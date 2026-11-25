@@ -44,7 +44,7 @@ import { createTestProvider } from '../test-util.js';
  *     -server=1 -rpcuser=user -rpcpassword=password -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 \
  *     -acceptnonstdtxn=0 -upgrade12activationtime=1762596456
  *   X64_STRICT_RPC_URL=http://localhost:18453 TESTS_USE_REGTEST=true yarn vitest run \
- *     test/journal-message-bus/e2e/MessageBusOutputTemplateX64.test.ts
+ *     test/e2e/OutputTemplateX64.test.ts
  *
  * AND THE STRONGEST FORM, which is not a policy verdict on unspendable bytes at all: the last test funds a
  * real 1,000-satoshi bare `OP_1` output through the node, so the node accepts and mines a transaction that

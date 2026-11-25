@@ -165,8 +165,6 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.routes.find((route) => route.function === 'update')?.target).not.toBe('root');
   });
 
-
-
   it('does not expose a root-owned public view call closure as a facet selector', () => {
     const bundle = compileStringSplit(`contract ViewClosure() {
       int counter;
@@ -615,8 +613,6 @@ describe('large-contract state-local splitting', () => {
         .toContain('__oraclePool');
     }
   });
-
-
 
   /**
    * THE GUARD IS STILL ARMED, and it has to be checked separately now that no source reaches it: the repair

@@ -37,7 +37,7 @@ contract Factory {
 `;
 
 describe('a payment to a new result (B2.1)', () => {
-  it('the routes a payment to a new result without an SDK build step (B2.2)', () => {
+  it('the compiler routes a payment to a new result without an SDK build step (B2.2)', () => {
     // The SDK's deployFrom path for a routed payment is B9's work: the transaction that spends the deployer and
     // carries the transfer is rebuilt there. This asserts the compiler's half: the routed payment compiles and
     // the source's payment is no longer an error.

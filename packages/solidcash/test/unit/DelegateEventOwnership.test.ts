@@ -44,6 +44,7 @@ describe('argumentsForPhysicalAbiFrame', () => {
       physicalFunctionArgs: ['stale-key', 'stale-value'],
       logicalFunctionName: 'record',
       logicalFunctionArgs: ['current-key', 'current-value'],
+      directCall: { abiFunction: handler, args: ['route-key', 'route-value'] },
     })).toEqual(['current-key', 'current-value']);
   });
 

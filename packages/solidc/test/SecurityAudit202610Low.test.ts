@@ -106,8 +106,7 @@ describe('October 2026 low holes', () => {
     expect(artifact.bytecode).toContain('OP_1 OP_LESSTHANOREQUAL OP_VERIFY');
   });
 
-  // The split path enforces this lifecycle policy on its own entries; the rule holds elsewhere.
-  it('DX-9 a split without a trusted signature is rejected outside the route', () => {
+  it('DX-9 a split without a trusted signature is rejected', () => {
     const src = `${P} contract C(pubkey admin) { int n; function fork(int k) split(k) { require(true); } }`;
     expect(() => compileString(src, {})).toThrow(/without an unconditional trusted-key signature/);
   });

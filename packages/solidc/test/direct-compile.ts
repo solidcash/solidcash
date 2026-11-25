@@ -12,9 +12,8 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
 /**
  * Compile a fixture for direct-route language semantics.
  *
- * General parser/type/codegen tests must not synthesize an unrelated route batch route: doing so changes byte-identity
- * assertions, can replace the source diagnostic with a generated-route diagnostic, and multiplies full-suite
- * runtime. Tests that need production defaults import the compiler directly.
+ * General parser/type/codegen fixtures run with the final-require check and the unsafe-operation gate relaxed.
+ * Tests that need production defaults import the compiler directly.
  */
 export const compileFile = (
   sourcePath: Parameters<typeof compileFileRaw>[0], options: FileOptions = {},

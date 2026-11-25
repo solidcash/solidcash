@@ -22,11 +22,15 @@ const fixtures = [
   { name: 'shared', artifact, frame: tuple },
   { name: 'inline', artifact: inline, frame: encodeDataPush },
 ];
+// BCH-2026 semantics with relaxed capacity limits.
 const vm = createVirtualMachineBch2026ForProvider(new MockNetworkProvider({
   consensusLimits: {
     maximumInputBytes: 1_000_000,
     maximumStackItemBytes: 1_000_000,
     maximumTransactionBytes: 10_000_000,
+    maximumNftCommitmentBytes: 128,
+    operationCostBudgetPerByte: 10_000_000,
+    hashDigestIterationsPerByte: 10_000_000,
   },
 }));
 

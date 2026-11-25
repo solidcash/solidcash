@@ -10,6 +10,10 @@ chunks, or pending vmap compiler/SDK plumbing predate the completed 2026-07-22 v
 defined only by [`verified-mappings.md`](verified-mappings.md); every mapping is vmap and unsupported shapes fail
 closed. Do not use historical opt-out instructions from this log.
 
+The message bus and its kernel were removed from the compiler and SDK in 2026-11. Entries below that mention
+them describe the tree as it stood when the entry was written; none is a current instruction or a supported
+option.
+
 Related: `bench/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
 `docs/platform-differences.md` (BCH-vs-EVM primitives),
 `archive/docs:packages/solidc/docs/solidity-gap-analysis.md`.

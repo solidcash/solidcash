@@ -3185,7 +3185,7 @@ const callsOwnFunction = (contract: ContractNode): boolean => {
 // compileString and compileStringMulti.
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
-  _admitExternalHandlers = true, _normalizeBareEntries = true, _relaxResultRouteEffects = true,
+  _admitExternalHandlers = true, _normalizeBareEntries = true, _relaxResultEffects = true,
   _admitMixedScalarHandlers = true, _admitBareForwardingHandlers = true,
   attribution?: ExternalAdmissionAttribution,
   fnPtrArraysPreLowered = false,

@@ -60,7 +60,7 @@ describe('a sorted-mapping loop write folds only its own entry', () => {
     }
   });
 
-  // A loop that emits once per turn was served by the removed kernel journal transport. The direct
+  // A loop that emits once per turn was served by the removed journal transport. The direct
   // conventions still publish the fold; framed composition refuses the entry because the loop's counter
   // and bound are not a recurrence its own facts fix, so a builder cannot count the event outputs.
   it.each([
@@ -128,7 +128,7 @@ describe('a sorted-mapping loop write folds only its own entry', () => {
         expect([name, body, loop?.op]).toStrictEqual([name, body, expected]);
       }
     }
-    // The kernel journal transport lowered a counter-loop write that emits once per turn. Direct codegen fails
+    // The journal transport lowered a counter-loop write that emits once per turn. Direct codegen fails
     // closed on this shape: it has no fold metadata to publish, so it refuses rather than guessing a transition.
     for (const body of [
       'slots[i] = slots[i] + amount; emit Hit(i);',

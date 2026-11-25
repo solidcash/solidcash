@@ -1,3 +1,6 @@
+> Historical workstream note. The message bus and its kernel were removed from the compiler and SDK in
+> 2026-11; any instruction to compile with `messageBus` or to use the bus describes the tree as it stood then.
+
 # compiler-retouch: intent and archived diff
 
 Kind: archived workstream, 2026-11-13. The worktree `.worktrees/compiler-retouch` was deleted after this record. Kept:

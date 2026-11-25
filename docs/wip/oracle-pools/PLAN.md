@@ -1,3 +1,6 @@
+> Historical workstream note. The message bus and its kernel were removed from the compiler and SDK in
+> 2026-11; any instruction to compile with `messageBus` or to use the bus describes the tree as it stood then.
+
 # Oracle pools: backport plan
 
 Status: phases 1-5 done on master, 2026-11-04 (branch `feat/oracle-pools` from master `320a1e9d3`). Phase 6, the

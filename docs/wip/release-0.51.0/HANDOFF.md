@@ -1,3 +1,6 @@
+> Historical workstream note. The message bus and its kernel were removed from the compiler and SDK in
+> 2026-11; any instruction to compile with `messageBus` or to use the bus describes the tree as it stood then.
+
 # Handoff: SolidCash 0.51.0 and what is open (2026-11-16)
 
 This note is for whoever picks the work up next, human or agent. It records where the branches are, how the work

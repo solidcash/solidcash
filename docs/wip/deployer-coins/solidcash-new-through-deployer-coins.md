@@ -1,3 +1,6 @@
+> Historical workstream note. The message bus and its kernel were removed from the compiler and SDK in
+> 2026-11; any instruction to compile with `messageBus` or to use the bus describes the tree as it stood then.
+
 # SolidCash `new` through deployer coins: specification and implementation plan
 
 Status, 2026-11-12: final and cleared for implementation; nothing is built yet. This is one consolidated text.

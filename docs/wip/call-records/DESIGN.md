@@ -1,3 +1,6 @@
+> Historical workstream note. The message bus and its kernel were removed from the compiler and SDK in
+> 2026-11; any instruction to compile with `messageBus` or to use the bus describes the tree as it stood then.
+
 # Call result binding in every composition mode (design)
 
 Kind: design, 2026-10-22. Replaces the held callee-side binding `ce51b6f18` (branch

@@ -54984,9 +54984,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // differ from each such call's input once both run, or a pointer whose target equals the fixed call's could name
     // that one callee and have one run serve both. The fixed call's identity reads this same offset.
     const fixedPoints = this.externalCallSlots.filter((slot) => !slot.inlineLoopDispatch && !slot.loopArrayVar
-      && !this.isExternalCallSlotLoopNested(slot) && this.getStackIndex(index(slot), true) < 0
-      && !this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex,
-      ));
+      && !this.isExternalCallSlotLoopNested(slot) && this.getStackIndex(index(slot), true) < 0);
     for (const claim of claims) {
       for (const fixed of fixedPoints) {
         if (target(claim) !== undefined && target(claim) === target(fixed)) continue;

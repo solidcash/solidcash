@@ -41585,10 +41585,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.readsRecordsFromFrame
         && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)) continue;
 
-      const routeBatch = false
-        && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)
-        && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${i}`), true) >= 0;
-      if (!routeBatch && this.sharesFixedEntryCoordinate(i)) {
+      if (this.sharesFixedEntryCoordinate(i)) {
         // The executing input is the master here, which a shared body reads as it does.
         this.emitPresentEntryChecks(i, 'category', (t, loc) => {
           t.emit(Op.OP_DUP, loc); t.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -41599,20 +41596,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }, locationData);
         continue;
       }
-      if (routeBatch) {
-        // A route publishes the union of every handler's logical entry slots. Its fixed block slot can
-        // belong to another participant when this handler is inactive, so existence must come from the
-        // authenticated batch proof witness. Non-positive offsets are inactive sentinels: zero names the master,
-        // while -1 must not alias the preceding participant. Active entry proofs have positive offsets.
-        this.emitPickVMapWitness(`__internal__vmapBatchProof_${i}`, locationData);
-        this.emit(Op.OP_0, locationData);
-        this.emit(Op.OP_GREATERTHAN, locationData);
-      } else {
-        // Ordinary entry points use physical fixed-slot presence. A framed frame records a node an earlier frame
-        // created at the sentinel coordinate, which names no input, so presence is read the read-only way there and
-        // a created node takes the `false` arm rather than reading a category at a coordinate that holds no input.
-        this.emitReadOnlyEntryExistsCheck(i, locationData);
-      }
+      // Ordinary entry points use physical fixed-slot presence. A framed frame records a node an earlier frame
+      // created at the sentinel coordinate, which names no input, so presence is read the read-only way there and
+      // a created node takes the `false` arm rather than reading a category at a coordinate that holds no input.
+      this.emitReadOnlyEntryExistsCheck(i, locationData);
 
       // If the slot is active, verify the entry input's token category.
       this.emit(Op.OP_IF, locationData);

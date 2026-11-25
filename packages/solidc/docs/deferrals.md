@@ -3480,6 +3480,16 @@ fails to compile (`StackVariableUnavailableError: '__internal__callDigest'`). Fa
 
 ## The EACC marketplace on the framed convention (2026-11-24)
 
+**RESOLVED 2026-11-25 (`50e7bbc01`) for `validator/1`, by reading; the ladder run is the lander's.** Both lanes were
+refused by the call-tree facet's argument digest. Its scan for a callee's redeem push read `OP_PUSHDATA4` as a one-byte
+push, and the marketplace's masters (90,741 and 76,976 bytes, which the lane's lifted stack item limit admits) are
+pushed with it, so the scan ran into the program and the digest mismatched. The scan came in with `77f4275f6`
+(2026-10-29); `e3d85e0b4` still used `dropLastPushScript`, which reads it, and passed the `initialize` hop. The dumps'
+other refusals were not faults. The head's census close and the census facet's split of a 4-byte item are the
+checkpoint placeholder of the unfilled draft the dump evaluates. The master's refusals are candidate plans the call
+path tried earlier; the final verdicts name `validator/1` alone. The `allowedWorkers_` site-9 message is not in the
+dumps: if the ladder still shows it, it is an entry of its own.
+
 **Deferred (pre-existing):** both marketplace ladder lanes fail, identically on v0.51.1, on the session-start master
 (`af630cc60`), on master `5c0013c47` and on the 0.52.0 candidate. The proxied lane fails all 66 rows at
 `upgrades.deployProxy`: the framed proxy's `initialize` hop is refused (`validator/1: Program failed an OP_VERIFY

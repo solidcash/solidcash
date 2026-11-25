@@ -14,15 +14,12 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
  */
 export const compileString = (
   source: string, options: StringOptions = {},
-): ReturnType<typeof compileStringRaw> => compileStringRaw(source, { ...options,
-});
+): ReturnType<typeof compileStringRaw> => compileStringRaw(source, { ...options });
 
 export const compileStringMulti = (
   source: string, options: MultiOptions = {},
-): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, { ...options,
-});
+): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, { ...options });
 
 export const compileStringSplit = (
   source: string, options: SplitOptions,
-): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, { ...options,
-});
+): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, { ...options });

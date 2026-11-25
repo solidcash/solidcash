@@ -52,8 +52,9 @@ describe('A12: paths and refusals', () => {
 
   it('an unsupported deployer refuses viaDeployer and names the reason', async () => {
     const { provider, fundingUtxo } = await funded();
-    const artifact = compileString(C, { deployer: true });
-    expect(artifact.deployerUnsupported).toBeDefined();
+    // A deployer exists only for a direct stateful contract.
+    const artifact = compileString(C, { deployer: true, composition: 'framed' });
+    expect(artifact.deployerUnsupported).toBe('not-stateful-direct');
     await expect(deploy(provider, artifact, fundingUtxo, { viaDeployer: true }))
       .rejects.toThrow(new RegExp(artifact.deployerUnsupported!));
   });

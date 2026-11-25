@@ -279,9 +279,8 @@ function oddBytes(width: number): Uint8Array {
 /**
  * True when a published condition reads an earlier call's result.
  *
- * Such a condition is not fixed by the caller's own facts: the hop states none of its visits in a pass that does
- * not hold that result, and only a later pass with the learned results decides it. A single-pass plan therefore
- * leaves these sites out.
+ * Such a condition is not fixed by the caller's own facts: a pass that does not hold that result stops before the
+ * site, and a later pass with the learned results decides it.
  */
 function conditionReadsProducerResult(condition: unknown): boolean {
   let found = false;
@@ -421,22 +420,24 @@ describePublished('the plan against the shipped published call table', () => {
     };
     const stated = plan.calls.map((call) => calleeOf(call.callee));
 
-    // A site whose published condition reads an earlier call's result is not fixed by the caller's own facts: this
-    // pass states none of its visits, and only a later pass that holds the learned result states them. The plan's
-    // calls are otherwise the published calls, one-to-one and in the same interface/method order.
+    // A site whose published condition reads an earlier call's result is not fixed by the caller's own facts: the pass
+    // stops before the first such site, waiting on earlier sites (77f4275f6). The plan's calls are the published calls
+    // before it, one-to-one and in the same interface/method order.
     const routing = row.externalCalls ?? [];
-    const gated = published.filter((_call, index) => conditionReadsProducerResult(routing[index]?.condition));
-    const fixed = published.filter((_call, index) => !conditionReadsProducerResult(routing[index]?.condition));
-    expect(gated.length).toBeGreaterThan(0);
+    const stopAt = published.findIndex((_call, index) => conditionReadsProducerResult(routing[index]?.condition));
+    expect(stopAt).toBeGreaterThan(0);
+    const before = published.slice(0, stopAt);
+    const stopped = published[stopAt]!;
+    expect(plan.blocked?.where).toBe(`the call to "${stopped.interfaceName}.${stopped.functionName}"`);
+    const earlier = new Set(routing.slice(0, stopAt).map((site) => site.callsiteId));
+    expect(plan.blocked!.producers.length).toBeGreaterThan(0);
+    expect(plan.blocked!.producers.every((producer) => earlier.has(producer))).toBe(true);
 
-    expect(plan.calls).toHaveLength(fixed.length);
-    expect(stated.map((call) => call.entry)).toStrictEqual(fixed.map((call) => call.functionName));
-    expect(stated.map((call) => call.contract)).toStrictEqual(fixed.map((call) =>
+    expect(plan.calls).toHaveLength(before.length);
+    expect(stated.map((call) => call.entry)).toStrictEqual(before.map((call) => call.functionName));
+    expect(stated.map((call) => call.contract)).toStrictEqual(before.map((call) =>
       externals[call.interfaceName]!.artifact.contractName));
-    // Every published site still has a base, `-1` for the ones this pass states no reach for.
-    expect(plan.callBases).toHaveLength(published.length);
-    published.forEach((_call, index) => {
-      expect(plan.callBases[index]! < 0).toBe(conditionReadsProducerResult(routing[index]?.condition));
-    });
+    // Each site before the stop has its base; the pass states none from the stop on.
+    expect(plan.callBases).toStrictEqual(before.map((_call, index) => index));
   });
 });

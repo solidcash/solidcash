@@ -49,6 +49,10 @@ const SOURCE = [
   `    require(block.timestamp >= this.stamp + ${DAY}, "a day has not passed");`,
   '    this.count = this.count + 1;',
   '  }',
+  '  function next() {',
+  '    require(block.timestamp > this.stamp, "not after the stamp");',
+  '    this.stamp = block.timestamp;',
+  '  }',
   '}',
 ].join('\n');
 
@@ -222,14 +226,20 @@ describe('the mock chain\'s clock in a proxied framed contract', () => {
     const marked = await enter(world, 'mark');
     expect(marked.error).toBeUndefined();
     expect(marked.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-    // The entry stamps the clock it read. The mock's automine executes the transaction at the tip's own timestamp
-    // (the Hardhat model), so the block that confirms it carries that same time: the clock moves on `evm_increaseTime`
-    // below, not on the confirming block.
+    // The entry stamps the clock it read. As Hardhat's automine does, the block that confirms it is a second after the
+    // tip, so the next transaction reads a later clock.
     const stamped = await proxyState(world);
     expect(stamped.stamp).toBe(read);
     const confirmed = await oracleClock(world.network);
     expect(confirmed).toBe(tipClock(world.network));
-    expect(confirmed).toBeGreaterThanOrEqual(read);
+    expect(confirmed).toBeGreaterThan(read);
+
+    // An entry that needs a time strictly after the stamp settles in the very next transaction, as a challenge of a
+    // payment made one transaction earlier does.
+    const strict = await enter(world, 'next');
+    expect(strict.error).toBeUndefined();
+    expect(strict.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect((await proxyState(world)).stamp).toBe(confirmed);
 
     const early = await enter(world, 'later');
     expect(early.error).toBeInstanceOf(FramedProxyDeployError);

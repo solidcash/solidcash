@@ -17,6 +17,11 @@
   `OP_PUSHDATA4` redeem push as a one-byte push and hashed the program as call data, so the EACC marketplace port did
   not deploy through a framed proxy and refused `publishJobPost`. The walk now reads `OP_PUSHDATA4`. The facet that
   makes the walk is 3 bytes longer, so every framed address differs from 0.52.0's: deploy a new category.
+- The mock network mined every transaction at its tip's own time (0.50.0 to 0.52.0), so two transactions in a row
+  read the same `block.timestamp`, and a rule such as `require(block.timestamp > start)` with `start` stamped by the
+  transaction before failed where Hardhat's automine gives each transaction a later block: the EACC marketplace's
+  disputes. Each transaction now mines a block a second after the tip, or at the time `setNextBlockTimestamp` set, as
+  Hardhat and the regtest provider do.
 
 ## 0.52.0
 

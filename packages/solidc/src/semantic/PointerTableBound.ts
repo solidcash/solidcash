@@ -41,7 +41,7 @@ export const MAXIMUM_POINTER_TABLE_BOUND = 24;
 /** Stable, exact rejection for a compiler-route pointer-table loop the compiler cannot bound. */
 export class PointerTableBoundError extends SolidCashError {
   constructor(node: Node, detail: string) {
-    super(node, `Message-bus pointer-table loop is not compiler-bounded: ${detail}`);
+    super(node, `Batch pointer-table loop is not compiler-bounded: ${detail}`);
   }
 }
 

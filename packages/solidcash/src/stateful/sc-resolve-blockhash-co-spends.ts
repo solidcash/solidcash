@@ -115,7 +115,7 @@ export async function extractBlockhashReads(
   return extractBlockhashReadsFromTrace(trace, base, slotCount);
 }
 
-/** Message-bus graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding
+/** Batch graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding
  * inactive positions use inert inputs and prior active oracle co-spends occupy their exact slots. */
 export async function extractGraphBlockhashRead(
   host: BlockhashCoSpendHost,

@@ -1681,7 +1681,7 @@ function isInternalCodegenAttemptFailure(error: unknown): boolean {
   // migrated, without treating typed KERNEL_* admission fences as compiler failures.
   return message.startsWith('Block slot not found:')
     || message.startsWith('Missing journal context ')
-    || message.startsWith('Message-bus owner frame for ')
+    || message.startsWith('Batch owner frame for ')
     || /lacks compiler metadata \(slot /.test(message);
 }
 
@@ -5095,7 +5095,7 @@ function compileResolvedAst(
   const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed';
   if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
 
-  // Keep direct compilation's narrow permutation ABI stable. Message-bus compilation still needs the richer
+  // Keep direct compilation's narrow permutation ABI stable. Batch compilation still needs the richer
   // analysis to classify legacy-unroll refusals, while kernel execution was already lowered at admission.
   // A looped emit takes the richer lowering too, so each iteration's event is pinned; a framed body binds a looped
   // event where it emits it instead (framed/master/loop-effects.ts).
@@ -5405,7 +5405,7 @@ function compileResolvedAst(
 
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
-  // Message-bus compilation already ran this pass before route synthesis. The IRSH above can still
+  // Batch compilation already ran this pass before route synthesis. The IRSH above can still
   // expose scalar state inside a previously context-only void wrapper (`_checkInitializing` after
   // `_isInitializing()` is reduced). Without a follow-up inline, that wrapper stays an OP_INVOKE
   // body and a delegate `initialize` re-reads the pre-tx NFT (or INPUTINDEX+1 on the impl).
@@ -6349,7 +6349,7 @@ function compileResolvedAst(
   if (mergedCompilerOptions.autoDelegate || hasCompilerDelegate) {
     artifact.delegateProxyStateOutputCountPinned = true;
   }
-  // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
+  // Batch graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
   // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a
   // graph-route compilation, so ordinary direct dispatch keeps one ABI row per physical callsite.
   if (graphMode && pointerTableBounds.size > 0) {
@@ -7525,7 +7525,7 @@ function compileStringSplitUnchecked(
     fn.overrideBases = [];
     fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
   }
-  // A split root's mutating entries are delegate forwarders. Message-bus admission already refuses delegate
+  // A split root's mutating entries are delegate forwarders. Batch admission already refuses delegate
   // handlers (`atomic-delegate-context-unpreservable`), leaving only incidental root-owned getters on the hidden
   // route; on UniswapV2Pair that unusable getter-only route inflated the otherwise valid forwarding root to
   // 13,658 bytes. Keep every ordinary ABI selector and one-hop forwarder, but omit the root's incoming batch route.
@@ -7845,7 +7845,7 @@ function mergeFootprints(plans: PlannedFunction[]): SplitStateFootprint {
 }
 
 /**
- * Message-bus GRAPH mode unrolls pointer-table loops (`UnrollFixedBoundEntryLoop`,
+ * Batch GRAPH mode unrolls pointer-table loops (`UnrollFixedBoundEntryLoop`,
  * `ExpandBoundedPointerTableLoop`) BEFORE the fn-ptr array pass, and `prepareSplitAst` does not run those. Its
  * `loopDepth` decides broadcast-vs-single-element, so hoisting the pass ahead of them would lower different
  * callsites. Graph mode therefore keeps the post-filter route and leans on `assertSplitLayoutsAgree`, which

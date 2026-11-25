@@ -1243,9 +1243,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.sourceFile = node;
     this.sourceFreeFunctions.clear();
     this.reachableSourceFreeFunctions.clear();
-    if (node.freeFunctions.length > 0 && (this.compilerOptions as CompilerOptions & {
-      __routeMetaExplicitlyDisabled?: boolean;
-    }).__routeMetaExplicitlyDisabled === true) {
+    if (node.freeFunctions.length > 0) {
       this.sourceFreeFunctions = new Set(node.freeFunctions);
       this.reachableSourceFreeFunctions = reachableFreeFunctionsInSource(node);
     }
@@ -1687,9 +1685,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     this.sourceContractFunctions.clear();
     this.reachableSourceContractFunctions.clear();
-    if (node.functions.length > 0 && (this.compilerOptions as CompilerOptions & {
-      __routeMetaExplicitlyDisabled?: boolean;
-    }).__routeMetaExplicitlyDisabled === true) {
+    if (node.functions.length > 0) {
       this.sourceContractFunctions = new Set(node.functions);
       this.reachableSourceContractFunctions = reachableContractFunctions(node);
     }
@@ -2477,7 +2473,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
-      // Message-bus routes are compiler-owned source. Their deliberately generic parser/context
+      // Batch routes are compiler-owned source. Their deliberately generic parser/context
       // locals vary by admitted handler shape, so reporting them as user warnings makes default-on
       // compilation noisy without identifying anything the user can fix.
       if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
@@ -4614,12 +4610,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         // a second time and make its slot/effect layout disagree with the generated covenant. Release-5 grouping
         // therefore runs on source entry points only; their synthesized local or graph route consumes the
         // compiler-authored grouping instead of rediscovering it.
-        const routeMetaExplicitlyDisabled =
-          (this.compilerOptions as CompilerOptions & { __routeMetaExplicitlyDisabled?: boolean })
-            .__routeMetaExplicitlyDisabled === true;
-        const routeMetaAutoNarrowed =
-          (this.compilerOptions as CompilerOptions & { __routeMetaAutoNarrowed?: boolean })
-            .__routeMetaAutoNarrowed === true;
         if (!node.routeMetaRoute) {
           const callOccursInLoop = (target: ExternalFunctionCallNode | undefined): boolean => {
             if (!target) return false;
@@ -4656,123 +4646,25 @@ export default class SymbolTableTraversal extends AstTraversal {
                 : hasUnresolvedExpression(child, seen)
             ));
           };
-          const hasRuntimeArrayOccurrence = (value: unknown, seen = new Set<object>()): boolean => {
-            if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
-            seen.add(value as object);
-            if ((value as { kind?: string }).kind === 'arrayElement') return true;
-            return Object.values(value).some((child) => (
-              Array.isArray(child)
-                ? child.some((item) => hasRuntimeArrayOccurrence(item, seen))
-                : hasRuntimeArrayOccurrence(child, seen)
-            ));
-          };
-          const byTarget = new Map<string, ExternalCallSlot[]>();
           const allByTarget = new Map<string, ExternalCallSlot[]>();
-          const inferredSelectors = new Map<ExternalCallSlot, Uint8Array>();
-          // A batch group is advertised in the CALLER's bytecode, which then requires the callee's route to
-          // execute every row. A route refuses a handler that writes a variable-width collection until its
-          // completed entry descriptor is represented in the compact journal, so when this compilation also
-          // contains the callee's source do not advertise a batch the callee cannot serve: the callsites keep
-          // their individual slots and the ordinary composition path. A foreign callee (interface only) is
-          // unknown here and keeps the previous behavior.
-          const calleeRouteServesSlot = (slot: ExternalCallSlot): boolean => {
-            const callee = this.contractMap.get(slot.interfaceName);
-            const handler = callee?.functions.find((candidate) => candidate.name === slot.functionName);
-            if (!callee || !handler?.body) return true;
-            const chunkable = new Set(callee.collections
-              .filter((collection) => isChunkableValueType(collection.innermostValueType))
-              .map((collection) => collection.name));
-            if (chunkable.size === 0) return true;
-            if (handler.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
-              return true;
-            }
-            const helpersByName = new Map<string, FunctionDefinitionNode[]>();
-            for (const candidate of callee.functions) {
-              const group = helpersByName.get(candidate.name) ?? [];
-              group.push(candidate);
-              helpersByName.set(candidate.name, group);
-            }
-            let unsupported = false;
-            const visit = (visitedNode: Node, seen: Set<Node>): void => {
-              if (unsupported || seen.has(visitedNode)) return;
-              seen.add(visitedNode);
-              const name = (visitedNode as unknown as { name?: unknown }).name;
-              if (typeof name === 'string' && chunkable.has(name)
-                && (visitedNode instanceof MappingAssignNode || visitedNode instanceof MappingFieldAssignNode
-                  || visitedNode instanceof MappingDeleteNode || visitedNode instanceof ArrayAssignNode
-                  || visitedNode instanceof ArrayPushNode || visitedNode instanceof ArrayPopNode
-                  || visitedNode instanceof ArrayDeleteNode || visitedNode instanceof StateArrayAssignNode
-                  || visitedNode instanceof StateArrayPushNode || visitedNode instanceof StateArrayPopNode
-                  || visitedNode instanceof StateArrayDeleteNode || visitedNode instanceof StateAssignNode
-                  || visitedNode instanceof DeleteStateNode)) {
-                unsupported = true;
-                return;
-              }
-              if (visitedNode instanceof FunctionCallNode && visitedNode.identifier instanceof IdentifierNode) {
-                for (const helper of helpersByName.get(visitedNode.identifier.name) ?? []) {
-                  if (helper.body) visit(helper.body, seen);
-                  if (unsupported) return;
-                }
-              }
-              for (const value of Object.values(visitedNode)) {
-                if (value instanceof Node) visit(value, seen);
-                else if (Array.isArray(value)) {
-                  for (const item of value) if (item instanceof Node) visit(item, seen);
-                }
-              }
-            };
-            visit(handler.body, new Set<Node>());
-            return !unsupported;
-          };
           for (const slot of logicalCallSlots) {
-            // Single-method interfaces normally omit selector verification, so
-            // their slots have no baked selector yet. compiler-route batch rows always carry
-            // the original direct selector. Infer it without mutating the slot:
-            // discovery must leave every ordinary/unselected call byte-identical.
-            if (!slot.compileTimeSelector) {
-              const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
-              if (ifaceFunc) {
-                inferredSelectors.set(slot, this.calleeMethodSelector(slot.functionName, ifaceFunc.parameterTypes));
-              }
-            }
             // A loop over targets calls a callee per iteration through its receiver declaration: two loops may
             // each declare `pair` for callees of their own.
             const fixedIdentity = slot.addressParam ? `param:${slot.addressParam}`
               : slot.addressStateVar ? `state:${slot.addressStateVar}`
                 : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
             const identity = slot.loopArrayVar ? (slot.loopReceiver ? `loop:${slot.loopReceiver}` : '') : fixedIdentity;
-            if (identity !== '') {
-              const ownerKey = `${identity}|${slot.interfaceName}`;
-              const allGroup = allByTarget.get(ownerKey) ?? [];
-              allGroup.push(slot);
-              allByTarget.set(ownerKey, allGroup);
-            }
-            const loopOccurrence = callOccursInLoop(slot.sourceCallNode);
-            const eligible = identity !== ''
-              && !slot.hasReturnValues && !slot.loopArrayVar && !slot.fnPtrCall
-              && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
-              && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot))
-              && !(slot.argSources ?? []).some((source) => hasUnresolvedExpression(source))
-              // Runtime-sized grouped loops are reconstructed from the same compiler-authored argument array.
-              // A loop with no array-derived cardinality remains with the full graph planner.
-              && (!loopOccurrence || (slot.argSources ?? []).some(
-                (source) => hasRuntimeArrayOccurrence(source),
-              ))
-              && (true || calleeRouteServesSlot(slot));
-            if (!eligible) continue;
-            const key = `${identity}|${slot.interfaceName}|${slot.requiredDataNftIndices.join(',')}`;
-            const group = byTarget.get(key) ?? [];
-            group.push(slot);
-            byTarget.set(key, group);
+            if (identity === '') continue;
+            const ownerKey = `${identity}|${slot.interfaceName}`;
+            const allGroup = allByTarget.get(ownerKey) ?? [];
+            allGroup.push(slot);
+            allByTarget.set(ownerKey, allGroup);
           }
-          const repeated = [...byTarget.values()].filter((group) => group.length > 1
-            // The physical route must always have at least one row. Optional-only families remain with the
-            // graph planner until the route format grows an authenticated zero-row representation.
-            && group.some((slot) => !slot.condition && !callOccursInLoop(slot.sourceCallNode)));
+
           const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
-          // The direct convention runs repeated calls to one callee in one spend of its master, through the
-          // callee's multi-call entry, each call reading the record of its own frame; it never builds a bus batch.
-          const directConvention = routeMetaExplicitlyDisabled && this.compilerOptions.composition !== 'framed';
+          // Repeated calls to one callee run in one spend of its master, through the callee's multi-call entry,
+          // each call reading the record of its own frame.
+          const directConvention = this.compilerOptions.composition !== 'framed';
           // A loop repeats its call while a callee master is spent once. Only a per-iteration target (an array
           // element or witness, checked where it runs) or a frame of the callee's multi-call spend runs once per
           // iteration; any other looped call would take results and effects of runs its callee never made.
@@ -4789,7 +4681,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             : knownRepeated;
           // Retained but unreachable helpers are still typechecked. Their hypothetical transactions do not make
           // the selected contract require a graph route; enforce the opt-out on reachable functions only.
-          if (refusedRepeated.length > 0 && routeMetaExplicitlyDisabled
+          if (directConvention && refusedRepeated.length > 0
             && (!this.sourceFreeFunctions.has(node) || this.reachableSourceFreeFunctions.has(node))
             && (!this.sourceContractFunctions.has(node) || this.reachableSourceContractFunctions.has(node))) {
             const chains = refusedRepeated.map((group) => group.map((slot) =>
@@ -4800,48 +4692,8 @@ export default class SymbolTableTraversal extends AstTraversal {
               + 'A UTXO master can be spent only once. The direct convention runs several calls in one spend only '
               + "through the callee's multi-call entry, whose calls are regular and value-free, name a fixed method "
               + 'of a fixed target and pass every argument their records digest; this transaction cannot be built.',
-              { functionName: node.name, callChains: chains, option: 'routeMeta' },
+              { functionName: node.name, callChains: chains },
             );
-          }
-          // V1 permits exactly one repeated callee group in a root invocation. A framed master carries one call
-          // record per call and gives each call its own frame, so it has nothing to collapse: its sites are the
-          // calls themselves and each binds its own descriptor.
-          if (repeated.length === 1 && this.compilerOptions.composition !== 'framed' && !directConvention) {
-            const group = repeated[0];
-            const hasCompleteSourceEffectOrder = group.every(
-              (slot) => slot.sourceEffectOrdinal !== undefined,
-            );
-            const representative = group[0];
-            representative.batchInvocations = group.map((slot, logicalIndex) => {
-              slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
-              const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)!;
-              slot.compileTimeSelector = selector;
-              const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
-              const occurrence = callOccursInLoop(slot.sourceCallNode)
-                ? 'loop' as const
-                : slot.condition ? 'conditional' as const : 'once' as const;
-              return {
-                selector,
-                parameters: slot.sourceCallNode!.parameters,
-                parameterTypes: ifaceFunc?.parameterTypes
-                  ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
-                logicalIndex,
-                sourceCallsiteId: slot.slotIndex,
-                ...(hasCompleteSourceEffectOrder
-                  ? { sourceEffectOrdinal: slot.sourceEffectOrdinal! }
-                  : {}),
-                argSources: slot.argSources,
-                occurrence,
-                ...(slot.condition && { condition: slot.condition }),
-                ...(slot.callValueEffect && { callValueEffect: true }),
-                sourceCallNode: slot.sourceCallNode,
-              };
-            });
-            representative.compileTimeSelector = Uint8Array.from([0x53, 0x43, 0x42, 0x31]);
-            representative.needsSelectorVerification = true;
-            const grouped = new Set(group.slice(1));
-            externalCallSlots.splice(0, externalCallSlots.length,
-              ...logicalCallSlots.filter((slot) => !grouped.has(slot)));
           }
         }
         // Approach B (method binding): a void call through an interface naming exactly one function verifies no

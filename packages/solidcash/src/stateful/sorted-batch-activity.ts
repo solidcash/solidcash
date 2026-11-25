@@ -1,7 +1,7 @@
 /**
  * Select the physical mutations from a compiler-published sorted-batch union.
  *
- * Message-bus functions publish the union of every bounded handler's write slots. At runtime, slots belonging to
+ * Batch functions publish the union of every bounded handler's write slots. At runtime, slots belonging to
  * unselected handlers are inactive, and runtime aliases are owned by their canonical slot. Neither class may
  * allocate predecessor outputs: doing so shifts the absolute output band of later active batches.
  */

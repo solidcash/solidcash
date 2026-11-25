@@ -100,7 +100,7 @@ The two builders emit the contract's outputs in different orders:
 
 - Direct (`packages/solidcash/src/stateful/sc-deploy.ts`): masters, one per thread; records; the mapping nodes the
   constructor writes, then the head of each sorted collection it does not write; the constructor's transfers;
-  events; the recreated head of each sorted collection the constructor writes; chunks; message-bus verifiers; the
+  events; the recreated head of each sorted collection the constructor writes; chunks; the
   satoshi container; the reserve and the bearer supply (6.2); identity anchors; the blockhash ring.
 - Framed (`packages/solidcash/src/framed/deploy/stateful.ts`): masters, a pool per entry lock; validators; facets;
   events; records; mapping nodes; chunks; an initialize hop's outputs; identity anchors; the blockhash ring; the
@@ -309,9 +309,9 @@ Further points:
 - The genesis that creates C also creates X, from a second vout-0 coin (`nativeToken.funding`), so the two categories
   share its identity output, and the registry describes both: X carries the token fields, C the contract and its NFT
   labels. A framed genesis does the same, and a framed token wraps and unwraps through the container
-  (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b; D34). A message-bus route carries the container under its state key
-  (D36), and another contract's callee frame wraps into and unwraps from it (`FramedTokenCallee.test.ts`). The full
-  framed ERC-20 is `packages/solidcash/contracts/examples/FramedNativeToken.scash`.
+  (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b; D34). Another contract's callee frame wraps into and unwraps from
+  the container (`FramedTokenCallee.test.ts`). The full framed ERC-20 is
+  `packages/solidcash/contracts/examples/FramedNativeToken.scash`.
 
 ### 6.2 Genesis for a native token
 
@@ -440,9 +440,8 @@ of it. The first `wrap` then creates the container.
 
 BCMR metadata for a category a contract creates inside a call is **unsupported** (DECISIONS D48). Such a category
 takes the creating transaction's output 0 as its identity output (R1), because that transaction spends the reserved
-genesis coin. The layouts put the creating contract's own participant there: the factory's master in direct
-`deployFrom` (`packages/solidcash/src/stateful/sc-deploy-from.ts`), and participant 0's master in a message-bus child
-deployment (`packages/solidcash/src/message-bus/compose-materialize-deployments.ts`). Every call of that contract
+genesis coin. The layout puts the creating contract's own participant there: the factory's master in direct
+`deployFrom` (`packages/solidcash/src/stateful/sc-deploy-from.ts`). Every call of that contract
 then extends the child's authchain, and anyone able to make one can publish for it. The SDK publishes nothing for a
 child and resolves no identity for it (`resolveIdentity` finds no authhead), and clients should not trust metadata
 published for a contract-created category.

@@ -77,7 +77,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
   private hoists: StatementNode[] = [];
 
   /**
-   * `graphMode` only affects a varying broadcast (in-loop) call. Message-bus graph handlers reconstruct one
+   * `graphMode` only affects a varying broadcast (in-loop) call. Batch graph handlers reconstruct one
    * authoritative row per reached iteration, so they also need the element's live selector. The ordinary
    * broadcast covenant instead verifies every element against the whole selector array in its epilogue.
    */

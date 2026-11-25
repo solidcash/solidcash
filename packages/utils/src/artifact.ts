@@ -43,7 +43,7 @@ export interface CompilerOptions {
   framedCreationTargets?: readonly string[];
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
-  /** Skip speculative compiler-route admission rungs and compile the conservative route directly. */
+  /** Skip speculative admission rungs and compile the conservative path directly. */
   optimizeForCompilationSpeed?: boolean;
   /**
    * Emit bytecode source maps on the artifact (`debug.sourceMap` and per-body maps). Default true.
@@ -89,12 +89,12 @@ export interface CompilerOptions {
   __deployerNew?: boolean;
   /**
    * Which entry functions publish a call record: `'returning'` (today's behaviour: only functions that return a
-   * value) or `'all'` (void entries too). Framed and compiler-route compiles accept only `'returning'`.
+   * value) or `'all'` (void entries too). Framed compiles accept only `'returning'`.
    */
   callRecords?: 'returning' | 'all';
   /**
    * Compile direct contracts with the constructor-genesis (O6) mechanisms. Defaults to on. A framed compile and a
-   * compiler-route compile take none: a constructor calls only a direct contract.
+   * framed compile take none: a constructor calls only a direct contract.
    */
   genesisCalls?: boolean;
   /** Encode an NFT-index tag even when fixed state occupies only one data NFT. Opt-in wire-layout choice. */

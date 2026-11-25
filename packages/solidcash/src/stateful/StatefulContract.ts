@@ -1729,7 +1729,7 @@ export function selectEvmScalarReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypes: readonly string[], allowRaw = true,
 ): string | undefined {
   const bytes = expectedTypes.length * 32;
-  // Message-bus routes frame the complete Solidity return vector as one canonical `bytes` field before
+  // Batch routes frame the complete Solidity return vector as one canonical `bytes` field before
   // publishing it. Prefer that compiler-authored boundary over raw ABI-width values which happen to remain in
   // the route frame: state hashes, mapping witnesses, and zero placeholders are all valid `uint256` words, but
   // none of them is a complete framed return. A progressive probe can stop after the frame is assembled and
@@ -3498,7 +3498,7 @@ export function matchingRouteRowsForExpressionKey(params: {
     }
   }
   throw new Error(
-    `Message-bus expression key for '${params.collection}' matches multiple active rows`,
+    `Batch expression key for '${params.collection}' matches multiple active rows`,
   );
 }
 
@@ -5178,7 +5178,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
   }
 
-  /** Message-bus graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding
+  /** Batch graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding
    * inactive positions use inert inputs and prior active oracle co-spends occupy their exact slots. */
   private async _extractGraphBlockhashRead(
     masterUtxo: Utxo, stateInputUnlocker: Unlocker, dataNftUtxos: Utxo[],
@@ -9604,7 +9604,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // consumer. Keep the first physical witness as the canonical candidate.
         if (allowExistingScalarReuse || deferRuntimeJournalMaterialization) return false;
         throw new Error(
-          `Message-bus runtime mapping rows overlap the '${collection}' pre-state journal at ${id}; `
+          `Batch runtime mapping rows overlap the '${collection}' pre-state journal at ${id}; `
           + 'a read-your-writes transition is required.',
         );
       }
@@ -9733,7 +9733,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const rows = [...new Set(frames.flatMap((frame) => (
         frame.row === undefined ? [] : [routeRowIndex(frame.row)]
       )))];
-      const rowDescription = rows.length > 0 ? `Message-bus rows ${rows.join(', ')}` : 'Runtime loops';
+      const rowDescription = rows.length > 0 ? `Batch rows ${rows.join(', ')}` : 'Runtime loops';
       throw new Error(
         `${rowDescription} both mutate the '${collection}' runtime journal, but at least one loop form `
         + 'does not support threaded collection cardinality; split the loops into separate transactions.',
@@ -9755,7 +9755,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const input = loopAbiFunction.inputs[index];
           if (!input?.name.startsWith('__internal__')) {
             throw new Error(
-              `Message-bus runtime loop in '${loopAbiFunction.name}' requires public argument reordering; `
+              `Batch runtime loop in '${loopAbiFunction.name}' requires public argument reordering; `
               + 'split this invocation into an order already accepted by the collection topology.',
             );
           }
@@ -9763,10 +9763,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           mutableInternal[input.name] = value;
           const routeIndex = entryAbiFunction!.inputs.findIndex((candidate) => candidate.name === input.name);
           if (routeIndex < 0) {
-            throw new Error(`Message-bus route is missing compiler-owned loop argument '${input.name}'`);
+            throw new Error(`Batch route is missing compiler-owned loop argument '${input.name}'`);
           }
           const rowIndex = routeRowIndex(upsertFrame.row!);
-          if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
+          if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
           const current = entryArgs[routeIndex];
           const routeValue = Array.isArray(current) ? [...current] : [];
           while (routeValue.length <= rowIndex) routeValue.push([]);
@@ -10490,7 +10490,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           runtimeLoopDerivedCounts.set(info.collection, priorOutputCount + outputCount);
           if (upsertFrame.routed && selectedUpsertRows.length > 1 && outputCount > 0) {
             const rowIndex = routeRowIndex(upsertFrame.row!);
-            if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
+            if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
             runtimeLoopEntrySegments.push({
               rowIndex, collection: info.collection, offset: priorOutputCount, count: outputCount,
             });
@@ -10951,7 +10951,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         if (upsertFrame.routed) {
           const rowIndex = routeRowIndex(upsertFrame.row!);
-          if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
+          if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
           runtimeLoopEntrySegments.push({
             rowIndex, collection: info.collection, offset: prior.length, count: commitments.length,
           });
@@ -11581,7 +11581,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           mutableInternal[input.name] = value;
           const routeIndex = entryAbiFunction!.inputs.findIndex((candidate) => candidate.name === input.name);
           if (routeIndex < 0) throw new Error(
-            `Message-bus route is missing compiler-owned loop argument '${input.name}'`,
+            `Batch route is missing compiler-owned loop argument '${input.name}'`,
           );
           entryArgs[routeIndex] = value;
           if (entryCompilerRoute) {

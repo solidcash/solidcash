@@ -527,7 +527,7 @@ export function matchingRouteRowsForExpressionKey(params: {
     }
   }
   throw new Error(
-    `Message-bus expression key for '${params.collection}' matches multiple active rows`,
+    `Batch expression key for '${params.collection}' matches multiple active rows`,
   );
 }
 

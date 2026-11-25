@@ -250,7 +250,7 @@ export async function allocateCreateBuilderFunders(
         ordinal++;
       }
     }
-    // Message-bus routes publish the union of compute resources required by every admitted handler. A selected
+    // Batch routes publish the union of compute resources required by every admitted handler. A selected
     // handler can leave some of those physical slots inactive, but the balanced route remains fixed-width: later
     // executor, identity, and participant inputs must not shift into an unused compute coordinate.
     neededFunders += Math.max(

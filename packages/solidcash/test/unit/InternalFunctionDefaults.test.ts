@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultInternalFunctionArg } from '../../src/stateful/kernel-journal-helpers.js';
+import { defaultInternalFunctionArg } from '../../src/stateful/internal-function-args.js';
 
 describe('synthetic function-argument defaults', () => {
   it('encodes an array witness as its empty pushdata form, not a host array', () => {

@@ -3324,7 +3324,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopRepointName: string = '(sorted_upsert_repoint)';
   private sortedUpsertMergeDebitSlot: number = -1; // the debit entry's FIXED block slot index (-1 = no merge possible)
   private sortedUpsertPendingRepoint: boolean = false; // a merge-capable upsert loop left a re-point register on the stack
-  // Message-bus routes preserve their vmap topology witnesses on the altstack across OP_INVOKE handler calls.
+  // Batch routes preserve their vmap topology witnesses on the altstack across OP_INVOKE handler calls.
   // A compact fixed-width capsule in the tracked main frame gives wrapper-level upserts constant-time exact
   // access without crossing an OP_INVOKE altstack return frame; the ordinary snapshots are restored at settlement.
   // The name list is frozen at preflight so restore pops the exact same count/order even when a later final-use
@@ -8065,7 +8065,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     } else {
       // A direct contract's selector dispatcher leaves each entry it invokes `0 || selector`, the prefix of its call
-      // record, so no returning entry pushes its own. Message-bus programs and the multi-call entry keep theirs.
+      // record, so no returning entry pushes its own. Batch programs and the multi-call entry keep theirs.
       this.dispatchHandsCallPrefix = !hasFallback && !hasReceive && !this.currentContractCarriesCallBatch
         && this.directConvention && this.contractSettlesCallRecords() && this.compactCallRecords
         && !dispatchFunctions.some((fn) => this.isCompilerRouteMetaRoute(fn));
@@ -9955,7 +9955,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The first pass deliberately treats every OP_INVOKE as a hard boundary. Once it has settled, make one
     // conservative follow-up pass that may move only invocations of compiler-authored helpers. Those helpers
     // have a stable, stack-only ABI and are safe to nest; user/source entry points are dispatch targets whose
-    // selector is not a label, so they stay out of this allow-list. Message-bus bodies keep the window-12 floor
+    // selector is not a label, so they stay out of this allow-list. Batch bodies keep the window-12 floor
     // so traced derivation does not match a shorter fragment. Ordinary direct contracts use window 8 here.
     //
     // The ids the first pass allocated belong in the list as well. An OP_INVOKE body runs on the caller's stack,
@@ -9983,7 +9983,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         () => encodeInt(this.allocateCompactHelperId()),
         () => this.peekCompactHelperIdPushBytes(),
         'savings',
-        // Ordinary direct contracts may nest compiler helpers at window 8. Message-bus bodies keep the
+        // Ordinary direct contracts may nest compiler helpers at window 8. Batch bodies keep the
         // window-12 floor so traced derivation does not lose the fragments it matches.
         !this.currentContractHasRouteMeta && this.directConvention ? 8 : MINIMUM_WINDOW_ELEMENTS,
         // A round cap of 1024 predates this pass being able to nest the first pass's ids. Nesting turns the
@@ -11422,7 +11422,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-    // Message-bus unlocking bytecode retains its positional batch copy and historical reserved slot below the
+    // Batch unlocking bytecode retains its positional batch copy and historical reserved slot below the
     // ordinary ABI argument stack. A root-carried atomic envelope adds one more positional item only to the
     // direct root at input zero. Normalize the physical frame immediately after declaring the parameters:
     // journal pre-allocation, parameter validation, and delegate setup all address that frame. A route arm has
@@ -12669,7 +12669,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       } else if (!this.functionHasDelegatecall && isStatefulContract && isSelfdestruct && !hasAnyStatefulAccess) {
         // Selfdestruct without state access: direct spends still verify minting uniqueness (M6).
-        // Message-bus eligible handlers defer category census to selector-derived lifecycle mode 3.
+        // Batch eligible handlers defer category census to selector-derived lifecycle mode 3.
         if (!this.currentFunctionIsRouteMetaRoute && node.routeMetaEligible !== true) {
           this.emitMintingNftUniqueness(node);
           this.emitSelfdestructOwnNftBound(node);
@@ -17779,7 +17779,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     const names = new Set(this.currentFunction.dynamicReads ?? []);
-    // Message-bus route handlers share one trailing band. Preserved dynamic resources (_name/_symbol, …)
+    // Batch route handlers share one trailing band. Preserved dynamic resources (_name/_symbol, …)
     // occupy slots from trailingBase before any mapping NEW; omitting those counts aliases NEW verifies onto
     // chunk locks (take-job FakeToken input 225 EQUALVERIFY).
     const sharesRouteBand = this.currentFunction.routeMetaRoute === true
@@ -40116,7 +40116,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
           }, field);
         };
-        // Message-bus routes expose the union of all handlers in one ABI. A target unused by the selected handler
+        // Batch routes expose the union of all handlers in one ABI. A target unused by the selected handler
         // has no proof input or output and is authenticated by the same -2 sentinel as a general batch target. A
         // write known to have run has already refused it.
         if (!ran) {
@@ -56853,7 +56853,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * True when `node` settles a direct call record: a direct-convention entry returning values whose epilogue pins
-   * the record at its return witness. Message-bus routes, graph handlers and framed entries bind results otherwise.
+   * the record at its return witness. Batch routes, graph handlers and framed entries bind results otherwise.
    */
   private settlesDirectCallRecord(node: FunctionDefinitionNode): boolean {
     return !this.framedMaster && node.isEntryPoint && node.returnTypes.length > 0 && !node.graphEmissionHandler
@@ -56953,7 +56953,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * A direct compile shares its entries' bounded-bytes parameter checks, and the executing input's category read
-   * with the entry address that takes it, through helpers. Message-bus compiles keep their byte-pinned layout.
+   * with the entry address that takes it, through helpers. Batch compiles keep their byte-pinned layout.
    */
   private get sharesDirectEntryHelpers(): boolean {
     return true;
@@ -66596,7 +66596,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Get token container category from the key parameter
       const keyParamName = this.tokenContainerSlots[i].keyParam;
       // Prefer the live parameter; after a transfer emission the category may only remain as `__tc_cat_*`.
-      // Message-bus routes keep forwarded `__compiler_route_token_category*` witnesses instead of source names.
+      // Batch routes keep forwarded `__compiler_route_token_category*` witnesses instead of source names.
       const routeMetaCatName = i === 0
         ? '__compiler_route_token_category'
         : `__compiler_route_token_category_${i}`;

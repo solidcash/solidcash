@@ -11,6 +11,10 @@ authorization from a paraphrase instead of having to adjudicate one. Nothing mec
 an earlier round added a test that grepped the documents for superseded phrasings, and it was removed as work whose
 subject was prose rather than behaviour.
 
+The message bus and its kernel were removed from the compiler and SDK in 2026-11. Rows that describe message-bus
+behaviour or compare a decision with the kernel lane are historical records of what was decided at the time; none of
+them is a current instruction, and the code they cite is gone.
+
 | id | date | item | question asked | answer | provenance | status |
 | --- | --- | --- | --- | --- | --- | --- |
 | D1 | 2026-09-30 | the ladder's matchers, its checkpoint run, and the repeated-callee capability | how the ladder stream should spend its rounds before the next milestone | strict `revertedWith`/`withArgs` for framed contracts before M1, a full ladder at the next checkpoint, and the repeated mapping-writing callee treated as the class-(d) capability | coordinator directions recorded as Log rows `f85b9d3d3` and `912ff9400` in `archive/docs:docs/framed/PLAN_MARKETPLACE_66.md`, and carried at the top of `archive/docs:docs/framed/HANDOFF_PARALLEL.md` | live |

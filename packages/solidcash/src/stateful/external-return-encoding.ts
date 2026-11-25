@@ -58,7 +58,7 @@ export function selectEvmScalarReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypes: readonly string[], allowRaw = true,
 ): string | undefined {
   const bytes = expectedTypes.length * 32;
-  // Message-bus routes frame the complete Solidity return vector as one canonical `bytes` field before
+  // Batch routes frame the complete Solidity return vector as one canonical `bytes` field before
   // publishing it. Prefer that compiler-authored boundary over raw ABI-width values which happen to remain in
   // the route frame: state hashes, mapping witnesses, and zero placeholders are all valid `uint256` words, but
   // none of them is a complete framed return. A progressive probe can stop after the frame is assembled and

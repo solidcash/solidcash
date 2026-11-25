@@ -327,7 +327,7 @@ export interface EntryAccessInfo {
   // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
   // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
   aliasCondDeleteSlot?: number;
-  // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
+  // Batch alias canonicalization: this conditional slot is inactive when its complete key equals
   // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
   runtimeAliasPriorSlots?: number[];
   // Direct-convention compose-on-alias: earlier fixed batch writes of this collection whose key this write may share

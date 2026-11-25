@@ -42,7 +42,7 @@ import { fixedForMaximum } from './FixedForLoop.js';
 /** Stable, exact rejection for a low-level call shape the compiler-route route does not admit. */
 export class LowLevelCallShapeError extends SolidCashError {
   constructor(node: Node, detail: string) {
-    super(node, `Message-bus low-level call shape is not admitted: ${detail}`);
+    super(node, `Batch low-level call shape is not admitted: ${detail}`);
   }
 }
 

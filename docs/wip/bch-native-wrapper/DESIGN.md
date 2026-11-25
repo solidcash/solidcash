@@ -9,7 +9,7 @@ over this file.
 Sources: `packages/solidcash/contracts/` (ERC20, BchNative and its layers), `docs/bcmr/DESIGN.md` (section 6),
 `packages/solidc/docs/native-erc20.md` (supply model, reserve container), `docs/framed/AUDIT_MSG_SENDER.md` (F12) and
 OpenZeppelin Contracts' `ERC20Wrapper` (`token/ERC20/extensions/ERC20Wrapper.sol`). The sizes are measured on the
-implementation with `messageBus: false`; section 10 lists the tests and their one mocknet run.
+implementation with the direct convention; section 10 lists the tests and their one mocknet run.
 
 ## 1. Summary
 
@@ -137,7 +137,7 @@ the compiler reports a diamond conflict on `wrap`.
 
 ### 3.3 Size
 
-Measured on `13712fb9b` and again on `c2ede0be8`, with `messageBus: false`:
+Measured on `13712fb9b` and again on `c2ede0be8`, with the direct convention:
 
 | Contract | Before | Implemented |
 | --- | --- | --- |
@@ -267,7 +267,6 @@ The sum of `balanceOf` equals `totalSupply()` by construction; only a hand-built
 
 ## 7. Conventions
 
-- Message bus: a route carries a state-keyed container under a fixed key (D36).
 - Split: the option rides the root's genesis, whose category keys the container. The root's probe reads the views and
   the container key through the facets (`DeployOptions.splitFacets`), and the bundle holds the facets' geneses until
   the root's is built (`docs/bcmr/DESIGN.md`, 6.4). `TetherNativeToken.test.ts` premints and publishes USDT this way,
@@ -348,8 +347,7 @@ By the user, 2026-10-21, on the four questions revision 3 left open:
 1. "1. yes.": the hook's cost is accepted (D42).
 2. "2. no. should be general.": the SDK refuses no lifecycle entry in a wrapper deployment (D43).
 3. "3. same as on solidity/evm": `wrap` requires exact growth, as do BchNative's own `wrap` and BchNativeQuarantine's
-   `deposit` (D44). The framed path compiles the same comparison, and the message bus admits one growth-reading row per
-   batch (D36), so neither needed a change.
+   `deposit` (D44). The framed path compiles the same comparison, so neither needed a change.
 4. "4. fix": both findings are fixed (D45). The first was misstated here: in the direct convention every call spends
    the reserve's coin and re-creates it, so deposits do not add coins; framed containers (D40) bind no master and do not
    migrate. A direct reserve spreads over several coins only when tokens are paid to its lock, after which a call may

@@ -733,7 +733,7 @@ export async function loadCreateBuilderDynamicChunks(
     for (const row of selectedRuntimeEventRows) {
       const offset = runtimeLoopEventOutputs.length;
       const rowIndex = routeRowIndex(row);
-      if (rowIndex < 0) throw new Error('Message-bus runtime event row is missing from its route frame');
+      if (rowIndex < 0) throw new Error('Batch runtime event row is missing from its route frame');
       const rowArtifact = (delegateRouteRows as any[] | undefined)?.some((candidate: any) => candidate === row) && delegateRouteGroup
         ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
       await appendRuntimeEvents(row.handler, [...row.args], rowArtifact, (name) =>
@@ -781,7 +781,7 @@ export async function loadCreateBuilderDynamicChunks(
     for (const row of selectedRuntimeTransferRows) {
       const offset = runtimeLoopTransferOutputs.length;
       const rowIndex = routeRowIndex(row);
-      if (rowIndex < 0) throw new Error('Message-bus runtime transfer row is missing from its route frame');
+      if (rowIndex < 0) throw new Error('Batch runtime transfer row is missing from its route frame');
       const rowArtifact = (delegateRouteRows as any[] | undefined)?.some((candidate: any) => candidate === row) && delegateRouteGroup
         ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
       await appendRuntimeTransfers(row.handler, [...row.args], rowArtifact, (name) =>

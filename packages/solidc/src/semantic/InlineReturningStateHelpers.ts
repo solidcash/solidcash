@@ -249,7 +249,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
-    // Message-bus compilation intentionally runs this pass both before and after route synthesis. The second
+    // Batch compilation intentionally runs this pass both before and after route synthesis. The second
     // traversal sees locals emitted by the first; restarting at `__rh0_` can collide with those locals inside a
     // cloned handler. Continue after the largest serial already present in the tree. This also makes the pass
     // idempotent when another lowering requests a second helper-inlining boundary.

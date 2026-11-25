@@ -5,7 +5,6 @@ import {
   parsePushdataCommitment,
 } from '../src/state.js';
 import { readUpgradeLayoutVerdict } from '../src/framed/upgrade-layout.js';
-import { artifactExecutionIdentityFingerprint } from '../src/domain-separated-fingerprint.js';
 
 const legacy: StateLayout = {
   variables: [{ name: 'counter', type: 'bigint', nftIndex: 0, fieldIndex: 0 }],
@@ -36,11 +35,8 @@ describe('opt-in tagged singleton state layouts', () => {
     expect(childStateLayoutDigest(legacy)).toBe(LEGACY_DIGEST);
   });
 
-  it('binds the singleton tag schema into child-genesis and execution identities', () => {
+  it('binds the singleton tag schema into child-genesis identities', () => {
     expect(childStateLayoutDigest(tagged)).not.toBe(LEGACY_DIGEST);
-    const artifact = { contractName: 'Counter', bytecode: 'OP_1', abi: [], stateLayout: legacy };
-    expect(artifactExecutionIdentityFingerprint({ ...artifact, stateLayout: tagged }))
-      .not.toBe(artifactExecutionIdentityFingerprint(artifact));
     expect(childStateLayoutDigest({ ...tagged })).toBe(childStateLayoutDigest(tagged));
   });
 

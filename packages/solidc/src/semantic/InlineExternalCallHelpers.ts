@@ -251,7 +251,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     let found = false;
     this.walk(fn.body, (n) => {
       if (found) return;
-      // Message-bus admission may run after an earlier syntax-normalization pass has already replaced the
+      // Batch admission may run after an earlier syntax-normalization pass has already replaced the
       // surface method spelling with a dedicated external-call node. Treat the pre- and post-normalization
       // representations identically so early physical-frame inlining does not depend on pipeline position.
       if (this.earlyRootFilter && (n instanceof ExternalFunctionCallNode || n instanceof LowLevelCallNode

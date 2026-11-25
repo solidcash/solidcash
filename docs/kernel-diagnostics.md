@@ -124,7 +124,8 @@ verdicts remain unchanged. Use it on one focused title, for example
 Recheck with the variable unset before recording a passing checkpoint or comparing timings.
 `docs/framed/NOPROXY_LANE_COST.md` is the reading that motivated it.
 
-`FRAMED_REFUSAL_DUMP=1` writes, for every participant of a composed framed transaction the machine refuses, the
+`FRAMED_REFUSAL_DUMP=1` writes, for every participant of a composed framed transaction the machine refuses (a framed
+proxy deploy's `initialize` hop included), the
 program as the machine left it: the input, the failing instruction pointer and error, the instructions around it,
 both stacks, and the instructions each enclosing function frame was at (`FRAMED-REFUSAL ...` on stderr). Read it
 when a refusal names no source line (`no source message`): the stack names the operands the failing check compared,

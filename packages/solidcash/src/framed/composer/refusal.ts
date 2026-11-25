@@ -247,7 +247,7 @@ function entrySelector(artifact: Artifact, functionName: string | undefined): st
 }
 
 /** True under `FRAMED_REFUSAL_DUMP=1` (docs/kernel-diagnostics.md). */
-function refusalDumpOn(): boolean {
+export function refusalDumpOn(): boolean {
   return (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.FRAMED_REFUSAL_DUMP === '1';
 }
 
@@ -256,7 +256,7 @@ function refusalDumpOn(): boolean {
  * instructions around the refused one, both stacks, and the instructions each enclosing function frame was at, so a
  * refusal no source line names can be read off the program itself.
  */
-function dumpRefusedParticipant(label: string, inputIndex: number, refused: unknown): void {
+export function dumpRefusedParticipant(label: string, inputIndex: number, refused: unknown): void {
   type Instruction = { readonly opcode: number; readonly data?: Uint8Array };
   const state = refused as {
     readonly ip?: number; readonly error?: unknown; readonly instructions?: readonly Instruction[];

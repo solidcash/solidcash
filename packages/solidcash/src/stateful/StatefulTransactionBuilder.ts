@@ -69,7 +69,6 @@ export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBa
   return outputBase < 0 ? outputBase : outputBase + blockBase;
 }
 import { decodeEntryCommitment, encodeEntryCommitment } from './SortedList.js';
-import { planJournalEntryJournalOutputLayout, type KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
@@ -1046,8 +1045,6 @@ export class StatefulTransactionBuilder {
 
   private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
-  private kernelJournalSettlementOutputPlan: NonNullable<StatefulTransactionOptions['kernelJournalSettlementOutputPlan']> = [];
-  private kernelJournalEagerOutputPlan: NonNullable<StatefulTransactionOptions['kernelJournalEagerOutputPlan']> = [];
 
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
   // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
@@ -1203,10 +1200,6 @@ export class StatefulTransactionBuilder {
       ...(output.commitment && { commitment: Uint8Array.from(output.commitment) }),
     }));
     this.runtimeLoopTrailingSegments = options.runtimeLoopTrailingSegments?.map((segment) => ({ ...segment })) ?? [];
-    this.kernelJournalSettlementOutputPlan = options.kernelJournalSettlementOutputPlan
-      ?.map((entry) => ({ ...entry })) ?? [];
-    this.kernelJournalEagerOutputPlan = options.kernelJournalEagerOutputPlan
-      ?.map((entry) => ({ ...entry })) ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
     this.eventNftLockingBytecodes = options.eventNftLockingBytecodes ?? new Map();
     this.tokenContainers = options.tokenContainers ?? [];
@@ -2063,18 +2056,11 @@ export class StatefulTransactionBuilder {
       loopEntryCommitments: this.loopEntryCommitments,
       pendingKeccakLoopRecreates: (b) => this._pendingKeccakLoopRecreates(b),
       keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
-      kernelJournalSettlementOutputPlan: this.kernelJournalSettlementOutputPlan,
-      kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
       loopEntriesBeforeDynamicChunks: this.loopEntriesBeforeDynamicChunks,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       directCallDelegateBlock: this.directCallDelegateBlock,
       trailingLoopEntryVars: () => this._trailingLoopEntryVars(),
       delegateLoopEntryVars: () => this._delegateLoopEntryVars(),
-      validateJournalJournalSettlementOutputPlan: () => {
-        this.validateJournalJournalSettlementOutputPlan();
-      },
-      kernelJournalOutputLayout: () => this.kernelJournalOutputLayout(),
-      trailingLoopEntryOutputCount: () => this._trailingLoopEntryOutputCount(),
       loopEntryTransitionSatoshis: (variable, commitment) => (
         this._loopEntryTransitionSatoshis(variable, commitment)
       ),
@@ -6117,9 +6103,6 @@ export class StatefulTransactionBuilder {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length
         - this.runtimeLoopEventOutputs.length + eventIndex;
     }
-    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
-      return this.getJournalJournalTrailingEffectOutputIndex('events', eventIndex);
-    }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
       - this.runtimeLoopTransferOutputs.length + this._runtimeLoopUnsegmentedEntryPrefixCount();
@@ -6145,9 +6128,6 @@ export class StatefulTransactionBuilder {
     }
     if (this.runtimeLoopTrailingSegments.length === 0) {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length + transferIndex;
-    }
-    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
-      return this.getJournalJournalTrailingEffectOutputIndex('transfers', transferIndex);
     }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
@@ -6300,14 +6280,8 @@ export class StatefulTransactionBuilder {
   /** Resolve a collection-local commitment offset through the authenticated trailing segment plan. */
   private _getLoopEntryOutputIndexHost(): GetLoopEntryOutputIndexHost {
     return {
-      kernelJournalSettlementOutputPlan: this.kernelJournalSettlementOutputPlan,
-      kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
       runtimeLoopTrailingSegments: this.runtimeLoopTrailingSegments,
       loopEntryCommitments: this.loopEntryCommitments,
-      validateJournalJournalSettlementOutputPlan: () => {
-        this.validateJournalJournalSettlementOutputPlan();
-      },
-      kernelJournalOutputLayout: () => this.kernelJournalOutputLayout(),
       getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
       trailingLoopEntryVars: () => this._trailingLoopEntryVars(),
     };
@@ -6413,46 +6387,6 @@ export class StatefulTransactionBuilder {
     return end;
   }
 
-  /**
-   * The SDK derives this plan, but its coordinates must still be canonical before they decide output placement.
-   * The route final flush independently authenticates each selected record against the resulting output.
-   */
-  private validateJournalJournalSettlementOutputPlan(): void {
-    this.kernelJournalOutputLayout();
-  }
-
-  /** Compose the explicit eager prefix and deferred dense band without deriving either from commitment order. */
-  private kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan {
-    return planJournalEntryJournalOutputLayout(
-      this.kernelJournalEagerOutputPlan,
-      this.kernelJournalSettlementOutputPlan,
-    );
-  }
-
-  /** Runtime effects retain source order, but always follow the complete `E + D` journal entry band. */
-  private getJournalJournalTrailingEffectOutputIndex(
-    kind: 'events' | 'transfers', effectIndex: number,
-  ): number {
-    const layout = this.kernelJournalOutputLayout();
-    let physical = this.getLoopEntryOutputBase() + layout.finalOutputCursorDelta;
-    let resolved: number | undefined;
-    for (const segment of this.runtimeLoopTrailingSegments) {
-      if (segment.kind === 'entries') continue;
-      if (segment.kind === kind
-        && effectIndex >= segment.offset && effectIndex < segment.offset + segment.count) {
-        if (resolved !== undefined) {
-          throw new Error(`Runtime loop ${kind} output ${effectIndex} has multiple output locations`);
-        }
-        resolved = physical + effectIndex - segment.offset;
-      }
-      physical += segment.count;
-    }
-    if (resolved === undefined) {
-      throw new Error(`Runtime loop ${kind} output ${effectIndex} is missing from the trailing segment plan`);
-    }
-    return resolved;
-  }
-
   /** Entry outputs preceding the source-ordered segment stream, including same-collection fixed prefixes. */
   private _runtimeLoopUnsegmentedEntryPrefixCount(): number {
     const firstSegmentOffsets = new Map<string, number>();
@@ -6488,12 +6422,11 @@ export class StatefulTransactionBuilder {
    * entries from emitTrailingWriteOutputBase, which steps down past the slot while the call's own
    * `__internal__returnOutputIdx` is negative, while emitRuntimeLoopEffectVerification reads the loop's events and
    * payments from past the complete fixed block. The slot then sits between the entries and the effects. A segment
-   * plan that also places entries (a route's rows), a journal journal's band and a delegate's frame keep their
-   * published coordinates, so they take nothing out.
+   * plan that also places entries and a delegate's frame keep their published coordinates, so they take nothing
+   * out.
    */
   private _runtimeLoopEntryBandCompaction(): number {
     if (this.runtimeLoopTrailingSegments.some((segment) => segment.kind === 'entries')
-      || this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0
       || this.delegateEntriesAfterLowLevel || this.directCallDelegateBlock || this.keccakSideCarsFollowBlock) {
       return 0;
     }

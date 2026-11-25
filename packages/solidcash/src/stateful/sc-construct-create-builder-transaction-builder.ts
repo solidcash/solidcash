@@ -80,8 +80,6 @@ export function constructCreateBuilderTransactionBuilder(
     runtimeLoopEventOutputs: any[];
     runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[];
     runtimeLoopTrailingSegments: any[];
-    kernelJournalSettlementOutputPlan: any;
-    kernelJournalEagerOutputPlan: any;
     tokenContainers: TokenContainerInfo[];
     tokenContainerLockingBytecodes: Map<string, Uint8Array>;
     satoshiContainerUtxo: UnlockableUtxo | undefined;
@@ -138,8 +136,7 @@ export function constructCreateBuilderTransactionBuilder(
     resolvedMsgSenderCategory, externalReadUtxos, overrides, valueChunkWriteStagingSession,
     unlockableMaster, unlockableDataNfts, stateLayout, requiredNftIndices, entryNftLockingBytecodes,
     dynamicChunkVars, dynamicChunkInputs, trailingDisposalInputs, loopEntryVars,
-    runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments,
-    kernelJournalSettlementOutputPlan, kernelJournalEagerOutputPlan, tokenContainers,
+    runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments, tokenContainers,
     tokenContainerLockingBytecodes, satoshiContainerUtxo, satoshiContainerLockingBytecode,
     blockhashCoSpendUtxos, blockInfoCoSpendUtxos, delegateBlockInfoOracle, unslottedPoolCoSpends,
     blockhashCoSpendSlotOrdinals,
@@ -238,8 +235,6 @@ export function constructCreateBuilderTransactionBuilder(
     ...(runtimeLoopEventOutputs.length > 0 && { runtimeLoopEventOutputs }),
     ...(runtimeLoopTransferOutputs.length > 0 && { runtimeLoopTransferOutputs }),
     ...(runtimeLoopTrailingSegments.length > 0 && { runtimeLoopTrailingSegments }),
-    ...(kernelJournalSettlementOutputPlan && { kernelJournalSettlementOutputPlan }),
-    ...(kernelJournalEagerOutputPlan && { kernelJournalEagerOutputPlan }),
     tokenContainers,
     tokenContainerLockingBytecodes,
     ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),

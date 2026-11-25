@@ -26,10 +26,6 @@ import {
   type TokenContainerInfo,
 } from './external-call-utxo-group.js';
 import {
-  type KernelEntryJournalEagerOutputPlanEntry,
-  type KernelEntryJournalSettlementOutputPlanEntry,
-} from './KernelEntryJournal.js';
-import {
   legacyNamedJobEventCollectionFallback,
 } from './legacy-planning-heuristics.js';
 import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
@@ -328,10 +324,6 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   | { kind: 'events'; offset: number; count: number }
   | { kind: 'transfers'; offset: number; count: number }
   >;
-  /** Canonical global-record to physical-entry ordering for a journal carrier settlement. */
-  kernelJournalSettlementOutputPlan?: KernelEntryJournalSettlementOutputPlanEntry[];
-  /** Source/materialization-ordered outputs which precede the route-final carrier settlement band. */
-  kernelJournalEagerOutputPlan?: KernelEntryJournalEagerOutputPlanEntry[];
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];

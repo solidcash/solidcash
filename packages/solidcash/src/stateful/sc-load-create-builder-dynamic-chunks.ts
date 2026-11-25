@@ -310,7 +310,6 @@ export async function loadCreateBuilderDynamicChunks(
   const tokenContainers = params.tokenContainers as any[];
   const routeRowIndex = params.routeRowIndex as (row: any) => number;
   const selectedRowArgument = params.selectedRowArgument as (row: any, name: string) => unknown;
-  const kernelJournalSettlementEntrySegments = params.kernelJournalSettlementEntrySegments as any[];
   const runtimeLoopEntrySegments = params.runtimeLoopEntrySegments as any[];
   const entryAccesses = params.entryAccesses as any;
   const dynamicWrites = params.dynamicWrites as string[];
@@ -817,27 +816,16 @@ export async function loadCreateBuilderDynamicChunks(
   | { kind: 'events'; offset: number; count: number }
   | { kind: 'transfers'; offset: number; count: number }
   > = [];
-  if (kernelJournalSettlementEntrySegments) {
-    // The compiler's final flush walks the present-record subsequence in global record-ordinal order. Settlement
-    // authority may move between access streams, but it never changes that order. Keep the complete live journal
-    // band contiguous before source-ordered effects; a tombstone/absence disposition contributes no output.
-    runtimeLoopTrailingSegments.push(...kernelJournalSettlementEntrySegments.map((segment) => ({
-      kind: 'entries' as const,
-      ...segment,
-    })));
-  }
-  const sourceOrderedRuntimeEntrySegments = kernelJournalSettlementEntrySegments
-    ? [] : runtimeLoopEntrySegments;
-  if (sourceOrderedRuntimeEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
+  if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
     || runtimeLoopTransferSegments.length > 0) {
     const rowIndices = new Set([
-      ...sourceOrderedRuntimeEntrySegments.map((segment) => segment.rowIndex),
+      ...runtimeLoopEntrySegments.map((segment) => segment.rowIndex),
       ...runtimeLoopEventSegments.map((segment) => segment.rowIndex),
       ...runtimeLoopTransferSegments.map((segment) => segment.rowIndex),
       ...runtimeLoopEffectOccurrences.map((occurrence) => occurrence.rowIndex),
     ]);
     for (const rowIndex of [...rowIndices].sort((left, right) => left - right)) {
-      for (const segment of sourceOrderedRuntimeEntrySegments
+      for (const segment of runtimeLoopEntrySegments
         .filter((candidate: any) => candidate.rowIndex === rowIndex)) {
         runtimeLoopTrailingSegments.push({
           kind: 'entries', collection: segment.collection,

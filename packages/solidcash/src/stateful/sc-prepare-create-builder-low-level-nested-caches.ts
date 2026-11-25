@@ -308,10 +308,6 @@ type PreparedAtomicNode = RuntimeCallMetadata & {
   resolveArgsFromResults?: (
     results: ReadonlyMap<number, FunctionArgument>,
   ) => FunctionArgument[] | undefined;
-  /** Apply authenticated sibling returns to this physical legacy call group. */
-  refreshArgsFromResults?: (
-    results: ReadonlyMap<number, FunctionArgument>,
-  ) => boolean;
   /**
    * Re-derive this row's terminal chunkable-value productions against a complete route row list.
    *

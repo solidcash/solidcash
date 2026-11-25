@@ -52,7 +52,6 @@ export type ResolveCreateBuilderNestedComposeCalleeResult =
     nestedFunctionName: string;
     nestedArgs: FunctionArgument[];
     graphNestedArgs: FunctionArgument[];
-    needsExpressionReturns: boolean;
     nestedExpressionReturns: Map<string, FunctionArgument> | undefined;
     graphExpressionReturns: Map<string, FunctionArgument> | undefined;
   };
@@ -377,7 +376,6 @@ export async function resolveCreateBuilderNestedComposeCallee(
     nestedFunctionName,
     nestedArgs,
     graphNestedArgs,
-    needsExpressionReturns,
     nestedExpressionReturns,
     graphExpressionReturns,
   };

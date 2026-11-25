@@ -828,7 +828,6 @@ export class StatefulTransactionBuilder {
   private _minRelayFeePerKb: bigint;
   private _maximumFeeSatoshis?: bigint;
   private strictVmPreflight = false;
-  private resultDependentArgumentRefresher?: (builder: TransactionBuilder) => boolean;
   private masterUnlockerRefresher?: (builder?: TransactionBuilder) => Unlocker;
   private allInputs: UnlockableUtxo[];
   // External-library side-car UTXO, co-spent as the LAST input so the covenant's library loader can read
@@ -1238,13 +1237,6 @@ export class StatefulTransactionBuilder {
     if (this.probeMasterVout === undefined) return;
     this.masterUtxo.vout = this.probeMasterVout;
     this.probeMasterVout = undefined;
-  }
-
-  /** @internal Rebind later callee arguments after an authenticated return channel converges. */
-  _setResultDependentArgumentRefresher(
-    refresher: (builder: TransactionBuilder) => boolean,
-  ): void {
-    this.resultDependentArgumentRefresher = refresher;
   }
 
   /** @internal Rebuild a root unlocker whose hidden witnesses depend on the final materialized input order. */
@@ -2585,8 +2577,8 @@ export class StatefulTransactionBuilder {
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       computeMinFee: (size) => this.computeMinFee(size),
-      assertConvergedFinalTransaction: (builder, reassertFinalLayout, finalizeFeeBeforeValidation) => (
-        this._assertConvergedFinalTransaction(builder, reassertFinalLayout, finalizeFeeBeforeValidation)
+      assertConvergedFinalTransaction: (builder, finalizeFeeBeforeValidation) => (
+        this._assertConvergedFinalTransaction(builder, finalizeFeeBeforeValidation)
       ),
     };
   }
@@ -2893,31 +2885,10 @@ export class StatefulTransactionBuilder {
 
   private _convergedFinalTransactionHost(): ConvergedFinalTransactionHost {
     return {
-      masterUtxo: this.masterUtxo,
-      categoryId: this.categoryId,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
-      lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       allInputs: this.allInputs,
       externalCallEntryInserts: this.externalCallEntryInserts,
-      resultDependentArgumentRefresher: this.resultDependentArgumentRefresher,
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
-      repairComputedChunkOutput: (builder, inputIndex) => this._repairComputedChunkOutput(builder, inputIndex),
-      compilerOwnedTrailingEntryOutputIndices: () => this._compilerOwnedTrailingEntryOutputIndices(),
-      restoreDeclaredMutableEntrySlots: (builder) => {
-        this._restoreDeclaredMutableEntrySlots(builder);
-      },
-      clearSupersededDelegateDynamicCollectionOutputs: (builder) => {
-        this._clearSupersededDelegateDynamicCollectionOutputs(builder);
-      },
-      clearUnclaimedConditionalEventSlots: (builder) => {
-        this._clearUnclaimedConditionalEventSlots(builder);
-      },
-      syncRefreshedCarrierMasters: (builder, carriers) => {
-        this._syncRefreshedCarrierMasters(builder, carriers);
-      },
-      logCovenantFailureTrace: (builder, message) => {
-        this._logCovenantFailureTrace(builder, message);
-      },
     };
   }
 
@@ -7652,17 +7623,14 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /** Converge authenticated computed outputs against the exact transaction shape submitted to the provider. */
+  /** Validate the exact transaction shape submitted to the provider. */
   private _assertConvergedFinalTransaction(
     builder: TransactionBuilder,
-    afterRepairs?: () => void,
     beforeValidation?: (
       transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>,
     ) => boolean,
   ): ReturnType<TransactionBuilder['buildLibauthTransaction']> {
-    return assertConvergedFinalTransaction(
-      this._convergedFinalTransactionHost(), builder, afterRepairs, beforeValidation,
-    );
+    return assertConvergedFinalTransaction(this._convergedFinalTransactionHost(), builder, beforeValidation);
   }
 
   async send(): Promise<TransactionDetails> {
@@ -7701,7 +7669,6 @@ export class StatefulTransactionBuilder {
     const {
       finalBuilder,
       serializedAccountingFunders,
-      reassertFinalLayout,
     } = runSendPhase3FinalRebuildImpl(
       this._runSendPhase3FinalRebuildHost(),
       neededFee,
@@ -7727,7 +7694,6 @@ export class StatefulTransactionBuilder {
       this._runSendPhase4ThroughSubmitHost(),
       finalBuilder,
       serializedAccountingFunders,
-      reassertFinalLayout,
       provider,
       neededFee,
       sendTiming,

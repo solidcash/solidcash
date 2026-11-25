@@ -34,7 +34,6 @@ export async function runSendPhase4ThroughSubmit(
   host: RunSendPhase4ThroughSubmitHost,
   finalBuilder: TransactionBuilder,
   serializedAccountingFunders: readonly UnlockableUtxo[],
-  reassertFinalLayout: () => void,
   provider: NetworkProvider,
   neededFee: bigint,
   sendTiming: (label: string) => void,
@@ -43,7 +42,6 @@ export async function runSendPhase4ThroughSubmit(
     host.convergeAndSerializeFinalTransactionHost(),
     finalBuilder,
     serializedAccountingFunders,
-    reassertFinalLayout,
     sendTiming,
   );
   const { finalizedTransaction, totalInputSats } = converged;

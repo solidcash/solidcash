@@ -353,8 +353,6 @@ export interface ExternalCallUtxoGroup {
     }[] | undefined,
     finalVisibleArgs: readonly any[],
   ) => { internalArgs: Record<string, any>; payloadBytes: number };
-  /** The carrier master unlocker changed during the current dependency-convergence pass. */
-  argumentsRefreshedDuringConvergence?: boolean;
   /** Active route batch blockhash reads, retained until the group's absolute input base is known. */
   graphBlockhashSelections?: Array<{
     readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;

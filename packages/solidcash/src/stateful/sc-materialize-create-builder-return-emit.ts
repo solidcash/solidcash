@@ -1,21 +1,16 @@
 /**
  * phase-boundary extract: SC _createBuilder extract — B8 emitReturn blob materialization plus
- * atomic-graph nested return-event seed / arg-refresh preparation.
+ * nested return-event seed preparation.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodePushdataValue, type AbiFunction, type StateValue } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { decodeEvmInvocationResult } from './evm-abi-result.js';
-import {
-  decodeAuthenticatedProducerResultVector,
-  encodeExternalReturnValue,
-} from './external-return-encoding.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
-import { AuthenticatedProducerResults } from './authenticated-producer-results.js';
 import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 
 export type MaterializeCreateBuilderReturnEmitHost = {
@@ -374,57 +369,5 @@ export async function materializeCreateBuilderReturnEmit(
         provisionalResultCommitment: seedCommitment,
       };
     }
-
-    if (preparedAtomicNodes.some((node) => node.refreshArgsFromResults !== undefined)) {
-      builder._setResultDependentArgumentRefresher((transactionBuilder) => {
-        const resultsByParent = new Map<number, AuthenticatedProducerResults>();
-        for (const [groupIndex, nodeIndex] of preparedAtomicNodeByExternalGroup) {
-          const node = preparedAtomicNodes![nodeIndex];
-          if (node?.parent === null || node?.callsiteId === undefined) continue;
-          const group = externalCallUtxoGroups[groupIndex];
-          const outputIndex = group?.returnOutputIndex
-          ?? builder.getBuiltExternalCallReturnEventOutputIndex(groupIndex);
-          if (outputIndex === undefined || outputIndex < 0) continue;
-          const commitmentHex = transactionBuilder.outputs[outputIndex]?.token?.nft?.commitment;
-          if (typeof commitmentHex !== 'string' || commitmentHex.length === 0) continue;
-          const artifact = node.executionArtifact ?? node.contract.inner.artifact;
-          const producerFunction = (artifact.abi as readonly AbiFunction[])
-            .find((candidate) => candidate.name === node.functionName);
-          const output = producerFunction?.outputs;
-          if (!output?.length) continue;
-          const commitment = hexToBin(commitmentHex);
-          const values = decodeAuthenticatedProducerResultVector(
-            commitment,
-            output.map((component) => component.type),
-            artifact.structs ?? artifact.stateLayout?.structs,
-            resolveExternalResultEncoding(
-              producerFunction!.resultEncoding,
-              artifact,
-              output.map((component) => component.type),
-              `function '${producerFunction!.name}' result`,
-            ) === 'evm-abi-v1',
-            artifact.enums,
-          );
-          if (!values) continue;
-          const value = (values.length === 1 ? values[0] : values) as FunctionArgument;
-          const siblings = resultsByParent.get(node.parent) ?? new AuthenticatedProducerResults(node.parent);
-          siblings.add({
-            callsiteId: node.callsiteId,
-            sourceCallsiteId: node.sourceCallsiteId,
-            sourceLogicalIndex: node.sourceLogicalIndex ?? node.batchLogicalIndex,
-            occurrenceIndex: node.occurrenceIndex ?? node.batchOccurrenceIndex,
-          }, value);
-          resultsByParent.set(node.parent, siblings);
-        }
-        let changed = false;
-        for (const node of preparedAtomicNodes!) {
-          if (node.parent === null || !node.refreshArgsFromResults) continue;
-          const results = resultsByParent.get(node.parent);
-          if (results && node.refreshArgsFromResults(results)) changed = true;
-        }
-        return changed;
-      });
-    }
-
   }
 }

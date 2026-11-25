@@ -218,7 +218,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       resolvedRawFunctionName,
       nestedArgs,
       graphNestedArgs,
-      needsExpressionReturns,
       graphExpressionReturns,
     } = nestedCalleeResolved;
     const proxyCallee = resolvedProxyCallee as undefined | {
@@ -572,9 +571,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
           childExternalGroupIndex,
           childCompilerInternalArgs,
           childFunctionName,
-          nestedArgs,
           nestedSources,
-          needsExpressionReturns,
           directInvocationRows,
           resolveGraphNestedReturns,
           resolveGraphNestedArgs,
@@ -583,7 +580,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
           delegateVisibleInputs,
           callInfoContract: callInfo.contract,
           onChainState,
-          publishedNestedExternalCalls,
           proxyCallee,
           callee,
           refreshChunkableRouteWitnesses,
@@ -609,7 +605,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
           resolvedTargetLockingBytecode,
           resolvedRawFunctionName,
           producerSelector,
-          delegateFn,
           calleeRouteArtifact,
           delegateCallerIdentity,
         },

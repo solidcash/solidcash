@@ -39,7 +39,6 @@ import { isAuthenticatedEventRepairCommitment } from './delegate-event-jobevent-
 import { chunksFromValue, decodeVmScriptNumber } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
-import type { ComputedChunkRepairResult } from './stb-converged-final-transaction.js';
 import {
   isDisposableAlignmentPad,
   selectExpectedP2sh32OutputLock,
@@ -61,7 +60,17 @@ import {
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { isFillerLockingBytecode } from './filler.js';
 
-export type { ComputedChunkRepairResult };
+export type ComputedChunkRepairResult = {
+  changed: boolean;
+  passed: boolean;
+  repairedOutputs: number[];
+  repairDetails: Array<{
+    outputIndex: number;
+    field: 'commitment' | 'lockingBytecode' | 'token';
+    previous: string;
+    proposed: string;
+  }>;
+};
 
 export interface RepairComputedChunkOutputHost {
   authenticatedEventOutputs: Map<number, Output>;
@@ -687,7 +696,6 @@ export function repairComputedChunkOutput(
     const refreshedCarriers = new Set<ExternalCallUtxoGroup>();
     for (const [carrier, outputBase] of computedValueBaseRebases) {
       if (!refreshCapturedValueChunkOutputBase(carrier, outputBase, { shiftPredOut: false })) continue;
-      carrier.argumentsRefreshedDuringConvergence = true;
       refreshedCarriers.add(carrier);
     }
     if (refreshedCarriers.size > 0) {

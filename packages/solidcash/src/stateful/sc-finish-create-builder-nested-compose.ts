@@ -1,14 +1,12 @@
 /**
  * phase-boundary extract: SC _createBuilder extract — nested-compose post-publish finish
- * (value-chunk producer epoch, prepared atomic nodes, arg refresh, finish log).
+ * (value-chunk producer epoch, prepared atomic nodes, finish log).
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { externalReturnsForCallsites } from './external-returns-for-callsites.js';
-import { functionArgumentListsEqual } from './graph-planning-producer-result.js';
 import {
   advanceValueChunkProducerArgumentEpoch,
   createValueChunkProducerArgumentEpoch,
@@ -35,8 +33,8 @@ export type FinishCreateBuilderNestedComposeBags = {
 
 /**
  * After the nested-compose group is published: stage value-chunk producer
- * bindings, register prepared atomic nodes / convergence refreshers, and
- * append the nested callsite onto the group metadata arrays.
+ * bindings, register prepared atomic nodes, and append the nested callsite
+ * onto the group metadata arrays.
  */
 export function finishCreateBuilderNestedCompose(
   host: FinishCreateBuilderNestedComposeHost,
@@ -48,9 +46,7 @@ export function finishCreateBuilderNestedCompose(
     childExternalGroupIndex: number;
     childCompilerInternalArgs: Record<string, FunctionArgument>;
     childFunctionName: string;
-    nestedArgs: FunctionArgument[];
     nestedSources: readonly any[] | undefined;
-    needsExpressionReturns: boolean;
     directInvocationRows: readonly any[] | undefined;
     resolveGraphNestedReturns: ((results: ReadonlyMap<number, FunctionArgument>) => {
       externalReturns: Map<string, FunctionArgument>;
@@ -60,7 +56,6 @@ export function finishCreateBuilderNestedCompose(
     delegateVisibleInputs: readonly { name: string }[];
     callInfoContract: any;
     onChainState: { state: Record<string, unknown> };
-    publishedNestedExternalCalls: readonly ExternalCallAbi[];
     proxyCallee: any | undefined;
     refreshChunkableRouteWitnesses: ((...args: any[]) => any) | undefined;
     valueChunkProductionsForPath: (path: any) => readonly any[] | any[];
@@ -80,10 +75,10 @@ export function finishCreateBuilderNestedCompose(
 ): FinishCreateBuilderNestedComposeBags {
   const {
     nested, selectedFn, sharedGroupIndex, delegateCallGroupIndex, childExternalGroupIndex,
-    childCompilerInternalArgs, nestedArgs, nestedSources,
-    needsExpressionReturns, directInvocationRows, resolveGraphNestedReturns,
+    childCompilerInternalArgs, nestedSources,
+    directInvocationRows, resolveGraphNestedReturns,
     delegateVisibleArgs, delegateVisibleInputs, callInfoContract, onChainState,
-    publishedNestedExternalCalls, proxyCallee, refreshChunkableRouteWitnesses,
+    proxyCallee, refreshChunkableRouteWitnesses,
     valueChunkProductionsForPath, publishRouteValueChunkProducerBinding,
     latestRouteValueChunkProducerBinding, routeValueChunkProducerEpochByPhysicalGroup,
     preparedAtomicNodes, preparedAtomicNodeByExternalGroup, latestPreparedAtomicNodeByPhysicalGroup,
@@ -98,7 +93,6 @@ export function finishCreateBuilderNestedCompose(
   const graphNestedArgs = params.graphNestedArgs as FunctionArgument[] | undefined;
   const resolveGraphNestedArgs = params.resolveGraphNestedArgs as
     ((results: ReadonlyMap<number, FunctionArgument>) => FunctionArgument[] | undefined) | undefined;
-  const delegateFn = params.delegateFn as AbiFunction | undefined;
 
   let routeValueChunkProducerAliases = bags.routeValueChunkProducerAliases;
   let routeValueChunkProducerPhysicalGroup = bags.routeValueChunkProducerPhysicalGroup;
@@ -327,92 +321,6 @@ export function finishCreateBuilderNestedCompose(
       sharedGroupIndex >= 0 ? sharedGroupIndex : childExternalGroupIndex,
       preparedAtomicNodes.length - 1,
     );
-  }
-  const logicalGroup = externalCallUtxoGroups[childExternalGroupIndex];
-  // Argument recipes are evaluated at their compiler-authored callsite. A completed caller state is
-  // the terminal state, not a call-point snapshot, so replaying ordinary state-derived recipes against
-  // it can rewrite an earlier call with a later value. Calls which consume an earlier call's result are
-  // refreshed exclusively by the authenticated producer-result path below.
-  if (nestedSources && needsExpressionReturns && preparedAtomicNodes) {
-    const atomicNodeIndex = preparedAtomicNodeByExternalGroup.get(childExternalGroupIndex);
-    let currentLogicalArgs = nestedArgs;
-    if (atomicNodeIndex !== undefined) {
-      preparedAtomicNodes[atomicNodeIndex].refreshArgsFromResults = (results: any) => {
-        const externalReturns = externalReturnsForCallsites(
-          nestedSources, results, publishedNestedExternalCalls,
-          nested.callsiteId === undefined ? undefined : {
-            callsiteId: nested.callsiteId,
-            resultConsumers: delegateFn?.resultConsumers,
-          },
-        );
-        if (externalReturns.size === 0) return false;
-        const nextLogicalArgs = host.resolveExternalArgs(
-          nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-          delegateVisibleInputs, externalReturns, 0, false, delegateSelfAddress,
-        );
-        if (!nextLogicalArgs) return false;
-        const nextGraphArgs = host.resolveExternalArgs(
-          nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-          delegateVisibleInputs, externalReturns, 0, false, delegateSelfAddress,
-        ) ?? nextLogicalArgs;
-        const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
-        const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
-        const ownsPhysicalRefresh = routeValueChunkProducerPhysicalGroup === undefined
-          || routeValueChunkProducerEpoch === undefined
-          || routeValueChunkProducerEpochByPhysicalGroup.get(routeValueChunkProducerPhysicalGroup)
-            === routeValueChunkProducerEpoch;
-        const routeDerivedRefresher = refreshChunkableRouteWitnesses
-          ?? physicalGroup?.refreshRouteDerivedArguments;
-        const logicalArgsChanged = !functionArgumentListsEqual(
-          currentLogicalArgs, nextLogicalArgs,
-        );
-        const routeChanged = false;
-        if (!logicalArgsChanged && !routeChanged) return false;
-        const refreshedRouteInternalArgs = routeDerivedRefresher
-          ? routeDerivedRefresher(
-            undefined, nextLogicalArgs,
-          ).internalArgs
-          : {};
-
-        currentLogicalArgs = nextLogicalArgs;
-        if (logicalGroup !== physicalGroup || ownsPhysicalRefresh) {
-          logicalGroup.logicalFunctionArgs = [...nextLogicalArgs];
-          if (Object.keys(refreshedRouteInternalArgs).length > 0) {
-            logicalGroup.internalArgs = {
-              ...logicalGroup.internalArgs,
-              ...refreshedRouteInternalArgs,
-            };
-          }
-        }
-        preparedAtomicNodes![atomicNodeIndex] = {
-          ...preparedAtomicNodes![atomicNodeIndex],
-          args: [...nextGraphArgs],
-        };
-        if (!ownsPhysicalRefresh) return true;
-        const selectedFunctionName = resolvedRawFunctionName ?? nested.functionName;
-        if (proxyCallee && delegateCallGroupIndex !== undefined) {
-          const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
-          if (delegate.functionName === selectedFunctionName) {
-            delegate.refreshFunctionArgs?.(nextLogicalArgs);
-            if (Object.keys(refreshedRouteInternalArgs).length > 0) {
-              delegate.refreshInternalArgs?.(refreshedRouteInternalArgs);
-            }
-          }
-        } else {
-          if (physicalGroup.functionName === selectedFunctionName
-            || physicalGroup.logicalFunctionName === selectedFunctionName) {
-            physicalGroup.refreshFunctionArgs?.(nextLogicalArgs);
-            if (Object.keys(refreshedRouteInternalArgs).length > 0) {
-              physicalGroup.refreshInternalArgs?.(refreshedRouteInternalArgs);
-            }
-          }
-        }
-        const refreshedCarrier = proxyCallee && delegateCallGroupIndex !== undefined
-          ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : physicalGroup;
-        refreshedCarrier.argumentsRefreshedDuringConvergence = true;
-        return true;
-      };
-    }
   }
   allGroupEcSlots = [...allGroupEcSlots, nested];
   // Delegate-composed children use the callsite map below rather than the direct/transitive parent

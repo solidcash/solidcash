@@ -9138,21 +9138,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
     this.emit(Op.OP_DEFINE, locationData);
 
-    // handler-frame ABI: validate DEFINE frame against the shipped handler-frame-abi (same path unit tests drive).
-    // Count leftover tracked temps that are not named parameters as anonymous live cells.
-    // DEFINE fail-closed validation: returning bodies legitimately leave `returnTypes.length` result cells — subtract that
-    // arity so return values are not false-positive live-anonymous.
-    const frameResult: { ok: boolean; failures: readonly { invariantId: string }[] } = { ok: true, failures: [] };
-    // DEFINE fail-closed validation: under journal, fail-closed for every DEFINE kind. Return-aware leftover counting
-    // (`anonymousLive = max(0, leftover - returnArity)`) is the exact model for user returns and
-    // for generated verifier and row-parse bodies (their `(value)` leftovers
-    // match published return arity).
-    if (false) {
-      const failureIds = frameResult.failures.map((failure) => failure.invariantId);
-      throw new Error(
-        `DEFINE frame validation failed for ${func.name}: `
-        + failureIds.join(','),
-      );
+    // A framed DEFINE body fails closed when its stack model ends with more unnamed cells than its return arity.
+    if (this.compilerOptions.composition === 'framed') {
+      const parameterNames = new Set(func.parameters.map((parameter) => parameter.name));
+      const leftover = subTraversal.stack.filter((name) => (
+        !parameterNames.has(name) && !name.startsWith('__internal__')
+      ));
+      if (leftover.length > (func.returnTypes?.length ?? 0)) {
+        throw new Error(`DEFINE frame validation failed for ${func.name}: live-anonymous-at-settlement`);
+      }
     }
   }
 

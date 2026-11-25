@@ -2,6 +2,24 @@
 title: Release Notes
 ---
 
+## v0.52.1
+
+SolidCash 0.52.1 makes the EACC marketplace port pass on the framed convention, builds low-level calls in loops, and
+fixes the mock network's clock. Contracts on the direct convention compile to the same bytecode as in 0.52.0. Every
+framed contract's address changes: please refer to the [migration notes](/docs/releases/migration-notes#v0520-to-v0521).
+
+- The framed validator read a callee's redeem push of more than 65,535 bytes as a one-byte push, so it refused every
+  call to such a contract, including the EACC marketplace's. It reads `OP_PUSHDATA4` now; the marketplace ladder passes
+  with and without a proxy.
+- A low-level `call` that a loop may make more than once compiles again: each turn binds a callee run of its own, so one
+  run cannot answer two turns. mistswap's Kashi contracts compile again. A listing in which two turns pay value is
+  refused by name (`LowLevelCallTurnsError`).
+- `MockNetworkProvider` mines each transaction a second after the tip, or at the time `setNextBlockTimestamp` set, as
+  Hardhat's automine does. Since 0.50.0 it mined at the tip's own time, so consecutive transactions read the same
+  `block.timestamp`.
+- 0.52.0 was checked under libauth's corrected `OP_DEFINE` cost, which the packages depend on and BCHN v29.1.0 applies:
+  every flow in the test suites fits its limits.
+
 ## v0.52.0
 
 SolidCash 0.52.0 is a security release. It closes holes in how calls bind the callee run they answer and in how

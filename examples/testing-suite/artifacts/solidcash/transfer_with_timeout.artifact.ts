@@ -91,7 +91,7 @@ export default {
   fingerprint: '938bd4e34785c264a20e3b08fca31283fd92dd76acad7c91e6e11fc15161189d',
   compiler: {
     name: 'solidc',
-    version: '0.52.0',
+    version: '0.52.1',
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,

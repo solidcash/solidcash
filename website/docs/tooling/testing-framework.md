@@ -137,7 +137,9 @@ await time.setNextBlockTimestamp(new Date('2027-01-01T00:00:00Z'));
 
 `time.increase()` and `time.increaseTo()` advance time and mine a block. `time.setNextBlockTimestamp()` changes
 only the next block timestamp. These operations affect the mock chain, or the BCHN node on regtest. Electrum and
-Bitcoin RPC networks do not support them.
+Bitcoin RPC networks do not support them. On the mock chain, as with Hardhat's automine, each transaction mines its
+own block a second after the last, or at the timestamp `setNextBlockTimestamp()` set, so the next transaction reads a
+later `block.timestamp`.
 
 Contracts read Solidity-style `block.number` and `block.timestamp` from a block-info coin of an oracle pool. The
 mock chain's keeper writes its height and time into its pool whenever it mines, so these helpers move `block.*` as

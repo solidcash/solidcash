@@ -1327,7 +1327,8 @@ ethers v5 namespaces and `BigNumber`, `/ethers6` the v6 utilities, `/vitest-pres
 Vitest config aliases `hardhat`, `ethers`, `chai`, `@nomicfoundation/hardhat-network-helpers`,
 `@nomicfoundation/hardhat-chai-matchers` and `@openzeppelin/hardhat-upgrades` to the BCH runtime, so ported tests
 keep their imports. `loadFixture` needs a named function; `time.increase(s)` mines a block and moves
-`block.timestamp`; `setBalance` only adds a UTXO; `impersonateAccount` throws by design.
+`block.timestamp`; each transaction mines its own block a second after the last, as Hardhat's automine does;
+`setBalance` only adds a UTXO; `impersonateAccount` throws by design.
 
 ```ts
 import { expect } from 'chai';  // the BCH chai shim under the SolidHat preset

@@ -88,7 +88,7 @@ describe('oracle pool core', () => {
 
   it('refreshes every info coin by one height-locked, then one time-locked transaction, and leaves them equal', async () => {
     const { provider, keeper } = await setup();
-    // A send mines at the tip's own time here, so the clock moves only when told to.
+    // Each send moves the clock a second, so the fields are taken from the tip after the last one.
     await provider.send('evm_increaseTime', [60]);
     await provider.mine(5);
     const fields = {

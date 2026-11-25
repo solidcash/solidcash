@@ -288,7 +288,6 @@ import { hasEffectiveCallValue } from './semantic/branchOps.js';
 // hash-committed. This is therefore a cumulative participant-route bound, not a per-row allowance. Source the
 // ceiling from the active BCH-2026 consensus profile.
 const MAX_KERNEL_RESULT_BYTES = ConsensusBch2026.maximumStackItemLength;
-const MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES = ConsensusBch2026.maximumStackItemLength;
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -2699,97 +2698,7 @@ function recordExternalHandlerSpan(
   attribution.spans.push({ key, name: fn.name, location: fn.location });
 }
 
-/** Name prefixes of the internal clones route synthesis dispatches a source handler through. */
-const MESSAGE_BUS_CLONE_PREFIXES = [
-  '__message_bus_resource_', '__message_bus_handler_', '__message_bus_graph_', '__message_bus_array_',
-  '__message_bus_entry_', '__message_bus_dynamic_', '__message_bus_external_',
-];
 
-/**
- * Compiler-generated route handlers execute inside the route input, but their physical state/resource block may
- * belong to a different input (a delegated participant's authenticated proxy master). Thread that owner identity
- * explicitly rather than letting an internal OP_INVOKE body infer it from OP_INPUTINDEX.
- */
-const MESSAGE_BUS_OWNER_INPUT = '__internal__routeMetaOwnerInput';
-/** Stable route-band coordinate for a graph participant's physical owner input. */
-const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__routeMetaOwnerBandInput';
-
-const withinSpan = (location: Location, point: Point): boolean => {
-  const after = point.line > location.start.line
-    || (point.line === location.start.line && point.column >= location.start.column);
-  const before = point.line < location.end.line
-    || (point.line === location.end.line && point.column <= location.end.column);
-  return after && before;
-};
-
-/**
- * The external handlers a thrown route-generation error implicates, by the two channels an error can carry.
- *
- * NAME: the message names one of the internal clones route synthesis pushed - `Block layout not available while
- * compiling '__message_bus_external_deposit'` is a plain Error with no position at all, so nothing but the name is
- * available. The longest matching handler name wins, so `transfer` is not blamed for `transferFrom`.
- * POSITION: a SolidCashError carries `node.location`, and `cloneNode` shares Location objects, so a diagnostic
- * raised inside a clone still points into the handler that was cloned. Accepted only when exactly one recorded
- * span contains it; an ambiguous or generated position names no handler.
- *
- * Only external entry points are ever recorded, so the same shape spelled `public` keeps hard-throwing - that
- * asymmetry is deliberate and is what keeps the refusal a statement about the route rather than about the code.
- */
-function attributeExternalHandlerRefusal(
-  error: unknown, attribution: ExternalAdmissionAttribution,
-): string[] {
-  const candidates = attribution.spans.filter((span) => !attribution.refused.has(span.key));
-  const message = error instanceof Error ? error.message : '';
-  // The attributed refusal this produces (`handler-route-generation-unsupported`) names the handler but never the
-  // construct: the exception that gapped route generation is otherwise discarded, so a compile reports a class
-  // with no way to reach it. Publish the message with every attribution decision (each branch returns below).
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
-    console.error('compiler-route-attributed-refusal', JSON.stringify({
-      error: message.slice(0, 500),
-      errorKind: error instanceof Error ? error.constructor.name : typeof error,
-      candidates: candidates.map((span) => span.key),
-      location: (error as { node?: { location?: Location } } | undefined)?.node?.location === undefined
-        ? undefined : (() => {
-          const at = (error as { node: { location: Location } }).node.location;
-          return { line: at.start.line, column: at.start.column };
-        })(),
-    }));
-  }
-  if (candidates.length === 0) return [];
-  let named: string | undefined;
-  for (const prefix of MESSAGE_BUS_CLONE_PREFIXES) {
-    for (const span of candidates) {
-      if (!message.includes(`${prefix}${span.name}`)) continue;
-      if (named === undefined || span.name.length > named.length) named = span.name;
-    }
-  }
-  if (named !== undefined) {
-    const keys = candidates.filter((span) => span.name === named).map((span) => span.key);
-    if (error instanceof SortedMappingCodegenPendingError) {
-      for (const key of keys) attribution.reasons.set(key, 'KERNEL_UNBOUNDED_KEY');
-    }
-    return keys;
-  }
-  // Some late code-generation diagnostics retain the source handler name but not its cloned route prefix or
-  // node location (for example, an unresolved raw target reports "in function 'refund'"). Attribute only an
-  // exact, unambiguous entry-point name; overloads remain deliberately unattributed without a source span.
-  const sourceFunction = /\bin (?:function|runtime loop) '([^']+)'/.exec(message)?.[1];
-  if (sourceFunction) {
-    const exact = candidates.filter((span) => span.name === sourceFunction);
-    if (exact.length === 1) {
-      if (error instanceof SortedMappingCodegenPendingError) {
-        attribution.reasons.set(exact[0].key, 'KERNEL_UNBOUNDED_KEY');
-      }
-      return [exact[0].key];
-    }
-  }
-  const location = (error as { node?: { location?: Location } } | undefined)?.node?.location;
-  if (!location || generatedOriginOf(location)) return [];
-  const containing = candidates.filter((span) => span.location !== undefined
-    && !generatedOriginOf(span.location) && withinSpan(span.location, location.start));
-  return containing.length === 1 ? [containing[0].key] : [];
-}
 
 
 
@@ -3227,10 +3136,7 @@ function setPrimaryContract(ast: Ast, name: string): void {
   ast.importedContracts = all.filter((c) => c !== target);
 }
 
-const MESSAGE_BUS_SELECTOR_HEX = '53434231';
-const MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM = '__message_bus_verify_atomic_program';
-/** Replaced after handler OP_INVOKE bodies exist; the preliminary detached verifier is never published. */
-const MESSAGE_BUS_SIGNATURE_POLICY_SENTINEL = 'require(rowSignatureFrame != hex"4b545350");';
+
 const routeMetaSignatureVerifierSource = new WeakMap<object, string>();
 /** Exact capability attached to each compiler-generated detached verifier source. */
 const routeMetaVerifierLifecycleSources = new Set<string>();
@@ -3526,14 +3432,7 @@ function contractNamesTokenContainer(contract: ContractNode): boolean {
 
 
 
-const MAX_MESSAGE_BUS_ROWS = 8;
-// SCB1/SCB2 carry a one-byte row count. A batch has a seven-byte header and each SCB1 row needs at least
-// twelve framing bytes (SCB2 adds a call-options byte). With BCH-2026 stack items, the count byte is the
-// binding row ceiling. Runtime kernel dispatch has no unroll-size reason to retain the legacy eight-row cap.
-const MAX_KERNEL_MESSAGE_BUS_ROWS = Math.min(0xff, Math.floor((MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES - 7) / 12));
-const RESOURCE_SHAPED_BATCH_ROWS = 2;
-const MB_ROW_PLACEHOLDER = '__MB_ROW__';
-const MB_DISPATCH_SENTINEL = '__MB_DISPATCH__';
+
 
 type InvocationExternalCall = NonNullable<Artifact['abi'][number]['externalCalls']>[number];
 
@@ -3618,60 +3517,7 @@ function applyRolledLoopCeilings(
  * What a user should do about a rejection reason, for the reasons whose remedy is exact. A reason with no entry
  * is still named; inventing a remedy for one would be worse than stating the refusal alone.
  */
-const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
-  'batched-handler-forward-call-not-enabled':
-    'declare a statically bounded call shape supported by the atomic graph route, '
-    + 'or move the call into its own handler',
-  'unresolved-or-effectful-handler':
-    'move the effect (transfer, deploy, emit) into a handler the route admits, or resolve the call target so '
-    + 'the footprint is known',
-  'initial-v1-route-requires-public-visibility': 'declare the handler public or external',
-  'external-token-container-handler-requires-public-visibility':
-    'the legacy route cannot preserve the source parameter frame for an external token-container handler: '
-    + 'declare this handler public or enable the kernel row route',
-  'external-handler-route-generation-unsupported':
-    'this external handler is admissible, but the route generated for it could not be compiled, so the '
-    + 'public-only route was kept: the shape is a route-generation gap rather than a visibility rule',
-  'external-handler-would-shrink-the-route':
-    'admitting this external handler changes the shape the whole route must take, and that shape refuses more '
-    + 'handlers than it admits, so the public-only route is kept: split the handler off into its own contract, '
-    + 'or make the route uniform (one of returning, event-carrying, or value-carrying, not several)',
-  'result-route-requires-effect-free-handlers':
-    'a returning handler cannot also carry an effect; split the return and the effect into two handlers',
-  'result-consuming-handler-requires-effect-free-body':
-    'a handler that consumes a call result cannot also emit an event, transfer satoshis or move a token '
-    + 'container: the route wrapper has to declare that effect\'s block slot, which flattens the handler into '
-    + 'the wrapper and leaves its returning edge with no slot to bind - move the effect into a second handler '
-    + 'that consumes no result, or drop the result and make the call a void tail call',
-  'collection-iteration-handler-not-enabled':
-    'a handler that ITERATES a collection reads every entry of it, and the route addresses entries through '
-    + 'per-entry witnesses fixed at compile time, so an unbounded iteration has no representation in the '
-    + 'block layout: read the entries the batch needs by key, or keep the iteration on the direct route',
-  'verified-mapping-runtime-loop-write-unsupported':
-    'a graph clone cannot represent a verified-mapping write whose loop key array is a local constructed in '
-    + 'the handler closure rather than a parameter (or a zero-length `new T[](0)` that never iterates): keep '
-    + 'that write on the direct route, or pass the key array as a handler parameter',
-  'nested-dynamic-array-route-not-enabled':
-    'nested dynamic-array state does not yet have a bounded compiler-route row encoding; keep this handler on the '
-    + 'direct route or flatten the nested array into separately keyed state',
-  'collection-state-getter-route-not-enabled':
-    'collection getters remain available as ordinary entry points; compiler-route routes batch state-changing '
-    + 'handlers rather than synthesizing a second getter surface',
-  'array-struct-element-write-route-not-enabled':
-    'partial writes to a struct stored in a dynamic array remain available on the direct route; batch the '
-    + 'equivalent scalar or keyed fields only after their row encoding is enabled',
-  'result-route-static-payload-too-large':
-    'the statically encoded return payload exceeds the batch route\'s 10,000-byte result profile; keep this '
-    + 'function on its direct route or return a bounded page that fits in one invocation',
-  'mixed-scalar-and-collection-route-not-enabled':
-    'a handler that addresses no collection entry is refused on two route shapes. On a route that allocates a '
-    + 'ROW-LOCAL entry slot per row, those slots are bound by the entry handler\'s own row, so a row that '
-    + 'addresses no entry leaves its slot with no witness to bind and no way to gate it off - give the entry '
-    + 'handler a single key alternative so the route\'s entry slots become shared. On any route, a scalar '
-    + 'handler is also refused when admitting it would make the route returning or event-shaped and thereby '
-    + 'refuse MORE handlers than it adds. Either way, splitting the scalar-only handlers out gives them a '
-    + 'route of their own',
-};
+
 
 function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): number {
   const variables = packedStateLayoutVariables(contract, commitmentLimit, tagSingletonDataNfts);
@@ -6054,14 +5900,6 @@ function compileResolvedAst(
   }
   // Code generation
   if (mergedCompilerOptions.composition === 'framed') {
-    // The route is built for the lowering it performs on the source's own bodies — a low-level call becomes an
-    // authenticated call, an assembly block is lowered — and that lowering stays. The bodies the route adds are the
-    // other convention's program, which this one does not carry: a framed master dispatches the contract's own
-    // bodies. They are dropped here, before code generation reads the unit, so nothing downstream is asked to
-    // compile a body this convention does not serve.
-    ast.contract.functions = ast.contract.functions.filter(
-      (fn) => !(fn.routeMetaRoute === true || fn.name.startsWith('__message_bus')),
-    );
     // `split(n)` and `merge(n)` resize the master pool in an arm beside the head, so the head never serves them.
     const lifecycle = extractFramedLifecycle(ast.contract);
     if (lifecycle.length > 0) {
@@ -6558,15 +6396,9 @@ function compileResolvedAst(
       const bounded = !summary.footprint.unknown
         && externalCalls.every((call) =>
           call.occurrence === 'once' || call.maximumOccurrences !== undefined);
-      const sourceHandlerName = summary.name.replace(/^__message_bus_entry_/, '');
-      const sourceHandler = ast.contract.functions.find((fn) => fn.name === sourceHandlerName && fn.isEntryPoint);
-      const authenticatedGraphHandler = summary.name.startsWith('__message_bus_entry_')
-        && sourceHandler?.routeMetaEligible === true
-        && sourceHandler.routeMetaKeyWitnesses?.some((witness) => witness.source === 'msgSender')
-        && ast.contract.functions.some((fn) => fn.name === `__message_bus_graph_${sourceHandlerName}`);
       return ({
         id: summary.id,
-        name: authenticatedGraphHandler ? `__message_bus_graph_${sourceHandlerName}` : summary.name,
+        name: summary.name,
         arity: summary.arity + (invocationFunctionById.get(summary.id)?.journalContextArity ?? 0),
         entryPoint: summary.entryPoint,
         ...(selectorById.get(summary.id) && { selector: selectorById.get(summary.id) }),
@@ -9306,7 +9138,7 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   for (const fn of candidates) {
     if (!invoked.has(fn.functionId!)) continue;
     // Name the handler the user wrote, not the compiler's synthetic clone spelling of it.
-    throw new EmittingStateHelperEventError(fn, fn.name.replace(/^__message_bus_[a-z]+_/, ''), fn.collectionJournal === true);
+    throw new EmittingStateHelperEventError(fn, fn.name, fn.collectionJournal === true);
   }
 }
 

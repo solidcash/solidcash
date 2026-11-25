@@ -115,7 +115,6 @@ describe('solidc env registry', () => {
         expect(classifySolidcEnv(name), `${name} still unknown`).not.toBe('unknown');
       }
       expect(classifySolidcEnv('SOLIDC_NO_OPTIMISE')).toBe('instrumented');
-      expect(classifySolidcEnv('SOLIDC_SKIP_MESSAGE_BUS_BINDER')).toBe('instrumented');
       expect(classifySolidcEnv('SOLIDC_COMPILE_CACHE')).toBe('feature');
       expect(classifySolidcEnv('SOLIDC_DUMP_ROUTE')).toBe('observation');
     });
@@ -137,28 +136,23 @@ describe('solidc env registry', () => {
     it('solidcEnvFlagEnabled drives skip-binder / no-optimise; unknown names cannot enable', () => {
       expect(solidcEnvFlagEnabled('SOLIDC_NO_OPTIMISE', { SOLIDC_NO_OPTIMISE: '1' })).toBe(true);
       expect(solidcEnvFlagEnabled('SOLIDC_NO_OPTIMISE', { SOLIDC_NO_OPTIMISE: '0' })).toBe(false);
-      expect(solidcEnvFlagEnabled('SOLIDC_SKIP_MESSAGE_BUS_BINDER', {
-        SOLIDC_SKIP_MESSAGE_BUS_BINDER: '1',
-      })).toBe(true);
       // Unregistered names never flip production flags through the shipped reader.
       expect(solidcEnvFlagEnabled('SOLIDC_TOTALLY_UNKNOWN_FLAG', {
         SOLIDC_TOTALLY_UNKNOWN_FLAG: '1',
       })).toBe(false);
     });
 
-    it('compiler.ts routes NO_OPTIMISE and SKIP_MESSAGE_BUS_BINDER through solidcEnvFlagEnabled', () => {
+    it('compiler.ts routes NO_OPTIMISE through solidcEnvFlagEnabled', () => {
       const here = dirname(fileURLToPath(import.meta.url));
       const src = readFileSync(join(here, '../src/compiler.ts'), 'utf8');
       expect(src).toContain('solidcEnvFlagEnabled');
       expect(src).toContain("solidcEnvFlagEnabled('SOLIDC_NO_OPTIMISE')");
-      expect(src).toContain("solidcEnvFlagEnabled('SOLIDC_SKIP_MESSAGE_BUS_BINDER')");
       const codeLines = src.split('\n').filter((line) => {
         const t = line.trim();
         return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
       });
       const rawSkip = codeLines.filter((line) => (
-        /process\.env\.SOLIDC_SKIP_MESSAGE_BUS_BINDER/.test(line)
-        || /process\.env\.SOLIDC_NO_OPTIMISE/.test(line)
+        /process\.env\.SOLIDC_NO_OPTIMISE/.test(line)
       ));
       expect(rawSkip).toEqual([]);
     });

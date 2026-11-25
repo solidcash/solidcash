@@ -141,7 +141,6 @@ type KernelReadCarrierFamilyScope = { selectorHex: string; completedDescriptorDi
 type KernelJournalDispositionHandlerScope = Record<string, any>;
 const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
 const KERNEL_ENTRY_JOURNAL_MAX_RECORDS = 99;
-const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 const isKernelReadCarrierBindingToken = (_token: unknown): boolean => false;
 const deriveKernelJournalDispositionHandlerScope = (..._args: any[]): undefined => undefined;
 const sameKernelJournalDispositions = (..._args: any[]): boolean => true;
@@ -952,7 +951,7 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  *      Unlike `__internal__msgSenderCategory`, that injection is NOT skipped for a route or a graph handler.
  *   2. `TypeCheckTraversal.forwardInternalReturnOutputIdx` auto-forwards such a witness at an internal call
  *      site as an identifier naming "the caller's own same-named param".
- *   3. The generated `__message_bus1` route calls each eligible handler with the user-visible args only, and declares
+ *   3. The generated `__compiler_route1` route calls each eligible handler with the user-visible args only, and declares
  *      no such param - so step 2 inserts a reference to a name the route does not have.
  *   4. Code generation evaluates that identifier and died on the bare internal
  *      `Expected variable '__internal__blockhashInputIndex' does not exist on the stack`.
@@ -975,11 +974,13 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  * that compiled stops compiling and no emitted byte changes.
  */
 /** Compiler-added hidden ABI parameter carrying the authenticated participant owner of a route frame. */
-const MESSAGE_BUS_OWNER_INPUT = '__internal__routeMetaOwnerInput';
+/** Largest journal segment the route transport carries in one stack item. */
+const MAX_JOURNAL_SEGMENT_BYTES = 520;
+const COMPILER_ROUTE_OWNER_INPUT = '__internal__routeMetaOwnerInput';
 /** Route-local flag set when the authenticated row selector names a handler that writes dynamic state. */
-const MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE = '__message_bus_dynamic_write_active';
+const COMPILER_ROUTE_DYNAMIC_WRITE_ACTIVE = '__compiler_route_dynamic_write_active';
 /** Stable route-band coordinate for a graph participant's physical owner input. */
-const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__routeMetaOwnerBandInput';
+const COMPILER_ROUTE_OWNER_BAND_INPUT = '__internal__routeMetaOwnerBandInput';
 /** The value-chunk lock list the mutable-output check admits: the chunk-base witness, or a route-owned item. */
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
 /** The `ordinal 0 || selector` the selector dispatcher leaves a dispatched entry, its call record's prefix. */
@@ -1022,7 +1023,7 @@ const SCAN_OUT_MINTS = '(__scan_out_mints)';
 // The number of token container coins a direct upgrade's migration band holds (emitUpgradeTokenBandCount).
 const UPGRADE_TOKEN_BAND = '(__upgrade_token_band)';
 /** A route row's lifecycle mode; minting uniqueness holds in mode 0 only. */
-const LIFECYCLE_MODE = '__message_bus_active_lifecycle_mode';
+const LIFECYCLE_MODE = '__compiler_route_active_lifecycle_mode';
 /** A route's mint bound operands (emitRouteMintBoundItems), bottom first. */
 const ROUTE_MINT_LO = '(__route_mint_lo)';
 const ROUTE_MINT_HI = '(__route_mint_hi)';
@@ -1137,10 +1138,10 @@ function slotScanResidue(sat: boolean, foreign: boolean, mint: boolean): string[
   ];
 }
 /** Tracked-local name for the entry-time copy of the participant owner (see routeMetaOwnerAltAnchor). */
-const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
-const PROXY_MASTER_ANCHOR_LOCAL = '(message_bus_proxy_master)';
+const OWNER_ANCHOR_LOCAL = '(compiler_route_owner)';
+const PROXY_MASTER_ANCHOR_LOCAL = '(compiler_route_proxy_master)';
 /** O8: a route arm's proxy-forward decision (`index == 0`), kept across its exact-stack check. */
-const PROXY_FORWARD_DECISION = '(message_bus_proxy_forward_decision)';
+const PROXY_FORWARD_DECISION = '(compiler_route_proxy_forward_decision)';
 const GRAPH_EVENT_OWNER_LOCAL = '(graph_event_owner)';
 
 /**
@@ -1283,7 +1284,7 @@ const FORWARDED_WITNESS_DETAIL: Record<string, string> = {
   'route-cannot-carry-blockhash-oracle-index':
     'reading blockhash(n) is not admitted in a function the compiler-route route invokes. The block-oracle '
     + 'co-spend is located through a synthesized __internal__blockhashInputIndex witness that the compiler '
-    + 'forwards from the caller; the generated __message_bus1 route neither declares it nor appears in the ABI, so the '
+    + 'forwards from the caller; the generated __compiler_route1 route neither declares it nor appears in the ABI, so the '
     + 'SDK has nowhere to fill it and the handler would read an unlocated input. The read itself is fine off the '
     + 'route: compile without the compiler-route option, or keep the blockhash read in a function the route does '
     + 'not admit, and it compiles unchanged',
@@ -1318,7 +1319,7 @@ function forwardedWitnessMiss(
   constantExpressions: Map<string, ExpressionNode>,
 ): { reason: string; node: Node } | undefined {
   // X76's class: the forwarded identifier was synthesized by TypeCheckTraversal at the CALL site, which for a
-  // routed handler lives in compiler-generated `__message_bus1` source. Its Line/Column reads as a position in the
+  // routed handler lives in compiler-generated `__compiler_route1` source. Its Line/Column reads as a position in the
   // user's file and is not one. Report the effect's own site in the callee instead, falling back to the callee's
   // declaration - both are genuine user-source positions.
   const blame = (name: string, fallback: Node): Node =>
@@ -4097,7 +4098,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
   ): SharedEntryCheck | undefined {
     if (this.framedMaster || !this.directConvention
-      || this.currentFunction?.name?.startsWith('__message_bus_verify_atomic')) return undefined;
+      || this.currentFunction?.name?.startsWith('__compiler_route_verify_atomic')) return undefined;
     const fullKey = `stack|${key}`;
     let check = this.sharedEntryChecks.get(fullKey);
     if (check === undefined) {
@@ -4200,7 +4201,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Whether this physical invocation frame carries an authenticated participant-block owner. */
   private hasRouteMetaParticipantOwner(node: FunctionDefinitionNode = this.currentFunction): boolean {
     return node?.parameters?.some((parameter) =>
-      parameter.name === MESSAGE_BUS_OWNER_INPUT
+      parameter.name === COMPILER_ROUTE_OWNER_INPUT
       // Merge-capable routes publish the survivor index as `__internal__lifecycleOwnerInput` instead of the
       // ordinary handler owner witness. Treat it as the same participant-block authority so journal
       // preallocation and state reads stay owner-relative when consumed masters share this unlocker.
@@ -4211,8 +4212,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private routeMetaParticipantOwnerName(
     node: FunctionDefinitionNode = this.currentFunction,
   ): string | undefined {
-    if (node?.parameters?.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) {
-      return MESSAGE_BUS_OWNER_INPUT;
+    if (node?.parameters?.some((parameter) => parameter.name === COMPILER_ROUTE_OWNER_INPUT)) {
+      return COMPILER_ROUTE_OWNER_INPUT;
     }
     if (node?.parameters?.some((parameter) => parameter.name === '__internal__lifecycleOwnerInput')) {
       return '__internal__lifecycleOwnerInput';
@@ -4245,7 +4246,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private isCompilerRouteMetaRoute(node = this.currentFunction): boolean {
     return (node === this.currentFunction && this.currentFunctionIsRouteMetaRoute)
       || node?.routeMetaRoute === true
-      || (node?.name.startsWith('__message_bus') === true
+      || (node?.name.startsWith('__compiler_route') === true
         && node.parameters?.some((parameter) => parameter.name === 'batchBlob') === true);
   }
 
@@ -4263,7 +4264,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Whether `address(this)` in the body being compiled has to be answered from an authenticated participant owner
    * rather than from the input that happens to execute: true for every compiler-generated route clone (which
-   * receives the owner as a hidden argument, see MESSAGE_BUS_OWNER_INPUT) and for proxy-state delegate entries
+   * receives the owner as a hidden argument, see COMPILER_ROUTE_OWNER_INPUT) and for proxy-state delegate entries
    * (whose state block, and therefore whose Solidity-visible identity, lives at the proxy master input). An
    * ordinary entry can publish the same authenticated own-self witness without moving its physical state block.
    */
@@ -4432,7 +4433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const frame = this.currentFunction.graphEffectFrame;
     if (!frame || !this.currentFunction.graphEmissionHandler || (frame.deployWidth ?? 0) === 0) return false;
     const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
-      : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
+      : this.stack.includes('__compiler_route_row') ? '__compiler_route_row' : GRAPH_EFFECT_SITE;
     this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
     const width = frame.deployWidth ?? 0;
@@ -4462,7 +4463,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const width = frame?.deployWidth ?? 0;
     if (!frame || !this.currentFunction.graphEmissionHandler || width === 0) return false;
     const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
-      : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
+      : this.stack.includes('__compiler_route_row') ? '__compiler_route_row' : GRAPH_EFFECT_SITE;
     this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
     if (width > 1) {
@@ -4549,9 +4550,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const base = kind === 'event' ? frame.eventBase
       : kind === 'transfer' ? frame.transferBase : frame.tokenTransferBase;
     const constant = (routeOffset ?? this.getBlockSlotOffset(kind, base)) + slotIndex;
-    const rowIndex = this.getStackIndex('__message_bus_row');
+    const rowIndex = this.getStackIndex('__compiler_route_row');
     if (rowIndex < 0) {
-      throw new Error("Runtime effect slot missing loop variable '__message_bus_row'");
+      throw new Error("Runtime effect slot missing loop variable '__compiler_route_row'");
     }
     this.emit(encodeInt(BigInt(rowIndex)), locationData);
     this.emit(Op.OP_PICK, locationData);
@@ -4598,10 +4599,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           : frame.ecrecoverOffset;
     const constant = (routeOffset ?? this.getBlockSlotOffset(kind, base)) + (slotIndex ?? 0);
     // Read the ordinal BEFORE pushing anything untracked, so getStackIndex needs no offset correction.
-    // Kernel loop dispatch indexes the frame by live `__message_bus_row` when the hidden site is absent
+    // Kernel loop dispatch indexes the frame by live `__compiler_route_row` when the hidden site is absent
     // (receive/fallback clones compiled outside OP_DEFINE still share the route's row loop).
     const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
-      : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
+      : this.stack.includes('__compiler_route_row') ? '__compiler_route_row' : GRAPH_EFFECT_SITE;
     this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
     if (width > 1) {
@@ -4641,7 +4642,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (ownerIndex >= 0) {
       this.emit(encodeInt(BigInt(ownerIndex)), locationData);
       this.emit(Op.OP_PICK, locationData);
-      const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE : '__message_bus_row';
+      const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE : '__compiler_route_row';
       this.emit(encodeInt(BigInt(this.getStackIndex(siteName) + 1)), locationData);
       this.emit(Op.OP_PICK, locationData);
       if (frame.eventWidth > 1) {
@@ -5156,8 +5157,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !node.contract.collections.some((collection) => containsFunctionType(collection.valueType));
     this.outlinedRecoveryInputFunctionIds = new Set(allFunctions.flatMap((fn) => (
       fn.functionId !== undefined && Math.max(fn.recoveryEffectCount ?? 0, fn.ecrecoverCallCount ?? 0) > 0
-        && fn.name !== '__message_bus_verify_atomic'
-        && fn.name !== '__message_bus_verify_atomic_program'
         ? [fn.functionId] : []
     )));
     const functionsById = new Map(allFunctions
@@ -5195,8 +5194,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // `verifierProgram.inputs`, with the authenticated envelope deliberately left underneath. It does not
       // participate in compiler-to-compiler hidden-context threading, even when a sibling route handler uses a
       // compute side-car. Giving it this phantom slot makes its return cleanup NIP the preserved envelope.
-      if (target.name !== '__message_bus_verify_atomic'
-        && entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
+      if (entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -6548,7 +6546,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // silently produced an empty band (measured: the owner pick's ordinal did not move at all).
     const routeMetaRouteFunction = node.functions.find((fn) =>
       (fn.routeMetaRoute === true
-        || (fn.name.startsWith('__message_bus')
+        || (fn.name.startsWith('__compiler_route')
           && fn.parameters?.some((parameter) => parameter.name === 'batchBlob') === true)));
     this.routeMetaRouteParameterNames = (routeMetaRouteFunction?.parameters ?? [])
       .map((parameter) => parameter.name);
@@ -7416,8 +7414,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * X151 checked only bodies compiled on the contract traversal, and refused every chunk read in an OP_DEFINE'd
    * body outright because such a body carries its own footprint rather than the invoking entry's. X170 measured
-   * the shape that reached: `__message_bus_graph_fireAll`, whose emitted basis and trailing base ALREADY equal those of
-   * the only entry that reaches it (`__message_bus1`), and whose bytecode is byte-identical with and without X151's
+   * the shape that reached: `__compiler_route_graph_fireAll`, whose emitted basis and trailing base ALREADY equal those of
+   * the only entry that reaches it (`__compiler_route1`), and whose bytecode is byte-identical with and without X151's
    * correction. `RouteMetaRuntimeSizedPointerTable` settles that same contract on the VM over a non-empty chunk run
    * at 1, 2 and 3 rows. The blanket refusal was over-broad, so it is replaced by the check it should have been:
    * compare the emitted basis against every entry that can reach the body, and refuse on disagreement.
@@ -7743,7 +7741,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the compiler-route route as an OP_INVOKE subroutine it therefore re-read the authenticated PRE-state
     // commitment while an earlier row's write was live in the wrapper's frame - a stale read that settled.
     // Admit every function the route can reach, so all rows of one route load through one journal. Scoped to
-    // the route's own call closure: a contract with no `__message_bus1` produces the same map as before, and a
+    // the route's own call closure: a contract with no `__compiler_route1` produces the same map as before, and a
     // read-only function outside the route keeps its established covenant path.
     // X111. A graph EMISSION clone used to be dropped from this widening entirely, so a clone which reads a
     // scalar slot and writes none still re-read the pre-transaction commitment while an earlier row's write
@@ -7941,8 +7939,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const first = sideCarOffsets(entries[0]);
       if (first === '' || !entries.every((entry) => sideCarOffsets(entry) === first)) continue;
       this.keccakSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (target.name !== '__message_bus_verify_atomic'
-        && entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
+      if (entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -7969,8 +7966,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           keccakOffsetsOf(entry).join(',') === firstKeccak.join(','))) continue;
       }
       this.ecrecoverSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (target.name !== '__message_bus_verify_atomic'
-        && entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
+      if (entries.some((entry) => this.ownsRouteMetaParticipantBlock(entry))) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -7984,30 +7980,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((fn) => fn.isEntryPoint && fn.functionId !== undefined && invoked.has(fn.functionId)
         && indirect.has(fn.functionId))
       .map((fn) => ({ id: fn.functionId!, type: functionValueType(fn) }));
-    const cheapAdmission = false;
-    const keepAdmissionBody = (fn: FunctionDefinitionNode): boolean => {
-      // The throwaway pass only needs the atomic verifier closure so the binder can offload it.
-      // Compiling the unrolled `__message_bus1` route here duplicated most of the binder's codegen.
-      if (fn.routeMetaRoute === true) return false;
-      if (fn === node.constructorDef || fn === node.fallbackDef || fn === node.receiveDef) return false;
-      const { name } = fn;
-      if (!name.startsWith('__message_bus')) return false;
-      // The inlined sidecar is the verifier program. Skip the bound compact wrapper so its helpers
-      // cannot pollute the sidecar closure or steal compact-helper ids.
-      if (name === '__message_bus_verify_atomic'
-        && node.functions.some((candidate) => candidate.name === '__message_bus_verify_atomic_program')) {
-        return false;
-      }
-      // User-function clones are the expensive bodies. Keep the verifier and compiler-owned parse/settle
-      // helpers; skip graph/entry/handler clones and the unrolled route.
-      return !name.startsWith('__message_bus_graph_')
-        && !name.startsWith('__message_bus_entry_')
-        && !name.startsWith('__message_bus_handler_')
-        && !name.startsWith('__message_bus_dynamic_')
-        && !name.startsWith('__message_bus_array_')
-        && !name.startsWith('__message_bus_external_')
-        && !name.startsWith('__message_bus_resource_');
-    };
     // The fallback is a subroutine candidate too: a self low-level call (`address(this).call(data)`) lowers
     // to an internal `__fallback(data)` invocation, so it needs an internal OP_DEFINE when invoked.
     const subroutineCandidates = node.fallbackDef ? [...node.functions, node.fallbackDef] : node.functions;
@@ -9158,7 +9130,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // in step with the stamp (which already never sees them).
     if (true || !fn.isEntryPoint || slot.callOrdinal !== undefined
       || slot.loopArrayVar !== undefined || slot.inlineLoopDispatch === true
-      || fn.name.startsWith('__message_bus') || fn.graphEmissionHandler || fn.graphRuntimeEmissionHandler
+      || fn.name.startsWith('__compiler_route') || fn.graphEmissionHandler || fn.graphRuntimeEmissionHandler
       || this.isCompilerRouteMetaRoute(fn) || !this.isExternalCallSlotLoopNested(slot)) return false;
     // A repeated-address batch's owner, verified in the epilogue, binds its whole invocation vector, loop rows too.
     const owner = slot.batchInvocations ? slot : this.externalCallSlots.find((candidate) =>
@@ -9195,20 +9167,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitFunctionDefine(func: FunctionDefinitionNode, emitDefinition = true): void {
     const locationData = { location: func.location, positionHint: PositionHint.START };
 
-    if ((func.name === '__message_bus_verify_atomic'
-      || func.name === '__message_bus_verify_atomic_program')
-      && (this.outlinedComputeBlockBaseFunctionIds.has(func.functionId!)
-        || this.outlinedDynamicReadThreadedFunctionIds.has(func.functionId!)
-        || Math.max(func.recoveryEffectCount ?? 0, func.ecrecoverCallCount ?? 0) > 0
-        || this.constructorCaptures(func).length > 0)) {
-      throw new Error('Detached compiler-route verifier cannot require compiler-internal call-frame operands');
-    }
     // An invoked body's transaction-signature check covers that body, which no signer covers here: the helper
     // inliners keep such checks in the entry point, so one still invoked (a function-pointer target, an uninlinable
     // shape, a `this.f()` self-call in a direct build) could never verify. A compiler-route build keeps them, and
     // publishes the body to its signer; its own bodies, and an entry its route may invoke, are left to it.
-    const busOwned = func.name.startsWith('__message_bus') || !!func.graphEmissionHandler
-      || !!func.routeMetaDetachedSignatureHandler;
+    const busOwned = false;
     const directOnly = true && this.compilerOptions.composition !== 'framed';
     if (emitDefinition && !busOwned && inlinesSignatureChecks(this.compilerOptions)
       && (!func.isEntryPoint || directOnly) && checksTransactionSignature(func, new Map())) {
@@ -9355,9 +9318,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // compiler-generated helpers are different: their provenance is stamped when generated, and the standard
     // helper optimiser carries rewritten location/require data. Run that pass on these bodies so repeated
     // stack shuffles do not consume the transaction's BCH operation-density budget.
-    const generatedVerifierBody = func.name === '__message_bus_verify_atomic_program'
-      || func.compilerGeneratedHelper === true
-      || true;
+    const generatedVerifierBody = true;
     const optimisedVerifierBody = generatedVerifierBody
       ? GenerateTargetTraversalWithLocation.optimisedHelperBody(subTraversal) : undefined;
     const bodyScript = optimisedVerifierBody?.script ?? normaliseScript(subTraversal.output);
@@ -9371,10 +9332,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Unreachable functions are still compiled above: code-generation performs a number of important
     // fail-closed validations which must not disappear merely because a helper is dead. Their bodies do not,
     // however, need to occupy consensus-limited locking bytecode.
-    if (func.name === '__message_bus_verify_atomic'
-      || func.name === '__message_bus_verify_atomic_program') {
-      this.detachedVerifierBytecodes.set(func.functionId!, scriptToBytecode(bodyScript));
-    }
     if (!emitDefinition) return;
 
     // Emit: <body_bytecode> <function_id> OP_DEFINE
@@ -9426,7 +9383,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const frameResult: { ok: boolean; failures: readonly { invariantId: string }[] } = { ok: true, failures: [] };
     // DEFINE fail-closed validation: under kernel, fail-closed for every DEFINE kind. Return-aware leftover counting
     // (`anonymousLive = max(0, leftover - returnArity)`) is the exact model for user returns and
-    // for `__message_bus_verify_atomic*` / `__message_bus_parse_row` (their `(value)` leftovers
+    // for `__compiler_route_verify_atomic*` / `__compiler_route_parse_row` (their `(value)` leftovers
     // match published return arity).
     if (false) {
       const failureIds = frameResult.failures.map((failure) => failure.invariantId);
@@ -10855,7 +10812,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.routeMetaOwnerAltAnchor = false;
     this.bindTransferOnlyRawCallOrdinals(node);
     this.currentFunctionIsRouteMetaRoute = node.routeMetaRoute === true
-      || (node.name.startsWith('__message_bus')
+      || (node.name.startsWith('__compiler_route')
         && node.parameters?.some((parameter) => parameter.name === 'batchBlob') === true);
     if (this.currentFunctionIsRouteMetaRoute
       ) {
@@ -11357,7 +11314,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           isDefineSubTraversal: this.isDefineSubTraversal,
           isRoute: this.isCompilerRouteMetaRoute(node),
           parameters: node.parameters.map((parameter) => parameter.name),
-          ownerIndex: node.parameters.findIndex((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT),
+          ownerIndex: node.parameters.findIndex((parameter) => parameter.name === COMPILER_ROUTE_OWNER_INPUT),
           false: false,
           graphEmissionHandler: node.graphEmissionHandler,
           ownerIsLastArgument: node.routeMetaOwnerIsLastArgument,
@@ -11374,7 +11331,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // FIRST argument (observed: an unrelated scalar was captured and failed OP_UTXOBYTECODE).
         // Storage is the ALT stack because no main-stack push can shift its depth; the item stays for the whole
         // body, and every call site drops the leaked copy right after the invoke, before its own alt rotations.
-        const ownerDepth = this.getStackIndex(MESSAGE_BUS_OWNER_INPUT, true);
+        const ownerDepth = this.getStackIndex(COMPILER_ROUTE_OWNER_INPUT, true);
         if (ownerDepth >= 0) {
           const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
           this.emit(encodeInt(BigInt(ownerDepth)), anchorLocation);
@@ -11458,7 +11415,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // on `graphFixedSize`/`graphBlockSize`, turning the intended coordinate 20 into 151).
     const callerBandNames = node.routeMetaCallerBandNames ?? this.routeMetaRouteParameterNames;
     if (this.isDefineSubTraversal && callerBandNames.length > 0
-      && node.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)
+      && node.parameters.some((parameter) => parameter.name === COMPILER_ROUTE_OWNER_INPUT)
       && false) {
       // Every route input is seeded, INCLUDING `batchBlob`: the SDK pushes `[blob, ...routeWitnesses]`, so the blob
       // is physically the deepest band item. Omitting it under-counts the band by one and every deep read lands one
@@ -15279,7 +15236,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // generation outright.
       // Per-iteration vmap deletes (`for (i) delete m[k[i]]`) are the same class as loop writes: they have no
       // fixed `entry[N]` slot. collectMappingSlots follows the invoked clone, so the kernel row-dispatch
-      // `if (selector) handler()` would otherwise soft-delete-allocate `entry[0]` on `__message_bus1`.
+      // `if (selector) handler()` would otherwise soft-delete-allocate `entry[0]` on `__compiler_route1`.
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (this.pendingEntryDeletes.has(slotIndex)) continue;
       this.preAllocateCondDeleteWrite(slotIndex, locationData);
@@ -17837,7 +17794,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // land on preserved dynamic chunk slots (MDV1 take-job pad@163 vs entry@161).
     if (sharesRouteBand && routePreserved.size === 0 && (
       this.currentFunction.routeMetaRoute === true
-      || (this.currentFunction.name?.startsWith('__message_bus') === true)
+      || (this.currentFunction.name?.startsWith('__compiler_route') === true)
       || this.isCompilerRouteMetaRoute()
       || this.currentFunction.routeMetaEligible === true
       || (this.currentFunction.entryLoopWrites?.length ?? 0) > 0
@@ -20381,10 +20338,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (targetFunc.graphEmissionHandler && this.contractUsesMsgValue) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (!this.stack.includes('__message_bus_graph_msg_value')) {
+      if (!this.stack.includes('__compiler_route_graph_msg_value')) {
         throw new Error(`Missing authenticated logical msg.value while invoking '${targetFunc.name}'`);
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_msg_value'))), contextLoc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_msg_value'))), contextLoc);
       this.emit(Op.OP_PICK, contextLoc);
       this.pushToStack(`(__handler_msg_value_${targetFunc.functionId})`);
       hiddenContextCount += 1;
@@ -20393,10 +20350,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.contractUsesMsgData) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (targetFunc.graphEmissionHandler) {
-        if (!this.stack.includes('__message_bus_graph_msg_data')) {
+        if (!this.stack.includes('__compiler_route_graph_msg_data')) {
           throw new Error(`Missing logical graph calldata while invoking '${targetFunc.name}'`);
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_msg_data'))), contextLoc);
+        this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_msg_data'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else if (this.stack.includes('__internal__handlerMsgData')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), contextLoc);
@@ -20427,14 +20384,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (targetFunc.usesMsgSender) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (targetFunc.graphEmissionHandler && this.stack.includes('__message_bus_graph_caller')) {
-        this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_caller'))), contextLoc);
+      if (targetFunc.graphEmissionHandler && this.stack.includes('__compiler_route_graph_caller')) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_caller'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else if (targetFunc.graphEmissionHandler && this.stack.includes('__internal__graphCallers')) {
         // A real graph route authenticates one caller per row. Local compiler-route event/transfer handlers reuse
         // the graph-emission frame machinery too, but have no caller vector and correctly fall through to the
         // route's ordinary authenticated sender context below.
-        if (!this.stack.includes('__message_bus_graph_caller')) {
+        if (!this.stack.includes('__compiler_route_graph_caller')) {
           throw new Error(`Missing authenticated graph caller while invoking '${targetFunc.name}'`);
         }
       } else if (this.framedMaster && node.fromThisCall) {
@@ -20544,10 +20501,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const result of emissionResults) this.pushToStack(result);
     }
     if (targetFunc.graphEmissionHandler) {
-      if (!this.stack.includes('__message_bus_call_options')) {
+      if (!this.stack.includes('__compiler_route_call_options')) {
         throw new Error(`Missing authenticated call mode while invoking '${targetFunc.name}'`);
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_call_options'))), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_call_options'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack(`(__graph_static_mode_${targetFunc.functionId})`);
       this.emit(Op.OP_0, locationData);
@@ -20558,9 +20515,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // graph-result contexts, so it is pushed after the authenticated results and therefore sits above them.
     if (targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame) {
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('__message_bus_row');
+        const rowIndex = this.getStackIndex('__compiler_route_row');
         if (rowIndex < 0) {
-          throw new Error(`Runtime graph effect site missing loop variable '__message_bus_row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime graph effect site missing loop variable '__compiler_route_row' at a call to '${targetFunc.name}'`);
         }
         this.emit(encodeInt(BigInt(rowIndex)), locationData);
         this.emit(Op.OP_PICK, locationData);
@@ -20895,9 +20852,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (targetFunc.emitInfos?.length ?? 0) > 0 && this.stack.includes(GRAPH_EVENT_SITE)) {
       this.emitPickCompilerRouteFrameValue(GRAPH_EVENT_SITE, locationData);
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('__message_bus_row');
+        const rowIndex = this.getStackIndex('__compiler_route_row');
         if (rowIndex < 0) {
-          throw new Error(`Runtime event site missing loop variable '__message_bus_row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime event site missing loop variable '__compiler_route_row' at a call to '${targetFunc.name}'`);
         }
         // Mask was just PICK'd untracked; the subsequent `1` is untracked too.
         this.emit(encodeInt(1n), locationData);
@@ -20928,9 +20885,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && hasDirectChildDeployment(targetFunc.body) && this.stack.includes(GRAPH_DEPLOY_SITE)) {
       this.emitPickCompilerRouteFrameValue(GRAPH_DEPLOY_SITE, locationData);
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('__message_bus_row');
+        const rowIndex = this.getStackIndex('__compiler_route_row');
         if (rowIndex < 0) {
-          throw new Error(`Runtime deploy site missing loop variable '__message_bus_row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime deploy site missing loop variable '__compiler_route_row' at a call to '${targetFunc.name}'`);
         }
         this.emit(Op.OP_1, locationData);
         this.emit(encodeInt(BigInt(rowIndex + 2)), locationData);
@@ -20950,9 +20907,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const nftOccurrenceDelta = '(__graph_token_occurrence_delta)';
     if (graphTokenInvocation) {
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('__message_bus_row');
+        const rowIndex = this.getStackIndex('__compiler_route_row');
         if (rowIndex < 0) {
-          throw new Error(`Runtime token site missing loop variable '__message_bus_row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime token site missing loop variable '__compiler_route_row' at a call to '${targetFunc.name}'`);
         }
         this.emit(encodeInt(1n), locationData);
         // Only the `1` is temporarily above the tracked row here. (The event accumulator also has its old mask
@@ -30587,7 +30544,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The entry point lays out and binds a callee; an invoked body has none of it, so a call left there would run
     // unchecked. A compiler-route build's own bodies are the route's, which binds their calls per row.
     if (this.isDefineSubTraversal && !this.isUnemittedDefine && this.directConvention
-      && !this.currentFunction.name.startsWith('__message_bus') && !this.currentFunction.graphEmissionHandler
+      && !this.currentFunction.name.startsWith('__compiler_route') && !this.currentFunction.graphEmissionHandler
       && !this.currentFunction.graphRuntimeEmissionHandler && !this.currentFunction.routeMetaDetachedSignatureHandler
       && !this.isCompilerRouteMetaRoute()) {
       throw new SolidcDiagnosticError(
@@ -43074,7 +43031,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // conditions), and a compiler-route route or handler clone is admitted by the bus rather than by this recipe.
     const fn = this.currentFunction;
     if (fn.runtimeCounterLoopCounters?.has(varyingArrayParam) || fn.runtimeCounterLoopConditions?.has(varyingArrayParam)
-      || this.currentFunctionIsRouteMetaRoute || fn.name.startsWith('__message_bus')) return undefined;
+      || this.currentFunctionIsRouteMetaRoute || fn.name.startsWith('__compiler_route')) return undefined;
     const backReferences = new Set(['location', 'collection', 'symbol', 'symbolTable', 'type', 'resolvedFunction',
       'definition', 'referencedContract', 'stateVariable', 'functionReference']);
     const children = (node: Node): Node[] => Object.entries(node).flatMap(([key, value]) => {
@@ -43495,7 +43452,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * The route publishes one `bytes[]` access vector per batch row. A handler parameter is that row's vector.
-   * Inlined route code still names the route parameter, so select `__message_bus_row` before reading a stream.
+   * Inlined route code still names the route parameter, so select `__compiler_route_row` before reading a stream.
    */
   private kernelJournalAccessVector(): ExpressionNode {
     const location = this.currentFunction.location;
@@ -43510,7 +43467,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return name;
     }
     name.type = parameter.type;
-    const row = new IdentifierNode('__message_bus_row');
+    const row = new IdentifierNode('__compiler_route_row');
     row.type = PrimitiveType.INT;
     row.location = location;
     const selected = new ArrayAccessNode(name, row);
@@ -44859,7 +44816,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (names.length === 0) {
       this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
-      this.emit(encodeInt(BigInt(MAX_MESSAGE_BUS_BLOB_BYTES)), loc);
+      this.emit(encodeInt(BigInt(MAX_JOURNAL_SEGMENT_BYTES)), loc);
       this.emit(Op.OP_LESSTHANOREQUAL, loc); this.emit(Op.OP_VERIFY, loc);
       this.emitKernelJournalSegmentValidate(loc, KERNEL_ENTRY_JOURNAL_MAX_RECORDS);
       return;
@@ -47755,9 +47712,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Its synthesized source sets this flag only inside an authenticated writer selector branch; a writer row may
     // not take the read-only sentinel (audit DYN-1 route lane). Inactive rows keep the established skip below.
     const routeWriteFlagIndex = this.isCompilerRouteMetaRoute()
-      ? this.getStackIndex(MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE, true) : -1;
+      ? this.getStackIndex(COMPILER_ROUTE_DYNAMIC_WRITE_ACTIVE, true) : -1;
     if (routeWriteFlagIndex >= 0) {
-      this.emitPickTrackedFromBottom(MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE, loc);
+      this.emitPickTrackedFromBottom(COMPILER_ROUTE_DYNAMIC_WRITE_ACTIVE, loc);
       this.emit(Op.OP_IF, loc);
       this.emitDynamicChunkBasePick(loc);
       this.emit(encodeInt(-1n), loc);
@@ -58399,7 +58356,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(BigInt(MAX_MESSAGE_BUS_BLOB_BYTES)), locationData);
+    this.emit(encodeInt(BigInt(MAX_JOURNAL_SEGMENT_BYTES)), locationData);
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData); // [idx, remainder, expected, expectedLen]
 
@@ -58551,7 +58508,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // than staying equal; the route's lifecycle verification pins the exact total. Every other case keeps the
     // exact master-value equality.
     const lifecycleModeIndex = this.currentFunctionIsRouteMetaRoute
-      ? this.getStackIndex('__message_bus_active_lifecycle_mode', true) : -1;
+      ? this.getStackIndex('__compiler_route_active_lifecycle_mode', true) : -1;
     const relaxedMergeValue = lifecycleModeIndex >= 0
       && this.getStackIndex('__internal__lifecycleOwnerInput', true) >= 0;
     if (!relaxedMergeValue && !this.currentFunctionIsDelegate && !this.usesRouteMetaOwnerBlockBase()
@@ -58563,7 +58520,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (relaxedMergeValue) {
-      this.emitPickTrackedFromBottom('__message_bus_active_lifecycle_mode', locationData);
+      this.emitPickTrackedFromBottom('__compiler_route_active_lifecycle_mode', locationData);
       this.emit(encodeInt(2n), locationData);
       this.emit(Op.OP_NUMEQUAL, locationData);
       this.emit(Op.OP_IF, locationData);
@@ -58586,9 +58543,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Skip ordinary master-output preservation when selector-derived retirement destroyed the master. */
   private beginAtomicSelfdestructExclusion(locationData: SingleLocationData): boolean {
     const lifecycleModeIndex = this.currentFunctionIsRouteMetaRoute
-      ? this.getStackIndex('__message_bus_active_lifecycle_mode', true) : -1;
+      ? this.getStackIndex('__compiler_route_active_lifecycle_mode', true) : -1;
     if (lifecycleModeIndex < 0) return false;
-    this.emitPickTrackedFromBottom('__message_bus_active_lifecycle_mode', locationData);
+    this.emitPickTrackedFromBottom('__compiler_route_active_lifecycle_mode', locationData);
     this.emit(encodeInt(3n), locationData);
     this.emit(Op.OP_NUMNOTEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
@@ -58604,11 +58561,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private beginAtomicMergeTailExclusion(locationData: SingleLocationData): boolean {
     if (this.usesRouteMetaOwnerBlockBase()) return false;
     const lifecycleModeIndex = this.currentFunctionIsRouteMetaRoute
-      ? this.getStackIndex('__message_bus_active_lifecycle_mode', true) : -1;
+      ? this.getStackIndex('__compiler_route_active_lifecycle_mode', true) : -1;
     const lifecycleOwnerIndex = this.currentFunctionIsRouteMetaRoute
       ? this.getStackIndex('__internal__lifecycleOwnerInput', true) : -1;
     if (lifecycleModeIndex < 0 || lifecycleOwnerIndex < 0) return false;
-    this.emitPickTrackedFromBottom('__message_bus_active_lifecycle_mode', locationData);
+    this.emitPickTrackedFromBottom('__compiler_route_active_lifecycle_mode', locationData);
     this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_INPUTINDEX, locationData);
@@ -58636,7 +58593,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): boolean {
     return false
       && (node.routeMetaOwnerIsLastArgument === true || node.graphEmissionHandler === true)
-      && node.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT);
+      && node.parameters.some((parameter) => parameter.name === COMPILER_ROUTE_OWNER_INPUT);
   }
 
   /** Copy a tracked frame value by its stable distance from the bottom. */
@@ -58975,7 +58932,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       neighbours: [...neighbours.entries()],
       stackTop: this.stack.slice(0, 28),
       callerBandNames: this.currentFunction.routeMetaCallerBandNames,
-      ownerBandOrdinal: this.declaredBandOrdinal(MESSAGE_BUS_OWNER_BAND_INPUT),
+      ownerBandOrdinal: this.declaredBandOrdinal(COMPILER_ROUTE_OWNER_BAND_INPUT),
       ownerAnchorIndex: this.getStackIndex(OWNER_ANCHOR_LOCAL, true),
     }));
     return site;
@@ -59019,7 +58976,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // untracked operands ABOVE the tracked frame, the top-relative form when the extras sit BELOW it. A fix
       // for the take-job coordinate must therefore correct the MODEL (or the specific base emitter), not the
       // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
-      const ownerName = this.routeMetaParticipantOwnerName() ?? MESSAGE_BUS_OWNER_INPUT;
+      const ownerName = this.routeMetaParticipantOwnerName() ?? COMPILER_ROUTE_OWNER_INPUT;
       const trackedOwnerIndex = this.getStackIndex(ownerName, true);
       const trackedOwnerAnchorIndex = this.getStackIndex(OWNER_ANCHOR_LOCAL, true);
       if (trackedOwnerAnchorIndex >= 0) {
@@ -59082,8 +59039,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         );
         this.emitComputeBaseSiteMarker(locationData, ownerSite);
         const bandOwnerOrdinal = graphRowHandler
-          && ownerName === MESSAGE_BUS_OWNER_INPUT
-          ? this.declaredBandOrdinal(MESSAGE_BUS_OWNER_BAND_INPUT) : undefined;
+          && ownerName === COMPILER_ROUTE_OWNER_INPUT
+          ? this.declaredBandOrdinal(COMPILER_ROUTE_OWNER_BAND_INPUT) : undefined;
         if (bandOwnerOrdinal !== undefined) {
           // The route ABI band is stable while invoked handler frames and their live operands are not.
           this.emit(Op.OP_DEPTH, locationData);
@@ -61895,7 +61852,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // DS-6: with the bus on, the SDK still settles a direct entry's activity batch by what ran (it reads the layout
     // alone); settlesSortedTargetsByActivity agrees only with each such write's flag. A route, as the SDK names one,
     // gets none.
-    const busDirect = !direct && !this.framedMaster && activityWrites.size > 0 && !node.name.startsWith('__message_bus')
+    const busDirect = !direct && !this.framedMaster && activityWrites.size > 0 && !node.name.startsWith('__compiler_route')
       && !node.parameters.some((parameter) => parameter.name === 'batchBlob');
     if (!direct && !this.framedMaster && !busDirect) return;
     const slots = new Set<number>();
@@ -63715,7 +63672,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const names = new Set(fn.parameters.map((parameter) => parameter.name));
       if (fn.routeMetaRecordClaims !== undefined && !names.has(GRAPH_BLOCK_SIZE)) continue;
       if (names.has(ACTIVE_VERIFIER_INDEX) && !names.has('__internal__msgSenderCategory')
-        && !names.has('__internal__proxyMasterIndex') && !names.has(MESSAGE_BUS_OWNER_INPUT)
+        && !names.has('__internal__proxyMasterIndex') && !names.has(COMPILER_ROUTE_OWNER_INPUT)
         && !names.has('__internal__lifecycleOwnerInput')) return true;
     }
     return false;
@@ -64983,8 +64940,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       return;
     }
-    if (this.stack.includes('__message_bus_graph_caller')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_caller'))), locationData);
+    if (this.stack.includes('__compiler_route_graph_caller')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_caller'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }
@@ -65241,8 +65198,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Inlined compiler-route batch handlers execute in the wrapper traversal, where the parsed
     // row value is an ordinary local rather than an OP_DEFINE frame argument.
-    if (this.stack.includes('__message_bus_graph_msg_value')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_msg_value'))), locationData);
+    if (this.stack.includes('__compiler_route_graph_msg_value')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__compiler_route_graph_msg_value'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }
@@ -66643,10 +66600,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Get token container category from the key parameter
       const keyParamName = this.tokenContainerSlots[i].keyParam;
       // Prefer the live parameter; after a transfer emission the category may only remain as `__tc_cat_*`.
-      // Message-bus routes keep forwarded `__message_bus_token_category*` witnesses instead of source names.
+      // Message-bus routes keep forwarded `__compiler_route_token_category*` witnesses instead of source names.
       const routeMetaCatName = i === 0
-        ? '__message_bus_token_category'
-        : `__message_bus_token_category_${i}`;
+        ? '__compiler_route_token_category'
+        : `__compiler_route_token_category_${i}`;
       let keyIdx = this.getStackIndex(keyParamName, true);
       const slot = this.tokenContainerSlots[i];
       if (keyIdx < 0 && (slot.keySource === 'own' || slot.keySource === 'state')) {
@@ -66668,8 +66625,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         if (keyIdx < 0) {
           // Fall back to the i-th forwarded witness still on the stack when slot ordinals drifted.
-          const forwardedOnStack = this.stack.filter((name) => name === '__message_bus_token_category'
-            || name.startsWith('__message_bus_token_category_'));
+          const forwardedOnStack = this.stack.filter((name) => name === '__compiler_route_token_category'
+            || name.startsWith('__compiler_route_token_category_'));
           const byOrdinal = forwardedOnStack[i] ?? forwardedOnStack[0];
           if (byOrdinal !== undefined) keyIdx = this.getStackIndex(byOrdinal, true);
         }

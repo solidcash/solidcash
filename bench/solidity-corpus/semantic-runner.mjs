@@ -83,7 +83,7 @@ const withoutSize = ({ size: _size, ...rest }) => rest;
 const IN_TARGET_LAYOUT = 'in-target: layout at';
 const IN_TARGET_RETRIES = [
   [/^UnauthorizedLifecycleError: /, 'in-target: lifecycle refusal'],
-  [/\[MESSAGE_BUS_REQUIRED\]/, 'in-target: compiler route required'],
+  [/\[REPEATED_CALL_UNSUPPORTED\]/, 'in-target: repeated call unsupported'],
   [/^UndefinedReferenceError: /, 'in-target: undefined reference'],
   [/^AssignTypeError: /, 'in-target: assign type'],
 ];

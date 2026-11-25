@@ -150,7 +150,7 @@ pure first slice below, and the stateful slice after it.
   category; the mock reset hooks are fired). Every runnable line then runs in file order as its own `send()`, so
   state carries from line to line as in solc's runner. A `layout at` target gets the checks inside a copy of its
   own body, as in the pure slice. A derived wrapper the lifecycle policy refuses (`UnauthorizedLifecycleError`: a
-  `__check_<k>` reaches a child deploy and has no trusted-key signature check) or that hits `MESSAGE_BUS_REQUIRED`
+  `__check_<k>` reaches a child deploy and has no trusted-key signature check) or that hits `REPEATED_CALL_UNSUPPORTED`
   (`various/write_storage_external`: repeated calls to the same state owner) is compiled again that way: the
   compiler's compiler-route auto-selection reads only the root contract's own functions, before inheritance is
   expanded, so behind a derived wrapper the target's call-graph edges are invisible, the wrapper is narrowed to
@@ -242,7 +242,7 @@ clean lines (7 of the 10 misses are wrong `.slot`/`.offset` or slot-addressed `s
 lifecycle ones 6 of 13 (6 OP_VERIFY reverts on lines that deploy a fresh child, 1 keccak probe error; 6 more
 lines refused at deploy, 1 at compile on Yul `create`). Pure: 1,480 of 1,613 (91.75%). Refusals the wrapper still
 causes: an internal call to a returning dynamic-array state helper (10 lines), to an overloaded function
-(`storage_array_ref`, 16), to a function ending in an assembly `return` (2), and `MESSAGE_BUS_REQUIRED` on a
+(`storage_array_ref`, 16), to a function ending in an assembly `return` (2), and `REPEATED_CALL_UNSUPPORTED` on a
 derived `__check_0` (`write_storage_external`, 3: the same hidden call-graph edges as the lifecycle refusal);
 6 more lines fail inside the target's own code (undefined `x`/`s`, an assign type) though the target compiles
 alone, so likely on the derived shape (not diagnosed).

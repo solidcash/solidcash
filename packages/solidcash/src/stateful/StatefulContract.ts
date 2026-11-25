@@ -6803,7 +6803,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // A direct compiler-owned batch route may carry other physical witnesses while leaving only its caller
     // category for the builder to derive. Keep those supplied witnesses aligned with their actual ABI slots.
     const implicitCallerInputs = options.implicitMsgSenderCategory
-      && abiFunction.name === '__message_bus1'
+      && false
       && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')
       ? abiFunction.inputs.filter((input) => input.name !== '__internal__msgSenderCategory') : undefined;
     if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length
@@ -7603,14 +7603,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const m = keyType.match(/^bytes(\d+)$/);
               return m ? new Uint8Array(parseInt(m[1], 10)) : new Uint8Array(0);
             }
-            // Route entry helpers wrap their public key input in a local `__message_bus_ek_` alias. Artifact
-            // entry metadata preserves that helper-local spelling, while the ABI and `entryArgs` carry the
-            // underlying route input. Resolve either spelling; treating the alias as an ABI name produces an
-            // undefined key whenever a runtime-loop slot precedes this fixed mapping access.
-            const abiParamName = paramName.startsWith('__message_bus_ek_')
-              ? paramName.slice('__message_bus_ek_'.length) : paramName;
-            const idx = entryAbiFunction!.inputs.findIndex((inp) =>
-              inp.name === paramName || inp.name === abiParamName);
+            const idx = entryAbiFunction!.inputs.findIndex((inp) => inp.name === paramName);
             const v = entryArgs[idx] as bigint | number | boolean | Uint8Array | string;
             // An address key is hashed as its locking bytecode (matching the covenant's on-stack address and the
             // default entry model). Bytes keys arrive as Uint8Array (raw); ints as their VM number.
@@ -7648,10 +7641,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)), collection,
           );
           batchTargetSlots.set(slotIndex, slot);
-          const firstKeyParam = keyNames[0].startsWith('__message_bus_ek_')
-            ? keyNames[0].slice('__message_bus_ek_'.length) : keyNames[0];
-          const kvIdx = entryAbiFunction!.inputs.findIndex((inp) =>
-            inp.name === keyNames[0] || inp.name === firstKeyParam);
+          const kvIdx = entryAbiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
           const stateArrayKeyValues = access.keySources?.[0]?.kind === 'stateArrayLast'
             ? onChainState.state[access.keySources[0].stateArrayName ?? ''] as unknown[] : undefined;
           const kv = access.keySources?.[0]?.kind === 'constant'
@@ -8128,8 +8118,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 try {
                   return keyNames.map((name, index) => {
                     const keyType = keyTypes[index] ?? collection.keyType;
-                    const abiName = name.startsWith('__message_bus_ek_')
-                      ? name.slice('__message_bus_ek_'.length) : name;
+                    const abiName = name;
                     const at = entryAbiFunction?.inputs.findIndex((inp) =>
                       inp.name === name || inp.name === abiName) ?? -1;
                     return `${name}(${keyType})=${binToHex(
@@ -8286,7 +8275,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         })),
                         accessSlots: { entryAccessSlot: access.slotIndex ?? null, routeSlot: slotIndex },
                         routeKeys: (entryAbiFunction?.inputs ?? []).map((input, index) => ({ input, index }))
-                          .filter(({ input }) => input.name.startsWith('__message_bus_key_'))
+                          .filter(() => false)
                           .map(({ input, index }) => ({
                             name: input.name, type: input.type,
                             entryArg: entryArgs[index] instanceof Uint8Array
@@ -11527,7 +11516,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       while (finalArgs.length <= argumentIndex) {
         const pending = entryAbiFunction!.inputs[finalArgs.length];
-        const routeKeyWitness = pending?.name.startsWith('__message_bus_key_')
+        const routeKeyWitness = false
           && routeKeyWitnessInputs.has(pending.name);
         if (!pending?.name.startsWith('__internal__') && !routeKeyWitness) {
           throw new Error(

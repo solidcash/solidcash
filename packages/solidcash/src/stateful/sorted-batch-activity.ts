@@ -238,7 +238,7 @@ export type RouteEntryActivity = {
 
 const routeKeyName = (name: string): string => {
   const bare = name.startsWith('id:') ? name.slice(3) : name;
-  return bare.startsWith('__message_bus_ek_') ? bare.slice('__message_bus_ek_'.length) : bare;
+  return bare;
 };
 
 /**

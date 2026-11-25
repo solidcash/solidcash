@@ -151,7 +151,7 @@ export function returningCallChunkRunBase(
   if (!isContractUnlocker(unlocker)) return undefined;
   const { abiFunction: fn, params } = unlocker;
   if (params.length !== fn.inputs.length || unlocker.contract.artifact.composition !== undefined
-    || fn.name.startsWith('__message_bus') || !writes.every((name) => fn.dynamicWrites?.includes(name))
+    || !writes.every((name) => fn.dynamicWrites?.includes(name))
     || fn.inputs.some((input) => input.name.startsWith('__internal__vmapCounterPerm_'))) return undefined;
   const valueOf = (name: string): bigint | undefined => {
     const value = params[fn.inputs.findIndex((input) => input.name === name)];

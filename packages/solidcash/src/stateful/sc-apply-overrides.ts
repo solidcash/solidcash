@@ -154,7 +154,7 @@ export async function applyOverrides(
     if (host.parentContract && host.functionArgs) {
       const selected = host.compilerRoute?.abiFunction ?? host.selectedAbiFunction();
       if (selected) host.functionArgs = host.parentContract._validateAbiFrame(selected, host.functionArgs, {
-        implicitMsgSenderCategory: host.compilerRoute?.abiFunction.name === '__message_bus1',
+        implicitMsgSenderCategory: false,
       });
     }
     for (const call of host.callInfos) {

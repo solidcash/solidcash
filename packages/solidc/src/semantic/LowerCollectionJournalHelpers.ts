@@ -116,7 +116,7 @@ interface ActiveDynamicCache {
 
 /** Strip the compiler's synthetic batch-clone prefix so a diagnostic names the handler the user wrote. */
 const sourceHandlerName = (name: string): string => name
-  .replace(/^__message_bus_(?:resource|handler|dynamic|array|graph)_/, '')
+  .replace(/^__compiler_route_(?:resource|handler|dynamic|array|graph)_/, '')
   .replace(/_self_alias$/, '');
 
 interface ActiveMultiCacheLocal {
@@ -806,7 +806,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (child instanceof RequireNode && child.routeMetaFixedChunkableWriteGuard) remainingGuard = true;
       });
       if (!remainingGuard) route.fn.body.statements = route.fn.body.statements?.filter((statement) =>
-        !(statement instanceof VariableDefinitionNode && statement.name === '__message_bus_fixed_chunkable_write_count'));
+        !(statement instanceof VariableDefinitionNode && statement.name === '__compiler_route_fixed_chunkable_write_count'));
     }
     return node;
   }
@@ -1292,7 +1292,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         (target.fn.collectionJournalLinearKeyPools ?? []).some((pool) =>
           identity === `parameter:${pool.argumentName}`));
       const laneSelection = linearArgument && runtimeAliases.every((alias) =>
-        alias.keyIdentity.every((identity) => identity.startsWith('parameter:__message_bus_key_')));
+        alias.keyIdentity.every((identity) => identity.startsWith('parameter:__compiler_route_key_')));
       if (laneSelection) {
         const laneCache = [...this.activeMultiCaches.values()].find((candidate) => candidate.calls.has(call));
         const temps = [
@@ -1509,7 +1509,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         for (const entry of target.entries) {
           const keys = keysFor(entry);
           const keyName = keys.length === 1 && keys[0] instanceof IdentifierNode ? keys[0].name : undefined;
-          const lanePrefix = `__message_bus_key_${entry.collection}_`;
+          const lanePrefix = `__compiler_route_key_${entry.collection}_`;
           const pool = keyName === undefined ? undefined
             : linearPools.find((candidate) => candidate.argumentName === keyName
               && candidate.lanes.some((lane) => lane.startsWith(lanePrefix)));
@@ -1581,9 +1581,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       for (const binding of callLocals!) {
         const lanes = binding.runtimeAliases ?? [];
         const laneBacked = lanes.length > 0 && lanes.every((alias) => alias.keyIdentity.every((identity) =>
-          identity.startsWith('parameter:__message_bus_key_')));
+          identity.startsWith('parameter:__compiler_route_key_')));
         // A function-level flush cannot name the row-loop argument. Lane parameters own that write.
-        if (laneBacked && binding.local.keyIdentity.some((identity) => identity.includes('__message_bus_arg_'))) {
+        if (laneBacked && binding.local.keyIdentity.some((identity) => identity.includes('__compiler_route_arg_'))) {
           binding.local.mutates = false;
         }
       }
@@ -1750,9 +1750,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     wrapperParameters: Set<string>,
   ): string | undefined {
     if (key instanceof IdentifierNode && (wrapperParameters.has(key.name)
-      || key.name.startsWith('__message_bus_key_')
-      || key.name.startsWith('__message_bus_arg_'))) {
-      // Kernel row-decoded arguments are wrapper locals (`__message_bus_arg_*`), not formal parameters.
+      || key.name.startsWith('__compiler_route_key_')
+      || key.name.startsWith('__compiler_route_arg_'))) {
+      // Kernel row-decoded arguments are wrapper locals (`__compiler_route_arg_*`), not formal parameters.
       // They are still one identity per physical entry of this invocation.
       return `parameter:${key.name}`;
     }

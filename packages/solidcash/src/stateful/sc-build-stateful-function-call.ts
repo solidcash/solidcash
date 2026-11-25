@@ -967,11 +967,7 @@ export async function buildStatefulFunctionCall(
   // Only the active named handler's dynamicWrites are incompleteness-relevant for this local builder.
   // Absent dynamicWrites on a non-route entry means the selected handler writes none (treat as []).
   const selectedAbi = host.selectedAbiFunction();
-  const selectedIsRoute = selectedAbi?.name === '__message_bus1'
-    || (selectedAbi?.name?.startsWith('__message_bus') ?? false);
-  const activeDynamicWrites = selectedIsRoute
-    ? undefined
-    : (selectedAbi?.dynamicWrites ?? (selectedAbi !== undefined ? [] : undefined));
+  const activeDynamicWrites = selectedAbi?.dynamicWrites ?? (selectedAbi !== undefined ? [] : undefined);
   const incompleteDynamicChunks = stb.getDynamicChunkVars().flatMap((variable) => {
     if (Array.isArray(activeDynamicWrites) && !activeDynamicWrites.includes(variable.name)) {
       return [];

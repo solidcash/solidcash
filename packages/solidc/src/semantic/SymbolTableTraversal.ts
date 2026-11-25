@@ -285,7 +285,7 @@ export { getMaxPushdataEncodedSizeForType };
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
 //
 // X28 measured whether this can be split into a compile-time-sized LOOP leg and a conservative CHUNK leg, and
-// it cannot: there is no loop leg. `needsTrailingRegion` below is gated on `__message_bus1`, and every reservation
+// it cannot: there is no loop leg. `needsTrailingRegion` below is gated on `__compiler_route1`, and every reservation
 // measured - 18 of 2,283 layout computations in the compiler suite, 111 of 6,881 in the SDK suite - fired
 // through the chunk term. No loop term fired on any function that reached the reservation. See the note there.
 //
@@ -590,10 +590,10 @@ function isFoldableCreationCodeHash(node: FunctionCallNode): boolean {
     && arg.contractName !== undefined;
 }
 
-/** The compiler-route route's generated row loop, `for (__message_bus_row = 0; __message_bus_row < rowCount; ..)`. */
+/** The compiler-route route's generated row loop, `for (__compiler_route_row = 0; __compiler_route_row < rowCount; ..)`. */
 function isRouteMetaRowLoop(loop: WhileNode | DoWhileNode): boolean {
   const boundsRow = (expression: Node): boolean => (expression instanceof IdentifierNode
-    ? expression.name === '__message_bus_row'
+    ? expression.name === '__compiler_route_row'
     : expression instanceof BinaryOpNode && (boundsRow(expression.left) || boundsRow(expression.right)));
   return boundsRow(loop.condition);
 }
@@ -4459,7 +4459,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (lsym) lsym.references.push({ name: lname } as IdentifierNode);
             this.pushToStack(lparam);
           }
-          if (node.name.startsWith('__message_bus_')) {
+          if (node.name.startsWith('__compiler_route_')) {
             const routeFn = this.currentContract?.functions.find((candidate) => candidate.routeMetaRoute);
             if (routeFn && routeFn !== node
               && !routeFn.parameters.some((parameter) => parameter.name === wname)) {
@@ -4795,19 +4795,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             const chains = refusedRepeated.map((group) => group.map((slot) =>
               `${slot.interfaceName}.${slot.functionName}`).join(' -> '));
             throw new SolidcDiagnosticError(
-              'MESSAGE_BUS_REQUIRED',
+              'REPEATED_CALL_UNSUPPORTED',
               `Function '${node.name}' repeats calls to the same state owner (${chains.join('; ')}). `
-              + (directConvention
-                ? 'A UTXO master can be spent only once, and the direct convention runs several calls in one spend '
-                  + 'only through the callee\'s multi-call entry, whose calls are regular and value-free, name a '
-                  + 'fixed method of a fixed target and pass every argument their records digest; this transaction '
-                  + 'cannot be built with '
-                : 'A UTXO master can be spent only once, so this transaction cannot be built with ')
-              + (routeMetaAutoNarrowed
-                ? 'the automatic direct path: the automatic selection did not read the repeated call as a '
-                  + 'graph edge. State the option and set `routeMeta: true`.'
-                : directConvention ? '`routeMeta: false`.'
-                  : '`routeMeta: false`; omit the option to infer compiler-route support or set it to true.'),
+              + 'A UTXO master can be spent only once. The direct convention runs several calls in one spend only '
+              + "through the callee's multi-call entry, whose calls are regular and value-free, name a fixed method "
+              + 'of a fixed target and pass every argument their records digest; this transaction cannot be built.',
               { functionName: node.name, callChains: chains, option: 'routeMeta' },
             );
           }
@@ -5048,7 +5040,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         if (node.graphEmissionHandler) {
           // X119. All six refusals below carry the handler's definition node, so each gains a Line/Column plus
-          // the imported-file and generated-source caveats. The message text is unchanged: a `__message_bus_graph_*`
+          // the imported-file and generated-source caveats. The message text is unchanged: a `__compiler_route_graph_*`
           // clone keeps the location of the function it was cloned from, so the position names the user's own
           // function even though the name is synthesized.
           if (logicalCallSlots.length < 1
@@ -5767,7 +5759,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // impl keeps the C1 warning path (a P2PKH UTXO authorizes nothing, so pinning it would be unsound anyway).
     if (hasExplicitDelegatecall && !node.isEntryPoint) {
       throw new SolidcDiagnosticError(
-        'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE',
+        'DELEGATE_CONTEXT_UNPRESERVABLE',
         `internal function '${node.name}' contains delegatecall, whose proxy input witness cannot be preserved `
           + 'across an internal invocation',
         {
@@ -8918,7 +8910,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (fn === undefined) return;
     // Every route clone has a compiler-owned parameter frame; the direct source handler is the only place a
     // loop-target witness array can be threaded in from its caller.
-    if (fn.graphEmissionHandler !== true && !fn.name.startsWith('__message_bus_')) return;
+    if (fn.graphEmissionHandler !== true && !fn.name.startsWith('__compiler_route_')) return;
     throw new GraphHandlerShapeError(
       node,
       `Graph handler '${fn.name}' requires a pinned call target: a target selected by a loop index has no row `
@@ -9332,7 +9324,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const walk = (n: unknown): void => {
       if (!n || typeof n !== 'object') return;
       if (n instanceof ArrayAccessNode && n.index instanceof ExpressionNode
-        && !(n.index instanceof IdentifierNode && n.index.name === '__message_bus_row')) {
+        && !(n.index instanceof IdentifierNode && n.index.name === '__compiler_route_row')) {
         consider(n.index);
       }
       if (n instanceof IdentifierNode && !seen.has(n.name)) {
@@ -9618,8 +9610,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         };
         collect(node);
         result = candidates.find((candidate) => candidate.name === 'i')
-          ?? candidates.find((candidate) => candidate.name !== '__message_bus_row');
-        if (result?.name === '__message_bus_row') result = undefined;
+          ?? candidates.find((candidate) => candidate.name !== '__compiler_route_row');
+        if (result?.name === '__compiler_route_row') result = undefined;
         if (result) return;
         scan(node instanceof WhileNode || node instanceof DoWhileNode ? node.block : node, seen);
         return;
@@ -9688,9 +9680,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           findConditionCounter(node.condition);
           result = conditionCounter;
         }
-        // The kernel dispatch `for (__message_bus_row ...)` is not a per-iteration callee-target loop.
+        // The kernel dispatch `for (__compiler_route_row ...)` is not a per-iteration callee-target loop.
         // Locals declared in a row body must keep looking for a nested source loop.
-        if (result !== undefined && result.name === '__message_bus_row') {
+        if (result !== undefined && result.name === '__compiler_route_row') {
           result = undefined;
           scan(node.block, seen);
         }
@@ -20402,7 +20394,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (transfers === 0) continue;
       if (!fn.graphEmissionHandler && fn.routeMetaEligible !== true) continue;
       throw new GraphEmissionEffectError(
-        fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''), 'a token-container operation',
+        fn, fn.name.replace(/^__compiler_route_(graph|resource|handler|array)_/, ''), 'a token-container operation',
       );
     }
   }
@@ -20431,14 +20423,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     });
     // if/else arms are mutually exclusive: sum-of-nodes counted both `this.transfer` statements and
     // disagreed with `collectTransferStatements` (max of arms), so the clone never joined the route frame
-    // and `__message_bus1` compiled the transfer with no `transfer[0]` slot.
+    // and `__compiler_route1` compiled the transfer with no `transfer[0]` slot.
     const thisTransfers = countTransfersMinMax(fn.body, isDirectOwnerTransferNode).max;
     // Stateful child deployments publish the same global transfer ordinal used by direct owner transfers.
     // Their per-site descriptors therefore compose in one route frame; the total declared width is settled by
     // those ordinals rather than by treating call-option and statement effects as mutually exclusive families.
     if (thisTransfers > 0 && valueCalls !== childDeploymentValueCalls) {
       throw new GraphEmissionEffectError(
-        fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
+        fn, fn.name.replace(/^__compiler_route_(graph|resource|handler|array)_/, ''),
         'a value call option alongside an emit or transfer',
       );
     }
@@ -20451,7 +20443,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    *
    * SEC-5/SEC-6: a graph emission handler must stay behind OP_INVOKE, because only then does the route
    * recompute its outgoing edges and compare them against the authenticated callManifest. Flattening it makes
-   * `__message_bus1` the current function at code generation and every edge generates unbound. But a handler carrying
+   * `__compiler_route1` the current function at code generation and every edge generates unbound. But a handler carrying
    * an `emit` or a `transfer` produces OUTPUTS, and outputs are addressed through a block layout that only an
    * ENTRY POINT has - so the un-flattened handler had nowhere to put them and the effect was silently dropped.
    *
@@ -20575,7 +20567,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (loopDispatch || count >= (route.routeMetaMaximumRows ?? count)) continue;
       throw new GraphEmissionEffectError(
         handler,
-        handler.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
+        handler.name.replace(/^__compiler_route_(graph|resource|handler|array)_/, ''),
         'an effect on a route with fewer dispatch sites than rows',
       );
     }
@@ -20681,7 +20673,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const identity = (access: EntryAccessInfo): string => {
       const params = (access.keyParams ?? []).map((key) => key.replace(/_r\d+$/, ''));
       const usesRouteWitness = params.some((key) =>
-        key.includes('__message_bus_key_') || key.includes('__message_bus_ek_'));
+        key.includes('__compiler_route_key_') || key.includes('__compiler_route_ek_'));
       const canonical = (access.keySources ?? []).map((source) => source.canonical)
         .filter((value) => value !== undefined && value !== '');
       const keys = !usesRouteWitness && canonical.length > 0 ? canonical : params;
@@ -20730,7 +20722,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!route?.blockLayout) return;
     const extras: typeof route.entryAccesses = [];
     for (const fn of contract.functions) {
-      if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
+      if (fn === route || !fn.name.startsWith('__compiler_route_')) continue;
       for (const access of fn.entryAccesses ?? []) {
         const already = (route.entryAccesses ?? []).some((existing) =>
           this.sameRouteMetaEntryAccess(existing, access));
@@ -20740,18 +20732,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
     }
-    // token-container co-layout: absorb token-container accesses from OP_INVOKE helpers (esp. `__message_bus_dynamic_*`)
+    // token-container co-layout: absorb token-container accesses from OP_INVOKE helpers (esp. `__compiler_route_dynamic_*`)
     // into the route so co-spent `tokenContainer` slots exist before dyn trailing geometry is shared.
-    // Remap helper key params onto the route's forwarded `__message_bus_token_category*` witnesses —
+    // Remap helper key params onto the route's forwarded `__compiler_route_token_category*` witnesses —
     // the route stack never holds the source `category` name.
     const forwardedTokenKeys = route.parameters
       .map((parameter) => parameter.name)
-      .filter((name) => name === '__message_bus_token_category'
-        || name.startsWith('__message_bus_token_category_'));
+      .filter((name) => name === '__compiler_route_token_category'
+        || name.startsWith('__compiler_route_token_category_'));
     const routeTokenKeyFor = (accessKeyParam: string, ordinal: number): string => {
       // Prefer the ordinal-forwarded witness when present: source spellings like `category` may still
       // appear as route parameters in some templates, but identity verification runs against the
-      // forwarded `__message_bus_token_category*` stack names the invoke actually keeps live.
+      // forwarded `__compiler_route_token_category*` stack names the invoke actually keeps live.
       if (forwardedTokenKeys[ordinal] !== undefined) return forwardedTokenKeys[ordinal];
       const exact = route.parameters.find((parameter) => parameter.name === accessKeyParam);
       if (exact) return exact.name;
@@ -20784,7 +20776,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       tokenContainerMerged = true;
     }
     for (const fn of contract.functions) {
-      if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
+      if (fn === route || !fn.name.startsWith('__compiler_route_')) continue;
       for (const access of fn.tokenContainerAccesses ?? []) {
         if (fixedKey(access)) {
           const fixed = routeTokenContainers.find((candidate) => candidate.keySource === access.keySource
@@ -20838,7 +20830,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           );
           // Never invent a TC slot keyed by a source spelling absent from the route parameter list —
           // that leaves emitTokenContainerIdentityVerification looking for `category` on a stack that
-          // only holds `__message_bus_token_category*`.
+          // only holds `__compiler_route_token_category*`.
           if (!route.parameters.some((parameter) => parameter.name === routeKey)) continue;
           routeTokenContainers.push({
             ...access,
@@ -20883,9 +20875,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (route.graphEffectFrame) this.refreshGraphEffectFrameOffsets(route.graphEffectFrame, route);
     }
     for (const fn of contract.functions) {
-      if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
+      if (fn === route || !fn.name.startsWith('__compiler_route_')) continue;
       // token-container co-layout: share whenever the helper needs entry lanes OR token-container co-spent inputs
-      // (dynamic-bytes + tokens[category] co-layout compiles `__message_bus_dynamic_*` against this layout).
+      // (dynamic-bytes + tokens[category] co-layout compiles `__compiler_route_dynamic_*` against this layout).
       if (fn.entryAccesses?.length || (fn.tokenContainerAccesses?.length ?? 0) > 0) {
         fn.blockLayout = route.blockLayout;
         // Keep helper TC keyParams aligned with the route's forwarded witnesses so OP_INVOKE bodies
@@ -21408,9 +21400,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // body cannot see their dynamic state accesses. Reserve its balanced trailing region whenever the
     // contract has dynamic storage: concrete chunks occupy the leading trailing slots and funding/change
     // pairs fill the remainder, keeping the next participant's block relocatable and index-stable.
-    if (node.name === '__message_bus1' && dynamicNames.size > 0) touchesDynamicState = true;
-    if (node.name === '__message_bus1' && !touchesDynamicState) {
-      const dynamicHelpers = contract.functions.filter((fn) => fn.name.startsWith('__message_bus_dynamic_'));
+    if (node.name === '__compiler_route1' && dynamicNames.size > 0) touchesDynamicState = true;
+    if (node.name === '__compiler_route1' && !touchesDynamicState) {
+      const dynamicHelpers = contract.functions.filter((fn) => fn.name.startsWith('__compiler_route_dynamic_'));
       if (dynamicHelpers.length > 0) touchesDynamicState = true;
       for (const helper of dynamicHelpers) {
         scanDynamicState(helper.body);
@@ -21432,20 +21424,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     // This is distinct from ordinary/direct calls: atomic graph spans need an advertised maximum so they can
     // converge from the fixed core to the actually used suffix. Size collection-only routes from their physical
     // access count rather than imposing the 64-slot dynamic-storage reserve on every mapping contract.
-    const collectionRouteCapacity = node.name === '__message_bus1' && contract.collections.length > 0
+    const collectionRouteCapacity = node.name === '__compiler_route1' && contract.collections.length > 0
       ? Math.min(BALANCED_TRAILING_CAPACITY, Math.max(1, (node.entryAccesses?.length ?? 1) * 2)) : 0;
     // A chunkable sorted-map write needs a runtime-variable continuation run in addition to its entry NEW/P'
     // endpoints. It also needs one speculative continuation output while auto-derivation proves the end of that
     // run. The physical access-count bound above cannot cover either dimension: one entry write can emit many
     // continuation NFTs. Use the existing correctness-first trailing ceiling for this generic resource shape;
     // atomic composition compacts unused dummy suffix slots after derivation.
-    const writesChunkableCollection = node.name === '__message_bus1'
+    const writesChunkableCollection = node.name === '__compiler_route1'
       && (node.entryAccesses ?? []).some((access) => {
         if (!access.operations.includes('write')) return false;
         const collection = contract.collections.find((candidate) => candidate.name === access.collection);
         return collection?.sorted === true && isChunkableValueType(collection.innermostValueType);
       });
-    const runtimeCounterOutputCapacity = node.name === '__message_bus1'
+    const runtimeCounterOutputCapacity = node.name === '__compiler_route1'
       ? Math.max(0, ...contract.functions.map((fn) => (
         fn.graphEmissionHandler || fn.routeMetaEligible === true
           ? fn.runtimeCounterLoopOutputCapacity ?? 0 : 0
@@ -21481,7 +21473,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // A direct unbounded keccak256 chained read reserves no band: like a keccak loop's side-cars, its
     // START/CONT/FINAL side-cars follow the block, one per step, and the read takes FINAL's index from the
     // argument's length. A reserved band only made the SDK fund its unused slots.
-    const needsTrailingRegion = node.name === '__message_bus1'
+    const needsTrailingRegion = node.name === '__compiler_route1'
       && (needsWideTrailingRegion || collectionRouteCapacity > 0);
     const published = {
       ...(minerFeeStatement ? { minerFee: this.minerFeeAmount(minerFeeStatement).toString() } : {}),

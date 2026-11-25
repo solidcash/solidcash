@@ -27,8 +27,8 @@ import { fixedForMaximum } from './FixedForLoop.js';
  * | `addr.staticcall{gas: g}(payload)`             | `Block slot not found: lowLevelCall[0]`                   |
  * | `addr.call(payload)` inside a loop, void form  | `Block slot not found: lowLevelCall[0]`                   |
  * | `addr.call(payload)` inside a branch, void     | `Block slot not found: lowLevelCall[0]`                   |
- * | `addr.call(payload)` inside a loop, returning  | `Runtime graph handler '__message_bus_graph_run' requires void ...`|
- * | `addr.call(payload)` inside a branch, returning| `Runtime graph handler '__message_bus_graph_run' requires void ...`|
+ * | `addr.call(payload)` inside a loop, returning  | `Runtime graph handler '__compiler_route_graph_run' requires void ...`|
+ * | `addr.call(payload)` inside a branch, returning| `Runtime graph handler '__compiler_route_graph_run' requires void ...`|
  *
  * This module produces one stable, named diagnostic per shape instead, against the SOURCE function and the
  * source construct, before any route synthesis renames the handler.

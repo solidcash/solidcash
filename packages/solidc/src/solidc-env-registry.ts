@@ -52,7 +52,6 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_CACHE_ID', class: 'observation' },
   { name: 'SOLIDC_DEBUG_ENTRY_OUTPUT', class: 'observation' },
   { name: 'SOLIDC_DEBUG_LOOP', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK', class: 'observation' },
   { name: 'SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER', class: 'observation' },
   { name: 'SOLIDC_DEBUG_OWNER_TOP_HANDLER', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RAW_TARGET', class: 'observation' },
@@ -68,7 +67,6 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDCASH_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDC_NO_OPTIMISE', class: 'instrumented' },
-  { name: 'SOLIDC_SKIP_MESSAGE_BUS_BINDER', class: 'instrumented' },
   // Explicit features — identity-bearing when enabled
   {
     name: 'SOLIDC_OWNER_ALT_ANCHOR',
@@ -231,7 +229,6 @@ export function enforceSolidcEnvPolicy(
 
 /** Production hot-set names that must stay registered (subset of the full SOLIDC env registration). */
 export const PRODUCTION_SOLIDC_ENV_HOT_SET: readonly string[] = Object.freeze([
-  'SOLIDC_SKIP_MESSAGE_BUS_BINDER',
   'SOLIDC_COMPILE_CACHE',
   'SOLIDC_COMPILE_CACHE_BUILD_ID',
   'SOLIDC_COMPILE_CACHE_DIR',

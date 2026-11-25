@@ -55,9 +55,8 @@ import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
 export type SolidcDiagnosticCode =
-  | 'MESSAGE_BUS_RESERVED_SELECTOR_COLLISION'
-  | 'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE'
-  | 'MESSAGE_BUS_REQUIRED'
+  | 'DELEGATE_CONTEXT_UNPRESERVABLE'
+  | 'REPEATED_CALL_UNSUPPORTED'
   | 'FRAMED_CODEGEN_UNAVAILABLE'
   | 'FRAMED_UPGRADE_LAYOUT'
   | 'STATE_RECORD_CAPACITY'
@@ -109,7 +108,6 @@ export type SolidcDiagnosticCode =
   // A compiler-route entry whose looped call only the route binds, where the route does not serve that entry.
   | 'ROUTE_ONLY_ENTRY_UNSERVED'
   // A compiler-route verifier that reaches a function-pointer target reading block.*, whose pool helper it cannot carry.
-  | 'MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'
@@ -153,7 +151,7 @@ export class UnpublishableLoopGuardError extends SolidcDiagnosticError {
  * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot
  * reach: a diagnostic raised during SEMANTIC ANALYSIS of the merged AST, on a node the route parse built.
  * Measured on `SushiMakerKashi.sol` (169 lines) during generated graph-route analysis:
- * `Undefined reference to symbol __message_bus_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
+ * `Undefined reference to symbol __compiler_route_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
  * `address private immutable sushi;`. The position is INSIDE the file, so nothing signals it is wrong.
  */
 export function generatedSourceCaveat(location?: Location): string {
@@ -319,7 +317,7 @@ export class UnsupportedMemoryAliasingError extends SolidCashError {
  * X119. A graph handler whose call shape route synthesis cannot lower.
  *
  * Six sites in `SymbolTableTraversal` raised a bare `throw new Error`, so the user got a message naming a
- * SYNTHESIZED handler (`__message_bus_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
+ * SYNTHESIZED handler (`__compiler_route_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
  * which of their own functions it was cloned from. The stamp cannot reach these: they need a NODE. Carrying the
  * handler's definition node routes them through `SolidCashError`, so each one gains a Line/Column plus both file
  * caveats the same way every other diagnostic here does.
@@ -2309,7 +2307,7 @@ export class ContractTypeConstructorArgCountError extends SolidCashError {
  */
 export class UnboundReturnCallError extends SolidCashError {
   constructor(node: Node, functionName: string, edge: string, slotIndex: number, slotCount: number) {
-    const routed = /^__message_bus/.test(functionName);
+    const routed = /^__compiler_route/.test(functionName);
     super(
       node,
       `Function '${functionName}' consumes the return value of the external call '${edge}', but no return-event `

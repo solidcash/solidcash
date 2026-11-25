@@ -1383,7 +1383,7 @@ const expressionSource = (
     && (expression as unknown as { operator?: string }).operator === 'msg.sender') {
     return { kind: 'msgSender' };
   }
-  if (expression.constructor.name === 'IdentifierNode' && shaped.name === '__message_bus_graph_caller') {
+  if (expression.constructor.name === 'IdentifierNode' && shaped.name === '__compiler_route_graph_caller') {
     return { kind: 'msgSender' };
   }
   if (expression.constructor.name === 'IdentifierNode' && shaped.name) {

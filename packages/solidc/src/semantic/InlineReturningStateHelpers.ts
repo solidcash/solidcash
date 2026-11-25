@@ -513,7 +513,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (fn.graphEmissionHandler || fn.routeMetaDetachedSignatureHandler) continue;
       if (((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStoragePtr(fn))
-        && !(fn.name.startsWith('__message_bus_entry_') && this.ownsRuntimeMappingLoop(fn))) {
+        && !(fn.name.startsWith('__compiler_route_entry_') && this.ownsRuntimeMappingLoop(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -527,7 +527,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (!fn.graphEmissionHandler && !fn.routeMetaDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
-        && !(fn.name.startsWith('__message_bus_entry_') && this.ownsRuntimeMappingLoop(fn))
+        && !(fn.name.startsWith('__compiler_route_entry_') && this.ownsRuntimeMappingLoop(fn))
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn) || this.statefulHashesThroughFreeFunction(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
@@ -538,9 +538,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       }
     }
     // A compiler-owned batch clone can also own a dynamic-state journal. For example EventSubscription's
-    // `subscribe` writes both a mapping entry and `subscriberList.push(..)`: its `__message_bus_entry_` clone is selected
+    // `subscribe` writes both a mapping entry and `subscriberList.push(..)`: its `__compiler_route_entry_` clone is selected
     // for the entry journal, then LowerCollectionJournalHelpers makes it a single-tail returning value helper
-    // while retaining the array push. Resource-shaped `__message_bus_resource_` clones have the same form. Keeping one
+    // while retaining the array push. Resource-shaped `__compiler_route_resource_` clones have the same form. Keeping one
     // behind OP_INVOKE splits its dynamic journal from the route frame, so
     // code generation correctly refuses it. Inline it into the compiler-owned route just like a context-only
     // graph clone. A real emission handler retains its definition and graph frame exactly as before.
@@ -548,12 +548,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const writesDynamicArray = this.nodesOf(fn).some((candidate) =>
         candidate instanceof StateArrayPushNode || candidate instanceof StateArrayPopNode
         || candidate instanceof StateArrayAssignNode || candidate instanceof StateArrayDeleteNode);
-      const compilerOwnedRouteClone = fn.name.startsWith('__message_bus_entry_')
-        || fn.name.startsWith('__message_bus_resource_')
+      const compilerOwnedRouteClone = fn.name.startsWith('__compiler_route_entry_')
+        || fn.name.startsWith('__compiler_route_resource_')
         || (fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler
           && !this.transitivelyContainsExternalCall(fn)
           && !this.transitivelyContainsLowLevelCall(fn));
-      const returningEntryEffectClone = fn.name.startsWith('__message_bus_entry_')
+      const returningEntryEffectClone = fn.name.startsWith('__compiler_route_entry_')
         && fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler && this.eligibleShape(fn)
         // A clone that owns a runtime mapping loop must stay an OP_INVOKE body. Its journal access vector is the
         // selected row's own vector, whose cardinality is the handler's own stream count; splicing the loop into
@@ -633,12 +633,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         this.inlinedFns.add(fn.name);
       }
     }
-    // Kernel/graph clones must stay OP_INVOKE bodies. Inlining one into `__message_bus1` puts typed
+    // Kernel/graph clones must stay OP_INVOKE bodies. Inlining one into `__compiler_route1` puts typed
     // calls inside the row loop, and SymbolTableTraversal then rewrites their targets to an unbound
     // `__internal__loopTargets[rowArg]`.
     for (const fn of node.functions) {
-      if (!(fn.name.startsWith('__message_bus_entry_') || fn.name.startsWith('__message_bus_handler_')
-        || fn.name.startsWith('__message_bus_resource_'))) continue;
+      if (!(fn.name.startsWith('__compiler_route_entry_') || fn.name.startsWith('__compiler_route_handler_')
+        || fn.name.startsWith('__compiler_route_resource_'))) continue;
       if (fn.routeMetaDetachedSignatureHandler || fn.graphEmissionHandler
         || this.transitivelyContainsExternalCall(fn)
         || this.transitivelyContainsLowLevelCall(fn)) {
@@ -1381,7 +1381,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // A function that calls itself is the recursion lowering's to serve, and a compiler-route handler owns its
   // collection topology, so neither is an inliner's.
   private writesSortedEntry(fn: FunctionDefinitionNode): boolean {
-    if (fn.name.startsWith('__message_bus_')) return false;
+    if (fn.name.startsWith('__compiler_route_')) return false;
     const nodes = this.nodesOf(fn);
     if (nodes.some((n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;
     return nodes.some((n) => (n instanceof ArrayAssignNode || n instanceof MappingAssignNode

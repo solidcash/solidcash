@@ -8,7 +8,7 @@ import { ContractNode, FunctionDefinitionNode, FunctionModifier } from '../ast/A
 /** A compiler-synthesized compiler-route route. */
 export function isRouteMetaRouteFunction(fn: FunctionDefinitionNode): boolean {
   return fn.routeMetaRoute === true
-    || (fn.name.startsWith('__message_bus') && fn.parameters?.some((parameter) => parameter.name === 'batchBlob') === true);
+    || (fn.name.startsWith('__compiler_route') && fn.parameters?.some((parameter) => parameter.name === 'batchBlob') === true);
 }
 
 /**

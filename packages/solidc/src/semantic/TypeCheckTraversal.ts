@@ -2080,8 +2080,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
         this.currentFunction.routeMetaRoute === true || this.currentFunction.graphEmissionHandler === true
-          || this.currentFunction.name.startsWith('__message_bus')
-          || node.resolvedFunction.name.startsWith('__message_bus')
+          || this.currentFunction.name.startsWith('__compiler_route')
+          || node.resolvedFunction.name.startsWith('__compiler_route')
           || node.resolvedFunction.parameters.some((parameter) =>
             parameter.name === '__internal__proxyMasterIndex'),
       );
@@ -2110,8 +2110,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
         this.currentFunction.routeMetaRoute === true || this.currentFunction.graphEmissionHandler === true
-          || this.currentFunction.name.startsWith('__message_bus')
-          || node.resolvedFunction.name.startsWith('__message_bus')
+          || this.currentFunction.name.startsWith('__compiler_route')
+          || node.resolvedFunction.name.startsWith('__compiler_route')
           || node.resolvedFunction.parameters.some((parameter) =>
             parameter.name === '__internal__proxyMasterIndex'),
       );

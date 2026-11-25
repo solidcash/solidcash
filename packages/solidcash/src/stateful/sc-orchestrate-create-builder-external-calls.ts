@@ -90,6 +90,9 @@ import {
   loadCreateBuilderOutStateReads as loadCreateBuilderOutStateReadsImpl,
 } from './sc-load-create-builder-out-state-reads.js';
 import { selectCompatCalleeBlockCalls } from './sc-select-compat-callee-block-calls.js';
+import {
+  listedLowLevelCallsByRow, lowLevelCallTurnReadsRecords, refuseSecondPayingTurn,
+} from './low-level-call-turns.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
@@ -445,6 +448,10 @@ export async function orchestrateCreateBuilderExternalCalls(
   // guard before a compat callee group or a low-level callee is co-spent for it.
   await refuseListedLowLevelCallsTheGuardSkips(
     resolveHost, abiFunction, args, host.inner.artifact, publicSelfAddress, overrides?.calls,
+  );
+  // A per-turn call's loop pays from one turn per transaction: refuse a second paying turn before any is co-spent.
+  refuseSecondPayingTurn(
+    abiFunction?.lowLevelCalls ?? [], overrides?.calls, args, `${host.inner.artifact.contractName}.${abiFunction?.name}`,
   );
   const expandedExternal = await expandResolveCreateBuilderExternalCallsImpl(
     resolveHost,
@@ -1017,11 +1024,12 @@ export async function orchestrateCreateBuilderExternalCalls(
     // (recreated at its own index, which a covenant coin can check): the tail band of call records would otherwise come
     // before those outputs. A return probe runs only this function's input.
     if (overrides?.returnProbeOnly !== true) {
-      const lowLevelBandCall = (abiFunction?.lowLevelCalls ?? []).findIndex((row, index) => {
-        const type = (overrides?.calls?.[index] as { type?: string } | undefined)?.type;
-        return row.callMode !== 'delegatecall' && (type === 'stateful' || type === 'raw')
-          && !compatCalls.some((call) => call.callIndex === index);
-      });
+      const callsByRow = listedLowLevelCallsByRow(abiFunction?.lowLevelCalls ?? [], overrides?.calls);
+      const lowLevelBandCall = (abiFunction?.lowLevelCalls ?? []).findIndex((row, index) => (
+        row.callMode !== 'delegatecall' && callsByRow[index]!.some((call) => {
+          const type = (call as { type?: string } | undefined)?.type;
+          return type === 'stateful' || type === 'raw';
+        }) && !compatCalls.some((call) => call.callIndex === index)));
       await appendCreateBuilderTransitiveCalleeRegionsImpl(
         {
           block: nestedBlockHost,
@@ -1160,14 +1168,17 @@ export async function orchestrateCreateBuilderExternalCalls(
       const llcCalls = abiFunction?.lowLevelCalls;
       let lowLevelCallOutputCount = 0;
       if (llcCalls && llcCalls.length > 0) {
-        const resolvedLlcCalls = overrides?.calls ?? [];
+        const resolvedLlcCalls = listedLowLevelCallsByRow<any>(llcCalls, overrides?.calls);
         for (let i = 0; i < llcCalls.length; i++) {
-          const callInfo = resolvedLlcCalls[i];
-          if (!callInfo || compatCalls.some((call) => call.callIndex === i)) continue;
-          if (callInfo.type === 'stateful') {
-            lowLevelCallOutputCount += 1 + callInfo.contract.inner.stateLayout!.dataNftCount;
-          } else {
-            lowLevelCallOutputCount += 1;
+          if (compatCalls.some((call) => call.callIndex === i)) continue;
+          for (const callInfo of resolvedLlcCalls[i]!) {
+            if (callInfo.type === 'stateful') {
+              lowLevelCallOutputCount += 1 + callInfo.contract.inner.stateLayout!.dataNftCount;
+            } else {
+              lowLevelCallOutputCount += 1;
+            }
+            // A per-turn row's records follow the low-level band, one per turn.
+            if (llcCalls[i]!.perTurn === true && lowLevelCallTurnReadsRecords(abiFunction!, i)) lowLevelCallOutputCount += 1;
           }
         }
       }

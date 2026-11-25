@@ -3428,6 +3428,25 @@ digest and the reader, as typed loop calls do (`56ef7cfa7`, `d4a668146`), and th
 
 **Revisit if:** a port needs a batched low-level call (Kashi `cook`, a timelock's `executeBatch`).
 
+**Resolved 2026-11-25** (`842e3d3d2`): such a call in an entry point is `perTurn` and binds each turn to a callee run
+of its own. The turn's callee input is the next element of `__internal__lowLevelCallInputs<i>`, above the last turn's,
+and the list is spent to its end. A caller that keeps state reads the record each turn's run settles at
+`__internal__lowLevelCallRecordBase<i>` plus the turn, a carrier of that callee's category, by the payload's digest for
+a visible payload, and pins an opaque payload's run reader to its input. `.withCall()` lists one callee per turn. The
+three Kashi files compile again. Still refused by name: such a call outside an entry point, beside a delegatecall, or in
+a message-bus direct participant. Residuals: a `{value:}` pays from one turn per transaction; the SDK refuses a turn
+that is a returning callee, a raw coin (where records are read) or a second run of one contract (`LowLevelCallTurnsError`).
+
+**Stateful turns settle 2026-11-25** (`55f2cf8d5`): the build no longer drifts. The return-event pass held each turn's
+record witness open as a return slot and padded up to it before the band, so every build moved the band and its records
+6 outputs further (record base 42 by the send, unfunded pads, the fee funder copied whole). It skips the turns' callee
+runs, so the records follow the band, at the lowest base past the continuations, funded with the fee. The stateful rows
+VM-run: the honest send settles; one run for two turns, a record of another payload and one naming another reader are
+refused at the caller. A row whose `{value:}` is not statically zero publishes `valueSource`, and the SDK refuses before
+building a listing two of whose turns may pay (an amount every turn pays, two nonzero elements of a loop-indexed array
+argument, or a value it cannot evaluate). Open: a value-only send loop (`to.call{value: v}("")`) lists no turns, so a
+second paying turn of it still fails at the VM; a turn's value read any other way is refused rather than evaluated.
+
 ## Value calls nothing binds (2026-11-24)
 
 **Deferred:** a typed `{value:}` call in a loop, through a function pointer or a runtime selector, or to `msg.sender`

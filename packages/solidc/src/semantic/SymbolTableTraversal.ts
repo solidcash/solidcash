@@ -262,7 +262,7 @@ import {
   type FunctionBlockLayout, type BlockLayoutSlot, resolveLibraries, type ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, type LocationI,
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES, libraryDefinedIds,
-  ORACLE_POOL_PARAMETER, CALL_RECORD_READER_INPUT,
+  ORACLE_POOL_PARAMETER, CALL_RECORD_READER_INPUT, lowLevelCallTurnInputsInput, lowLevelCallTurnRecordBaseInput,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -5686,21 +5686,36 @@ export default class SymbolTableTraversal extends AstTraversal {
             condition: callsiteShapes[index].condition,
           }),
         }));
-        // The direct convention pins each low-level call's callee as one co-spent input (`__internal__callInputIndex`),
-        // which every turn of a loop reads, so one run of the callee would answer each turn of a `call`. A message-bus
-        // route refuses such a call too (LowLevelCallShapes), a framed body binds each frame, and a staticcall reads.
-        const looped = this.compilerOptions.messageBus === true || this.compilerOptions.composition === 'framed'
-          || node.graphEmissionHandler || node.messageBusRoute ? -1
-          : node.lowLevelCalls.findIndex((call) => call.callMode === 'call' && call.occurrence === 'loop'
-            && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1));
-        if (looped >= 0) {
-          throw new SolidcDiagnosticError(
-            'LOW_LEVEL_CALL_IN_LOOP',
-            `Function '${node.name}' makes low-level call ${looped} in a loop that may turn more than once. Its callee `
-            + 'is one co-spent input, so one run of it would answer every turn. Hoist the call out of the loop, or '
-            + 'make it a typed interface call.',
-            { functionName: node.name, callIndex: looped },
-          );
+        // A `call` a loop may make more than once binds each turn's own callee run (perTurn): the turn's callee input
+        // comes from a witness list, strictly increasing, and a caller that keeps state reads each turn's record.
+        // A message-bus route refuses such a call (LowLevelCallShapes), a framed body binds each frame, and a
+        // staticcall reads. Only an entry takes the witnesses; elsewhere the call stays refused.
+        const silentCalls = this.lowLevelCallsWithEmptyPayload(node);
+        const paidCalls = this.lowLevelCallValues(node);
+        const directLowLevel = !(this.compilerOptions.messageBus === true || this.compilerOptions.composition === 'framed'
+          || node.graphEmissionHandler || node.messageBusRoute);
+        const delegates = node.lowLevelCalls.some((call) => call.callMode === 'delegatecall');
+        for (let i = 0; directLowLevel && i < lowLevelCallCount; i++) {
+          const call = node.lowLevelCalls[i];
+          if (call.callMode !== 'call' || call.occurrence !== 'loop'
+            || (call.maximumOccurrences !== undefined && call.maximumOccurrences <= 1)) continue;
+          const reason = !node.isEntryPoint ? 'only an entry point takes the witnesses that bind each turn\'s callee'
+            : delegates ? 'a function that delegatecalls settles no state of its own to bind the turns to'
+              : this.compilerOptions.messageBusDirectParticipant === true
+                ? 'a message-bus direct participant admits no witness beside its call index' : undefined;
+          if (reason !== undefined) {
+            throw new SolidcDiagnosticError(
+              'LOW_LEVEL_CALL_IN_LOOP',
+              `Function '${node.name}' makes low-level call ${i} in a loop that may turn more than once, and ${reason}, `
+              + 'so one run of its callee would answer every turn. Make the call from an entry point, hoist it out of '
+              + 'the loop, or make it a typed interface call.',
+              { functionName: node.name, callIndex: i },
+            );
+          }
+          call.perTurn = true;
+          // Its turns share one payment register pair, so a builder must see what each turn pays: unknown here,
+          // serialized below for a compat site.
+          if (paidCalls.has(i)) call.valueSource = { kind: 'expression' };
         }
         // A Solidity-compat call/staticcall site pins its co-spent callee to the call's target (see
         // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.
@@ -5713,7 +5728,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           && this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
           && this.compilerOptions.messageBusDirectParticipant !== true
           && !node.lowLevelCalls.some((call) => call.callMode === 'delegatecall');
-        const silentCalls = this.lowLevelCallsWithEmptyPayload(node);
         for (let i = 0; attestsCalls && i < lowLevelCallCount; i++) {
           if (node.lowLevelCalls[i].occurrence !== 'once' || silentCalls.has(i)) continue;
           const paramName = `__internal__lowLevelCallEdgeOutputIdx${i}`;
@@ -5726,14 +5740,32 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(param);
         }
 
+        // A per-turn call takes its turns' callee inputs as a list, and in a caller that keeps state the output of
+        // its first turn's record. An empty literal payload co-spends no callee, so it takes neither.
+        for (let i = 0; i < lowLevelCallCount; i++) {
+          if (node.lowLevelCalls[i].perTurn !== true || silentCalls.has(i)) continue;
+          const witnesses: [string, Type][] = [[lowLevelCallTurnInputsInput(i), new BytesType()]];
+          if (this.isStatefulContract) witnesses.push([lowLevelCallTurnRecordBaseInput(i), PrimitiveType.BIGINT]);
+          for (const [paramName, type] of witnesses) {
+            const param = new ParameterNode(type, paramName);
+            param.location = node.location;
+            param.syntheticallyUsed = true;
+            node.parameters.push(param);
+            this.symbolTables[0].set(Symbol.variable(param));
+            this.symbolTables[0].get(paramName)?.references.push({ name: paramName } as IdentifierNode);
+            this.pushToStack(param);
+          }
+        }
+
         // Inject _callInputIndex for every non-delegatecall low-level call.
         // Stateful contracts previously pinned the callee to a fixed block-layout slot, but a multi-UTXO
         // callee (SafeERC20.transferFrom with balances/allowances entries) expands past that slot and
         // collides with the caller's trailing region (dynamic chunks, vmap batch preds). A runtime index
         // lets the SDK place the full callee band AFTER trailing resources, matching externalCallInputBase.
-        // Skip delegatecall (proxy uses its own delegate-input witness / block slot).
+        // Skip delegatecall (proxy uses its own delegate-input witness / block slot), and a per-turn call, which
+        // reads its turns' inputs from its list.
         for (let i = 0; i < lowLevelCallCount; i++) {
-          if (node.lowLevelCalls![i].callMode === 'delegatecall') continue;
+          if (node.lowLevelCalls![i].callMode === 'delegatecall' || node.lowLevelCalls![i].perTurn === true) continue;
           const paramName = lowLevelCallCount === 1 ? '__internal__callInputIndex' : `__internal__callInputIndex${i}`;
           const param = new ParameterNode(PrimitiveType.BIGINT, paramName);
           param.location = node.location;
@@ -6704,6 +6736,25 @@ export default class SymbolTableTraversal extends AstTraversal {
     return silent;
   }
 
+  /** The `{value:}` of each low-level call site whose value is not statically zero, by call index. */
+  private lowLevelCallValues(node: FunctionDefinitionNode): Map<number, ExpressionNode> {
+    const values = new Map<number, ExpressionNode>();
+    const walk = (value: unknown, seen: Set<object>): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if ((value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode)
+        && hasEffectiveCallValue(value.callOptions?.value)) values.set(value.callIndex, value.callOptions!.value!);
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'type', 'definition', 'symbolTable', 'resolvedFunction', 'functionReference',
+          'referencedContract', 'sourceCallNode', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node) walk(child, seen);
+        else if (Array.isArray(child)) for (const item of child) walk(item, seen);
+      }
+    };
+    walk(node.body, new Set());
+    return values;
+  }
+
   /**
    * Publish each Solidity-compat call/staticcall site's target and payload as an opaque `__raw__` call serializes
    * them, through a synthetic probe collected into a scratch slot list. A site whose target or payload holds an
@@ -6740,32 +6791,46 @@ export default class SymbolTableTraversal extends AstTraversal {
     const savedLoopLocals = this.loopDeclaredLocals;
     this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
     this.loopDeclaredLocals = this.collectLoopDeclaredLocals(node.body);
+    // The slot a `__raw__` call of the site's target with `operand` as its one argument collects; none if refused.
+    const probeSlot = (
+      site: LowLevelCallNode | LowLevelCallStatementNode, operand: ExpressionNode,
+    ): ExternalCallSlot | undefined => {
+      const probe = new ExternalFunctionCallNode('__raw__', site.targetExpression, '__raw__', [operand]);
+      probe.location = site.location;
+      probe.opaqueReturn = true;
+      probe.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
+      probe.callInfo = {
+        interfaceName: '__raw__',
+        functionName: '__raw__',
+        externalCallSlotIndex: -1,
+        hasReturnValues: true,
+        returnTypes: [new BytesType()],
+        returnEventSignature: '_Return___raw__(bytes)',
+        callMode: site.callMode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
+      };
+      const scratch: ExternalCallSlot[] = [];
+      try {
+        this.collectExternalCalls(probe, scratch);
+      } catch {
+        return undefined;
+      }
+      return scratch.at(-1);
+    };
     try {
       for (const site of sites) {
         const entry = node.lowLevelCalls[site.callIndex];
         if (!entry || site.callMode === 'delegatecall') continue;
-        if (containsExternalCall(site.targetExpression) || containsExternalCall(site.data)) continue;
-        const probe = new ExternalFunctionCallNode('__raw__', site.targetExpression, '__raw__', [site.data]);
-        probe.location = site.location;
-        probe.opaqueReturn = true;
-        probe.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
-        probe.callInfo = {
-          interfaceName: '__raw__',
-          functionName: '__raw__',
-          externalCallSlotIndex: -1,
-          hasReturnValues: true,
-          returnTypes: [new BytesType()],
-          returnEventSignature: '_Return___raw__(bytes)',
-          callMode: site.callMode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
-        };
-        const scratch: ExternalCallSlot[] = [];
-        try {
-          this.collectExternalCalls(probe, scratch);
-        } catch {
-          continue;
+        const callsInTarget = containsExternalCall(site.targetExpression);
+        // A per-turn call's value, serialized as an argument is.
+        const value = entry.valueSource !== undefined ? site.callOptions?.value : undefined;
+        if (value !== undefined && !callsInTarget && !containsExternalCall(value)) {
+          const source = probeSlot(site, value)?.argSources?.[0];
+          if (source !== undefined) entry.valueSource = source;
         }
-        const slot = scratch.at(-1);
-        if (slot?.addressSource) entry.targetSource = slot.addressSource;
+        if (callsInTarget || containsExternalCall(site.data)) continue;
+        const slot = probeSlot(site, site.data);
+        if (slot === undefined) continue;
+        if (slot.addressSource) entry.targetSource = slot.addressSource;
         // An `abi.encodeWithSelector` / `abi.encodeCall` payload has no whole-expression form; the `__raw__` collector
         // publishes it as its selector and per-argument sources instead. Carry those, so the callee's function is
         // the selector's and its arguments evaluate natively (a full locking bytecode, not a 20-byte ABI identity).

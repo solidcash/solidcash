@@ -8,6 +8,7 @@
 import type { AbiFunction, Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
+import { listedSingleLowLevelCalls } from './low-level-call-turns.js';
 
 /** Block slots the low-level path materializes itself. */
 const LOW_LEVEL_BAND_KINDS: ReadonlySet<string> = new Set(['master', 'dataNft', 'returnEvent']);
@@ -44,8 +45,10 @@ export function selectCompatCalleeBlockCalls(
   const rows = abiFunction?.lowLevelCalls ?? [];
   if (rows.some((row) => row.callMode === 'delegatecall')) return [];
   const selected: CompatCalleeBlockCall[] = [];
+  // A per-turn row lays each turn's callee on the low-level path, which its list and records address.
+  const byRow = listedSingleLowLevelCalls(rows, calls);
   rows.forEach((row, callIndex) => {
-    const call = calls?.[callIndex] as StatefulCallInfo | { type: 'raw' } | undefined;
+    const call = byRow[callIndex] as StatefulCallInfo | { type: 'raw' } | undefined;
     if (row.callMode !== 'call' || call?.type !== 'stateful' || call.compilerRoute !== undefined) return;
     const witness = rows.length === 1 ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
     if (!abiFunction!.inputs.some((input) => input.name === witness)) return;

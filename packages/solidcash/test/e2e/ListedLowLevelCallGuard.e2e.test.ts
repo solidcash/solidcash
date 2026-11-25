@@ -166,7 +166,7 @@ describe('R\'s compat low-level call to T, with T listed by withCall(), under a 
 describe('R\'s compat low-level call to T in a loop, with T listed by withCall()', () => {
   // The call's row publishes no number of turns for its loop, so the SDK cannot tell whether R makes the call: with
   // n = 0, as here, the loop makes none and the listed T would run uncalled. (A call a loop may make more than once
-  // does not compile in the direct convention: LOW_LEVEL_CALL_IN_LOOP.)
+  // binds each turn to a callee run of its own: LowLevelCallTurns.e2e.)
   it('refuses the listed call by name, before sending', async () => {
     const c = await chain();
     const before = c.sentCount();

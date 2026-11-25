@@ -648,12 +648,16 @@ export class FunctionDefinitionNode extends Node implements Named {
     dataParamIndex?: number;
     occurrence?: 'once' | 'conditional' | 'loop';
     maximumOccurrences?: number;
+    /** A `call` a loop may make more than once, each turn binding its own callee run (ABI `perTurn`). */
+    perTurn?: true;
     /** Serialized lexical predicates guarding a `conditional` callsite, in the external-call expression vocabulary. */
     condition?: ExternalCallExpression;
     // Solidity-compat call/staticcall sites: the target and payload as an opaque `__raw__` call serializes its
     // addressSource and payload argument, published so the SDK can co-spend the pinned callee.
     targetSource?: import('@solidcash/utils').ArgSource;
     dataSource?: import('@solidcash/utils').ArgSource;
+    /** A per-turn call's `{value:}` that is not statically zero, as an argument serializes (ABI `valueSource`). */
+    valueSource?: import('@solidcash/utils').ArgSource;
   }[];
 
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK

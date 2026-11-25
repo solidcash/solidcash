@@ -13,6 +13,7 @@ import {
   defaultInternalFunctionArg,
   materializeInternalFunctionArgument,
 } from './kernel-journal-helpers.js';
+import { lowLevelCallTurnInputsWitness, lowLevelCallTurnWitnessPositions } from './low-level-call-turns.js';
 
 export type MaterializeCreateBuilderSyntheticArgsHost = {
   selectActiveRootDelegateGroup: () => number | undefined;
@@ -110,12 +111,24 @@ export function materializeCreateBuilderSyntheticArgs(
   // non-delegatecall group. These compiler-added parameters are intentionally
   // absent from the public SDK arguments.
   const callInputIndexByName = new Map<string, bigint>();
+  // A per-turn row's turns take its list instead (planned below), not a call-input witness each.
+  const turnPositions = new Map<number, number[]>();
   if (lowLevelCallUtxoGroups.length > 0) {
     let callOrdinal = 0;
     const nonDelegateCount = lowLevelCallUtxoGroups
-      .filter((group) => group.callMode !== 'delegatecall').length;
+      .filter((group) => group.callMode !== 'delegatecall' && group.lowLevelCallTurn === undefined).length;
     for (let i = 0; i < lowLevelCallUtxoGroups.length; i++) {
       if (lowLevelCallUtxoGroups[i].callMode === 'delegatecall') continue;
+      const turn = lowLevelCallUtxoGroups[i].lowLevelCallTurn;
+      const row = lowLevelCallUtxoGroups[i].edgeLowLevelCallIndex;
+      if (turn !== undefined) {
+        if (row === undefined) continue;
+        const positions = turnPositions.get(row) ?? [];
+        positions[turn] = (overrides?.blockBase ?? 0) + lowLevelCallInputBase
+          + lowLevelCallUtxoGroups.slice(0, i).reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
+        turnPositions.set(row, positions);
+        continue;
+      }
       const paramName = nonDelegateCount === 1
         ? '__internal__callInputIndex'
         : `__internal__callInputIndex${callOrdinal}`;
@@ -218,6 +231,10 @@ export function materializeCreateBuilderSyntheticArgs(
     for (const [paramName, masterPos] of callInputIndexByName) {
       const position = abiFunction.inputs.findIndex((input) => input.name === paramName);
       if (position >= 0 && position < finalArgs.length) finalArgs[position] = masterPos;
+    }
+    for (const [row, positions] of turnPositions) {
+      const { inputs } = lowLevelCallTurnWitnessPositions(abiFunction, row);
+      if (inputs >= 0 && inputs < finalArgs.length) finalArgs[inputs] = lowLevelCallTurnInputsWitness([...positions]);
     }
   }
 

@@ -656,6 +656,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     // addressSource and payload argument, published so the SDK can co-spend the pinned callee.
     targetSource?: import('@solidcash/utils').ArgSource;
     dataSource?: import('@solidcash/utils').ArgSource;
+    /** A per-turn call's `{value:}` that is not statically zero, as an argument serializes (ABI `valueSource`). */
+    valueSource?: import('@solidcash/utils').ArgSource;
   }[];
 
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK

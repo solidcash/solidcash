@@ -31,6 +31,11 @@ export interface MaterializeReturnEventOutputsHost {
   addReturnOutput(builder: { addOutput(output: Output): unknown }, identity: string, output: Output): void;
   /** The digest of the call a direct return record answers; none for a routed one. */
   callRecordDigest?(identity: string): Uint8Array | undefined;
+  /**
+   * The `txid:vout` of each input whose record the low-level band lays out after itself (a per-turn call's callee
+   * run, stb-materialize-low-level-call-outputs.ts). Its record witness names that record, no slot held open here.
+   */
+  readonly bandRecordRunners?: ReadonlySet<string>;
 }
 
 /**
@@ -96,6 +101,9 @@ export function materializeReturnEventOutputs(
     const indices: number[] = [];
     for (const input of host.allInputs) {
       if (!('unlocker' in input) || !input.unlocker) continue;
+      // Holding such a run's record index open here pushes the band, and the record after it, past that index on
+      // every build.
+      if (host.bandRecordRunners?.has(`${input.txid.toLowerCase()}:${input.vout}`)) continue;
       const unlocker = input.unlocker as {
         abiFunction?: { inputs?: ReadonlyArray<{ name: string }> };
         params?: readonly unknown[];

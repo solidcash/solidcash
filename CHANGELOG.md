@@ -9,9 +9,9 @@
   run of its own: the caller reads the turn's callee input from a list witness, strictly increasing, so one run cannot
   answer two turns. A caller that keeps state also takes the run that names it as reader and reads the record that run
   settles at a record base plus the turn, checked by the payload's digest when the payload is visible. `.withCall()`
-  lists one callee per turn, in turn order. A `{value:}` on such a call pays from one turn of a transaction; a second
-  paying turn fails. Only an entry point takes the turn witnesses: elsewhere, and beside a delegatecall, the call stays
-  refused by name.
+  lists one callee per turn, in turn order. A `{value:}` on such a call pays from one turn of a transaction: the SDK
+  refuses, before building, a listing two of whose turns pay (`LowLevelCallTurnsError`). Only an entry point takes the
+  turn witnesses: elsewhere, and beside a delegatecall, the call stays refused by name.
 
 ## 0.52.0
 

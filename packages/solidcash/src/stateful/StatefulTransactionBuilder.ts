@@ -2373,6 +2373,9 @@ export class StatefulTransactionBuilder {
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       addReturnOutput,
       callRecordDigest: (identity) => this.callRecordDigestFor(identity),
+      bandRecordRunners: new Set(this.lowLevelCallUtxoGroups
+        .filter((group) => group.lowLevelCallTurn !== undefined)
+        .map((group) => `${group.masterUtxo.txid.toLowerCase()}:${group.masterUtxo.vout}`)),
     };
   }
 

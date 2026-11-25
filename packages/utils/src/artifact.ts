@@ -895,6 +895,12 @@ export interface AbiFunction {
     targetSource?: ArgSource;
     dataSource?: ArgSource;
     /**
+     * A `perTurn` call's `{value:}` that is not statically zero: what a turn pays, as `dataSource` serializes an
+     * argument (`{ kind: 'expression' }` when unknown). The loop binds one paying turn per transaction, so a builder
+     * refuses a listing two of whose turns may pay.
+     */
+    valueSource?: ArgSource;
+    /**
      * The function can write the call's target before the call: the callee the call runs on is not the one the
      * caller's state and arguments name before the run, which `targetSource` reads. A builder does not resolve the
      * callee from them; the author passes it with `.withCall()`.

@@ -4402,6 +4402,7 @@ function buildFunctionAbiMetadata(
           targetSource: callTargetSources[index] ?? lc.targetSource,
         }),
         ...(lc.dataSource !== undefined && { dataSource: lc.dataSource }),
+        ...(lc.valueSource !== undefined && { valueSource: lc.valueSource }),
         // The source reads the caller's state and arguments from before a write of the target.
         ...(callTargetsWrittenFirst.has(index) && { targetWrittenBeforeCall: true as const }),
       })),

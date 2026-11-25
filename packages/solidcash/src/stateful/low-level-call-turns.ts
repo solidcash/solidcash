@@ -5,7 +5,7 @@
  */
 
 import {
-  lowLevelCallTurnInputsInput, lowLevelCallTurnRecordBaseInput, encodePushdataValue, type AbiFunction,
+  lowLevelCallTurnInputsInput, lowLevelCallTurnRecordBaseInput, encodePushdataValue, type AbiFunction, type ArgSource,
 } from '@solidcash/utils';
 import { LowLevelCallTurnsError } from '../Errors.js';
 
@@ -92,6 +92,64 @@ export function planLowLevelCallTurns<T extends ListedCall>(
     });
   });
   return plan;
+}
+
+const amountOf = (value: unknown): bigint | undefined => {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  return typeof value === 'string' && /^-?\d+$/.test(value) ? BigInt(value) : undefined;
+};
+
+/**
+ * What a per-turn call's turns pay, from its published `valueSource` and the call's arguments: one amount every turn
+ * pays, or the elements of an array argument its turns index by the loop's counter. Undefined when unknown.
+ */
+export function turnPayments(
+  source: ArgSource, args: readonly unknown[],
+): { readonly each: bigint } | { readonly elements: readonly bigint[] } | undefined {
+  const paid = (amount: bigint | undefined): { each: bigint } | undefined => (
+    amount === undefined ? undefined : { each: amount });
+  if (source.kind === 'literal') return paid(amountOf(source.value));
+  if (source.kind === 'forward') {
+    return source.paramIndex === undefined ? undefined : paid(amountOf(args[source.paramIndex]));
+  }
+  const array = source.kind === 'arrayElement' && source.paramIndex !== undefined ? args[source.paramIndex] : undefined;
+  if (!Array.isArray(array)) return undefined;
+  const elementAt = (index: bigint | number | undefined): { each: bigint } | undefined => (
+    index === undefined || Number(index) < 0 || Number(index) >= array.length ? undefined
+      : paid(amountOf(array[Number(index)])));
+  if (source.indexParamIndex !== undefined) return elementAt(amountOf(args[source.indexParamIndex]));
+  if (source.indexStepValue === 0 || (source.indexStepValue === undefined && source.counterName === undefined)) {
+    return elementAt(source.indexValue);
+  }
+  // Indexed by the loop's counter: any element may be a turn's.
+  const elements = array.map(amountOf);
+  return elements.every((amount) => amount !== undefined) ? { elements: elements as bigint[] } : undefined;
+}
+
+/**
+ * A per-turn call's `{value:}` fills its loop's one payment register pair only while it is empty, so a second paying
+ * turn fails the caller's covenant. Refuse a listing of two or more turns before building unless the published value
+ * shows at most one of them pays: every turn paying one nonzero amount, two nonzero elements a turn may read, or a
+ * value the SDK cannot evaluate is refused by name.
+ */
+export function refuseSecondPayingTurn(
+  rows: readonly LowLevelCallRow[], calls: readonly unknown[] | undefined, args: readonly unknown[],
+  caller = 'the function',
+): void {
+  listedLowLevelCallsByRow(rows, calls, caller).forEach((listed, row) => {
+    const source = rows[row]?.perTurn === true ? rows[row]!.valueSource : undefined;
+    if (source === undefined || listed.length < 2) return;
+    const payments = turnPayments(source, args);
+    const paying = payments === undefined ? undefined
+      : 'each' in payments ? (payments.each === 0n ? 0 : listed.length)
+        : payments.elements.filter((amount) => amount !== 0n).length;
+    if (paying !== undefined && paying < 2) return;
+    const reason = payments === undefined ? `its ${listed.length} turns pay a {value:} the SDK cannot evaluate`
+      : 'each' in payments ? `its ${listed.length} turns each pay {value:} ${payments.each}`
+        : `its turns pay {value:} from an array argument holding ${paying} nonzero amounts`;
+    throw new LowLevelCallTurnsError(caller, `${reason}, and its loop pays from one turn per transaction`);
+  });
 }
 
 /** The first listed call of each row, as the single-call paths read them; none for a per-turn row. */

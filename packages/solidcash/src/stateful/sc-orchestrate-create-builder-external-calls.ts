@@ -90,7 +90,9 @@ import {
   loadCreateBuilderOutStateReads as loadCreateBuilderOutStateReadsImpl,
 } from './sc-load-create-builder-out-state-reads.js';
 import { selectCompatCalleeBlockCalls } from './sc-select-compat-callee-block-calls.js';
-import { listedLowLevelCallsByRow, lowLevelCallTurnReadsRecords } from './low-level-call-turns.js';
+import {
+  listedLowLevelCallsByRow, lowLevelCallTurnReadsRecords, refuseSecondPayingTurn,
+} from './low-level-call-turns.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
@@ -446,6 +448,10 @@ export async function orchestrateCreateBuilderExternalCalls(
   // guard before a compat callee group or a low-level callee is co-spent for it.
   await refuseListedLowLevelCallsTheGuardSkips(
     resolveHost, abiFunction, args, host.inner.artifact, publicSelfAddress, overrides?.calls,
+  );
+  // A per-turn call's loop pays from one turn per transaction: refuse a second paying turn before any is co-spent.
+  refuseSecondPayingTurn(
+    abiFunction?.lowLevelCalls ?? [], overrides?.calls, args, `${host.inner.artifact.contractName}.${abiFunction?.name}`,
   );
   const expandedExternal = await expandResolveCreateBuilderExternalCallsImpl(
     resolveHost,

@@ -7,10 +7,10 @@ import {
   encodePushdataValue, lowLevelCallTurnInputsInput, lowLevelCallTurnRecordBaseInput, type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../direct-compile.js';
-import { Contract, TransactionBuilder } from '../../src/index.js';
+import { Contract, LowLevelCallTurnsError, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { callRecordDigest } from '../../src/stateful/call-record.js';
-import { lowLevelCallTurnInputsWitness } from '../../src/stateful/low-level-call-turns.js';
+import { lowLevelCallTurnInputsWitness, refuseSecondPayingTurn } from '../../src/stateful/low-level-call-turns.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos, verifyTransaction } from '../test-util.js';
 
 /**
@@ -173,11 +173,15 @@ describe('a low-level call loop whose turns each bind a callee run of their own'
   it('settles a two-turn loop reaching two callees, each turn reading its own run\'s record', async () => {
     const { provider, r, t1, t2, honest } = await setup();
     const tx = await capture(provider, honest);
-    const reader = masterOf(await coinsOf(provider, tx), r.category);
+    const coins = await coinsOf(provider, tx);
+    const reader = masterOf(coins, r.category);
     const first = recordOf(tx, t1.category);
-    expect(first).toBeGreaterThanOrEqual(0);
+    // The records follow the continuations of the six contract inputs, with no pad before or between them.
+    expect(first).toBe(coins.filter((coin) => coin.token?.category !== undefined).length);
     expect(recordOf(tx, t2.category)).toBe(first + 1);
     expect(binToHex(tx.outputs[first]!.token!.nft!.commitment)).toBe(binToHex(recordFor(TAG, reader)));
+    expect(tx.outputs.filter((output) => binToHex(output.lockingBytecode) === '51' && output.token === undefined))
+      .toHaveLength(0);
 
     await honest();
     expect((await r.sc.getState()).runs).toBe(1n);
@@ -237,6 +241,73 @@ describe('a low-level call loop whose turns each bind a callee run of their own'
     expect(outcome).not.toBe('ACCEPTED');
     expect(outcome).toContain(`error in evaluating input index ${caller}:`);
     expect((await t2.sc.getState()).pings).toBe(0n);
+  }, 300_000);
+});
+
+// A paying call's loop fills its one payment register pair once: one turn per transaction pays.
+const PAY_SOURCE = `pragma solidcash ^0.52.0;
+  interface IT { function ping(int tag) external; }
+  contract P { int runs;
+    function payAll(address t, uint n, uint v) external {
+      for (uint i = 0; i < n; i++) {
+        (bool ok, bytes data) = t.call{value: v}(abi.encodeWithSelector(IT.ping.selector, 7));
+        require(ok);
+      }
+      runs = runs + 1;
+    }
+    function payEach(address t, uint[] vs) external {
+      for (uint i = 0; i < vs.length; i++) {
+        (bool ok, bytes data) = t.call{value: vs[i]}(abi.encodeWithSelector(IT.ping.selector, 7));
+        require(ok);
+      }
+      runs = runs + 1;
+    }
+  }`;
+
+describe('a per-turn call that pays a value', () => {
+  let paying: Artifact | undefined;
+  const payArtifact = (): Artifact => {
+    paying ??= (compileStringMulti(PAY_SOURCE, OPTIONS) as Record<string, Artifact>).P;
+    return paying!;
+  };
+  const rowsOf = (name: string): NonNullable<AbiFunction['lowLevelCalls']> => abiOf(payArtifact(), name).lowLevelCalls!;
+  const turns = [{ type: 'stateful' }, { type: 'stateful' }];
+  const lock = Uint8Array.of(0x51);
+
+  it('publishes what each turn pays, and nothing for a call that pays none', () => {
+    expect(rowsOf('payAll')[0]).toMatchObject({ perTurn: true, valueSource: { kind: 'forward', paramIndex: 2 } });
+    expect(rowsOf('payEach')[0]).toMatchObject({
+      perTurn: true, valueSource: { kind: 'arrayElement', paramIndex: 1, indexStepValue: 1 },
+    });
+    expect(abiOf(artifacts().R, 'pingAll').lowLevelCalls?.[0]?.valueSource).toBeUndefined();
+  });
+
+  it('refuses two paying turns before building, and admits a listing of which at most one pays', () => {
+    expect(() => refuseSecondPayingTurn(rowsOf('payAll'), turns, [lock, 2n, 1000n], 'P.payAll'))
+      .toThrow(LowLevelCallTurnsError);
+    expect(() => refuseSecondPayingTurn(rowsOf('payAll'), turns, [lock, 2n, 0n], 'P.payAll')).not.toThrow();
+    expect(() => refuseSecondPayingTurn(rowsOf('payAll'), turns.slice(1), [lock, 1n, 1000n], 'P.payAll')).not.toThrow();
+    expect(() => refuseSecondPayingTurn(rowsOf('payEach'), turns, [lock, [0n, 5n]], 'P.payEach')).not.toThrow();
+    expect(() => refuseSecondPayingTurn(rowsOf('payEach'), turns, [lock, [5n, 5n]], 'P.payEach'))
+      .toThrow(/2 nonzero amounts, and its loop pays from one turn per transaction/);
+  });
+
+  it('refuses by name a send whose two turns each pay, before any transaction is sent', async () => {
+    const provider = createTestProvider();
+    const t1 = await deploy(provider, artifacts().T, { pings: 0n });
+    const t2 = await deploy(provider, artifacts().T, { pings: 0n });
+    const p = await deploy(provider, payArtifact(), { runs: 0n });
+    let sent = 0;
+    const send = provider.sendRawTransaction.bind(provider);
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      sent += 1;
+      return send(hex);
+    };
+    await expect((p.sc as any).payAll(t1.lock, 2n, 1000n)
+      .withCall(t1.sc, 'ping', [TAG]).withCall(t2.sc, 'ping', [TAG]).send())
+      .rejects.toThrow(/2 turns each pay \{value:\} 1000, and its loop pays from one turn per transaction/);
+    expect(sent).toBe(0);
+    expect((await p.sc.getState()).runs).toBe(0n);
   }, 300_000);
 });
 

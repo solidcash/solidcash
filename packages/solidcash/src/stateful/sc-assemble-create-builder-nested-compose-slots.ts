@@ -224,7 +224,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
   const markSharedFunder = host.markSharedFunder;
   const routeDebugEnabled = (): boolean => {
     const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-    return env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
+    return env?.SOLIDC_DEBUG_TRACE_CONCISE === '1'
       || env?.SOLIDC_DEBUG_COLLECTION_FETCH === '1';
   };
 
@@ -589,7 +589,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             } catch (error) {
               entry = undefined;
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+                ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
                 console.error('nested-entry-pick-threw', {
                   collection: access.collection,
                   blockSlot: childBlockInputs.length,
@@ -1143,7 +1143,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         });
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+        ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
         console.error('nested-batch-entry-lock', {
           collection: batch.collection,
           selected: binToHex(entryLockingBytecode),

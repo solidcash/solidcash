@@ -256,6 +256,10 @@ export function evalComputedKey(
 
 const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),schema=\[([^\]]*)\]\}$/;
 
+/**
+ * One direct call-frame planning row: the handler ABI, its visible arguments and the callsite identity.
+ * Retained name: it describes a direct call, not a message-bus batch row.
+ */
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
   /** Exact selected handler selector when transported by a route. */
@@ -494,7 +498,13 @@ export function canShareIdempotentCounterLoopSettlement(params: {
 }
 
 /**
- * Select the route row that owns an expression-keyed entry slot.
+ * Direct call-frame planning rows.
+ *
+ * A "route row" here is one direct call's handler ABI, visible arguments and callsite identity. It is not a
+ * message-bus batch row: the bus row model was removed with the bus itself.
+ */
+/**
+ * Select the direct call frame that owns an expression-keyed entry slot.
  * Later rows decode the same `rowArgs` label shape; matching is by collection + handler arity,
  * then an optional `_rN` hint, then the handler's own expression label.
  */
@@ -532,7 +542,7 @@ export function matchingRouteRowsForExpressionKey(params: {
 }
 
 /**
- * Resolve a nested/route entry key. Expression labels that decode `rowArgs` must use THAT row's
+ * Resolve a nested direct call-frame entry key. Expression labels that decode `rowArgs` must use THAT row's
  * handler arguments, not the route planning ABI — evaluating against the route args either
  * accidentally selected row 0 or left later-row slots funder-filled.
  */

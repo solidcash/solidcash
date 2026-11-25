@@ -152,7 +152,7 @@ export function setDerivedChunkOutput(
   if (!ownedChunk.fixedIndex && valueChunkPin && ownedChunk.commitment.length >= 3
     && ownedChunk.commitment !== '00' && !isEmptyValueChunkCommitment(ownedChunk.commitment)) {
     const categoryId = resolvedCategoryId;
-    if (undefined !== 'kernel-row-loop' || ownedChunk.resourceIdentity === undefined) {
+    {
       host.rememberJobEventsChunks(categoryId, [
         ...host.derivedChunkOutputs.values(),
       ].filter((entry) => (entry.categoryId ?? host.categoryId) === categoryId

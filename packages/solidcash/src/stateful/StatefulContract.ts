@@ -1355,7 +1355,7 @@ function normalizeJobEventAddresses(
   return decoded;
 }
 
-/** Quarantine the historical wire adapter to its exact legacy schema and legacy-unroll artifact. */
+/** Quarantine the historical wire adapter to its exact legacy schema and legacy layout. */
 /** Historical JobEventData wire compatibility is not part of the direct convention. */
 export function usesLegacyJobEventCompatibility(
   _artifact: Artifact, _type: string, _structs: Artifact['structs'],
@@ -1364,7 +1364,7 @@ export function usesLegacyJobEventCompatibility(
 }
 
 /**
- * Apply the historical JobEvent timestamp wire adapter to a nested legacy-unroll call.
+ * Apply the historical JobEvent timestamp wire adapter to a nested legacy-layout call.
  *
  * This compatibility behavior is selected by the callee artifact convention and the exact legacy ABI type,
  * never by a function name or a positional argument assumption. Kernel artifacts must preserve user arguments:
@@ -1657,11 +1657,11 @@ function chunkableValueWriteCollections(
 
 // Preserve the historical StatefulContract import surface while the extracted helper owns one implementation.
 export {
-  resolveKernelValueChunkResourceLanes,
-  resolveKernelValueChunkResourceLane,
+  resolveValueChunkResourceLanes,
+  resolveValueChunkResourceLane,
   resolveChunkableEntryCollection,
   resolvePublishedEntryBlockOffset,
-} from './kernel-value-chunk-lanes.js';
+} from './value-chunk-lanes.js';
 
 /** Map a physical output index to a vmap entry slot offset using proxy and/or implementation layouts. */
 export function routeProbeEntrySlotOffsetForOutput(
@@ -2969,6 +2969,10 @@ export function physicalExternalCallSelectorHex(
 
 const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),schema=\[([^\]]*)\]\}$/;
 
+/**
+ * One direct call-frame planning row: the handler ABI, its visible arguments and the callsite identity.
+ * Retained name: it describes a direct call, not a message-bus batch row.
+ */
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
   /** Exact selected handler selector when transported by a route. */
@@ -3204,7 +3208,7 @@ export function encodeLeadingRouteArrayPushes(params: {
   valueType: string;
   structs: Artifact['structs'];
   timestamp?: bigint;
-  /** Historical legacy-unroll JobEventData adapter; never inferred from arbitrary field names. */
+  /** Historical legacy-layout JobEventData adapter; never inferred from arbitrary field names. */
   legacyJobEventCompatibility?: boolean;
   /** Evaluate the compiler-authenticated element recipe in this row's exact ABI/state environment. */
   resolveElement?: (
@@ -6660,7 +6664,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       } catch (e) {
         if (['1'].includes((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_ROUTE_CONCISE ?? '')) {
+          ?.SOLIDC_DEBUG_TRACE_CONCISE ?? '')) {
           console.error('full-state-derivation-error', e);
         }
         if (e instanceof AutoDerivationError) throw e;
@@ -7185,7 +7189,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && u.token?.nft?.capability === 'mutable'
           && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0
         ));
-        if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_COLLECTION_FETCH'].some((name) =>
+        if (['SOLIDC_DEBUG_TRACE_CONCISE', 'SOLIDC_DEBUG_COLLECTION_FETCH'].some((name) =>
           (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
           console.error('collection-entry-fetch', {
             contract: this.inner.artifact.contractName, categoryId: this.categoryId,
@@ -8702,7 +8706,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         entry.utxo = undefined;
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
+        ?.SOLIDC_DEBUG_TRACE_ENTRY_PLAN === '1') {
         console.error('route-entry-plan', entryNfts.map((entry) => ({
           slotIndex: entry.slotIndex,
           collection: entry.collection,
@@ -10939,7 +10943,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const streamInputCount = insertLoopPredecessors.length - runtimeInputStart;
       const streamOutputCount = commitments.length;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
+        ?.SOLIDC_DEBUG_TRACE_ENTRY_PLAN === '1') {
         console.error('runtime-journal-stream-plan', JSON.stringify({
           functionName: loopAbiFunction.name,
           collection: info.collection,
@@ -12078,7 +12082,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         tailReturnRank,
       });
       const relocatedPredOutBase = relocated.relocatedPredOutBase;
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
         console.error('nested-route-layout', {
           external: externalCallUtxoGroups.map((group, index) => ({
             index,
@@ -12908,7 +12912,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const refreshTopLevelReturnWitnesses = constructed.refreshTopLevelReturnWitnesses;
 
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('stateful-builder-created', { functionName });
     }
     registerCreateBuilderBuilderStateImpl(

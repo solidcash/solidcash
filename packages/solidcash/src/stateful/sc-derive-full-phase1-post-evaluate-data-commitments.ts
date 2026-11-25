@@ -104,7 +104,7 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
     }
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('route-derive-finish', {
       groupIdx, states: fullTrace.length, error: fullTrace.at(-1)?.error,
       tail: fullTrace.slice(-3).map((state) => ({

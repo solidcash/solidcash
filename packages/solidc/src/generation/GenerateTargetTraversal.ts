@@ -33577,7 +33577,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const bareParameter = keyNode instanceof IdentifierNode && keyNode.name === keyParamName;
       if (bareParameter) {
         if (keyParamName === undefined && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_ROUTE === '1') {
+          ?.SOLIDC_DEBUG_TRACE === '1') {
           // eslint-disable-next-line no-console
           console.error('sorted-key-missing-param', {
             function: this.currentFunction.name, slotIndex, physicalSlotIndex, keyIndex: i,

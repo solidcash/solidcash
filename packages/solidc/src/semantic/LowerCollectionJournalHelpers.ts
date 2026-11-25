@@ -616,7 +616,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         valueType: entry.valueType,
       });
     }
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
       console.error('collection-journal-route-candidates', JSON.stringify({
         contract: node.name,
         candidates: [...this.candidates.keys()],
@@ -1405,7 +1405,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const sharedLocals: ActiveMultiCache['locals'] = [];
     const calls: FunctionCallNode[] = [];
     const debugRoute = (globalThis as { process?: { env?: Record<string, string> } })
-      .process?.env?.SOLIDC_DEBUG_ROUTE === '1';
+      .process?.env?.SOLIDC_DEBUG_TRACE === '1';
     const debugCalls: Array<{
       target: string;
       runtimeAliases: boolean;

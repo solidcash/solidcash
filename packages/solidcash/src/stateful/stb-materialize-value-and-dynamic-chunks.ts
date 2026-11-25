@@ -249,7 +249,7 @@ export function appendDynamicChunks(
       });
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' && commitments.length > 0) {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1' && commitments.length > 0) {
       console.error('append-dynamic-chunks', {
         name: dv.name,
         lockingBytecode: binToHex(dv.lockingBytecode),

@@ -83,7 +83,7 @@ export function deriveFullPhase1ProgressiveEntries(
     if (requiresFreshEntryProbe) {
       const entryProbe = stb.build();
       entryTransaction = entryProbe.buildLibauthTransaction();
-      if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN', 'SOLIDC_DEBUG_CHUNK_SCAN'].some((name) =>
+      if (['SOLIDC_DEBUG_TRACE_CONCISE', 'SOLIDC_DEBUG_RETURN', 'SOLIDC_DEBUG_CHUNK_SCAN'].some((name) =>
         (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
         console.error('route-entry-output-window', entryProbe.outputs.slice(38, 50).map((output, offset) => ({
           index: 38 + offset,
@@ -149,7 +149,7 @@ export function deriveFullPhase1ProgressiveEntries(
       const revealed = extractCommitmentMapFromTrace(entryTrace,
         { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE_VERBOSE === '1') {
+        ?.SOLIDC_DEBUG_TRACE_VERBOSE === '1') {
         const aborted = entryTrace.at(-1);
         console.error('progressive-route-entries', {
           groupIdx,

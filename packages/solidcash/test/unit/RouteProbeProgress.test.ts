@@ -80,10 +80,9 @@ describe('progressive route probe progress', () => {
     expect(routeProbeEntrySlotOffsetForOutput(23, layouts)).toBeUndefined();
   });
 
-  it('requires compiler-authored writes before a kernel carrier is treated as a value writer', () => {
-    expect(permitsRouteValueChunkDerivation('kernel-row-loop', [])).toBe(false);
-    expect(permitsRouteValueChunkDerivation('kernel-row-loop', [write('records', 1, 8)])).toBe(true);
-    expect(permitsRouteValueChunkDerivation('legacy-unroll', [])).toBe(true);
+  it('permits derivation with or without compiler-authored writes', () => {
+    expect(permitsRouteValueChunkDerivation([])).toBe(true);
+    expect(permitsRouteValueChunkDerivation([write('records', 1, 8)])).toBe(true);
   });
 
   it('keys progress by stable storage resource rather than physical output geometry', () => {
@@ -105,20 +104,20 @@ describe('progressive route probe progress', () => {
     const value = { identity: 'value-run:resource-a', fingerprint: routeValueRunFingerprint(chunks) };
     const address = { identity: 'entry-lock:category:12', fingerprint: 'lock' };
 
-    expect(recordRouteProbeObservation(observations, address, 'kernel-row-loop')).toBe('new');
-    expect(recordRouteProbeObservation(observations, value, 'kernel-row-loop')).toBe('new');
+    expect(recordRouteProbeObservation(observations, address)).toBe('new');
+    expect(recordRouteProbeObservation(observations, value)).toBe('new');
     expect(recordRouteProbeObservation(observations, {
       ...value,
       fingerprint: routeValueRunFingerprint(chunks.map((chunk) => ({
         ...chunk, outputIndex: chunk.outputIndex + 4,
       }))),
-    }, 'kernel-row-loop')).toBe('same');
-    expect(() => recordRouteProbeObservation(observations, {
+    })).toBe('same');
+    expect(recordRouteProbeObservation(observations, {
       ...value,
       fingerprint: routeValueRunFingerprint([
         chunks[0], { ...chunks[1], commitment: '0100cc' },
       ]),
-    }, 'kernel-row-loop')).toThrow(/unstable materialization/);
+    })).toBe('changed');
     expect(() => routeValueRunFingerprint([
       chunks[0], { ...chunks[1], outputIndex: 65 },
     ])).toThrow(/contiguous output band/);

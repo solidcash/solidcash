@@ -1040,7 +1040,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
         ? ''
         : `; failing require in ${requirement.contractName ?? 'contract'}:${requirement.line}`
           + `${requirement.message ? ` (${requirement.message})` : ''}`;
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE
         && failedStep) {
         console.error('constructor-probe-failure', {
           iter, currentCommitments, entryCommits, trailingEntryCommits, eventCommits,

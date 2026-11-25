@@ -103,7 +103,7 @@ export async function sendWithoutLogicalNonce(
         && host.parentContract._logicalNonceSigner !== host.parentContract._signer) {
         host.invalidateSignerUtxos(host.parentContract._logicalNonceSigner);
       }
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE
         && host.parentContract) {
         const address = host.parentContract.getDataNftAddress();
         console.error('fake-token-data-after-send', {

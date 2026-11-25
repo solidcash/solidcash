@@ -426,7 +426,7 @@ export async function deriveCommitments(
         keccakCoSpends: keccakProbeCoSpends,
       };
     } catch (e) {
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
         console.error('state-derivation-error', e);
       }
       if (e instanceof AutoDerivationError) throw e;

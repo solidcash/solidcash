@@ -120,7 +120,7 @@ export async function resolveCreateBuilderEffectiveLayout(
   }
 
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('stateful-builder-create', {
       functionName, externalGroups: externalCallUtxoGroups.length,
       lowLevelGroups: lowLevelCallUtxoGroups.length,

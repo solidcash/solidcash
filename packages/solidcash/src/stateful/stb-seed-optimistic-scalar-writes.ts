@@ -119,7 +119,7 @@ export function seedOptimisticScalarWrites(
     .map((input, index) => ({ input, index }))
     .filter(({ input, index }) => !usedArgs.has(index) && isIntegerType(input.type));
   // Name-regex leftover probes are legacy-only. Kernel convention uses typed arg→field matching above.
-  const allowNameHeuristics = permitsLegacyScalarNameHeuristics(undefined);
+  const allowNameHeuristics = permitsLegacyScalarNameHeuristics();
   const hints = allowNameHeuristics
     ? legacyScalarNameHints(abiFunction.name)
     : { decrement: false, zero: false, enable: false, disable: false, twice: false };

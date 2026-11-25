@@ -179,7 +179,7 @@ export function selectProtectedLoopEntryCollections(
     const declared = [...new Set(groups.flatMap(groupChunkableValueWriteCollections))];
     if (declared.length > 0) return { status: 'exact', collections: declared };
     // Descriptor-free legacy artifacts retain their historical adapter, but unrelated or empty group sets
-    // cannot claim this application's collection merely because the owner uses legacy-unroll.
+    // cannot claim this application's collection merely because the owner uses the legacy layout.
     return {
       status: 'absent',
       collections: [legacyNamedJobEventCollectionFallback(

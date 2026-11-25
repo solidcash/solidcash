@@ -9,7 +9,7 @@ import type { AbiFunction } from '@solidcash/utils';
 import { isValidComputedValueChunkCommitmentEncoding } from './computed-value-chunk-pin.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
-import { resolveKernelValueChunkResourceLanes } from './kernel-value-chunk-lanes.js';
+import { resolveValueChunkResourceLanes } from './value-chunk-lanes.js';
 import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
 import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { AssembledWitnessBag } from './sc-rebind-create-builder-assembled-witnesses.js';
@@ -224,7 +224,7 @@ export async function runCreateBuilderDerivePass(
     const ecCallsForDerive = externalCallUtxoGroups.length > 0 ? allGroupEcSlots : [];
     const osGroupsForDerive = externalOutStateUtxoGroups.length > 0 ? externalOutStateUtxoGroups : undefined;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('stateful-derive-call', {
         functionName,
         groups: ecGroupsForDerive.map((group, groupIdx) => ({
@@ -270,7 +270,7 @@ export async function runCreateBuilderDerivePass(
     // Collapse repeated callsites for one resource, but keep distinct collections/keys as ordered lanes.
     // The scalar `__internal__valueChunkOutputBase` authenticates band[0]; later bands ride ordered
     // continuationResourceClaims rather than sharing one projected coordinate.
-      resolveKernelValueChunkResourceLanes(computedValueChunkRuns);
+      resolveValueChunkResourceLanes(computedValueChunkRuns);
     }
     const graphValueChunkArgumentIndex = graphOwnsValueChunkWitness && entryAbiFunction
       ? entryAbiFunction.inputs.findIndex((input) => input.name === '__internal__valueChunkOutputBase')

@@ -172,7 +172,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       callsiteId: nested.callsiteId, interfaceName: nested.interfaceName, functionName: nested.functionName,
     });
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('nested-compose-start', {
         delegateGroupIndex, interfaceName: nested.interfaceName,
         functionName: nested.functionName, callsiteId: nested.callsiteId,

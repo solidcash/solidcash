@@ -177,7 +177,7 @@ export function materializeExternalCallOutputs(
 
     const externalDynamicChunks: Output[] = [];
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('external-dynamic-plan', {
         categoryId: group.categoryId,
         functionName: group.functionName,
@@ -343,7 +343,7 @@ export function materializeExternalCallOutputs(
           continue;
         }
         const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-        const debugRouteOutputs = debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
+        const debugRouteOutputs = debugEnv?.SOLIDC_DEBUG_TRACE_CONCISE === '1'
           || debugEnv?.SOLIDC_DEBUG_FAILURE_RING === '1';
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_CHUNK_GEOM === '1') {
@@ -364,7 +364,7 @@ export function materializeExternalCallOutputs(
         if (derivedChunk && !suffixOwnedChunk && !derivedOntoDataNft
         && derivedOccupant?.token?.nft?.capability !== 'minting') {
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+            ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
             console.error('chunk-placed', { groupIndex, si, absOut: builder.outputs.length });
           }
           builder.addOutput({

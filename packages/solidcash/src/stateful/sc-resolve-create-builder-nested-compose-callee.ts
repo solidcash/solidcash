@@ -318,7 +318,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
       + 'that cannot yet be resolved by the SDK.',
     );
   }
-  // Historical legacy-unroll artifacts encoded their JobEvent payload after implicitly filling the
+  // Historical legacy-layout artifacts encoded their JobEvent payload after implicitly filling the
   // timestamp. Keep that wire adapter quarantined to its exact ABI schema. Kernel calls retain their
   // source arguments and derive mutations by executing the authenticated handler behind OP_INVOKE.
   const nestedFunctionName = resolvedRawFunctionName ?? nested.functionName;

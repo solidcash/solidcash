@@ -75,7 +75,7 @@ export function deriveFullPhase2ApplyDynamicRescanAndEvents(
   // builder's updated layout (NEW nodes, value chunks, pending outputs, then dynamic chunks).
   if (chunkVars.length > 0) {
     const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-    const debugDynamicChunks = env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
+    const debugDynamicChunks = env?.SOLIDC_DEBUG_TRACE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
     let chunkOffset = getPhysicalChunkOutputBase();
     for (const dv of chunkVars) {
       const existing = stb.getChunkRawCommitments(dv.name);

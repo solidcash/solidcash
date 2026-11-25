@@ -125,8 +125,7 @@ export function materializeValueChunkBand(
   builder: TransactionBuilder,
 ): void {
   const band = host.getChunkableValueWriteBand();
-  if (undefined === 'kernel-row-loop'
-    && [...host.derivedChunkOutputs.values()].some((chunk) => chunk.resourceIdentity !== undefined)) {
+  if ([...host.derivedChunkOutputs.values()].some((chunk) => chunk.resourceIdentity !== undefined)) {
     host.applyDerivedValueChunks(builder);
     return;
   }

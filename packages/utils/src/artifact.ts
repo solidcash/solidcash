@@ -1580,7 +1580,7 @@ export interface ExternalCallAbi {
   occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
   /**
    * Authenticated caller subject for this outgoing edge. Kernel artifacts publish this for every callsite;
-   * absence is legacy and may fall back to owner@0 only outside `kernel-row-loop`.
+   * absence is legacy and may fall back to owner@0 only outside a compiler-described layout.
    */
   callerIdentity?: CallsiteCallerIdentityAbi;
   interfaceName: string;

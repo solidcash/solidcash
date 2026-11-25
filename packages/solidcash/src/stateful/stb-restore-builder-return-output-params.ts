@@ -100,11 +100,6 @@ export function restoreBuilderReturnOutputParams(
         && candidate.resourcePart === observation.resourcePart
       ));
       if (prior && !sameDerivedChunkOutputObservation(prior[1], observation)) {
-        if (undefined === 'kernel-row-loop') {
-          throw new Error(
-            `Conflicting authenticated observation for value-chunk resource '${observation.resourceIdentity}'`,
-          );
-        }
       } else if (prior && prior[0] !== outputIndex) {
         host.derivedChunkOutputs.delete(prior[0]);
       }

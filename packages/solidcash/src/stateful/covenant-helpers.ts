@@ -447,7 +447,7 @@ export async function getContractState(
   }
 
   const reader = new StateReader(contract.artifact.stateLayout);
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE) {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE) {
     console.error('get-contract-state-addresses', {
       contract: contract.name, categoryId, tokenAddress: contract.tokenAddress,
       allAddresses, dataNftOnlyAddresses,

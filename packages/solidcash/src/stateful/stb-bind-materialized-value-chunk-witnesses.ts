@@ -178,23 +178,7 @@ export function bindMaterializedValueChunkWitnesses(
           || alias.internalArgs?.__internal__valueChunkOutputBase !== BigInt(scalarStart)) {
           const trailingBase = alias.blockLayout?.trailingBase ?? carrier.blockLayout?.trailingBase;
           const blockSize = alias.blockLayout?.blockSize ?? carrier.blockLayout?.blockSize;
-          if (trailingBase !== undefined && blockSize !== undefined
-            && undefined === 'kernel-row-loop') {
-            refreshCapturedValueChunkOutputBase(alias, scalarStart, {
-              shiftPredOut: false,
-              resolveAuthority: {
-                publishedBase: coordinateBase,
-                blockSize,
-                trailingBase,
-                trailingCapacity: alias.blockLayout?.trailingCapacity
-                  ?? carrier.blockLayout?.trailingCapacity,
-                valueChunkBandOffset: firstClaim.bandOffset - trailingBase,
-                valueChunkCount: firstClaim.chunkCount,
-              },
-            });
-          } else {
-            refreshCapturedValueChunkOutputBase(alias, scalarStart, { shiftPredOut: false });
-          }
+          refreshCapturedValueChunkOutputBase(alias, scalarStart, { shiftPredOut: false });
           changedCarriers.add(alias);
         } else if (writesChanged) changedCarriers.add(alias);
       }
@@ -361,30 +345,7 @@ export function bindMaterializedValueChunkWitnesses(
       const write = selectedResourceIdentity === undefined
         ? writes.length === 1 ? writes[0] : undefined
         : writes.find((candidate) => valueChunkWriteResourceIdentity(candidate) === selectedResourceIdentity);
-      if (trailingBase !== undefined && blockSize !== undefined
-        && undefined === 'kernel-row-loop') {
-        // Descriptors may already carry aggregate coordinates. Resolve the observed builder-local run,
-        // not the old descriptor's absolute/provisional base, against the published local trailing band.
-        const bandOffset = selectedStart - trailingBase;
-        const resolveAuthority = {
-          publishedBase: coordinateBase,
-          blockSize: Math.max(blockSize, trailingBase + selectedWidth),
-          trailingBase,
-          trailingCapacity: alias.blockLayout?.trailingCapacity
-            ?? carrier.blockLayout?.trailingCapacity,
-          valueChunkBandOffset: bandOffset,
-          valueChunkCollection: write?.collection,
-          // The complete coherent run is known here. A descriptor can still carry a conservative
-          // planning estimate or the aggregate width of multiple resources in this carrier.
-          valueChunkCount: selectedWidth,
-        };
-        refreshCapturedValueChunkOutputBase(alias, absoluteStart, {
-          shiftPredOut: false,
-          resolveAuthority,
-        });
-      } else {
-        refreshCapturedValueChunkOutputBase(alias, absoluteStart, { shiftPredOut: false });
-      }
+      refreshCapturedValueChunkOutputBase(alias, absoluteStart, { shiftPredOut: false });
       changedCarriers.add(alias);
     }
   }

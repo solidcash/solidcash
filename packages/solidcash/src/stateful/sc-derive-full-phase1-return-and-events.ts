@@ -60,7 +60,7 @@ export function deriveFullPhase1ReturnAndEvents(
   const ec = { hasReturnValues };
   const routeReturnDebugEnabled = (): boolean => {
     const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-    return env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
+    return env?.SOLIDC_DEBUG_TRACE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
   };
   // Return event blob: extract from the dedicated return-event section, whose index is fixed at the
   // tx end and therefore order-independent. The inline data-NFT range only coincides with the return
@@ -225,7 +225,7 @@ export function deriveFullPhase1ReturnAndEvents(
     // raw caller skip its `data.length == 0` branch and ABI-decode a non-word. A record it does pin (fix B) is the
     // commitment the trace found.
     if (calleePinsNoRecord(group)) returnCommitments = undefined;
-    if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
+    if (['SOLIDC_DEBUG_TRACE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
       (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
       console.error('route-return-derivation', {
         groupIdx,
@@ -325,7 +325,7 @@ export function deriveFullPhase1ReturnAndEvents(
         });
 
         const eventCommitments = extractCommitmentMapFromTrace(fullTrace2, undefined, true, false, true);
-        if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
+        if (['SOLIDC_DEBUG_TRACE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
           (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
           console.error('route-event-discovery', {
             groupIdx,
@@ -358,7 +358,7 @@ export function deriveFullPhase1ReturnAndEvents(
           });
         }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_ROUTE === '1') {
+          ?.SOLIDC_DEBUG_TRACE === '1') {
           console.error('route-event-derivation', {
             groupIdx,
             bOutputBase,
@@ -535,7 +535,7 @@ export function deriveFullPhase1ReturnAndEvents(
         max: bOutputBase + group.blockInputs.length,
       }, true);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+        ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
         const transferFromInvokeWindows = entryTrace.flatMap((state, traceIndex) => {
           if (state.instructions[state.ip]?.opcode !== Op.OP_INVOKE
             || binToHex(state.stack.at(-1) ?? new Uint8Array()) !== '0d') return [];
@@ -676,7 +676,7 @@ export function deriveFullPhase1ReturnAndEvents(
     // The same rule as the pre-event derivation: a void callee that pins no record returns no bytes, so the
     // covenant's success push (`01`) or a stack key is not returndata.
     if (calleePinsNoRecord(group)) returnCommitments = undefined;
-    if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
+    if (['SOLIDC_DEBUG_TRACE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
       (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
       console.error('route-return-after-events', {
         groupIdx, returnOutputIndex, returnCommitments,
@@ -701,7 +701,7 @@ export function deriveFullPhase1ReturnAndEvents(
       }
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('progressive-route-return', {
         groupIdx, returnOutputIndex, returnCommitments, error: returnTrace.at(-1)?.error,
         tail: returnTrace.slice(-24).map((state) => ({

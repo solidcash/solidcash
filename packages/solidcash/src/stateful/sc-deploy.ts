@@ -204,7 +204,7 @@ export async function deployStatefulContract<T extends Artifact>(
   const stateLayout = artifact.stateLayout;
   const delegateOnly = artifact.delegateOnly === true;
   const dataNftAddress = getDataNftAddress(contract, categoryId);
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE) {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE) {
     console.error('deploy-data-nft-address', { contract: artifact.contractName, categoryId, dataNftAddress });
   }
 
@@ -600,7 +600,7 @@ export async function deployStatefulContract<T extends Artifact>(
   }
 
   const tx = await builder.send();
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE) {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE) {
     console.error('deploy-data-nft-utxos', {
       contract: artifact.contractName, dataNftAddress,
       utxos: await options.provider.getUtxos(dataNftAddress),

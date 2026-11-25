@@ -194,7 +194,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     bCompilerInternalArgs.__internal__msgSenderCategory = hexToBin(host.callerCategoryId).reverse();
   }
 
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
     console.error('external-route-vmap-args', callInfo.functionName, bAbiFunc?.name,
       bAbiFunc?.sortedBatchInfo, bCompilerInternalArgs);
   }

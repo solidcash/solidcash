@@ -125,7 +125,7 @@ export async function completeCreateBuilderNestedUnlockers(
     const childSelfIdentityBand = childSelfIdentity === undefined ? undefined
       : await host.ensureNestedIdentityAnchorBand(childSelfIdentity.logicalAddress);
     let visible = 0;
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
       console.error('nested-route-internal-args', child.functionName,
         child.directCall?.internalArgs ?? child.internalArgs, child.plannedEntryInserts);
     }

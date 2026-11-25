@@ -56,7 +56,7 @@ export function deriveFullPhase1GroupFront(
   // participant masters and return tails cannot collide with the recovered chunks.
   const valueChunkWitness = valueChunkOutputWitnessCarrier(stb, group);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('route-probe-build-start', { groupIdx, functionName: group.functionName });
   }
   let probeBuilder = stb.build();
@@ -100,7 +100,7 @@ export function deriveFullPhase1GroupFront(
     ms: Date.now() - debugGroupStartedAt,
   });
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('route-probe-build-finish', { groupIdx, inputs: probeBuilder.inputs.length });
     console.error('route-probe-output-window', probeBuilder.outputs.slice(38, 50).map((output, offset) => ({
       index: 38 + offset,
@@ -163,7 +163,7 @@ export function deriveFullPhase1GroupFront(
 
   // Run VM on B's master input
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     const tail = sourceOutputs.at(-1);
     console.error('route-derive-start', {
       groupIdx, functionName: group.functionName, bMasterIdx,

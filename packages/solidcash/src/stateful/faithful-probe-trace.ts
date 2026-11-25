@@ -982,8 +982,8 @@ export function evaluateProbeTrace(
   // six opcodes. SC_FORCE_FULL_PROBE_TRACE remains available for diagnosing an observer discrepancy.
   const preferFullDebug = maxIn <= 10_000
     || debugEnv?.SC_FORCE_FULL_PROBE_TRACE === '1'
-    || debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
-    || debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1';
+    || debugEnv?.SOLIDC_DEBUG_TRACE_CONCISE === '1'
+    || debugEnv?.SOLIDC_DEBUG_TRACE_FULL_OPS === '1';
   const probeTraceTiming = debugEnv?.SOLIDC_DEBUG_PROBE_TRACE_TIMING === '1';
   // Above ordinary capacity `debug()` is not merely slow, it deep-clones the whole OP_DEFINE'd body table at
   // every instruction. Prefer the faithful shallow recorder there; `debug()` remains the reference for ordinary
@@ -1022,8 +1022,8 @@ export function evaluateProbeTrace(
       // Live-network pairing fix (solidcash_v0.13.1): `extractCommitmentMapFromTrace` pairs a commitment
       // read with the OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for
       // a trace containing just the probe opcodes. A raw debug trace makes every pair look interrupted.
-      if (maxIn <= 10_000 && debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE !== '1'
-        && debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS !== '1') {
+      if (maxIn <= 10_000 && debugEnv?.SOLIDC_DEBUG_TRACE_CONCISE !== '1'
+        && debugEnv?.SOLIDC_DEBUG_TRACE_FULL_OPS !== '1') {
         dumpProbeTerminal(debugEnv, full.at(-1));
         dumpProbeOperands(debugEnv, full.at(-2));
         return reduceProbeTrace(full);

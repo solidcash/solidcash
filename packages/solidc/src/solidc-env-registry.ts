@@ -55,12 +55,11 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_RAW_TARGET', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RECOVERY_CLOSURE', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RECOVERY_PRE', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_ROUTE', class: 'observation' },
+  { name: 'SOLIDC_DEBUG_TRACE', class: 'observation' },
   { name: 'SOLIDC_DEBUG_STREAM_PICK_OFFSET', class: 'observation' },
   { name: 'SOLIDC_DEBUG_UPSERT_WITNESS', class: 'observation' },
   { name: 'SOLIDC_DEBUG_UPSERT_WITNESS_DEFINE_ONLY', class: 'observation' },
   { name: 'SOLIDC_DEBUG_UPSERT_WITNESS_TARGET', class: 'observation' },
-  { name: 'SOLIDC_ROUTE_ABI_TAIL', class: 'observation' },
   // Instrumented (change codegen shape) — must not affect default release compile
   { name: 'SOLIDC_DEBUG_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDCASH_NO_OUTLINE', class: 'instrumented' },

@@ -588,7 +588,7 @@ export async function allocateCreateBuilderFunders(
     }
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') console.error('stateful-builder-funded', { functionName });
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') console.error('stateful-builder-funded', { functionName });
   timing?.('funders-complete');
 
 }

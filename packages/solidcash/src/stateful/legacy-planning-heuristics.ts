@@ -1,7 +1,7 @@
 /**
  * Legacy planning heuristics isolated from the kernel builder path.
  *
- * Kernel artifacts (`route.convention === 'kernel-row-loop'` or typed value-chunk /
+ * Artifacts with typed value-chunk /
  * state-transition descriptors) must never take these branches. Older plans without descriptors
  * may opt in explicitly via `permitsLegacyNamedValueChunkFallback`.
  */
@@ -80,11 +80,7 @@ export function legacyNamedJobEventCollectionFallback(
 
 /**
  * Whether leftover integer/bool fields may be seeded from function-name regexes.
- * Kernel convention always returns false — typed arg→field matching may still run.
  */
-export function permitsLegacyScalarNameHeuristics(
-  artifactConvention?: 'legacy-unroll' | 'kernel-row-loop' | string,
-): boolean {
-  if (artifactConvention === 'kernel-row-loop') return false;
+export function permitsLegacyScalarNameHeuristics(): boolean {
   return true;
 }

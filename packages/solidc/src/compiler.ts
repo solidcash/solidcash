@@ -2331,7 +2331,6 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
 /** Read straight from the environment and change emitted bytecode, so they belong in the cache key. */
 const BYTECODE_CHANGING_ENV = [
   'SOLIDC_DEBUG_STREAM_PICK_OFFSET',
-  'SOLIDC_ROUTE_ABI_TAIL',
   'SOLIDC_ROW_ASSERT',
   'SOLIDC_ROW_HEAD_CHECK',
   'SOLIDC_ROW_STACK_CLEAN',
@@ -5031,7 +5030,7 @@ function compileResolvedAst(
   if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
 
   // Keep direct compilation's narrow permutation ABI stable. Batch compilation still needs the richer
-  // analysis to classify legacy-unroll refusals, while kernel execution was already lowered at admission.
+  // analysis to classify legacy-layout refusals, while direct execution was already lowered at admission.
   // A looped emit takes the richer lowering too, so each iteration's event is pinned; a framed body binds a looped
   // event where it emits it instead (framed/master/loop-effects.ts).
   const needsRuntimeLoopCounter = needsRuntimeLoopTransferCounter

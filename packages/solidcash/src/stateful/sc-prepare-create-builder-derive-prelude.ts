@@ -304,7 +304,7 @@ export async function prepareCreateBuilderDerivePrelude(
   const eventBlockLayoutForDerive = effectiveBlockLayout
   ?? entryAbiFunction?.blockLayout ?? abiFunction?.blockLayout;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('stateful-builder-delegate-index', { functionName, delegatecallInputIndex });
   }
 

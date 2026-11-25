@@ -511,7 +511,7 @@ export function deriveRouteValueChunks(
   const blockSlot = pin.outputIndex - bOutputBase;
   const kind = group.blockLayout.slots[blockSlot]?.kind;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('route-value-chunks', {
       outputIndex: pin.outputIndex, blockSlot, kind, commitmentBytes: pin.commitment.length / 2,
       lockingBytecode: binToHex(pin.lockingBytecode),
@@ -653,7 +653,12 @@ export function deriveRouteValueChunks(
         discovered = true;
       }
     }
-    const exactRunObservation = undefined;
+    const exactRunObservation = resourceIdentity !== undefined && allChunks.length > 0
+      ? recordRouteProbeObservation(observations, {
+        identity: `value-run:${resourceIdentity}`,
+        fingerprint: routeValueRunFingerprint(allChunks),
+      })
+      : undefined;
 
     if (resourceIdentity !== undefined && allChunks.length > 0) {
       if (group.valueChunkWrites === undefined) group.valueChunkWrites = [...writes];

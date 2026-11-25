@@ -2010,7 +2010,7 @@ export class FunctionCallNode extends ExpressionNode {
   graphEffectSite?: number;
   // Kernel row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
   graphEffectSiteFromRow?: boolean;
-  // Compiler-generated legacy-unroll route: every mutually exclusive handler call emitted for one logical row
+  // Compiler-generated legacy route: every mutually exclusive handler call emitted for one logical row
   // carries that row's stable ordinal. Graph-effect planning uses it instead of counting each handler's calls
   // independently (different handler kinds in distinct rows can both be the Nth call of their kind).
   /** Stable first recovery-effect ordinal contributed by this source call within its defining function.

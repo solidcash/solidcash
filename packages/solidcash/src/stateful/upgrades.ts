@@ -1014,7 +1014,7 @@ export async function deployProxy<TImpl extends Artifact>(
     const mockInitializerHasEntries = mockInitializerState !== undefined && !!initializer
       && (implArtifact.abi.find((item) => item.name === initializer)?.entryAccesses?.length ?? 0) > 0;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('large-mock-initializer-shape', {
         contract: implArtifact.contractName, initializer,
         hasMockState: mockInitializerState !== undefined,

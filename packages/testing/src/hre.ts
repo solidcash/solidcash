@@ -429,7 +429,7 @@ export async function initHre(dir?: string, networkName?: string): Promise<Hardh
   // Load the heavy StatefulContract module here (async) rather than at hre.ts import time.
   await loadStatefulContract();
   hreGlobal.__solidcashActiveHre = createHardhatRuntimeEnvironment(config, networkName);
-  if (process.env.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+  if (process.env.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('init-hre-config', { dir, defaultNetwork: config.defaultNetwork,
       consensus: config.networks[config.defaultNetwork]?.consensus });
   }

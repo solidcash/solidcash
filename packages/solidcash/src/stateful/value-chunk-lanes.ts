@@ -16,7 +16,7 @@ import {
  * preserved in first-seen order so each can receive its own trailing band under the scalar band[0]
  * witness plus ordered continuation claims.
  */
-export function resolveKernelValueChunkResourceLanes(
+export function resolveValueChunkResourceLanes(
   runs: readonly { collection: string; slot?: Uint8Array }[],
 ): string[] {
   if (runs.some((run) => run.slot?.length !== 32)) {
@@ -41,10 +41,10 @@ export function resolveKernelValueChunkResourceLanes(
 }
 
 /** Resolve the one authenticated storage resource addressable by the scalar continuation-base witness. */
-export function resolveKernelValueChunkResourceLane(
+export function resolveValueChunkResourceLane(
   runs: readonly { collection: string; slot?: Uint8Array }[],
 ): string {
-  const lanes = resolveKernelValueChunkResourceLanes(runs);
+  const lanes = resolveValueChunkResourceLanes(runs);
   if (lanes.length !== 1) {
     throw new Error(
       'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
@@ -65,7 +65,6 @@ export function resolveChunkableEntryCollection(parts: {
   writes: readonly ValueChunkWriteDescriptor[];
   categoryId: string;
   publishedCollections: readonly string[];
-  convention?: 'legacy-unroll' | 'kernel-row-loop';
   legacyFallback?: string;
 }): string | undefined {
   const selection = selectValueChunkWriteCategory(parts.writes.filter((write) => (
@@ -75,11 +74,6 @@ export function resolveChunkableEntryCollection(parts: {
 
   const published = [...new Set(parts.publishedCollections)];
   if (selection.status === 'absent' && published.length === 1) return published[0];
-  if (parts.convention === 'kernel-row-loop') {
-    throw new Error(
-      'Kernel chunkable-value entry placement requires one exact compiler-published collection identity.',
-    );
-  }
   if (selection.status === 'absent' && published.length > 1) {
     throw new Error('Legacy chunkable-value entry placement has ambiguous compiler-published collections.');
   }

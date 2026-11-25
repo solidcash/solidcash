@@ -148,7 +148,7 @@ export function registerStatefulInputs(
     seenInputs.set(id, index);
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     const missingUnlockers = host.allInputs.map((input, index) => ({ input, index }))
       .filter(({ input }) => !('unlocker' in input) || input.unlocker === undefined);
     if (missingUnlockers.length > 0) {

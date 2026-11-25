@@ -50,7 +50,7 @@ export type ChunkableValueWriteGroup = {
 /**
  * Old route plans identified the chunkable writer by application ABI names because their artifacts did
  * not publish resource descriptors. Keep that migration path out of the kernel convention: once an artifact
- * declares `kernel-row-loop`, missing descriptors mean "not described", never permission to guess from names.
+ * declares no descriptors, missing descriptors mean "not described", never permission to guess from names.
  */
 export function permitsLegacyNamedValueChunkFallback(
   _groups: ReadonlyArray<ChunkableValueWriteGroup>,
@@ -307,7 +307,7 @@ export function selectChunkableValueWriteExecution(
   }>();
   for (const { group, inputIndex } of candidates) {
     if (inputIndex < 0) continue;
-    // Under `kernel-row-loop` the named fallback is closed, but a COMPOSED participant still needs the band: the
+    // With compiler-described writes the named fallback is closed, but a COMPOSED participant still needs the band: the
     // compiler describes the chunkable collection it writes, and the composed path is the only one that asks for
     // this relaxation, so ordinary direct sends keep the strict claim.
     const described = options?.allowCompilerDescribed === true

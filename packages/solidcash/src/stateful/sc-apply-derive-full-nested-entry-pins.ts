@@ -18,7 +18,7 @@ import { legacyNamedJobEventCollectionFallback } from './legacy-planning-heurist
 import {
   resolveChunkableEntryCollection,
   resolvePublishedEntryBlockOffset,
-} from './kernel-value-chunk-lanes.js';
+} from './value-chunk-lanes.js';
 import {
   extractFailingP2sh32OutputPin,
   lastExtractedComputedValue,

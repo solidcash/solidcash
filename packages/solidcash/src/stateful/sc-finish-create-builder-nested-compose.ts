@@ -421,7 +421,7 @@ export function finishCreateBuilderNestedCompose(
   // table. Retain an explicit sentinel so the two metadata arrays stay index-aligned.
   allGroupParentIndices = [...allGroupParentIndices, -1];
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('nested-compose-finish', {
       delegateGroupIndex, interfaceName: nested.interfaceName,
       functionName: nested.functionName, childExternalGroupIndex,

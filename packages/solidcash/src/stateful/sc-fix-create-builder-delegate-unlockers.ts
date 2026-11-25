@@ -233,7 +233,7 @@ export async function fixCreateBuilderDelegateUnlockers(
     // unlocker then selects.
     const bSameName = bAbi.filter((f) => f.name === group.functionName);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('delegate-function-selection', {
         groupLocalIdx, contract: bArt.contractName, functionName: group.functionName,
         functionArgCount: group.functionArgs.length,
@@ -936,7 +936,7 @@ export async function fixCreateBuilderDelegateUnlockers(
         });
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+        ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
         console.error('delegate-encoded-args', {
           groupLocalIdx,
           functionName: group.functionName,

@@ -81,9 +81,6 @@ and runtime aliases. Use it to distinguish a missing write from an alias/key-lan
 application names. Metadata collection and logging are both disabled when the switch is unset; the switch does
 not alter emitted bytecode.
 
-`SOLIDC_DEBUG_OUTPUT_TOKEN_COMPARE=1` reports mismatched `OP_OUTPUTTOKENCOMMITMENT` equalities during final
-preflight without changing the transaction. Use `SOLIDC_DEBUG_TRACE_INPUT_INDEX` to select an input and
-`SOLIDC_DEBUG_OUTPUT_TOKEN_COMPARE_IP` to inspect one instruction's stack before the comparison.
 `SOLIDC_DEBUG_DERIVE_TRACE_OPS=1` emits `derive-op` records with an `executing` field. The VM also visits
 instructions inside inactive conditional arms, so an `OP_INVOKE` record with `executing: false` does not mean
 the callee ran. Use `programInputs` to distinguish a final composed probe from earlier setup transactions in

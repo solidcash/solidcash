@@ -3910,10 +3910,12 @@ describe('assignPhysicalReturnIndices', () => {
       slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1, slotIndex: 0 },
         { kind: 'event', offset: 2, slotIndex: 0 }],
     };
+    const abiFunction = { name: 'appendNotice', inputs: [], outputs: [], blockLayout: layout };
     const writer = {
       categoryId: ownerCategory,
       functionName: 'appendNotice',
       blockLayout: layout,
+      logicalArtifact: { abi: [abiFunction] },
       eventOutputs: [{ eventSignature, commitment: '01aa', lockingBytecode: eventLock }],
       valueChunkWrites: [{
         categoryId: ownerCategory, collection: 'notices', collectionSignature: signature,

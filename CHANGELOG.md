@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The framed validator refused every call to a contract whose program is longer than 65,535 bytes, which only a
+  network with a lifted stack item limit runs (`validator/1`, the argument digest). Its walk read the callee's
+  `OP_PUSHDATA4` redeem push as a one-byte push and hashed the program as call data, so the EACC marketplace port did
+  not deploy through a framed proxy and refused `publishJobPost`. The walk now reads `OP_PUSHDATA4`. The facet that
+  makes the walk is 3 bytes longer, so every framed address differs from 0.52.0's: deploy a new category.
+
 ## 0.52.0
 
 ### Security

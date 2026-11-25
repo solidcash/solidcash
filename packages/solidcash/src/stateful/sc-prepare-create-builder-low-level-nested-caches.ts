@@ -15,7 +15,7 @@ import {
   resolveLogicalIdentity,
 } from './logical-identity.js';
 import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
-import { selectKernelDelegateForwardingGroupIndex } from './KernelDelegateForwarding.js';
+import { selectDelegateForwardingGroupIndex } from './DelegateForwarding.js';
 import { SortedList } from './SortedList.js';
 import type { OnChainState } from './StateReader.js';
 import type { StateValue } from '@solidcash/utils';
@@ -292,7 +292,7 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
         ? [groupIndex] : []
     ));
     if (candidateIndexes.length === 0) return undefined;
-    return selectKernelDelegateForwardingGroupIndex({
+    return selectDelegateForwardingGroupIndex({
       forwarding: physicalAbiFunction.delegateForwarding,
       encodedProxyConstructorArgs: host.inner.encodedConstructorArgs,
       groups: lowLevelCallUtxoGroups,

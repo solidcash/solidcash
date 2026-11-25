@@ -1,9 +1,7 @@
 /**
- * Kernel delegate, kernel entry-journal and route route planning helpers.
+ * Entry-journal planning helpers.
  *
- * Extracted from `StatefulContract.ts`: these are pure, artifact-driven planners for the kernel and route
- * calling conventions, kept here so the core stateful class no longer carries the whole plugin surface. The class
- * re-exports them for the public `@solidcash/solidcash/stateful` barrel.
+ * Extracted from `StatefulContract.ts`: pure, artifact-driven planners for the shipped state journal.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -18,127 +16,22 @@ import {
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
   kernelEntryJournalRecordSegmentIndex,
   kernelEntryJournalRecordSegmentName,
-  encodeKernelEntryJournalRecordSegment,
-  encodeKernelEntryJournalAccesses,
-  segmentKernelEntryJournalRecords,
-  validateKernelEntryJournalRecordSegmentSlots,
+  encodeJournalEntryJournalRecordSegment,
+  encodeJournalEntryJournalAccesses,
+  segmentJournalEntryJournalRecords,
+  validateJournalEntryJournalRecordSegmentSlots,
   kernelEntryJournalReadCarrierCapabilityCovers,
   type KernelEntryJournalReadCarrierCapability,
 } from './KernelEntryJournal.js';
-import { resolveKernelDelegateForwardingTarget, resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
+import { resolveDelegateForwardingTarget, resolveDelegatePromotion } from './DelegateForwarding.js';
 
 export const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
 export const KERNEL_JOURNAL_RECORDS = '__internal__kernelJournalRecords';
 
-export function resolvePreparedKernelDelegateExecution(input: {
-  proxyFunction: Pick<AbiFunction, 'name' | 'delegateForwarding'>;
-  callIndex: number;
-  proxyParameters: readonly FunctionArgument[];
-  proxyConstructorArgs: readonly FunctionArgument[];
-  proxyLockingBytecode: string;
-  stateCategory: string;
-  implementationArtifact: Artifact;
-  implementationLockingBytecode: string;
-  requestedFunctionName: string;
-  requestedArgs: readonly FunctionArgument[];
-}): ReturnType<typeof resolveKernelDelegatePromotion> | undefined {
-  if (input.proxyFunction.delegateForwarding?.callIndex !== input.callIndex) return undefined;
-  return resolveKernelDelegatePromotion({
-    forwarding: input.proxyFunction.delegateForwarding,
-    proxyParameters: input.proxyParameters,
-    proxyConstructorArgs: input.proxyConstructorArgs,
-    proxyLockingBytecode: input.proxyLockingBytecode,
-    stateCategory: input.stateCategory,
-    implementation: {
-      artifact: input.implementationArtifact,
-      lockingBytecode: input.implementationLockingBytecode,
-    },
-    requestedFunctionName: input.requestedFunctionName,
-    requestedArgs: input.requestedArgs,
-  });
-}
-
-/**
- * Bind a promoted delegate execution to its exact logical ABI owner.
- *
- * A route and its logical handler can have equally plausible argument counts. Once forwarding promotion
- * has authenticated the implementation selector, nested calls must resolve against that handler and its decoded
- * arguments rather than rediscovering a frame by function name or arity.
- */
-export function resolvePreparedKernelDelegateOwnerFrame(input: {
-  execution: NonNullable<ReturnType<typeof resolveKernelDelegatePromotion>>;
-  implementationAbi: readonly AbiFunction[];
-}): { abiFunction: AbiFunction; args: FunctionArgument[] } {
-  const selector = input.execution.selector.toLowerCase();
-  const matches = input.implementationAbi.filter((candidate) => (
-    candidate.selector?.toLowerCase() === selector
-    && candidate.name === input.execution.functionName
-  ));
-  if (matches.length !== 1) {
-    throw new Error(
-      `Promoted delegate selector ${selector} does not identify exactly one logical implementation handler.`,
-    );
-  }
-  const abiFunction = matches[0]!;
-  const visibleInputs = abiFunction.inputs.filter((candidate) => !candidate.name.startsWith('__internal__'));
-  if (visibleInputs.length !== input.execution.args.length) {
-    throw new Error(
-      `Promoted delegate selector ${selector} decoded ${input.execution.args.length} arguments, `
-      + `but its logical implementation handler declares ${visibleInputs.length}.`,
-    );
-  }
-  return { abiFunction, args: [...input.execution.args] };
-}
-
-type KernelDelegateForwardingGroupIdentity = {
-  callMode?: string;
-  externalContract: { inner: { lockingBytecode: string } };
-  masterUtxo?: unknown;
-};
-
-/**
- * Select the one physical executor committed by a compiler-authored forwarding edge.
- *
- * Candidate order and application names are deliberately irrelevant. The caller scopes candidates to the
- * forwarding function's physical owner; duplicate bytecode within that scope remains ambiguous until the graph
- * carries an owner-scoped callsite identity and must fail closed.
- */
-export function selectKernelDelegateForwardingGroupIndex(input: {
-  forwarding: unknown;
-  encodedProxyConstructorArgs: readonly FunctionArgument[];
-  groups: readonly KernelDelegateForwardingGroupIdentity[];
-  candidateIndexes?: readonly number[];
-}): number {
-  const target = resolveKernelDelegateForwardingTarget(
-    input.forwarding, input.encodedProxyConstructorArgs,
-  );
-  const candidateIndexes = input.candidateIndexes
-    ?? input.groups.map((_, index) => index);
-  const matching = candidateIndexes.filter((index) => {
-    const group = input.groups[index];
-    if (!group || group.callMode !== 'delegatecall') return false;
-    const contractLock = group.externalContract.inner.lockingBytecode.toLowerCase();
-    const generatedLock = (group.masterUtxo as {
-      unlocker?: { generateLockingBytecode(): Uint8Array };
-    } | undefined)?.unlocker?.generateLockingBytecode();
-    if (generatedLock && binToHex(generatedLock) !== contractLock) {
-      throw new Error(`Delegate executor group ${index} has inconsistent physical locking bytecode`);
-    }
-    return contractLock === target.lockingBytecode;
-  });
-  if (matching.length === 0) {
-    throw new Error('Compiler-authenticated delegate forwarding target is not materialized');
-  }
-  if (matching.length !== 1) {
-    throw new Error('Compiler-authenticated delegate forwarding target is ambiguous');
-  }
-  return matching[0]!;
-}
-
 export function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
   if (kernelEntryJournalRecordSegmentIndex(name) !== undefined) {
-    return encodeKernelEntryJournalRecordSegment([]);
+    return encodeJournalEntryJournalRecordSegment([]);
   }
   if (name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS) return [];
   if (name.includes('Selector') || type === 'bytes4') return new Uint8Array(4);
@@ -186,14 +79,14 @@ export interface KernelJournalRecordSegmentWitnesses {
 }
 
 /** Enforce the protocol-wide record budget across every independently planned collection/stream group. */
-export function assertKernelJournalRecordBudget(recordCounts: readonly number[]): number {
+export function assertJournalJournalRecordBudget(recordCounts: readonly number[]): number {
   if (recordCounts.some((count) => !Number.isSafeInteger(count) || count < 0)) {
-    throw new Error('Kernel entry journal record counts must be non-negative safe integers.');
+    throw new Error('Entry journal record counts must be non-negative safe integers.');
   }
   const total = recordCounts.reduce((sum, count) => sum + count, 0);
   if (!Number.isSafeInteger(total) || total > KERNEL_ENTRY_JOURNAL_MAX_RECORDS) {
     throw new Error(
-      `Kernel entry journal has ${total} records across all streams, exceeding the protocol cap of `
+      `Entry journal has ${total} records across all streams, exceeding the protocol cap of `
       + `${KERNEL_ENTRY_JOURNAL_MAX_RECORDS}.`,
     );
   }
@@ -213,39 +106,39 @@ export function kernelJournalRecordSegmentWitnesses(
     if (segmentIndex === undefined) return [];
     if (segmentIndex >= KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS) {
       throw new Error(
-        `Kernel journal segment input '${input.name}' exceeds the protocol cap of `
+        `Entry journal segment input '${input.name}' exceeds the protocol cap of `
         + `${KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS} slots.`,
       );
     }
     if (input.type !== 'bytes') {
-      throw new Error(`Kernel journal segment input '${input.name}' must have type bytes.`);
+      throw new Error(`Entry journal segment input '${input.name}' must have type bytes.`);
     }
     return [{ name: input.name, inputIndex, segmentIndex }];
   });
   const byIndex = new Map<number, (typeof discovered)[number]>();
   for (const slot of discovered) {
     if (byIndex.has(slot.segmentIndex)) {
-      throw new Error(`Kernel journal segment slot ${slot.segmentIndex} is published more than once.`);
+      throw new Error(`Entry journal segment slot ${slot.segmentIndex} is published more than once.`);
     }
     byIndex.set(slot.segmentIndex, slot);
   }
   for (let segmentIndex = 0; segmentIndex < discovered.length; segmentIndex += 1) {
     if (!byIndex.has(segmentIndex)) {
-      throw new Error(`Kernel journal segment slots must be contiguous from 0; missing slot ${segmentIndex}.`);
+      throw new Error(`Entry journal segment slots must be contiguous from 0; missing slot ${segmentIndex}.`);
     }
   }
   // No published slots means the caller may still use the bounded monolithic compatibility input.
   if (discovered.length === 0) return { slots: [] };
-  const segments = segmentKernelEntryJournalRecords(encodedRecords);
+  const segments = segmentJournalEntryJournalRecords(encodedRecords);
   if (segments.length > discovered.length) {
     throw new Error(
-      `Kernel entry journal requires ${segments.length} carrier segments, but the compiler published `
+      `Entry journal requires ${segments.length} carrier segments, but the compiler published `
       + `${discovered.length} segment slots.`,
     );
   }
   const rawSlots = Array.from({ length: discovered.length }, (_unused, segmentIndex) =>
     segments[segmentIndex] ?? []);
-  validateKernelEntryJournalRecordSegmentSlots(
+  validateJournalEntryJournalRecordSegmentSlots(
     rawSlots, segments.length,
     { expectedRecordCount: encodedRecords.length, transportOnly: true },
   );
@@ -254,7 +147,7 @@ export function kernelJournalRecordSegmentWitnesses(
     return {
       name: kernelEntryJournalRecordSegmentName(segmentIndex),
       inputIndex: slot.inputIndex,
-      carrier: encodeKernelEntryJournalRecordSegment(rawSlots[segmentIndex]),
+      carrier: encodeJournalEntryJournalRecordSegment(rawSlots[segmentIndex]),
     };
   });
   return { slots };
@@ -269,22 +162,22 @@ export function kernelJournalAccessStreamPlaceholders(handler: Pick<AbiFunction,
   const expected = new Set(Array.from({ length: infos.length }, (_unused, index) => index));
   if (ordinals.length !== expected.size
     || ordinals.some((ordinal) => !Number.isSafeInteger(ordinal) || !expected.delete(ordinal))) {
-    throw new Error(`Kernel handler '${handler.name}' has a non-canonical journal access stream ordinal space`);
+    throw new Error(`Runtime handler '${handler.name}' has a non-canonical journal access stream ordinal space`);
   }
   return [...infos]
     .sort((left, right) => left.journalAccessStreamIndex - right.journalAccessStreamIndex)
     .map((info) => {
       if (!/^[0-9a-f]{40}$/i.test(info.collectionHash)) {
         throw new Error(
-          `Kernel handler '${handler.name}' has no canonical collection hash for journal stream `
+          `Runtime handler '${handler.name}' has no canonical collection hash for journal stream `
           + `${info.journalAccessStreamIndex}`,
         );
       }
-      return encodeKernelEntryJournalAccesses(hexToBin(info.collectionHash), []);
+      return encodeJournalEntryJournalAccesses(hexToBin(info.collectionHash), []);
     });
 }
 
-export interface SelectedKernelJournalStream {
+export interface SelectedJournalJournalStream {
   /** Stable ABI identity of the selected handler which owns this stream. */
   handler: Pick<AbiFunction, 'selector' | 'inputs'>;
   /** Compiler-owned ordinal within that handler's compact journal stream vector. */
@@ -295,34 +188,34 @@ export interface SelectedKernelJournalStream {
  * Whether duplicate physical proof discovery belongs to the authenticated carrier planner.
  *
  * Read occurrences may intentionally authenticate the same present entry or absence predecessor. Once the
- * route has transferred the complete journal batch to deferred materialization, the global physical
+ * batch has transferred the complete journal batch to deferred materialization, the global physical
  * planner owns that deduplication. Mutations and every legacy/direct path retain the established fail-closed
  * duplicate-input checks.
  */
-export function kernelReadCarrierOwnsDuplicateProof(
+export function readCarrierOwnsDuplicateProof(
   deferRuntimeJournalMaterialization: boolean,
   operation: string,
 ): boolean {
   return deferRuntimeJournalMaterialization && operation === 'read';
 }
 
-export type SelectedKernelJournalHandler = Pick<AbiFunction,
+export type SelectedJournalJournalHandler = Pick<AbiFunction,
 'selector' | 'inputs' | 'sortedUpsertLoopInfo' | 'entryAccesses' | 'entryLoopWrites'
 | 'sortedInsertLoops' | 'sortedInsertLoopInfo' | 'sortedBatchInfo' | 'collectionIterations'>;
 
 /**
  * Decide physical read-carrier ownership once for a complete selected batch.
  *
- * A route-scoped capability may be present while the concrete envelope selects unrelated handlers. In that case
+ * A batch-scoped capability may be present while the concrete envelope selects unrelated handlers. In that case
  * the established legacy materializer remains authoritative. If the capability covers any selected stream, it
  * must cover every selected stream and every covered handler must expose the compact stream carrier consumed by
- * the route. This prevents a transaction from mixing legacy and dense physical ownership within one batch.
+ * the batch. This prevents a transaction from mixing legacy and dense physical ownership within one batch.
  *
  * Callers must run this preflight before discovering UTXOs or retaining materialization intents.
  */
-export function shouldDeferKernelJournalMaterialization(
+export function shouldDeferJournalJournalMaterialization(
   capability: KernelEntryJournalReadCarrierCapability | undefined,
-  selectedStreams: readonly SelectedKernelJournalStream[],
+  selectedStreams: readonly SelectedJournalJournalStream[],
 ): boolean {
   if (!capability || selectedStreams.length === 0) return false;
   const covered = selectedStreams.map(({ handler, journalAccessStreamIndex }) => (
@@ -359,9 +252,9 @@ export function shouldDeferKernelJournalMaterialization(
  * transferred to the deferred final flush. There is no published eager/carrier isolation proof in protocol v1,
  * so an exact collection-name collision fails closed.
  */
-export function shouldDeferKernelJournalBatchMaterialization(
+export function shouldDeferJournalJournalBatchMaterialization(
   capability: KernelEntryJournalReadCarrierCapability | undefined,
-  selectedHandlers: readonly SelectedKernelJournalHandler[],
+  selectedHandlers: readonly SelectedJournalJournalHandler[],
 ): boolean {
   const selectedStreams = selectedHandlers.flatMap((handler) => (
     (handler.sortedUpsertLoopInfo ?? []).map((info) => ({
@@ -385,7 +278,7 @@ export function shouldDeferKernelJournalBatchMaterialization(
       );
     }
   }
-  const deferred = shouldDeferKernelJournalMaterialization(capability, selectedStreams);
+  const deferred = shouldDeferJournalJournalMaterialization(capability, selectedStreams);
   if (!deferred) return false;
 
   const protectedCollections = new Set(selectedHandlers.flatMap((handler) => (
@@ -418,86 +311,3 @@ export interface KernelJournalEagerOutputOccurrence {
 }
 
 /** Bind SDK-only row arguments to the selector sequence already authenticated by the batch envelope. */
-export function assertKernelReadCarrierAuthenticatedRows(
-  carrierMode: boolean,
-  authenticatedSelectors: readonly string[],
-  rows: readonly { handler: Pick<AbiFunction, 'selector'> }[] | undefined,
-): void {
-  if (!carrierMode) return;
-  if (!rows || rows.length !== authenticatedSelectors.length
-    || rows.some((row, index) => row.handler.selector !== authenticatedSelectors[index])) {
-    throw new Error(
-      'Compiler internal-read-carrier batch requires exact row metadata for every authenticated selector.',
-    );
-  }
-}
-
-export type GraphBlockhashSelection = {
-  readKey: string;
-  slotOrdinal: number;
-  rowArgs: FunctionArgument[];
-  handler: AbiFunction;
-};
-
-export type GraphEcrecoverCall = readonly [
-  FunctionArgument | undefined, FunctionArgument | undefined,
-  FunctionArgument | undefined, FunctionArgument | undefined,
-];
-
-/** Move route-owned dynamic inputs from executor-relative provisional slots to the state owner's published
- * trailing band. The displaced balanced funders retain the provisional positions, preserving total block width. */
-export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown }>(
-  blockInputs: readonly T[],
-  resources: readonly { blockSlot: number; name: string }[],
-  executorOffset: number,
-): T[] {
-  const anchored = [...blockInputs];
-  for (const resource of resources) {
-    const shiftedSlot = resource.blockSlot + executorOffset;
-    const destination = anchored[resource.blockSlot];
-    const source = anchored[shiftedSlot];
-    if (!source) {
-      throw new Error(
-        `Nested dynamic state '${resource.name}' has no provisional routed slot ${shiftedSlot}`,
-      );
-    }
-    if (destination?.token) {
-      throw new Error(
-        `Nested dynamic state '${resource.name}' overlaps a fixed routed resource at `
-        + `block slot ${resource.blockSlot}`,
-      );
-    }
-    anchored[resource.blockSlot] = source;
-    anchored[shiftedSlot] = destination;
-  }
-  return anchored;
-}
-
-/** A route needs the physical entry ABI only when an actual wrapper entry point carries it. Synthetic
- * routes live exclusively in route metadata, so the absence of a same-named physical ABI is not a wrapper. */
-export function directCallUsesPhysicalWrapper(
-  directCallSelector: Uint8Array | undefined,
-  physicalAbiFunction: AbiFunction | undefined,
-  effectiveAbiFunction: AbiFunction | undefined,
-): boolean {
-  return directCallSelector !== undefined
-    && physicalAbiFunction !== undefined
-    && effectiveAbiFunction !== undefined
-    && physicalAbiFunction !== effectiveAbiFunction;
-}
-
-/** Rebase route proof offsets when an implementation block is embedded after a proxy's state prefix.
- * Batch proof witnesses are relative to the authenticated state owner, unlike ordinary implementation block slots
- * which are relative to the executor. Negative sentinels and output-relative witnesses are intentionally unchanged. */
-export function rebaseRoutedBatchProofOffsets(
-  internalArgs: Readonly<Record<string, FunctionArgument>>,
-  executorOffset: number,
-): Record<string, FunctionArgument> {
-  if (executorOffset === 0) return { ...internalArgs };
-  const delta = BigInt(executorOffset);
-  return Object.fromEntries(Object.entries(internalArgs).map(([name, value]) => [
-    name,
-    /^__internal__vmapBatchProof_\d+$/.test(name) && typeof value === 'bigint' && value >= 0n
-      ? value + delta : value,
-  ]));
-}

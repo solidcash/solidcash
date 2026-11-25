@@ -336,7 +336,7 @@ export function bindMaterializedValueChunkWitnesses(
           : alias.valueChunkWrites
         : alias.valueChunkWrites?.map((write) => valueChunkWriteResourceIdentity(write) === selectedResourceIdentity
           ? { ...write, outputBase: absoluteStart } : write);
-      // Kernel sole authority: when trailing geometry is published, assign via resolve (not invent).
+      // Sole authority: when trailing geometry is published, assign via resolve (not invent).
       const trailingBase = alias.blockLayout?.trailingBase
         ?? carrier.blockLayout?.trailingBase;
       const blockSize = alias.blockLayout?.blockSize

@@ -973,7 +973,7 @@ export function evaluateProbeTrace(
       outputs: program.transaction.outputs.length,
       inputIndex: program.inputIndex,
       frames: new Error('probe-shape').stack?.split('\n').slice(2, 6)
-        .map((frame) => frame.trim().replace('file:///Code/cashscript/.worktrees/kernel-beta-candidate/', '')),
+        .map((frame) => frame.trim().replace('file:///Code/cashscript/.worktrees/journal-beta-candidate/', '')),
     }));
   }
   // Production-sized inputs retain the faithful trace for diagnostics. Relaxed/private-network inputs always

@@ -109,7 +109,7 @@ export function buildNamespaces<TArtifact extends Artifact>(
       const keyTypes = coll.keyTypes ?? [coll.keyType];
       const mappingKeys = keys.slice(0, keyTypes.length);
       // A stored address key is the peer's value identity (a plain contract's physical locking bytecode, or a
-      // kernel participant's public CREATE identity). A caller may name the same contract by its logical address,
+      // journal participant's public CREATE identity). A caller may name the same contract by its logical address,
       // so expand each address key into its authenticated deployment aliases before comparing slots.
       const candidateRows = keyTypes.reduce<Array<Array<MappingKey>>>(
         (rows, keyType, index) => rows.flatMap((row) => {

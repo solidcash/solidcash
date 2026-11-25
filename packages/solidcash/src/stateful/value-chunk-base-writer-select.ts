@@ -328,7 +328,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   | { kind: 'events'; offset: number; count: number }
   | { kind: 'transfers'; offset: number; count: number }
   >;
-  /** Canonical global-record to physical-entry ordering for a kernel carrier settlement. */
+  /** Canonical global-record to physical-entry ordering for a journal carrier settlement. */
   kernelJournalSettlementOutputPlan?: KernelEntryJournalSettlementOutputPlanEntry[];
   /** Source/materialization-ordered outputs which precede the route-final carrier settlement band. */
   kernelJournalEagerOutputPlan?: KernelEntryJournalEagerOutputPlanEntry[];
@@ -375,7 +375,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   minRelayFeePerKb?: bigint;  // satoshis per 1000 bytes; default 1000n (1 sat/byte)
   blockLayout?: FunctionBlockLayout;
   /** Convention of the ABI body currently driving this builder. Historical application-name fallbacks must
-   * never run for a kernel-owned route, even if every nested group is legacy or descriptor-free. */
+   * never run for a journal-owned route, even if every nested group is legacy or descriptor-free. */
   /** Building one balanced participant of an atomic composition: its block is concatenated after others, so
    * absolute coordinates in route witnesses are not local output indices. */
   composedParticipant?: boolean;

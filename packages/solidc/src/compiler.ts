@@ -287,7 +287,7 @@ import { hasEffectiveCallValue } from './semantic/branchOps.js';
 // A participant's row results are concatenated into one VM byte string before that complete return vector is
 // hash-committed. This is therefore a cumulative participant-route bound, not a per-row allowance. Source the
 // ceiling from the active BCH-2026 consensus profile.
-const MAX_KERNEL_RESULT_BYTES = ConsensusBch2026.maximumStackItemLength;
+const MAX_JOURNAL_RESULT_BYTES = ConsensusBch2026.maximumStackItemLength;
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -318,7 +318,7 @@ function sourceFunctionSelectorHex(fn: FunctionDefinitionNode, evmCompat = false
   const visibleParams = fn.isFallback || fn.isReceive
     ? []
     : fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  // The dispatch scheme follows the compile's mode; the kernel's selector identities must match it, including
+  // The dispatch scheme follows the compile's mode; the journal's selector identities must match it, including
   // Solidity's canonical parameter spelling under evmCompat.
   const signature = evmCompat
     ? canonicalSelectorSignature(fn.name, visibleParams.map((parameter) => parameter.type))
@@ -1015,7 +1015,6 @@ function compileDeployerProgram(
     __admissionWinnerBox: undefined,
     __attemptFailureBox: undefined,
     __internalAttemptFailureState: undefined,
-    __kernelReadCarrierAuthorizationBox: undefined,
     __singlePassVerifierSource: undefined,
   } as InternalCompilerOptions;
   delete (inner as { delegateVariant?: unknown }).delegateVariant;
@@ -1568,7 +1567,7 @@ type InternalCompilerOptions = CompilerOptions & {
    * a missing verifierProgram does not replay the whole search as full compiles.
    */  /** Test-only observation of failures consumed by an admission/rebinding recovery path. */
   __attemptFailureBox?: { failures: CaughtCompilerAttempt[] };
-  /** Test-only explicit audit flag; kernel compiles enforce this invariant regardless of the flag's value. */
+  /** Test-only explicit audit flag; journal compiles enforce this invariant regardless of the flag's value. */
   __strictNoInternalRecovery?: boolean;
   /** Test-only observation of the constants B7.2 derives for a deployer. */
   __deployerConstantsBox?: { constants?: import('./generation/deployerConstants.js').DeployerConstants };
@@ -1670,7 +1669,7 @@ function isInternalCodegenAttemptFailure(error: unknown): boolean {
     || error instanceof UnboundReturnCallError) return true;
   const message = error instanceof Error ? error.message : String(error);
   // Some older generator invariants predate named error classes. Keep the strict audit useful while those are
-  // migrated, without treating typed KERNEL_* admission fences as compiler failures.
+  // migrated, without treating typed JOURNAL_* admission fences as compiler failures.
   return message.startsWith('Block slot not found:')
     || message.startsWith('Missing journal context ')
     || message.startsWith('Batch owner frame for ')
@@ -1990,70 +1989,6 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   };
 }
 
-/**
- * Preserve the source-level fact that an entry reaches an effect helper which closes over a contract constructor
- * parameter. It must be recorded before early graph preparation: that preparation can inline the helper (so its
- * physical external-call frame is well formed), but must not erase the admission fence carried by the source
- * topology. This intentionally recognizes only lexical constructor capture plus outgoing-call syntax; it does
- * not classify applications by declaration names or require a post-symbol synthetic call frame.
- */
-function markConstructorCapturedHelperGraphEffects(ast: Ast): void {
-  const contractParameterNames = new Set(ast.contract.parameters.map((parameter) => parameter.name));
-  const functions = ast.contract.functions;
-  const candidatesFor = (call: FunctionCallNode): FunctionDefinitionNode[] => functions.filter((candidate) =>
-    candidate.name === call.identifier.name
-      && candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length
-        === call.parameters.length
-      && [StateVariableVisibility.INTERNAL, StateVariableVisibility.PRIVATE]
-        .includes(candidate.visibility as StateVariableVisibility));
-  const capturesConstructorParameter = (fn: FunctionDefinitionNode): boolean => {
-    const locals = new Set(fn.parameters.map((parameter) => parameter.name));
-    walkInvocationAst(fn.body, (node) => {
-      if (node instanceof VariableDefinitionNode) locals.add(node.name);
-    });
-    let captured = false;
-    walkInvocationAst(fn.body, (node) => {
-      if (node instanceof IdentifierNode && contractParameterNames.has(node.name) && !locals.has(node.name)) {
-        captured = true;
-      }
-    });
-    return captured;
-  };
-  const directOutgoingEffect = (fn: FunctionDefinitionNode): boolean => {
-    let found = false;
-    walkInvocationAst(fn.body, (node) => {
-      if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
-        || node instanceof LowLevelCallStatementNode) found = true;
-      // Pre-symbol typed calls retain their receiver/member structure here. Intrinsic namespace helpers have no
-      // graph edge, so exclude the compiler-owned spellings rather than treating every method-shaped expression
-      // as an external effect.
-      if (node instanceof MethodCallNode && !(node.object instanceof IdentifierNode
-        && ['abi', 'bytes', 'string'].includes(node.object.name))) found = true;
-      if (node instanceof FunctionCallNode && node.identifier.name.includes('.')
-        && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0])) found = true;
-    });
-    return found;
-  };
-  const reachesCapturedEffect = (root: FunctionDefinitionNode): boolean => {
-    const visited = new Set<FunctionDefinitionNode>();
-    const visit = (fn: FunctionDefinitionNode, beneathEntry: boolean): boolean => {
-      if (visited.has(fn)) return false;
-      visited.add(fn);
-      if (beneathEntry && capturesConstructorParameter(fn) && directOutgoingEffect(fn)) return true;
-      let found = false;
-      walkInvocationAst(fn.body, (node) => {
-        if (found || !(node instanceof FunctionCallNode)) return;
-        const candidates = candidatesFor(node);
-        if (candidates.length === 1) found = visit(candidates[0], true);
-      });
-      return found;
-    };
-    return visit(root, false);
-  };
-  for (const fn of functions) {
-    fn.kernelConstructorCapturedHelperGraphEffect = reachesCapturedEffect(fn) || undefined;
-  }
-}
 
 
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
@@ -2605,7 +2540,7 @@ interface ExternalAdmissionAttribution {
   refused: Set<string>;
   /** One entry per external entry point route synthesis considered. Accumulated across attempts, deduped. */
   spans: { key: string; name: string; location?: Location }[];
-  /** Optional KERNEL_* / named reason to apply instead of the generic attributed refusal. */
+  /** Optional JOURNAL_* / named reason to apply instead of the generic attributed refusal. */
   reasons: Map<string, string>;
 }
 
@@ -3102,7 +3037,7 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 /**
  * Verifier covenant locks, keyed by everything that can change the covenant script.
  *
- * The pre-codegen verifier compile exists to produce this lock and nothing else: a kernel pass replaces its
+ * The pre-codegen verifier compile exists to produce this lock and nothing else: a journal pass replaces its
  * program with the post-codegen specialized one, and the published program carries only ids, names and
  * bytecode. The lock itself is not root-file dependent - two integration roots with different root files and
  * different verifier sources already produced the same lock - so the same route shape recompiled in another
@@ -3319,7 +3254,7 @@ function streamsEveryEmit(fn: FunctionDefinitionNode, byName: Map<string, Functi
 
 
 /**
- * Kernel stream clone: its top-level emits become the records of one exact-count runtime event segment, one compact
+ * Stream clone: its top-level emits become the records of one exact-count runtime event segment, one compact
  * record per emit, or the chunked records of each payload when one can pass a commitment.
  */
 function streamHandlerEmits(handler: FunctionDefinitionNode, cheap: boolean, chunked: boolean): void {
@@ -3351,7 +3286,7 @@ function emitsWideEvent(
     (name === fn.name ? [fn] : byName.get(name) ?? []).some((candidate) => emitsNamedEvent(candidate.body, wide)));
 }
 
-/** Map admission reasons onto the shared frozen KERNEL_* catalog. */
+/** Map admission reasons onto the shared frozen JOURNAL_* catalog. */
 /** True when a body names a token container. */
 function namesTokenContainer(body: BlockNode): boolean {
   let names = false;
@@ -3829,7 +3764,7 @@ function inheritedSourceContracts(ast: Ast): ContractNode[] {
 
 
 
-/** Snapshot enumerable-iteration hidden witnesses before kernel clones, matching SymbolTableTraversal. */
+/** Snapshot enumerable-iteration hidden witnesses before journal clones, matching SymbolTableTraversal. */
 function injectCollectionIterationWitnesses(ast: Ast): void {
   const inject = (fn: FunctionDefinitionNode | undefined): void => {
     if (!fn?.body) return;
@@ -4570,8 +4505,8 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
  * cache, read-only chunks lead the band 1:1), which is what the pin requires, so a read claims none of them.
  * A typed external call claims nothing of its own: the callee runs as its own row, in its own block, and a call back
  * into this contract is another row with its own claims. A low-level `call` or `staticcall` to another address runs
- * its callee the same way; a value it carries moves out of the tokenless satoshi container, no record. Kernel-safe
- * native assembly is a closed computation (NativeAssemblyKernelSafety) and an unsafe(2) row writes no state, entry,
+ * its callee the same way; a value it carries moves out of the tokenless satoshi container, no record. Journal-safe
+ * native assembly is a closed computation (NativeAssemblySafety) and an unsafe(2) row writes no state, entry,
  * container, transfer or event (SymbolTableTraversal), so neither claims anything of its own. A shape whose writes
  * the route cannot bound (routeUnboundedWriteShape) or an unknown effect is refused admission, so reaching it here
  * is an invariant violation. A lifecycle row claims what its body writes, as any row: the verifier holds a split,
@@ -5922,11 +5857,11 @@ function compileResolvedAst(
     );
     setFramedMaster(mergedCompilerOptions as InternalCompilerOptions);
   }
-  // Kernel entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary
+  // Entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary
   // per-entry peephole freezes each optimized body into a separate OP_DEFINE push before the cross-body
   // outliner sees it; on a large neutral corpus that retained 263KB of clone bodies, while the bounded
   // structural-helper probe plus exact-span outliner retained 50KB. Both paths emit the same unoptimized
-  // semantics and the whole-program optimiser below still runs. Canonicalize kernel codegen onto the compact
+  // semantics and the whole-program optimiser below still runs. Canonicalize journal codegen onto the compact
   // path so bytecode size does not depend on the front-end compilation-speed preference.
   // The children are compiled, so a creator knows which of them take the pool binding it passes on.
   bindOraclePool(ast.contract, ast.freeFunctions, isFramedMaster(mergedCompilerOptions as InternalCompilerOptions));
@@ -6047,7 +5982,7 @@ function compileResolvedAst(
   mark('optimise');
   // Publish only the source snapshots which can be projected into the deliberately narrow, data-only replay ABI.
   // This runs after all semantic validation but before artifact construction; route admission intentionally keeps
-  // every constructed-vector handler behind KERNEL_LAYOUT until the authenticated carrier protocol consumes it.
+  // every constructed-vector handler behind JOURNAL_LAYOUT until the authenticated carrier protocol consumes it.
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
@@ -8692,7 +8627,7 @@ function compileReferencedDeployerStandalone(
  * enclosing compile build it once.
  *
  * The bytes are the artifact's published `bytecode`, the program the SDK deploys and derives the address from. A
- * kernel artifact publishes its plan digest there (`<SCKP digest> OP_DROP` after the program), which the debug copy
+ * journal artifact publishes its plan digest there (`<SCKP digest> OP_DROP` after the program), which the debug copy
  * of the same program leaves out.
  */
 function compileReferencedContractStandalone(

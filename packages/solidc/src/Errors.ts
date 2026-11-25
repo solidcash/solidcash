@@ -108,9 +108,9 @@ export type SolidcDiagnosticCode =
   // A route entry whose looped call only the route binds, where the route does not serve that entry.
   | 'ROUTE_ONLY_ENTRY_UNSERVED'
   // A route verifier that reaches a function-pointer target reading block.*, whose pool helper it cannot carry.
-  // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
-  | 'KERNEL_LAYOUT'
-  | 'KERNEL_UNBOUNDED_KEY'
+  // Frozen JOURNAL_* catalog codes for fence / journal-helper refuse diagnostics.
+  | 'JOURNAL_LAYOUT'
+  | 'JOURNAL_UNBOUNDED_KEY'
   | 'KERNEL_TX_SIGNATURE'
   | 'KERNEL_OPAQUE_EFFECT'
   | 'KERNEL_FOREIGN_DELEGATE'
@@ -136,7 +136,7 @@ export class SolidcDiagnosticError extends Error {
  */
 export class UnpublishableLoopGuardError extends SolidcDiagnosticError {
   constructor(
-    code: 'KERNEL_UNBOUNDED_KEY' | 'KERNEL_LAYOUT',
+    code: 'JOURNAL_UNBOUNDED_KEY' | 'JOURNAL_LAYOUT',
     readonly functionName: string,
     readonly reason: string,
     context: Readonly<Record<string, unknown>>,

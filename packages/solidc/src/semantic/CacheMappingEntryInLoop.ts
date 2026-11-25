@@ -801,7 +801,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private transformFunction(fn: FunctionDefinitionNode, constructor = false): void {
-    // The kernel's pre-write key recipes; a framed body plans its keys from its own frame and takes none.
+    // The journal's pre-write key recipes; a framed body plans its keys from its own frame and takes none.
     if (!this.callsCloseSegments) this.publishStraightLineMappingKeyValues(fn);
     const composed = this.composedMappings(fn, constructor);
     // A collection is no symbol, so a local may take its name, and the bare `x[i]` this pass sees is then the local's.
@@ -833,7 +833,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // afterwards instead of holding a node that is no longer in the body. An entry with a call between two of its
     // accesses gets a cache per run of statements (`straddleSpans`), each redirect rewriting its own run alone.
     // Capture source guards before any redirect rewrites a mutation site. Multiple cached entries may share a
-    // branch, and a later guard scan must still see the complete source body. The guard plan feeds the kernel's
+    // branch, and a later guard scan must still see the complete source body. The guard plan feeds the journal's
     // replayable flush activation; a framed body publishes its own write activation instead, so it takes none.
     const selectedWithPlans = selected.map((e) => ({
       e, guardPlan: this.callsCloseSegments ? undefined : this.replayableCacheActivation(fn, e),
@@ -1643,7 +1643,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (!scope.assigned.has(key.name)) continue;
         // The route-snapshot instance runs before compiler-generated route synthesis, where a handler's collection accesses are
         // the ones the route covenant and the SDK's argument derivation both read by name. An anchored local
-        // there changes that shape, so the anchored form stays with the ordinary pipeline; kernel handlers keep
+        // there changes that shape, so the anchored form stays with the ordinary pipeline; journal handlers keep
         // their established snapshot-key caching.
         if (this.routeSnapshotKeysOnly) { keyUsable = false; break; }
         const declaration = scope.declaredTopLevel.get(key.name);
@@ -1830,7 +1830,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   /**
    * A write-back may drop its dirty guard where nothing replays or moves it as the guarded flush: not in a framed
    * body, whose write activation reads the flag; not under the route, whose routes clone the body and whose
-   * CloseDirectEntryCaches moves the flush (`composesAliases` holds only without it); not for a guarded kernel
+   * CloseDirectEntryCaches moves the flush (`composesAliases` holds only without it); not for a guarded journal
    * activation.
    */
   private settlesWriteBack(
@@ -1927,7 +1927,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
  * `closeBeforeGuardedDelete` gives, once route synthesis has cloned the bodies. A route and its handler clones compile
  * without alias staging, so a flush moved before the delete there would skip the write where the keys meet and the
  * delete does not run: they keep the end flush, as does an entry a route invokes itself and a cache also flushed before
- * a return. So does a cache the body only writes: the SDK plans a delete the kernel's argument activation turns off as
+ * a return. So does a cache the body only writes: the SDK plans a delete the journal's argument activation turns off as
  * a read, and a write-only alias write then finds no node at the delete's slot (refused by the VM preflight).
  */
 export class CloseDirectEntryCaches extends AstTraversal {

@@ -38,7 +38,7 @@ import {
   memZeroBytes,
   memGrowTo,
 } from './YulMemPrimitives.js';
-import { isKernelSafeNativeAssembly } from './NativeAssemblyKernelSafety.js';
+import { isNativeAssemblySafe } from './NativeAssemblySafety.js';
 import { expandYulLoopBreakContinue } from './BreakContinueTransformation.js';
 
 // Thrown when a Yul construct is outside the supported codegen subset; the block is then left as-is for the
@@ -293,7 +293,7 @@ function bodyHasAssembly(node: Node | undefined): boolean {
 function bodyHasUnsafeNativeAssembly(node: Node | undefined): boolean {
   if (!node) return false;
   if (node instanceof AssemblyStatementNode) {
-    return node.yulBlock === undefined && !isKernelSafeNativeAssembly(node);
+    return node.yulBlock === undefined && !isNativeAssemblySafe(node);
   }
   for (const key of Object.keys(node)) {
     if (key === 'type' || key === 'symbolTable' || key === 'location') continue;

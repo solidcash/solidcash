@@ -30,7 +30,7 @@ describe('runtime loop entry output indices', () => {
       kernelJournalSettlementOutputPlan: [], kernelJournalEagerOutputPlan: [],
       loopEntriesBeforeDynamicChunks: true, delegateEntriesAfterLowLevel: false,
       directCallDelegateBlock: false, trailingLoopEntryVars: () => [entry],
-      delegateLoopEntryVars: () => [], validateKernelJournalSettlementOutputPlan: () => {},
+      delegateLoopEntryVars: () => [], validateJournalJournalSettlementOutputPlan: () => {},
       kernelJournalOutputLayout: () => { throw new Error('unused'); },
       trailingLoopEntryOutputCount: () => 2, loopEntryTransitionSatoshis: () => 1200n,
       getRequiredLoopEntryCount: () => 0, getLoopEntryOutputBase: () => 4,

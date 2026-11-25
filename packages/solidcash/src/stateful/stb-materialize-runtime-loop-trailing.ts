@@ -46,7 +46,7 @@ export interface MaterializeRuntimeLoopTrailingHost {
   readonly directCallDelegateBlock: boolean;
   trailingLoopEntryVars(): readonly LoopEntryVar[];
   delegateLoopEntryVars(): readonly LoopEntryVar[];
-  validateKernelJournalSettlementOutputPlan(): void;
+  validateJournalJournalSettlementOutputPlan(): void;
   kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan;
   trailingLoopEntryOutputCount(): number;
   loopEntryTransitionSatoshis(variable: LoopEntryVar, commitment: string): bigint | undefined;
@@ -128,9 +128,9 @@ export function materializeRuntimeLoopTrailing(
   };
   if (host.runtimeLoopTrailingSegments.length > 0) {
     const variables = new Map(host.trailingLoopEntryVars().map((variable) => [variable.collection, variable]));
-    const hasKernelSettlementOutputPlan = host.kernelJournalSettlementOutputPlan.length > 0
+    const hasJournalSettlementOutputPlan = host.kernelJournalSettlementOutputPlan.length > 0
       || host.kernelJournalEagerOutputPlan.length > 0;
-    if (hasKernelSettlementOutputPlan) host.validateKernelJournalSettlementOutputPlan();
+    if (hasJournalSettlementOutputPlan) host.validateJournalJournalSettlementOutputPlan();
     // Fixed-batch predecessor rewrites occupy the leading trailing coordinates, before the source-ordered
     // runtime row stream. They share `loopEntryCommitments` with runtime mapping outputs but deliberately have
     // no runtime segment: a segment describes a source-row occurrence, while these outputs authenticate the
@@ -179,11 +179,11 @@ export function materializeRuntimeLoopTrailing(
         throw new Error(`Runtime loop ${kind} segments cover ${expected} of ${length} outputs`);
       }
     }
-    if (hasKernelSettlementOutputPlan) {
+    if (hasJournalSettlementOutputPlan) {
       const layout = host.kernelJournalOutputLayout();
       if (layout.finalOutputCursorDelta !== host.trailingLoopEntryOutputCount()) {
         throw new Error(
-          `Kernel journal output layout covers ${layout.finalOutputCursorDelta} of `
+          `Entry journal output layout covers ${layout.finalOutputCursorDelta} of `
           + `${host.trailingLoopEntryOutputCount()} trailing entry commitments`,
         );
       }
@@ -191,7 +191,7 @@ export function materializeRuntimeLoopTrailing(
         const variable = variables.get(entry.collection);
         const commitment = host.loopEntryCommitments.get(entry.collection)?.[entry.offset];
         if (!variable || commitment === undefined) {
-          throw new Error(`Kernel journal settlement plan references missing ${entry.collection}[${entry.offset}]`);
+          throw new Error(`Entry journal settlement plan references missing ${entry.collection}[${entry.offset}]`);
         }
         appendLoopEntry(variable, commitment);
       }
@@ -226,7 +226,7 @@ export function materializeRuntimeLoopTrailing(
         }
         continue;
       }
-      if (hasKernelSettlementOutputPlan) continue;
+      if (hasJournalSettlementOutputPlan) continue;
       const variable = variables.get(segment.collection!);
       if (!variable) throw new Error(`Runtime loop segment references unknown collection '${segment.collection}'`);
       const commitments = host.loopEntryCommitments.get(segment.collection!) ?? [];

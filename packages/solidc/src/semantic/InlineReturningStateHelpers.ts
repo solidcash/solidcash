@@ -559,7 +559,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // selected row's own vector, whose cardinality is the handler's own stream count; splicing the loop into
         // the compiler-owned route would charge it the route-wide union instead.
         && !this.ownsRuntimeMappingLoop(fn)
-        // An IERC20/SafeERC20 edge must keep its graph OP_INVOKE frame. Flattening it into the kernel
+        // An IERC20/SafeERC20 edge must keep its graph OP_INVOKE frame. Flattening it into the journal
         // dispatch loop makes SymbolTableTraversal treat the row iterator as a callee-target index and
         // rewrite the call target to an unbound compiler-owned loop-target element.
         && !this.transitivelyContainsExternalCall(fn)
@@ -633,7 +633,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         this.inlinedFns.add(fn.name);
       }
     }
-    // Kernel/graph clones must stay OP_INVOKE bodies. Inlining one into an aggregate body puts typed
+    // Graph clones must stay OP_INVOKE bodies. Inlining one into an aggregate body puts typed
     // calls inside the row loop, and SymbolTableTraversal then rewrites their targets to an unbound
     // `__internal__loopTargets[rowArg]`.
     for (const fn of node.functions) {

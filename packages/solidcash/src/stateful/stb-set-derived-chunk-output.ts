@@ -32,7 +32,7 @@ export interface SetDerivedChunkOutputHost {
 /**
  * Reconcile a probe/compiler observation into derivedChunkOutputs: resolve category, refuse minting/
  * delegate false pins, relocate same resource-part, prefer authenticated commitments, and remember
- * non-kernel jobEvents chunk runs.
+ * non-journal jobEvents chunk runs.
  */
 export function setDerivedChunkOutput(
   host: SetDerivedChunkOutputHost,

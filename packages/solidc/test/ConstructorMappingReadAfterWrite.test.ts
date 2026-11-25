@@ -579,7 +579,7 @@ describe('a constructor that writes a mapping in a loop', () => {
     const artifact = compileString(`${PRAGMA} contract Genesis {${members} function g() { require(true); } }`,
       { composition: 'framed' });
     expect(settleFramed(artifact, [[3n], [true]]))
-      .toContain('KERNEL_UNBOUNDED_KEY: the loop writes \'seen\' under the guard');
+      .toContain('JOURNAL_UNBOUNDED_KEY: the loop writes \'seen\' under the guard');
   });
 
   it('refuses by name an array out of slot order, which a constructor\'s body may also read, naming the order', () => {

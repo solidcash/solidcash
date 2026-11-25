@@ -16,9 +16,9 @@ import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { createGraphPlanningProducerResultContext } from './graph-planning-producer-result.js';
 import {
-  resolvePreparedKernelDelegateExecution,
-  resolvePreparedKernelDelegateOwnerFrame,
-} from './KernelDelegateForwarding.js';
+  resolvePreparedDelegateExecution,
+  resolvePreparedDelegateOwnerFrame,
+} from './DelegateForwarding.js';
 import { hydrateExternalPredicateState } from './sc-hydrate-external-predicate-state.js';
 import type { ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 
@@ -58,7 +58,7 @@ export type MaterializeCreateBuilderLowLevelStatefulCallResult = {
 };
 
 /** Preserve the selector-authenticated logical frame separately from the physical delegatecall payload. */
-export function publishPreparedKernelDelegateOwnerFrame(
+export function publishPreparedDelegateOwnerFrame(
   group: Pick<ExternalCallUtxoGroup, 'logicalFunctionName' | 'logicalFunctionArgs'>,
   frame: { abiFunction: Pick<AbiFunction, 'name'>; args: readonly FunctionArgument[] },
 ): void {
@@ -68,7 +68,7 @@ export function publishPreparedKernelDelegateOwnerFrame(
 
 /**
  * Materialize one stateful LLC into lowLevelCallUtxoGroups. For delegatecall,
- * optionally promote the kernel forwarding frame and filter active nested
+ * optionally promote the journal forwarding frame and filter active nested
  * external calls. Host continues with nested-compose for each nested call.
  */
 export async function materializeCreateBuilderLowLevelStatefulCall(
@@ -177,7 +177,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   let delegateFn = callInfo.directCall?.abiFunction
   ?? delegateAbi.find((f) => f.name === callInfo.functionName);
   let promotedDelegateOwnerFrame: ReturnType<
-  typeof resolvePreparedKernelDelegateOwnerFrame
+  typeof resolvePreparedDelegateOwnerFrame
   > | undefined;
   const nestedIndices: number[] = [];
   const nestedByCallsite = new Map<number, number>();
@@ -186,9 +186,9 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   // terminal delegatecall of an untouched bytes parameter to an address-committed target. Resolve
   // that payload back to the exact eligible implementation row. Generated-proxy and user-authored
   // forwarding functions therefore take the same path, independent of their source-level names.
-    let promoted: ReturnType<typeof resolvePreparedKernelDelegateExecution>;
+    let promoted: ReturnType<typeof resolvePreparedDelegateExecution>;
     try {
-      promoted = resolvePreparedKernelDelegateExecution({
+      promoted = resolvePreparedDelegateExecution({
         proxyFunction: abiFunction,
         callIndex,
         proxyParameters: args,
@@ -205,7 +205,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     // delegate transaction, whose proxy and implementation covenants remain authoritative.
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
-        console.error('kernel-delegate-promotion-refused', {
+        console.error('journal-delegate-promotion-refused', {
           functionName, requestedFunctionName: callInfo.functionName,
           reason: error instanceof Error ? error.message : String(error),
           payload: args[physicalAbiFunction?.delegateForwarding?.payloadInput ?? -1]
@@ -216,11 +216,11 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       }
     }
     if (promoted) {
-      promotedDelegateOwnerFrame = resolvePreparedKernelDelegateOwnerFrame({
+      promotedDelegateOwnerFrame = resolvePreparedDelegateOwnerFrame({
         execution: promoted,
         implementationAbi: delegateAbi,
       });
-      publishPreparedKernelDelegateOwnerFrame(
+      publishPreparedDelegateOwnerFrame(
         lowLevelCallUtxoGroups[delegateGroupIndex]!, promotedDelegateOwnerFrame,
       );
       delegateFn = promotedDelegateOwnerFrame.abiFunction;

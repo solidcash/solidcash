@@ -180,7 +180,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   }
 
   // The covenant sees each address argument as the registered deployment's value identity (a physical locking
-  // bytecode for a plain contract, its public CREATE identity for a kernel participant). Derive salts, mapping
+  // bytecode for a plain contract, its public CREATE identity for a journal participant). Derive salts, mapping
   // keys and constructor genesis from those same bytes: a cashaddr string here would otherwise sort and pack
   // differently from the value the script compares, deriving a child address the factory never creates.
   const deployFunctionArgs = rawDeployFunctionArgs.map((arg, index) => {

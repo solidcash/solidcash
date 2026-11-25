@@ -263,7 +263,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
-    if (this.publishJournalAccessStreams) this.propagateKernelJournalContext(node);
+    if (this.publishJournalAccessStreams) this.propagateJournalJournalContext(node);
     return node;
   }
 
@@ -280,7 +280,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
    * a context-bearing target, retain an explicit refusal marker and propagate it to every named caller. This is
    * deliberately fail-closed until pointer target-set analysis can prove and encode one uniform hidden frame.
    */
-  propagateKernelJournalContext(contract: ContractNode): void {
+  propagateJournalJournalContext(contract: ContractNode): void {
     const functions = [
       ...contract.functions,
       ...(contract.constructorDef ? [contract.constructorDef] : []),
@@ -8680,7 +8680,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 } else {
                   // A value parameter starts with the caller's current contents but owns an isolated history.
                   // Its mutations remain available to reads inside this call without leaking into the caller.
-                  const copiedPlanName = `__internal__kernelHelperCopy_${this.serial++}`;
+                  const copiedPlanName = `__internal__journalHelperCopy_${this.serial++}`;
                   nestedPlanNames.set(parameter.name, copiedPlanName);
                   nestedSourcePlans.set(copiedPlanName, clonePlan(copiedPlanName, callerPlan));
                 }

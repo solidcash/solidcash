@@ -11,8 +11,8 @@ interface FrameIdentity {
   stateCategory: string;
 }
 
-/** Physical values that a future kernel delegate verifier must bind in one transcript. */
-export interface KernelDelegateForwardingFrame {
+/** Physical values that a future journal delegate verifier must bind in one transcript. */
+export interface DelegateForwardingFrame {
   participantInputIndex: number;
   participantOutputIndex: number;
   executorInputIndex: number;
@@ -23,7 +23,7 @@ export interface KernelDelegateForwardingFrame {
   forwardedCalldata: Uint8Array;
 }
 
-export interface ResolvedKernelDelegateForwarding {
+export interface ResolvedDelegateForwarding {
   participantInputIndex: number;
   participantOutputIndex: number;
   executorInputIndex: number;
@@ -33,7 +33,7 @@ export interface ResolvedKernelDelegateForwarding {
   forwardedCalldata: Uint8Array;
 }
 
-export interface ResolvedKernelDelegateExecution extends ResolvedKernelDelegateForwarding {
+export interface ResolvedDelegateExecution extends ResolvedDelegateForwarding {
   functionName: string;
   selector: string;
   args: readonly FunctionArgument[];
@@ -42,30 +42,30 @@ export interface ResolvedKernelDelegateExecution extends ResolvedKernelDelegateF
   commitment: Uint8Array;
 }
 
-export interface KernelDelegateExecutionTarget {
+export interface DelegateExecutionTarget {
   artifact: Artifact;
   /** Instantiated implementation covenant identity; must be the exact executor input selected by the frame. */
   lockingBytecode: string;
 }
 
 /** Compiler-authored physical target for one singular delegate-forwarding edge. */
-export interface ResolvedKernelDelegateForwardingTarget {
+export interface ResolvedDelegateForwardingTarget {
   callIndex: number;
   lockingBytecode: string;
 }
 
-export interface KernelDelegatePromotionInput {
+export interface DelegatePromotionInput {
   forwarding: unknown;
   proxyParameters: readonly FunctionArgument[];
   proxyConstructorArgs: readonly FunctionArgument[];
   proxyLockingBytecode: string;
   stateCategory: string;
-  implementation: KernelDelegateExecutionTarget;
+  implementation: DelegateExecutionTarget;
   requestedFunctionName: string;
   requestedArgs: readonly FunctionArgument[];
 }
 
-export type KernelDelegateForwardingMetadata = DelegateForwardingAbi;
+export type DelegateForwardingMetadata = DelegateForwardingAbi;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -145,15 +145,15 @@ const coordinate = (value: unknown, label: string): number => {
   return value as number;
 };
 
-interface ValidatedKernelDelegateForwardingMetadata {
+interface ValidatedDelegateForwardingMetadata {
   forwarding: UnknownRecord;
   callIndex: number;
   payloadInput: number;
 }
 
-const validateKernelDelegateForwardingMetadata = (
+const validateDelegateForwardingMetadata = (
   forwarding: unknown,
-): ValidatedKernelDelegateForwardingMetadata => {
+): ValidatedDelegateForwardingMetadata => {
   if (!isRecord(forwarding)) throw new Error('delegate forwarding metadata must be an object');
   exactKeys(forwarding, [
     'version', 'callIndex', 'payloadInput', 'target', 'targetBinding', 'frame', 'terminalRequire',
@@ -182,10 +182,10 @@ const validateKernelDelegateForwardingMetadata = (
   };
 };
 
-const resolveValidatedKernelDelegateForwardingTarget = (
-  metadata: ValidatedKernelDelegateForwardingMetadata,
+const resolveValidatedDelegateForwardingTarget = (
+  metadata: ValidatedDelegateForwardingMetadata,
   constructorArgs: readonly FunctionArgument[],
-): ResolvedKernelDelegateForwardingTarget => {
+): ResolvedDelegateForwardingTarget => {
   const { forwarding } = metadata;
   let lockingBytecode: string;
   if ((forwarding.targetBinding as UnknownRecord).kind === 'constructorArg') {
@@ -233,12 +233,12 @@ const resolveValidatedKernelDelegateForwardingTarget = (
  * Constructor arguments should be their ABI-encoded values: an `address` may be supplied publicly as a
  * CashAddress string, while its encoded value is the exact locking bytecode committed by the proxy covenant.
  */
-export function resolveKernelDelegateForwardingTarget(
+export function resolveDelegateForwardingTarget(
   forwarding: unknown,
   constructorArgs: readonly FunctionArgument[],
-): ResolvedKernelDelegateForwardingTarget {
-  return resolveValidatedKernelDelegateForwardingTarget(
-    validateKernelDelegateForwardingMetadata(forwarding), constructorArgs,
+): ResolvedDelegateForwardingTarget {
+  return resolveValidatedDelegateForwardingTarget(
+    validateDelegateForwardingMetadata(forwarding), constructorArgs,
   );
 }
 
@@ -249,13 +249,13 @@ export function resolveKernelDelegateForwardingTarget(
  * binds the four values a covenant must compare: owner, state category, executor target, and calldata. State
  * commitment transitions remain the implementation route's responsibility.
  */
-export function planKernelDelegateForwarding(
+export function planDelegateForwarding(
   forwarding: unknown,
   parameters: readonly FunctionArgument[],
   constructorArgs: readonly FunctionArgument[],
-  frame: KernelDelegateForwardingFrame,
-): ResolvedKernelDelegateForwarding {
-  const metadata = validateKernelDelegateForwardingMetadata(forwarding);
+  frame: DelegateForwardingFrame,
+): ResolvedDelegateForwarding {
+  const metadata = validateDelegateForwardingMetadata(forwarding);
 
   const payload = parameters[metadata.payloadInput];
   if (!(payload instanceof Uint8Array)) throw new Error('delegate forwarding payload must be bytes');
@@ -263,7 +263,7 @@ export function planKernelDelegateForwarding(
     throw new Error('delegate forwarding calldata does not match the selected payload input');
   }
 
-  const target = resolveValidatedKernelDelegateForwardingTarget(metadata, constructorArgs).lockingBytecode;
+  const target = resolveValidatedDelegateForwardingTarget(metadata, constructorArgs).lockingBytecode;
 
   const ownerInput = canonicalHex(frame.participantInput.lockingBytecode, 'delegate participant input owner');
   const ownerOutput = canonicalHex(frame.participantOutput.lockingBytecode, 'delegate participant output owner');
@@ -304,15 +304,15 @@ export function planKernelDelegateForwarding(
  * identities to the proxy payload and the selected implementation selector. No caller-supplied function name
  * or decoded argument is trusted.
  */
-export function resolveKernelDelegateExecution(
+export function resolveDelegateExecution(
   forwarding: unknown,
   parameters: readonly FunctionArgument[],
   constructorArgs: readonly FunctionArgument[],
-  frame: KernelDelegateForwardingFrame,
-  implementation: KernelDelegateExecutionTarget,
+  frame: DelegateForwardingFrame,
+  implementation: DelegateExecutionTarget,
   detachedArguments?: readonly FunctionArgument[],
-): ResolvedKernelDelegateExecution {
-  const binding = planKernelDelegateForwarding(forwarding, parameters, constructorArgs, frame);
+): ResolvedDelegateExecution {
+  const binding = planDelegateForwarding(forwarding, parameters, constructorArgs, frame);
   if (canonicalHex(implementation.lockingBytecode, 'delegate implementation identity')
     !== binding.executorLockingBytecode) {
     throw new Error('delegate implementation artifact is not attached to the authenticated executor input');
@@ -395,16 +395,16 @@ export function resolveKernelDelegateExecution(
 }
 
 /**
- * Resolve the narrow compiler-published forwarding form into an existing kernel delegate participant.
+ * Resolve the narrow compiler-published forwarding form into an existing journal delegate participant.
  *
  * The forwarding source admits arbitrary bytes, but fixes the executor in the proxy's address-committed
  * constructor/literal data. This helper proves that the implementation call selected by `withDelegatecall` is
  * exactly those bytes. The physical composer later replaces these normalized coordinates with its authenticated
  * participant/executor layout; no application or generated proxy function name participates in the decision.
  */
-export function resolveKernelDelegatePromotion(
-  input: KernelDelegatePromotionInput,
-): ResolvedKernelDelegateExecution {
+export function resolveDelegatePromotion(
+  input: DelegatePromotionInput,
+): ResolvedDelegateExecution {
   if (!isRecord(input.forwarding)
     || !Number.isSafeInteger(input.forwarding.payloadInput)
     || (input.forwarding.payloadInput as number) < 0) {
@@ -414,7 +414,7 @@ export function resolveKernelDelegatePromotion(
   if (!(forwardedCalldata instanceof Uint8Array)) {
     throw new Error('delegate forwarding payload must be bytes');
   }
-  const resolved = resolveKernelDelegateExecution(
+  const resolved = resolveDelegateExecution(
     input.forwarding,
     input.proxyParameters,
     input.proxyConstructorArgs,
@@ -459,7 +459,7 @@ export function resolveKernelDelegatePromotion(
 }
 
 /** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
-export function resolvePreparedKernelDelegateExecution(input: {
+export function resolvePreparedDelegateExecution(input: {
   proxyFunction: Pick<AbiFunction, 'name' | 'delegateForwarding'>;
   callIndex: number;
   proxyParameters: readonly FunctionArgument[];
@@ -470,9 +470,9 @@ export function resolvePreparedKernelDelegateExecution(input: {
   implementationLockingBytecode: string;
   requestedFunctionName: string;
   requestedArgs: readonly FunctionArgument[];
-}): ReturnType<typeof resolveKernelDelegatePromotion> | undefined {
+}): ReturnType<typeof resolveDelegatePromotion> | undefined {
   if (input.proxyFunction.delegateForwarding?.callIndex !== input.callIndex) return undefined;
-  return resolveKernelDelegatePromotion({
+  return resolveDelegatePromotion({
     forwarding: input.proxyFunction.delegateForwarding,
     proxyParameters: input.proxyParameters,
     proxyConstructorArgs: input.proxyConstructorArgs,
@@ -494,8 +494,8 @@ export function resolvePreparedKernelDelegateExecution(input: {
  * has authenticated the implementation selector, nested calls must resolve against that handler and its decoded
  * arguments rather than rediscovering a frame by function name or arity.
  */
-export function resolvePreparedKernelDelegateOwnerFrame(input: {
-  execution: NonNullable<ReturnType<typeof resolveKernelDelegatePromotion>>;
+export function resolvePreparedDelegateOwnerFrame(input: {
+  execution: NonNullable<ReturnType<typeof resolveDelegatePromotion>>;
   implementationAbi: readonly AbiFunction[];
 }): { abiFunction: AbiFunction; args: FunctionArgument[] } {
   const selector = input.execution.selector.toLowerCase();
@@ -519,7 +519,7 @@ export function resolvePreparedKernelDelegateOwnerFrame(input: {
   return { abiFunction, args: [...input.execution.args] };
 }
 
-type KernelDelegateForwardingGroupIdentity = {
+type DelegateForwardingGroupIdentity = {
   callMode?: string;
   externalContract: { inner: { lockingBytecode: string } };
   masterUtxo?: unknown;
@@ -532,13 +532,13 @@ type KernelDelegateForwardingGroupIdentity = {
  * forwarding function's physical owner; duplicate bytecode within that scope remains ambiguous until the graph
  * carries an owner-scoped callsite identity and must fail closed.
  */
-export function selectKernelDelegateForwardingGroupIndex(input: {
+export function selectDelegateForwardingGroupIndex(input: {
   forwarding: unknown;
   encodedProxyConstructorArgs: readonly FunctionArgument[];
-  groups: readonly KernelDelegateForwardingGroupIdentity[];
+  groups: readonly DelegateForwardingGroupIdentity[];
   candidateIndexes?: readonly number[];
 }): number {
-  const target = resolveKernelDelegateForwardingTarget(
+  const target = resolveDelegateForwardingTarget(
     input.forwarding, input.encodedProxyConstructorArgs,
   );
   const candidateIndexes = input.candidateIndexes

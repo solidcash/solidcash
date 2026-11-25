@@ -880,7 +880,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       // Every ordinary mine moves the mock clock forward by at least one second. A fixture restore disconnects
       // blocks BCHN keeps marked invalid; re-mining one at its old time would repeat its hash, so a restore pays
       // later blocks to a fresh address instead of keeping the clock ahead of every block ever mined. Kept ahead,
-      // the clock ran 75 hours past the fixture in a kernel cell and entries with a 120-second window had expired.
+      // the clock ran 75 hours past the fixture in a journal cell and entries with a 120-second window had expired.
       const timestamp = Math.max(this.tipTime + 1, this.lastMinedTimestamp + 1);
       await this.setMockTime(timestamp);
       this.mockTime = timestamp;
@@ -1375,7 +1375,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // for every distinct value would mint many to spend 1 and bloat the wallet - and `pickLiveFundingInput` is
   // already O(wallet). Batch only values that have been asked for before; mint exactly one the first time. A
   // repeated value (the 5,000-satoshi layout funders) comes in batches of 100: every refill mines, and with 20 a
-  // re-planned kernel composition spent most of its time refilling.
+  // re-planned journal composition spent most of its time refilling.
   private async refillFeeFunderPool(satoshis: bigint): Promise<void> {
     const seen = (this.feeFunderSizeRequests.get(satoshis) ?? 0) + 1;
     this.feeFunderSizeRequests.set(satoshis, seen);

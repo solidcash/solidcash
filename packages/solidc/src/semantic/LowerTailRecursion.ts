@@ -651,7 +651,7 @@ export default class LowerTailRecursion extends AstTraversal {
       functionsByName.set(fn.name, overloads);
     }
     // Run before tail/control normalization: literal base selection and recursive source order are still explicit.
-    // The specialized block replaces the source call, so later memory lowering and kernel key replay consume the
+    // The specialized block replaces the source call, so later memory lowering and journal key replay consume the
     // same finite executable statements rather than independently reconstructing recursion metadata.
     this.finiteArraySpecializationBudget = 256;
     for (const fn of node.functions) {
@@ -921,7 +921,7 @@ export default class LowerTailRecursion extends AstTraversal {
         ? this.finiteArraySpecialization(statement, functionsByName) : undefined;
       if (specialized) {
         // Keep the specialized mutations in their caller's lexical array scope. Introducing a nested scoped
-        // block here would make later memory lowering allocate a distinct local-array frame while kernel replay
+        // block here would make later memory lowering allocate a distinct local-array frame while journal replay
         // still attributes the writes to the caller array.
         statements.push(...(specialized.statements ?? []));
         continue;

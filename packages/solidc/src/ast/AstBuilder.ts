@@ -8781,7 +8781,7 @@ export default class AstBuilder
       text = text.slice(1, close) + text.slice(close + 1);
     }
     // `parseType('Rec[]')` yields `ArrayType(undefined)` because `Rec` is not a primitive. Falling through
-    // to `resolveType` (struct/enum/UDVT maps) is required; otherwise the kernel wrapper's
+    // to `resolveType` (struct/enum/UDVT maps) is required; otherwise the journal wrapper's
     // `abi.decodeAt(rowArgs, (Rec[]), 0)` types as `address[]`.
     if (text.endsWith(']') && text.includes('[')) {
       const bracketIdx = text.lastIndexOf('[');

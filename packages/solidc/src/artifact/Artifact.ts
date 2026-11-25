@@ -5014,7 +5014,7 @@ export function generateArtifact(
     debug,
     ...(directCompile && isStateful && { callRecords: compilerOptions.callRecords ?? 'returning' as const }),
     // A direct compile's call digests name their reader (CALL_RECORD_READER_INPUT): it digests its own input as a
-    // caller, a kernel direct participant too, whose entries take no reader witness. Said where the contract digests
+    // caller, a journal direct participant too, whose entries take no reader witness. Said where the contract digests
     // a call: an entry takes the reader witness, reads a record or pins an edge.
     ...(directCompile && abi.some((fn) => fn.inputs.some((input) => input.name === CALL_RECORD_READER_INPUT
       || DIGESTING_WITNESS.test(input.name))) && { callRecordReader: true }),

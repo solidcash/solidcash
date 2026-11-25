@@ -319,7 +319,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
     );
   }
   // Historical legacy-layout artifacts encoded their JobEvent payload after implicitly filling the
-  // timestamp. Keep that wire adapter quarantined to its exact ABI schema. Kernel calls retain their
+  // timestamp. Keep that wire adapter quarantined to its exact ABI schema. Direct calls retain their
   // source arguments and derive mutations by executing the authenticated handler behind OP_INVOKE.
   const nestedFunctionName = resolvedRawFunctionName ?? nested.functionName;
   const hasLegacyJobEventInput = (callee.inner.artifact.abi as readonly AbiFunction[])

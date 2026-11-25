@@ -878,7 +878,7 @@ export function isInitialValueChunkWrite(
 
 /**
  * Scope persisted continuation readiness to the active compiler-described resource.
- * Descriptor-free pre-kernel plans supply their selected category's compatibility readiness.
+ * Descriptor-free pre-journal plans supply their selected category's compatibility readiness.
  */
 export function persistedValueChunkReadiness(parts: {
   selection: ValueChunkWriteCategorySelection;

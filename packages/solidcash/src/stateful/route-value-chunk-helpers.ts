@@ -348,7 +348,7 @@ export function extractAllRouteValueChunks(
   const persistedWrite = valueChunkWrites === undefined
     ? undefined : selectPersistedValueChunkWrite(valueChunkWrites, categoryId, persistedStagingSession);
   // Compatibility-only callers without compiler descriptors may still use the historical category cache.
-  // Descriptor-aware kernel calls must authenticate collection signature + key slot before borrowing state.
+  // Descriptor-aware journal calls must authenticate collection signature + key slot before borrowing state.
   const persisted = valueChunkWrites === undefined
     ? (categoryId ? legacyPersistedValueChunkValue(categoryId) : undefined)
     : (persistedWrite
@@ -528,13 +528,13 @@ export function deriveRouteValueChunks(
   let discovered = false;
   const localWrites = group.valueChunkWrites ?? describeValueChunkWrites(group);
   const localSelection = selectValueChunkWriteCategory(localWrites);
-  // In a multi-resource kernel row, the failing pin's redeem lock can identify one compiler-described
+  // In a multi-resource journal row, the failing pin's redeem lock can identify one compiler-described
   // write only when that write's complete value is visible in the VM trace. Require a unique exact-lock
   // match; never infer a collection/key merely from the shape or output position of a chunk.
   const pinBoundWrite = undefined;
 
   const writes = pinBoundWrite ? [pinBoundWrite] : localWrites;
-  // Compiler-authored kernel descriptors are authoritative. A P2SH32 equality in a carrier with no chunkable
+  // Compiler-authored journal descriptors are authoritative. A P2SH32 equality in a carrier with no chunkable
   // write describes an entry/resource lock, never permission to infer a value-chunk resource by output shape.
   /* eslint-disable @typescript-eslint/indent */
   if (permitsRouteValueChunkDerivation(localWrites)) {

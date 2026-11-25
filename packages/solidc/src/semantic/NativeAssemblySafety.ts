@@ -3,7 +3,7 @@ import { AssemblyStatementNode, Node } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 
-// Native assembly is safe to run inside a kernel handler only when it is a closed computation: it may use
+// Native assembly is safe to run inside a journal handler only when it is a closed computation: it may use
 // literal data, pure BCH operators, and read-only transaction inspection, but it may not borrow values from the
 // compiler-managed main/alt stacks or change signature evaluation context. Keep this an allow-list so newly
 // activated opcodes fail closed.
@@ -38,7 +38,7 @@ const LOCAL_OPCODES = new Set<number>([
   Op.OP_OUTPUTTOKENCATEGORY, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTTOKENAMOUNT,
 ]);
 
-// These opcodes observe the enclosing execution frame, so their results cannot participate in a kernel handler:
+// These opcodes observe the enclosing execution frame, so their results cannot participate in a journal handler:
 // direct calls and routed rows intentionally have different stack depths and active bytecode. An immediately
 // adjacent OP_DROP erases the observation before it can influence control flow, validation, or output state.
 const DISCARDED_AMBIENT_READ_OPCODES = new Set<number>([
@@ -80,7 +80,7 @@ const pushedScriptNumber = (bytes: Uint8Array): bigint => {
   return (bytes[bytes.length - 1] & 0x80) === 0 ? magnitude : -magnitude;
 };
 
-export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean {
+export function isNativeAssemblySafe(node: AssemblyStatementNode): boolean {
   if (node.yulBlock !== undefined) return false;
 
   let script;
@@ -216,18 +216,18 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
   return controls.length === 0 && main.length === 0 && alt.length === 0;
 }
 
-/** Native assembly the kernel cannot isolate, among a body's own statements: a resolved call is not followed. */
+/** Native assembly the journal cannot isolate, among a body's own statements: a resolved call is not followed. */
 class UnsafeNativeAssemblyFinder extends AstTraversal {
   found = false;
 
   visitAssemblyStatement(node: AssemblyStatementNode): Node {
-    if (node.yulBlock === undefined && !isKernelSafeNativeAssembly(node)) this.found = true;
+    if (node.yulBlock === undefined && !isNativeAssemblySafe(node)) this.found = true;
     return node;
   }
 }
 
 /**
- * Whether a function's own body holds native assembly the kernel cannot isolate. The walk is the AST's own: a call's
+ * Whether a function's own body holds native assembly the journal cannot isolate. The walk is the AST's own: a call's
  * resolved function is another body, and a recursive one would never end the walk.
  */
 export function hasUnsafeNativeAssembly(body: Node | undefined): boolean {

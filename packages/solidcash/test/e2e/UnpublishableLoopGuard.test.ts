@@ -45,9 +45,9 @@ describe('varying-key upsert loop under a guard its recipe cannot carry', () => 
   it('refuses that function by name while the literal-guarded loop settles a skipped iteration', async () => {
     const artifact = compileString(SOURCE, { suppressWarnings: true });
     expect(artifact.refusedFunctions?.map((entry) => entry.functionName)).toEqual(['C.applyAbove()', 'C.applyCovered()']);
-    expect(artifact.refusedFunctions?.[0].reason).toMatch(/^KERNEL_UNBOUNDED_KEY: the loop writes 'part' under the guard/);
+    expect(artifact.refusedFunctions?.[0].reason).toMatch(/^JOURNAL_UNBOUNDED_KEY: the loop writes 'part' under the guard/);
     expect(artifact.refusedFunctions?.[1].reason)
-      .toMatch(/^KERNEL_LAYOUT: the guard at Line 19, Column \d+ selects writes to 'part', 'share' in one loop/);
+      .toMatch(/^JOURNAL_LAYOUT: the guard at Line 19, Column \d+ selects writes to 'part', 'share' in one loop/);
 
     const provider = createTestProvider();
     const sig = new SignatureTemplate(alicePriv);
@@ -76,9 +76,9 @@ describe('varying-key upsert loop under a guard its recipe cannot carry', () => 
 
     await fund(contract);
     await expect(contract.applyAbove([3n, 7n], [6n, 2n], alicePub, sig).send())
-      .rejects.toThrow(/C\.applyAbove\(\) is refused by the compiler: KERNEL_UNBOUNDED_KEY/);
+      .rejects.toThrow(/C\.applyAbove\(\) is refused by the compiler: JOURNAL_UNBOUNDED_KEY/);
     await expect(contract.applyCovered([3n, 7n], [5n, 6n], alicePub, sig).send())
-      .rejects.toThrow(/C\.applyCovered\(\) is refused by the compiler: KERNEL_LAYOUT/);
+      .rejects.toThrow(/C\.applyCovered\(\) is refused by the compiler: JOURNAL_LAYOUT/);
 
     // The refused body fails in the program itself, so a builder that ignores the published refusal settles nothing.
     const unread = await deploy({ ...artifact, refusedFunctions: undefined });

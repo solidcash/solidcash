@@ -148,7 +148,7 @@ export type DelegateExecutionLayoutGroup = {
 };
 
 /**
- * Physical block of a proxy-forwarded implementation. Kernel-eligible handlers publish this on
+ * Physical block of a proxy-forwarded implementation. Journal-eligible handlers publish this on
  * `directCall`; ineligible handlers still compile a native body with ABI `blockLayout`, and the
  * proxy must materialize that geometry even without a route descriptor.
  */

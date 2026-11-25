@@ -71,7 +71,7 @@ export function rebaseGraphValueChunkWrites(
         ...claim, bandOffset: claim.bandOffset + claimDelta,
       }));
       const ordered = orderTransportedContinuationResourceClaims(shiftedClaims);
-      if (!ordered) throw new Error('Kernel multi-resource continuation claims lost local band geometry.');
+      if (!ordered) throw new Error('Multi-resource continuation claims lost local band geometry.');
       nextClaims = ordered;
     }
     target.valueChunkWrites = nextWrites;
@@ -88,7 +88,7 @@ export function rebaseGraphValueChunkWrites(
     const byResource = new Map(claims?.map((claim) => [claim.producerClaim.resourceIdentity, claim]));
     if (!claims || claims.length !== writes.length || byResource.size !== writes.length
       || distinctIdentities.size !== writes.length) {
-      throw new Error('Kernel multi-resource value-chunk writes lack exact continuation geometry.');
+      throw new Error('Multi-resource value-chunk writes lack exact continuation geometry.');
     }
     const firstOffset = claims[0]!.bandOffset;
     const reconstructed = writes.map((write, index) => {
@@ -96,7 +96,7 @@ export function rebaseGraphValueChunkWrites(
       const base = claim === undefined ? NaN : outputBase + claim.bandOffset - firstOffset;
       if (!claim || !Number.isSafeInteger(base) || base < 0
         || !Number.isSafeInteger(base + claim.chunkCount)) {
-        throw new Error('Kernel multi-resource value-chunk writes lack exact continuation geometry.');
+        throw new Error('Multi-resource value-chunk writes lack exact continuation geometry.');
       }
       return { ...write, outputBase: base, outputCount: claim.chunkCount };
     });
@@ -404,7 +404,7 @@ export async function runCreateBuilderDerivePass(
       if (topLevelValueChunkBase >= 0) {
       // During derivation the default/sentinel selects the route-relative continuation band. Once the complete
       // transaction geometry is known, publish the absolute coordinate on the executing input too. This is
-      // required for standalone kernel rows as well as atomic graphs: runtime mapping entries precede their
+      // required for standalone journal rows as well as atomic graphs: runtime mapping entries precede their
       // computed value chunks, so the layout-relative base is no longer the materialized coordinate.
         // A chunkable-capable route can select an inline write: its reserved continuation band has
         // zero physical chunks. The provisional positive base used during derivation is not a witness

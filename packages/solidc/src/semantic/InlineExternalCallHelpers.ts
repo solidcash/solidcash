@@ -70,7 +70,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private stateVarTypes: Map<string, Type> = new Map();
   private voidExternalCallHelpers: Set<string> = new Set();
-  // Public helpers among those: inlined where an ordinary function calls them, never into a kernel caller.
+  // Public helpers among those: inlined where an ordinary function calls them, never into a journal caller.
   private entryPointHelpers: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private fileUsingForDirectives: { libraryName?: string, targetTypeName?: string }[] = [];
@@ -110,9 +110,9 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       // Graph handlers intentionally execute behind OP_INVOKE: their hidden callManifest/caller/result
       // frame is what makes each reached edge authoritative. Flattening one into an aggregate body erases that
       // context and turns its external calls into inert ordinary-call nodes. Compiler-owned route clones are
-      // the same, and so are public entry points inside the kernel row loop: inlining one there makes
+      // the same, and so are public entry points inside the journal row loop: inlining one there makes
       // SymbolTableTraversal rewrite `token.transfer` against an unbound `__internal__loopTargets` (an entry point
-      // is inlined only where an ordinary, non-kernel function calls it, below). An imported delegate-library
+      // is inlined only where an ordinary, non-journal function calls it, below). An imported delegate-library
       // entry runs in its own co-spent input; inlining it would erase the call before
       // SynthesizeLibraryDelegateCalls lowers it to a delegatecall, duplicating the facet's state covenant in the
       // consumer and bypassing the intended split boundary.
@@ -127,7 +127,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     // A public function is a helper too where an ordinary function calls it internally: its external call then
     // runs in the caller's frame, and only the inlined body can carry the call's covenant parameters there.
     const calledInternally = [...this.entryPointHelpers].filter((name) => all.some((fn) => fn.body
-      && !this.isKernelCaller(fn) && this.callsByStatement(fn.body, name)));
+      && !this.isJournalCaller(fn) && this.callsByStatement(fn.body, name)));
     for (const name of calledInternally) this.voidExternalCallHelpers.add(name);
     if (this.voidExternalCallHelpers.size === 0) return node;
 
@@ -153,8 +153,8 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     return node;
   }
 
-  // A compiler-owned kernel or route function, which keeps the public entry points it calls as calls.
-  private isKernelCaller(fn: FunctionDefinitionNode | undefined): boolean {
+  // A compiler-owned journal or route function, which keeps the public entry points it calls as calls.
+  private isJournalCaller(fn: FunctionDefinitionNode | undefined): boolean {
     return fn !== undefined && (false || false);
   }
 
@@ -374,7 +374,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
         // A qualified library call (`SafeERC20.safeTransfer`) is eligible too - the name is the registered helper.
         if (helper && this.voidExternalCallHelpers.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === helper.parameters.length
-          && !(this.entryPointHelpers.has(name) && this.isKernelCaller(this.funcByName.get(stack[0]!)))) {
+          && !(this.entryPointHelpers.has(name) && this.isJournalCaller(this.funcByName.get(stack[0]!)))) {
           if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
           }

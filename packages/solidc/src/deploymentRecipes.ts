@@ -61,7 +61,7 @@ const withTypedEffectOptions = <T>(
   run: () => T,
 ): T => {
   const previous = activeTypedEffectOptions;
-  // Default remains allow-pre-final for analysis bridges; kernel publication asserts finalized IR separately.
+  // Default remains allow-pre-final for analysis bridges; journal publication asserts finalized IR separately.
   activeTypedEffectOptions = {
     requireFinalizedTypes: false,
     ...options,
@@ -1016,7 +1016,7 @@ export function analyzeFixedBchEffectRecipes(
       undefined, new Set(), helperFunctions,
     );
     // A transaction signature commits the transaction containing the transfer output. Reusing it to derive that
-    // output would create a circular fixed-effect recipe even when the kernel carries the signature separately as
+    // output would create a circular fixed-effect recipe even when the journal carries the signature separately as
     // a row witness. Data signatures are intentionally unaffected: they do not commit the spending transaction.
     return resolved && !recipeUsesTransactionSignature(resolved) ? resolved : undefined;
   };

@@ -33,7 +33,7 @@ export function routeValueRunFingerprint(chunks: readonly {
 /**
  * Record probe facts by their compiler-authenticated resource, independently of physical builder mutations.
  * Physical output indices can move while earlier participant slots hydrate, so callers fingerprint value runs
- * relative to their base. Different semantic bytes for one kernel resource remain an SDK/compiler disagreement.
+ * relative to their base. Different semantic bytes for one journal resource remain an SDK/compiler disagreement.
  */
 export function recordRouteProbeObservation(
   observations: RouteProbeObservationHistory,

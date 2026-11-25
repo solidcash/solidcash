@@ -152,7 +152,7 @@ export function deriveFullPhase2IterationProbe(
   // those clobber the first valid pin with later stack garbage.
   // The sparse observer cannot currently see introspection executed inside OP_INVOKE bodies. Runtime-loop
   // transfer values are verified there, so use the faithful reduced debug trace until those outputs have
-  // converged. This remains bounded by the kernel's 64-iteration admission limit.
+  // converged. This remains bounded by the journal's 64-iteration admission limit.
   const hasRuntimeLoopTransfers = stb.getRuntimeLoopTransferOutputs().length > 0;
   const fullTrace2 = evaluateProbeTrace(
     host.inner.provider, probeProgram, hasRuntimeLoopTransfers,

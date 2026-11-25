@@ -84,7 +84,7 @@ export function encodeStructArgument(
     : decodedValue;
   if (canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)) {
     const record = { ...(canonicalValue as Record<string, unknown>) };
-    // This historical wire adapter is deliberately fenced by usesLegacyJobEventCompatibility. Ordinary kernel
+    // This historical wire adapter is deliberately fenced by usesLegacyJobEventCompatibility. Ordinary journal
     // values are derived from compiler-authenticated flow and must never change because a field happens to have
     // an application-associated spelling.
     if (legacyJobEventCompatibility && (

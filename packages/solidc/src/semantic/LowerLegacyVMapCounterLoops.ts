@@ -9,7 +9,7 @@ import { ArrayType, IntType } from '@solidcash/utils';
 const PREFIX = '__internal__vmapCounterPerm_';
 
 /**
- * Preserve the deliberately narrow direct-compile lowering independently of kernel row-loop admission. It
+ * Preserve the deliberately narrow direct-compile lowering independently of journal row-loop admission. It
  * supports only `for (int i = 0; i < n; i++) m[i] = f(i)`: its physical counter remains unchanged while the one
  * mapping key/value pair is evaluated through an SDK-supplied slot-order permutation.
  */

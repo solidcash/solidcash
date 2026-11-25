@@ -20,7 +20,7 @@ export interface GetLoopEntryOutputIndexHost {
   readonly kernelJournalEagerOutputPlan: readonly unknown[];
   readonly runtimeLoopTrailingSegments: readonly RuntimeLoopTrailingSegment[];
   readonly loopEntryCommitments: ReadonlyMap<string, readonly string[]>;
-  validateKernelJournalSettlementOutputPlan(): void;
+  validateJournalJournalSettlementOutputPlan(): void;
   kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan;
   getLoopEntryOutputBase(): number;
   trailingLoopEntryVars(): readonly LoopEntryVar[];
@@ -38,7 +38,7 @@ export function getLoopEntryOutputIndex(
     throw new Error(`Invalid loop entry commitment index ${commitmentIndex} for '${collection}'`);
   }
   if (host.kernelJournalSettlementOutputPlan.length > 0 || host.kernelJournalEagerOutputPlan.length > 0) {
-    host.validateKernelJournalSettlementOutputPlan();
+    host.validateJournalJournalSettlementOutputPlan();
     const entry = host.kernelJournalOutputLayout().outputs.find((candidate) =>
       candidate.collection === collection && candidate.offset === commitmentIndex);
     if (!entry) {

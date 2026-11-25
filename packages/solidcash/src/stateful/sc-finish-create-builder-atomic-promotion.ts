@@ -128,7 +128,7 @@ export function finishCreateBuilderAtomicPromotion(params: {
       throw new Error(
         'route: repeated-owner calls require atomic composition, but the prepared graph contains '
       + `direct-only participant${directOnly.length === 1 ? '' : 's'}: ${directOnly.join(', ')}. `
-      + 'This direct/kernel graph lacks the explicit V5 authority or an eligible direct-call shape.',
+      + 'This direct/journal graph lacks the explicit V5 authority or an eligible direct-call shape.',
       );
     }
     if (requiresAtomicPromotion && allRoutesEligible) {

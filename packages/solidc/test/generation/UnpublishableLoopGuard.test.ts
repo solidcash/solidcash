@@ -30,7 +30,7 @@ describe('a loop guard the published upsert recipe cannot carry', () => {
       expect(artifact.refusedFunctions).toEqual([{
         functionName: 'C.apply()',
         reason: expect.stringMatching(
-          /^KERNEL_UNBOUNDED_KEY: the loop writes 'part' under the guard at Line 7, Column \d+, and the published recipe/,
+          /^JOURNAL_UNBOUNDED_KEY: the loop writes 'part' under the guard at Line 7, Column \d+, and the published recipe/,
         ),
       }]);
       expect(artifact.abi.find((fn) => fn.name === 'apply')?.sortedUpsertLoopInfo).toBeUndefined();
@@ -47,13 +47,13 @@ describe('a loop guard the published upsert recipe cannot carry', () => {
       expect(compileString(contract(body), options).refusedFunctions).toEqual([{
         functionName: 'C.apply()',
         reason: expect.stringMatching(
-          /^KERNEL_LAYOUT: the guard at Line 7, Column \d+ selects writes to 'part', 'share' in one loop/,
+          /^JOURNAL_LAYOUT: the guard at Line 7, Column \d+ selects writes to 'part', 'share' in one loop/,
         ),
       }]);
     }
     const master = compileStringMulti(contract(body), { ...quiet, composition: 'framed' }).C;
     expect(master.composition?.refusedEntries).toEqual([
-      { functionName: 'C.apply()', reason: expect.stringMatching(/^KERNEL_LAYOUT: the guard at Line 7/) },
+      { functionName: 'C.apply()', reason: expect.stringMatching(/^JOURNAL_LAYOUT: the guard at Line 7/) },
     ]);
     expect(master.refusedFunctions).toBeUndefined();
   });
@@ -125,7 +125,7 @@ describe('a loop guard the published upsert recipe cannot carry', () => {
     } else {
       expect(artifact.refusedFunctions).toEqual([{
         functionName: 'Token.multitransfer()',
-        reason: expect.stringContaining(`KERNEL_UNBOUNDED_KEY: the loop writes 'balances' under the guard at ${guard},`),
+        reason: expect.stringContaining(`JOURNAL_UNBOUNDED_KEY: the loop writes 'balances' under the guard at ${guard},`),
       }]);
     }
   });
@@ -139,7 +139,7 @@ describe('a loop guard the published upsert recipe cannot carry', () => {
     } finally {
       console.log = log;
     }
-    expect(lines.filter((line) => line.startsWith('Warning: function \'apply\' is refused: KERNEL_UNBOUNDED_KEY')))
+    expect(lines.filter((line) => line.startsWith('Warning: function \'apply\' is refused: JOURNAL_UNBOUNDED_KEY')))
       .toHaveLength(1);
   });
 });

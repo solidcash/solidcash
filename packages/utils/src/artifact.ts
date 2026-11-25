@@ -448,7 +448,7 @@ export interface FixedBchTransferAbi {
   /** Legacy shallow sources retained for artifact consumers which do not yet evaluate recipes. */
   recipient: ArgSource;
   amount: ArgSource;
-  /** Canonical typed recipes used by kernel composition. Absence means the operand is not materializable. */
+  /** Canonical typed recipes used by journal composition. Absence means the operand is not materializable. */
   recipientRecipe?: ChildDeploymentValueRecipe;
   amountRecipe?: ChildDeploymentValueRecipe;
   /** A stateless child address derived from compiler-pinned body bytes and pure row recipes. */
@@ -551,7 +551,7 @@ export interface ValueProvenance {
 
 /**
  * Exact, fail-closed recipe for collapsing a source forwarding function into an authenticated delegate
- * execution frame. Publication alone grants no route admission: the kernel verifier must still bind the
+ * execution frame. Publication alone grants no route admission: the journal verifier must still bind the
  * resolved implementation and payload to the executor input while keeping state and outputs owned by the
  * participant block.
  */
@@ -837,7 +837,7 @@ export interface AbiFunction {
    */
   constructedKeyVectors?: readonly ConstructedKeyVectorV1Abi[];
   /**
-   * Compiler-authored affine recursive-frame relation. It is not a kernel capability:
+   * Compiler-authored affine recursive-frame relation. It is not a journal capability:
    * absence and presence both require the existing recursive settlement admission checks.
    */
   affineRecursiveFrames?: readonly AffineRecursiveFrameV1Abi[];
@@ -1520,7 +1520,7 @@ export interface CallsiteCallerIdentityAbi {
  * - **Occurrence** (`occurrence` / runtime `occurrenceIndex`): reach index of that source row.
  *
  * Non-batched calls: physical === source; logical index absent; occurrence 0 unless loop/conditional.
- * Batched calls (kernel): physical ≠ source in general; every row publishes `sourceCallsiteId` +
+ * Batched calls (journal): physical ≠ source in general; every row publishes `sourceCallsiteId` +
  * `logicalIndex`; runtime occurrence is required and monotone per `(sourceCallsiteId, logicalIndex)`.
  * Do not invent source identity from proxy/delegate/locking bytecode.
  */
@@ -2181,7 +2181,7 @@ export interface Artifact {
    * True: a direct call digest names its reader, the input index of the contract that reads the record (or of the
    * caller whose edge it is), after the selector. As a caller the contract digests its own `OP_INPUTINDEX`, for the
    * records it reads and the edges it pins; an entry digests its run with the reader its `CALL_RECORD_READER_INPUT`
-   * witness names, where it takes that witness (a kernel direct participant's entries take none). So one record
+   * witness names, where it takes that witness (a journal direct participant's entries take none). So one record
    * answers one input. A record answering a constructor is bound by its tag instead. Set only on a contract that
    * digests a call (an entry takes that witness, reads a record or pins an edge), so a stateless artifact keeps its
    * shape. Absent on artifacts compiled before; the SDK does not mix the two in one call.

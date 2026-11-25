@@ -133,7 +133,7 @@ export function seedOptimisticScalarWrites(
     for (const field of leftoverInts) {
       const current = currentState[field.name];
       if (typeof current !== 'bigint') continue;
-      // Kernel path: single leftover int may still +1 without a function-name regex.
+      // Journal path: single leftover int may still +1 without a function-name regex.
       const nextInt = hints.zero ? 0n
         : hints.twice ? current * 2n
           : current + (hints.decrement ? -1n : 1n);

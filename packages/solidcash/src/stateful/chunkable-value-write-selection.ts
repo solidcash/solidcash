@@ -58,7 +58,7 @@ export function permitsLegacyNamedValueChunkFallback(
   return true;
 }
 
-/** Permit inferred event reconstruction only for descriptor-free pre-kernel plans. */
+/** Permit inferred event reconstruction only for descriptor-free pre-journal plans. */
 export function permitsLegacyValueChunkEventReconstruction(
   groups: ReadonlyArray<ChunkableValueWriteGroup>,
   hasChunkableValueWriteMetadata: boolean,

@@ -78,11 +78,11 @@ export function resolveValueChunkWriteGeometry(
     const next = { base: write.outputBase, count: write.outputCount };
     if (!Number.isSafeInteger(next.base) || next.base < 0
       || !Number.isSafeInteger(next.count) || next.count < 1) {
-      throw new Error(`Kernel transported value-chunk resource '${identity}' has invalid geometry.`);
+      throw new Error(`Transported value-chunk resource '${identity}' has invalid geometry.`);
     }
     const prior = transportedGeometry.get(identity);
     if (prior !== undefined && (prior.base !== next.base || prior.count !== next.count)) {
-      throw new Error(`Kernel transported value-chunk resource '${identity}' has conflicting geometry.`);
+      throw new Error(`Transported value-chunk resource '${identity}' has conflicting geometry.`);
     }
     transportedGeometry.set(identity, next);
     geometry.set(identity, next);

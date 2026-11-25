@@ -62,7 +62,7 @@ import {
 import { SolidcDiagnosticError } from '../Errors.js';
 
 /** Fail closed with a stable diagnostic code for an invariant the lowering relies on. */
-const throwKernelCatalogDiagnostic = (
+const throwJournalDiagnostic = (
   code: string, message: string, detail: Readonly<Record<string, unknown>> = {},
 ): never => {
   throw new SolidcDiagnosticError(code as never, message, detail);
@@ -359,9 +359,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (!fn.body || fn.parameters[0]?.name !== `__dj_${fn.name}`) continue;
       const reach = this.callGraphReach(fn, node, touchesCollection);
       if (reach.via) {
-        // KERNEL_* admission catalog: fence-map item 9 — catalog-coded refuse (was plain Error without KERNEL_*).
-        throwKernelCatalogDiagnostic(
-          'KERNEL_LAYOUT',
+        // Journal admission catalog: catalog-coded refuse.
+        throwJournalDiagnostic(
+          'JOURNAL_LAYOUT',
           `Handler '${sourceHandlerName(fn.name)}' writes unbounded bytes/string state and also reaches a `
           + 'collection entry. The dynamic-storage journal and the collection journal do not share one exit, '
           + 'so this handler cannot flush both; split the unbounded write and the collection access into '
@@ -417,7 +417,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       // event into the authenticated route-owned effect frame. It can therefore share the value-threaded
       // collection-journal exit. Ordinary internal helpers still have no such projection and retain X118's gate.
       if (emitsEvent && !false) continue;
-      // A kernel counter-loop write owns its own trailing upsert journal.  It
+      // A journal counter-loop write owns its own trailing upsert journal.  It
       // must not prevent this helper from value-threading a separate fixed
       // entry read/write: e.g. `target[i] = source[0]` needs `source[0]` to
       // share the route-wide cache while `target[i]` remains on the runtime
@@ -592,8 +592,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (candidate instanceof ReturnNode) hasEarlyReturn = true;
       });
       if (hasEarlyReturn && !pooledTerminalResult) {
-        throwKernelCatalogDiagnostic(
-          'KERNEL_LAYOUT',
+        throwJournalDiagnostic(
+          'JOURNAL_LAYOUT',
           `Collection journal helper '${sourceHandlerName(fn.name)}' cannot contain an early return; `
           + 'its journalled entry values are flushed only at the single function exit',
           {
@@ -964,7 +964,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (statement.elseBlock) statement.elseBlock = this.rewriteBlock(statement.elseBlock);
       return statement;
     }
-    // Kernel dispatch is a desugared `for` (`{ init; while { body; update } }`). Assignment-form
+    // Runtime dispatch is a desugared `for` (`{ init; while { body; update } }`). Assignment-form
     // invokes of returning journal helpers live in that while body; visiting only if/else left them
     // at the pre-journal arity and failed typecheck (`bool` pending prepended, call site unchanged).
     if (statement instanceof BlockNode) return this.rewriteBlock(statement);
@@ -1161,8 +1161,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   private rewriteMultiCall(call: FunctionCallNode, target: MultiCandidate): StatementNode[] {
     if (target.resultTypes.length > 0) {
-      throwKernelCatalogDiagnostic(
-        'KERNEL_LAYOUT',
+      throwJournalDiagnostic(
+        'JOURNAL_LAYOUT',
         `Result-producing collection journal '${target.fn.name}' requires an assignment target`,
         { gate: 'journal-result-assignment', handler: target.fn.name },
       );
@@ -1177,7 +1177,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   ): StatementNode {
     const cache = this.activeMultiCaches.get(target.fn);
     if (!cache) {
-      throwKernelCatalogDiagnostic(
+      throwJournalDiagnostic(
         'KERNEL_INTERNAL_DEFECT',
         `Missing function-scoped collection journal for '${target.fn.name}'`,
         { gate: 'journal-function-scope-missing', handler: target.fn.name },
@@ -1185,7 +1185,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }
     const callLocals = cache!.calls.get(call);
     if (!callLocals) {
-      throwKernelCatalogDiagnostic(
+      throwJournalDiagnostic(
         'KERNEL_INTERNAL_DEFECT',
         `Missing call-scoped collection journal for '${target.fn.name}'`,
         { gate: 'journal-call-scope-missing', handler: target.fn.name },
@@ -1195,7 +1195,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const dynamicLocals = target.dynamicEntries.map((entry) => {
       const dynamicCache = this.activeDynamicCaches.get(entry.state);
       if (!dynamicCache) {
-        throwKernelCatalogDiagnostic(
+        throwJournalDiagnostic(
           'KERNEL_INTERNAL_DEFECT',
           `Missing dynamic-state journal for '${target.fn.name}:${entry.state}'`,
           { gate: 'journal-dynamic-cache-missing', handler: target.fn.name, state: entry.state },
@@ -1428,8 +1428,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const identitiesFor = (keys: ExpressionNode[]): string[] => keys.map((key) => {
         const identity = this.canonicalCacheKey(key, wrapperParameters)!;
         if (identity === undefined) {
-          throwKernelCatalogDiagnostic(
-            'KERNEL_LAYOUT',
+          throwJournalDiagnostic(
+            'JOURNAL_LAYOUT',
             `Collection journal helper '${target.fn.name}' requires a stable key expression; `
             + `use a wrapper parameter, literal, or transaction global (found ${key.constructor.name}: ${
               key instanceof IdentifierNode ? key.name : key.toString()})`,
@@ -1667,7 +1667,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     if (key instanceof IdentifierNode && (wrapperParameters.has(key.name)
       || false
       || false)) {
-      // Kernel row-decoded arguments are wrapper locals (`__internal_arg_*`), not formal parameters.
+      // Row-decoded arguments are wrapper locals (`__internal_arg_*`), not formal parameters.
       // They are still one identity per physical entry of this invocation.
       return `parameter:${key.name}`;
     }

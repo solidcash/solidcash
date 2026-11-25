@@ -45,7 +45,7 @@ export const MAX_JOURNAL_SEGMENT_BYTES = 520;
 /** Canonical record tag, distinct from runtime event/BCH/FT/NFT effect tags 0x01..0x04. */
 export const KERNEL_ENTRY_JOURNAL_TAG = 0x05;
 
-/** Compact per-stream record-selection program consumed by a kernel row. */
+/** Compact per-stream record-selection program consumed by a journal row. */
 export const KERNEL_ENTRY_JOURNAL_ACCESS_TAG = 0x06;
 
 /** Entry NFT commitments are capped at 128 bytes: slot + next slot + at most 64 bytes of value tail. */
@@ -54,7 +54,7 @@ export const KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES = 64;
 /** Return the stable compiler-owned input name for one zero-based journal record segment. */
 export function kernelEntryJournalRecordSegmentName(segmentIndex: number): string {
   if (!Number.isSafeInteger(segmentIndex) || segmentIndex < 0) {
-    throw new Error('kernel entry journal segment index must be a non-negative safe integer');
+    throw new Error('journal entry journal segment index must be a non-negative safe integer');
   }
   return `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${segmentIndex}`;
 }
@@ -64,11 +64,11 @@ export function kernelEntryJournalRecordSegmentIndex(name: string): number | und
   if (!name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) return undefined;
   const suffix = name.slice(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX.length);
   if (!/^(0|[1-9][0-9]*)$/.test(suffix)) {
-    throw new Error(`kernel entry journal segment input '${name}' has a non-canonical index`);
+    throw new Error(`journal entry journal segment input '${name}' has a non-canonical index`);
   }
   const segmentIndex = Number(suffix);
   if (!Number.isSafeInteger(segmentIndex)) {
-    throw new Error(`kernel entry journal segment input '${name}' exceeds the safe index range`);
+    throw new Error(`journal entry journal segment input '${name}' exceeds the safe index range`);
   }
   return segmentIndex;
 }
@@ -106,7 +106,7 @@ export const KERNEL_ENTRY_JOURNAL_MAX_ACCESSES = Math.floor((520 - ACCESS_HEADER
  * this global cap. Finalized transactions remain subject to independent BCH size and cost checks.
  */
 if (KERNEL_ENTRY_JOURNAL_MAX_RECORDS !== KERNEL_ENTRY_JOURNAL_MAX_ACCESSES) {
-  throw new Error('kernel entry journal record and compact-access protocol caps diverged');
+  throw new Error('journal entry journal record and compact-access protocol caps diverged');
 }
 
 export interface KernelEntryJournalRecord {
@@ -200,7 +200,7 @@ export interface KernelEntryJournalScheduledOccurrence<T, S extends KernelEntryJ
  * later selected frames remain outside that interleave. Rejecting duplicate stream/site coordinates is important:
  * otherwise two artifact streams can describe different physical-input schedules while sorting identically.
  */
-export function scheduleKernelEntryJournalOccurrences<
+export function scheduleJournalEntryJournalOccurrences<
 T,
 S extends KernelEntryJournalExecutionStream,
 >(
@@ -218,24 +218,24 @@ S extends KernelEntryJournalExecutionStream,
       ['access stream index', stream.accessStreamIndex],
     ] as const) {
       if (!Number.isSafeInteger(coordinate) || coordinate < 0) {
-        throw new Error(`kernel journal ${label} must be a non-negative safe integer`);
+        throw new Error(`journal journal ${label} must be a non-negative safe integer`);
       }
     }
     const streamCoordinate = `${stream.frameIndex}:${stream.accessStreamIndex}`;
     if (streamCoordinates.has(streamCoordinate)) {
-      throw new Error(`kernel journal repeats access stream coordinate ${streamCoordinate}`);
+      throw new Error(`journal journal repeats access stream coordinate ${streamCoordinate}`);
     }
     streamCoordinates.add(streamCoordinate);
     const siteCoordinate = `${stream.frameIndex}:${stream.executionGroup}:${stream.executionOrder}`;
     if (siteCoordinates.has(siteCoordinate)) {
-      throw new Error(`kernel journal repeats execution site coordinate ${siteCoordinate}`);
+      throw new Error(`journal journal repeats execution site coordinate ${siteCoordinate}`);
     }
     siteCoordinates.add(siteCoordinate);
 
     const streamValues = values(stream);
     if (stream.sourceOccurrences && stream.sourceOccurrences.length !== streamValues.length) {
       throw new Error(
-        `kernel journal access stream ${stream.accessStreamIndex} has ${streamValues.length} accesses but `
+        `journal journal access stream ${stream.accessStreamIndex} has ${streamValues.length} accesses but `
         + `${stream.sourceOccurrences.length} source occurrences`,
       );
     }
@@ -243,11 +243,11 @@ S extends KernelEntryJournalExecutionStream,
     streamValues.forEach((value, compactIndex) => {
       const sourceOccurrence = stream.sourceOccurrences?.[compactIndex] ?? compactIndex;
       if (!Number.isSafeInteger(sourceOccurrence) || sourceOccurrence < 0) {
-        throw new Error('kernel journal source occurrence must be a non-negative safe integer');
+        throw new Error('journal journal source occurrence must be a non-negative safe integer');
       }
       if (sourceOccurrence <= priorSourceOccurrence) {
         throw new Error(
-          `kernel journal access stream ${stream.accessStreamIndex} source occurrences are not strictly ordered`,
+          `journal journal access stream ${stream.accessStreamIndex} source occurrences are not strictly ordered`,
         );
       }
       priorSourceOccurrence = sourceOccurrence;
@@ -276,7 +276,7 @@ export interface KernelEntryJournalSettlementStream {
  * mutation streams share an execution group, every stream in that group must explicitly authenticate the global
  * journal ordinal domain used by scheduling and last-mutating settlement ownership.
  */
-export function validateKernelEntryJournalSettlementGroups(
+export function validateJournalEntryJournalSettlementGroups(
   streams: readonly KernelEntryJournalSettlementStream[],
 ): void {
   const groups = new Map<string, KernelEntryJournalSettlementStream[]>();
@@ -289,7 +289,7 @@ export function validateKernelEntryJournalSettlementGroups(
     if (group.filter((stream) => stream.mutates).length < 2) continue;
     if (group.some((stream) => stream.identity?.recordOrdinalScope !== 'global-journal')) {
       throw new Error(
-        `kernel journal execution group '${executionGroup}' has multiple mutation streams without authenticated `
+        `journal journal execution group '${executionGroup}' has multiple mutation streams without authenticated `
         + 'global record ordinals',
       );
     }
@@ -330,16 +330,16 @@ export interface KernelEntryJournalReadCarrierCapability {
   scopes?: readonly KernelEntryJournalCapabilityScopeAbi[];
 }
 
-const isKernelEntryJournalReadCarrierScope = (
+const isJournalEntryJournalReadCarrierScope = (
   scope: KernelEntryJournalCapabilityScopeAbi,
 ): boolean => /^[0-9a-f]{8}$/.test(scope.handlerSelector)
   && Number.isSafeInteger(scope.journalAccessStreamIndex)
   && scope.journalAccessStreamIndex >= 0;
 
-const hasCanonicalKernelEntryJournalReadCarrierScopes = (
+const hasCanonicalJournalEntryJournalReadCarrierScopes = (
   scopes: readonly KernelEntryJournalCapabilityScopeAbi[] | undefined,
 ): scopes is readonly KernelEntryJournalCapabilityScopeAbi[] => {
-  if (!scopes || scopes.length === 0 || !scopes.every(isKernelEntryJournalReadCarrierScope)) return false;
+  if (!scopes || scopes.length === 0 || !scopes.every(isJournalEntryJournalReadCarrierScope)) return false;
   return new Set(scopes.map((scope) => `${scope.handlerSelector}:${scope.journalAccessStreamIndex}`)).size
     === scopes.length;
 };
@@ -359,7 +359,7 @@ export function kernelEntryJournalReadCarrierCapabilityCovers(
   if (capability?.kind !== 'internal-read-carrier' || capability.version !== 1
     || !handlerSelector || !/^[0-9a-f]{8}$/.test(handlerSelector)
     || !Number.isSafeInteger(journalAccessStreamIndex) || journalAccessStreamIndex < 0
-    || !hasCanonicalKernelEntryJournalReadCarrierScopes(capability.scopes)) return false;
+    || !hasCanonicalJournalEntryJournalReadCarrierScopes(capability.scopes)) return false;
   return capability.scopes.some((scope) =>
     scope.handlerSelector === handlerSelector
     && scope.journalAccessStreamIndex === journalAccessStreamIndex) === true;
@@ -533,7 +533,7 @@ function readCarrierReferences(
     || !Number.isSafeInteger(occurrence.accessStreamIndex) || occurrence.accessStreamIndex < 0
     || !Number.isSafeInteger(occurrence.accessOrdinal) || occurrence.accessOrdinal < 0
     || access.mutates || access.pending || access.presentBefore !== access.presentAfter) {
-    throw new Error('kernel read-carrier materialization accepts only ordered clean read accesses');
+    throw new Error('journal read-carrier materialization accepts only ordered clean read accesses');
   }
   const references: KernelEntryJournalReadCarrierReference[] = [];
   // An absent target is the synthetic 0x0c record. It never owns a physical
@@ -566,12 +566,12 @@ function readCarrierReferences(
  * collection-local offset, proof role, source names, or caller witness data. A physical record may legitimately
  * occur first as a target and later as a predecessor.
  */
-export function planKernelEntryJournalReadCarrierMaterialization(
+export function planJournalEntryJournalReadCarrierMaterialization(
   capability: KernelEntryJournalReadCarrierCapability | undefined,
   occurrences: readonly KernelEntryJournalReadCarrierOccurrence[],
 ): KernelEntryJournalReadCarrierMaterialization[] {
   if (capability?.kind !== 'internal-read-carrier' || capability.version !== 1) {
-    throw new Error('kernel read-carrier materialization requires compiler internal-read-carrier capability');
+    throw new Error('journal read-carrier materialization requires compiler internal-read-carrier capability');
   }
   const references = occurrences.flatMap(readCarrierReferences);
   const byRecord = new Map<number, KernelEntryJournalReadCarrierReference[]>();
@@ -584,14 +584,14 @@ export function planKernelEntryJournalReadCarrierMaterialization(
   for (const group of byRecord.values()) {
     const authenticators = group.filter((reference) => reference.authenticates);
     if (authenticators.length !== 1) {
-      throw new Error('kernel read-carrier record requires exactly one first authenticator');
+      throw new Error('journal read-carrier record requires exactly one first authenticator');
     }
     const firstAuthenticator = authenticators[0]!;
     if (group[0] !== firstAuthenticator) {
-      throw new Error('kernel read-carrier consumer precedes its authenticated producer');
+      throw new Error('journal read-carrier consumer precedes its authenticated producer');
     }
     if (group.some((reference) => reference.finalOutput !== firstAuthenticator.finalOutput)) {
-      throw new Error('kernel read-carrier record changes final disposition across consumers');
+      throw new Error('journal read-carrier record changes final disposition across consumers');
     }
     materializations.push({
       recordOrdinal: firstAuthenticator.recordOrdinal,
@@ -621,11 +621,11 @@ export function planKernelEntryJournalReadCarrierMaterialization(
  * assigned global record ordinals. This is deliberately dormant until the compiler advertises the corresponding
  * internal marker capability: it does not itself authorize omitting an input.
  */
-export function planKernelEntryJournalReadCarrierPhysicalPlan(
+export function planJournalEntryJournalReadCarrierPhysicalPlan(
   capability: KernelEntryJournalReadCarrierCapability | undefined,
   occurrences: readonly KernelEntryJournalReadCarrierOccurrence[],
 ): KernelEntryJournalReadCarrierPhysicalPlan {
-  const inputs = planKernelEntryJournalReadCarrierMaterialization(capability, occurrences);
+  const inputs = planJournalEntryJournalReadCarrierMaterialization(capability, occurrences);
   const inputByRecord = new Map(inputs.map((input) => [input.recordOrdinal, input]));
   const seenOccurrence = new Set<string>();
   const plannedOccurrences: KernelEntryJournalReadCarrierPhysicalOccurrence[] = [];
@@ -636,17 +636,17 @@ export function planKernelEntryJournalReadCarrierPhysicalPlan(
   for (const occurrence of occurrences) {
     const occurrenceKey = `${streamKey(occurrence)}:${occurrence.accessOrdinal}`;
     if (seenOccurrence.has(occurrenceKey)) {
-      throw new Error(`kernel read-carrier physical plan repeats source occurrence ${occurrenceKey}`);
+      throw new Error(`journal read-carrier physical plan repeats source occurrence ${occurrenceKey}`);
     }
     seenOccurrence.add(occurrenceKey);
     const references = readCarrierReferences(occurrence);
     // A clean read names exactly one physical carrier: its present target or its absent-proof predecessor.
     if (references.length !== 1) {
-      throw new Error('kernel read-carrier physical plan requires one selected record per clean read');
+      throw new Error('journal read-carrier physical plan requires one selected record per clean read');
     }
     const reference = references[0]!;
     const input = inputByRecord.get(reference.recordOrdinal);
-    if (!input) throw new Error('kernel read-carrier physical plan lost a selected record owner');
+    if (!input) throw new Error('journal read-carrier physical plan lost a selected record owner');
     const materializesInput = input.firstAuthenticator === occurrence;
     plannedOccurrences.push({
       occurrence, recordOrdinal: reference.recordOrdinal, recordRole: reference.recordRole, materializesInput,
@@ -735,7 +735,7 @@ export interface KernelEntryJournalOutputLayoutPlan {
  * order. Their collection-local commitment locations must be globally disjoint, preventing an unchanged eager
  * record from also being recreated by another row's final carrier flush.
  */
-export function planKernelEntryJournalOutputLayout(
+export function planJournalEntryJournalOutputLayout(
   eager: readonly KernelEntryJournalEagerOutputPlanEntry[],
   deferred: readonly KernelEntryJournalSettlementOutputPlanEntry[],
 ): KernelEntryJournalOutputLayoutPlan {
@@ -743,17 +743,17 @@ export function planKernelEntryJournalOutputLayout(
   const outputs: KernelEntryJournalOutputLayoutEntry[] = [];
   const validateLocation = (collection: string, offset: number): void => {
     if (!collection || !Number.isSafeInteger(offset) || offset < 0) {
-      throw new Error('kernel journal output layout has an invalid physical location');
+      throw new Error('journal journal output layout has an invalid physical location');
     }
     const location = `${collection}\0${offset}`;
     if (locations.has(location)) {
-      throw new Error(`kernel journal output layout repeats physical location ${collection}[${offset}]`);
+      throw new Error(`journal journal output layout repeats physical location ${collection}[${offset}]`);
     }
     locations.add(location);
   };
   for (const [index, entry] of eager.entries()) {
     if (!Number.isSafeInteger(entry.eagerOutputOrdinal) || entry.eagerOutputOrdinal !== index) {
-      throw new Error('kernel journal eager output ordinals must be dense and ordered');
+      throw new Error('journal journal eager output ordinals must be dense and ordered');
     }
     validateLocation(entry.collection, entry.offset);
     outputs.push({
@@ -766,7 +766,7 @@ export function planKernelEntryJournalOutputLayout(
     if (!Number.isSafeInteger(entry.recordOrdinal) || entry.recordOrdinal < 0
       || entry.recordOrdinal <= priorRecordOrdinal
       || !Number.isSafeInteger(entry.outputOrdinal) || entry.outputOrdinal !== index) {
-      throw new Error('kernel journal deferred outputs must have ordered records and dense ordinals');
+      throw new Error('journal journal deferred outputs must have ordered records and dense ordinals');
     }
     priorRecordOrdinal = entry.recordOrdinal;
     validateLocation(entry.collection, entry.offset);
@@ -793,7 +793,7 @@ export function planKernelEntryJournalOutputLayout(
  * implements the published `last-mutating-access` rule without using collection iteration order, commitment-vector
  * position, or a best-effort slot scan as the semantic settlement identity.
  */
-export function planKernelEntryJournalSettlementAuthority(
+export function planJournalEntryJournalSettlementAuthority(
   occurrences: readonly KernelEntryJournalSettlementOccurrence[],
 ): KernelEntryJournalSettlementPlan {
   const streamRecipes = new Map<string, string>();
@@ -804,31 +804,31 @@ export function planKernelEntryJournalSettlementAuthority(
   const authenticatedCarriers = new Map<number, KernelEntryJournalSettlementReference>();
   for (const { frameIndex, identity, accessOrdinal, access } of occurrences) {
     if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) {
-      throw new Error('kernel journal settlement identity has an invalid frame index');
+      throw new Error('journal journal settlement identity has an invalid frame index');
     }
     if (!Number.isSafeInteger(identity.accessStreamIndex) || identity.accessStreamIndex < 0) {
-      throw new Error('kernel journal settlement identity has an invalid access stream index');
+      throw new Error('journal journal settlement identity has an invalid access stream index');
     }
     if (identity.recordOrdinalScope !== undefined && identity.recordOrdinalScope !== 'global-journal') {
-      throw new Error('kernel journal settlement identity has an unsupported record ordinal scope');
+      throw new Error('journal journal settlement identity has an unsupported record ordinal scope');
     }
     if (identity.accessOrdinalSource !== 'access-program-order'
       || identity.recordOrdinalSources.length !== 2
       || identity.recordOrdinalSources[0] !== 'target-record-ordinal'
       || identity.recordOrdinalSources[1] !== 'predecessor-record-ordinal') {
-      throw new Error('kernel journal settlement identity has an unsupported record recipe');
+      throw new Error('journal journal settlement identity has an unsupported record recipe');
     }
     if ((identity.settlementRole === 'carrier-only') !== (identity.settlementOwnership === 'none')
       || (identity.settlementRole === 'mutation-settlement')
         !== (identity.settlementOwnership === 'last-mutating-access')) {
-      throw new Error('kernel journal settlement identity has an inconsistent settlement ownership rule');
+      throw new Error('journal journal settlement identity has an inconsistent settlement ownership rule');
     }
     if (identity.recordDispositionSource !== undefined
       && ((identity.settlementRole === 'carrier-only'
         && identity.recordDispositionSource !== 'authenticated-carrier')
         || (identity.settlementRole === 'mutation-settlement'
           && identity.recordDispositionSource !== 'mutation-settlement'))) {
-      throw new Error('kernel journal settlement identity has an inconsistent record disposition source');
+      throw new Error('journal journal settlement identity has an inconsistent record disposition source');
     }
     const recipe = [
       identity.accessStreamIndex,
@@ -843,21 +843,21 @@ export function planKernelEntryJournalSettlementAuthority(
     const scopedStream = `${frameIndex}:${identity.accessStreamIndex}`;
     const priorRecipe = streamRecipes.get(scopedStream);
     if (priorRecipe !== undefined && priorRecipe !== recipe) {
-      throw new Error(`kernel journal settlement stream ${identity.accessStreamIndex} changes identity recipe`);
+      throw new Error(`journal journal settlement stream ${identity.accessStreamIndex} changes identity recipe`);
     }
     streamRecipes.set(scopedStream, recipe);
     if (!Number.isSafeInteger(accessOrdinal) || accessOrdinal < 0) {
-      throw new Error('kernel journal settlement access ordinal must be a non-negative safe integer');
+      throw new Error('journal journal settlement access ordinal must be a non-negative safe integer');
     }
     const streamOrdinals = ordinalsByStream.get(scopedStream) ?? new Set<number>();
     if (streamOrdinals.has(accessOrdinal)) {
       throw new Error(
-        `kernel journal settlement stream ${identity.accessStreamIndex} repeats access ordinal ${accessOrdinal}`,
+        `journal journal settlement stream ${identity.accessStreamIndex} repeats access ordinal ${accessOrdinal}`,
       );
     }
     if (accessOrdinal !== streamOrdinals.size) {
       throw new Error(
-        `kernel journal settlement stream ${identity.accessStreamIndex} expected access ordinal `
+        `journal journal settlement stream ${identity.accessStreamIndex} expected access ordinal `
         + `${streamOrdinals.size}, received ${accessOrdinal}`,
       );
     }
@@ -865,7 +865,7 @@ export function planKernelEntryJournalSettlementAuthority(
     ordinalsByStream.set(scopedStream, streamOrdinals);
     if ((identity.settlementRole === 'mutation-settlement') !== access.mutates) {
       throw new Error(
-        `kernel journal settlement stream ${identity.accessStreamIndex} settlement role disagrees with its access`,
+        `journal journal settlement stream ${identity.accessStreamIndex} settlement role disagrees with its access`,
       );
     }
     const append = (recordOrdinal: number, recordRole: 'target' | 'predecessor'): void => {
@@ -886,7 +886,7 @@ export function planKernelEntryJournalSettlementAuthority(
         ? access.authenticatesTarget === true : access.authenticatesPredecessor === true;
       if (authenticatesRecord) {
         if (authenticatedCarriers.has(recordOrdinal)) {
-          throw new Error(`kernel journal record ${recordOrdinal} has multiple authenticating access identities`);
+          throw new Error(`journal journal record ${recordOrdinal} has multiple authenticating access identities`);
         }
         authenticatedCarriers.set(recordOrdinal, reference);
       }
@@ -920,7 +920,7 @@ export function planKernelEntryJournalSettlementAuthority(
  * emitted as a dense subsequence of global record-ordinal order, even when collections or access streams interleave.
  * An absence disposition (a deleted/tombstoned target) is settled without emitting an NFT.
  */
-export function planKernelEntryJournalSettlementOutputs(
+export function planJournalEntryJournalSettlementOutputs(
   plan: KernelEntryJournalSettlementPlan,
   resolve: (authority: KernelEntryJournalSettlementReference) => {
     collection: string; offset: number;
@@ -933,16 +933,16 @@ export function planKernelEntryJournalSettlementOutputs(
   for (const [recordOrdinal, disposition] of ordered) {
     const { reference } = disposition;
     if (reference.recordOrdinal !== recordOrdinal) {
-      throw new Error('kernel journal record disposition aliases a different record ordinal');
+      throw new Error('journal journal record disposition aliases a different record ordinal');
     }
     if (reference.settlementDisposition === 'absence') continue;
     const { collection, offset } = resolve(reference);
     if (!collection || !Number.isSafeInteger(offset) || offset < 0) {
-      throw new Error(`kernel journal settlement record ${recordOrdinal} has an invalid physical output location`);
+      throw new Error(`journal journal settlement record ${recordOrdinal} has an invalid physical output location`);
     }
     const locationIdentity = `${collection}\0${offset}`;
     if (usedLocations.has(locationIdentity)) {
-      throw new Error(`kernel journal settlement record ${recordOrdinal} aliases a physical output location`);
+      throw new Error(`journal journal settlement record ${recordOrdinal} aliases a physical output location`);
     }
     usedLocations.add(locationIdentity);
     outputs.push({ recordOrdinal, outputOrdinal: outputs.length, collection, offset });
@@ -1000,14 +1000,14 @@ function validatePhysicalSettlementFlow(
     const { access } = occurrence;
     const knownTargetPresence = presence.get(access.targetRecordOrdinal);
     if (knownTargetPresence !== undefined && knownTargetPresence !== access.presentBefore) {
-      throw new Error(`kernel physical settlement record ${access.targetRecordOrdinal} changes target pre-state`);
+      throw new Error(`journal physical settlement record ${access.targetRecordOrdinal} changes target pre-state`);
     }
     presence.set(access.targetRecordOrdinal, access.presentAfter);
     if (access.predecessorRecordOrdinal !== undefined) {
       const knownPredecessorPresence = presence.get(access.predecessorRecordOrdinal);
       if (knownPredecessorPresence === false) {
         throw new Error(
-          `kernel physical settlement deleted record ${access.predecessorRecordOrdinal} cannot be a predecessor`,
+          `journal physical settlement deleted record ${access.predecessorRecordOrdinal} cannot be a predecessor`,
         );
       }
       // A predecessor is an existing linked-list node in every valid topology transition. This also makes a
@@ -1063,7 +1063,7 @@ function isSyntheticPresentRecord(
  * rewritten here; a repeated mutating authenticator is therefore rejected rather than silently changing protocol
  * semantics.
  */
-export function planKernelEntryJournalPhysicalSettlement(
+export function planJournalEntryJournalPhysicalSettlement(
   occurrences: readonly KernelEntryJournalSettlementOccurrence[],
 ): KernelEntryJournalPhysicalSettlementPlan {
   const referencesByRecord = new Map<number, KernelEntryJournalPhysicalReference[]>();
@@ -1087,12 +1087,12 @@ export function planKernelEntryJournalPhysicalSettlement(
     if (authenticators.length === 0) continue;
     const firstAuthenticator = authenticators[0]!;
     if (references[0] !== firstAuthenticator) {
-      throw new Error(`kernel physical settlement consumer precedes authenticated producer for record ${recordOrdinal}`);
+      throw new Error(`journal physical settlement consumer precedes authenticated producer for record ${recordOrdinal}`);
     }
     inputReferences.push(firstAuthenticator);
     for (const duplicate of authenticators.slice(1)) {
       if (!duplicate.cleanCarrier) {
-        throw new Error(`kernel physical settlement record ${recordOrdinal} has multiple non-clean authenticators`);
+        throw new Error(`journal physical settlement record ${recordOrdinal} has multiple non-clean authenticators`);
       }
       const current = rewritten[duplicate.occurrenceIndex]!;
       // The public access representation uses optional literal `true` flags; omit the selected flag so the
@@ -1119,7 +1119,7 @@ export function planKernelEntryJournalPhysicalSettlement(
     const isAbsentOnly = references.every((reference) => reference.recordRole === 'target'
       && !occurrences[reference.occurrenceIndex]!.access.presentAfter);
     if (!isAbsentOnly && !isSyntheticPresentRecord(occurrence, first)) {
-      throw new Error(`kernel physical settlement record ${recordOrdinal} has no authenticated producer`);
+      throw new Error(`journal physical settlement record ${recordOrdinal} has no authenticated producer`);
     }
   }
 
@@ -1127,7 +1127,7 @@ export function planKernelEntryJournalPhysicalSettlement(
     ...occurrence,
     access: rewritten[occurrenceIndex]!,
   }));
-  const settlement = planKernelEntryJournalSettlementAuthority(normalizedOccurrences);
+  const settlement = planJournalEntryJournalSettlementAuthority(normalizedOccurrences);
   const referenceByCoordinate = new Map<string, KernelEntryJournalSettlementReference>();
   for (const reference of settlement.references) {
     referenceByCoordinate.set(
@@ -1140,7 +1140,7 @@ export function planKernelEntryJournalPhysicalSettlement(
     const firstOwner = referenceByCoordinate.get(
       `${occurrence.frameIndex}:${occurrence.identity.accessStreamIndex}:${occurrence.accessOrdinal}:${input.recordRole}`,
     );
-    if (!firstOwner) throw new Error('kernel physical settlement lost first input owner');
+    if (!firstOwner) throw new Error('journal physical settlement lost first input owner');
     return { recordOrdinal: input.recordOrdinal, recordRole: input.recordRole, firstOwner };
   });
   const inputCoordinates = new Set(inputs.map((input) => (
@@ -1167,7 +1167,7 @@ export function planKernelEntryJournalPhysicalSettlement(
       isSyntheticPresentRecord(occurrences[reference.occurrenceIndex]!, reference)
     )) === true;
     if (!hasInput && !hasSyntheticProducer) {
-      throw new Error(`kernel physical settlement present record ${recordOrdinal} has no input or synthetic producer`);
+      throw new Error(`journal physical settlement present record ${recordOrdinal} has no input or synthetic producer`);
     }
     outputs.push({ recordOrdinal, outputOrdinal: outputs.length, finalOwner: disposition.reference });
   }
@@ -1207,7 +1207,7 @@ export function planKernelEntryJournalPhysicalSettlement(
  * of the caller which has verified the matching route bytecode; exporting this helper alone cannot omit an input
  * or materialize an output.
  */
-export function resolveKernelEntryJournalDirtyFinalBodies(
+export function resolveJournalEntryJournalDirtyFinalBodies(
   plan: Pick<KernelEntryJournalPhysicalSettlementPlan, 'outputs'>,
   records: readonly KernelEntryJournalRecord[],
   candidates: readonly KernelEntryJournalDirtyFinalBodyCandidate[],
@@ -1220,23 +1220,23 @@ export function resolveKernelEntryJournalDirtyFinalBodies(
   for (const output of plan.outputs) {
     if (!Number.isSafeInteger(output.recordOrdinal) || output.recordOrdinal < 0
       || !Number.isSafeInteger(output.outputOrdinal) || output.outputOrdinal < 0) {
-      throw new Error('kernel dirty final-body resolution received an invalid output coordinate');
+      throw new Error('journal dirty final-body resolution received an invalid output coordinate');
     }
     if (dirtyOutputs.has(output.recordOrdinal)) {
-      throw new Error(`kernel dirty final-body resolution has duplicate final authority for record ${output.recordOrdinal}`);
+      throw new Error(`journal dirty final-body resolution has duplicate final authority for record ${output.recordOrdinal}`);
     }
     const record = records[output.recordOrdinal];
     if (!record) {
-      throw new Error(`kernel dirty final-body resolution has no record ${output.recordOrdinal}`);
+      throw new Error(`journal dirty final-body resolution has no record ${output.recordOrdinal}`);
     }
     if (record.dirty) {
       if (record.tombstone) {
-        throw new Error(`kernel dirty final-body resolution cannot recreate tombstoned record ${output.recordOrdinal}`);
+        throw new Error(`journal dirty final-body resolution cannot recreate tombstoned record ${output.recordOrdinal}`);
       }
       dirtyOutputs.set(output.recordOrdinal, output);
       const key = producerKey(output.finalOwner);
       if (dirtyOutputsByProducer.has(key)) {
-        throw new Error(`kernel dirty final-body resolution has duplicate producer identity ${key}`);
+        throw new Error(`journal dirty final-body resolution has duplicate producer identity ${key}`);
       }
       dirtyOutputsByProducer.set(key, output);
     }
@@ -1249,11 +1249,11 @@ export function resolveKernelEntryJournalDirtyFinalBodies(
       || !Number.isSafeInteger(producer.accessStreamIndex) || producer.accessStreamIndex < 0
       || !Number.isSafeInteger(producer.accessOrdinal) || producer.accessOrdinal < 0
       || (producer.recordRole !== 'target' && producer.recordRole !== 'predecessor')) {
-      throw new Error('kernel dirty final-body resolution received an invalid producer identity');
+      throw new Error('journal dirty final-body resolution received an invalid producer identity');
     }
     const output = dirtyOutputsByProducer.get(producerKey(producer));
     if (!output) {
-      throw new Error(`kernel dirty final-body resolution received an unexpected producer ${producerKey(producer)}`);
+      throw new Error(`journal dirty final-body resolution received an unexpected producer ${producerKey(producer)}`);
     }
     const { recordOrdinal } = output;
     const record = records[recordOrdinal]!;
@@ -1261,14 +1261,14 @@ export function resolveKernelEntryJournalDirtyFinalBodies(
     // boundary require the full fixed link prefix explicitly, then bind its slot to the authenticated record.
     if (candidate.commitment.length < SLOT_BYTES * 2
       || candidate.commitment.length > SLOT_BYTES * 2 + KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES) {
-      throw new Error(`kernel dirty final-body resolution has malformed commitment for record ${recordOrdinal}`);
+      throw new Error(`journal dirty final-body resolution has malformed commitment for record ${recordOrdinal}`);
     }
     const body = decodeEntryCommitment(candidate.commitment);
     if (!body.slot.every((byte, index) => byte === record.slot[index])) {
-      throw new Error(`kernel dirty final-body resolution commitment slot mismatches record ${recordOrdinal}`);
+      throw new Error(`journal dirty final-body resolution commitment slot mismatches record ${recordOrdinal}`);
     }
     if (!body.nextKey.every((byte, index) => byte === record.nextKey[index])) {
-      throw new Error(`kernel dirty final-body resolution commitment next key mismatches record ${recordOrdinal}`);
+      throw new Error(`journal dirty final-body resolution commitment next key mismatches record ${recordOrdinal}`);
     }
     const group = candidatesByRecord.get(recordOrdinal) ?? [];
     group.push(candidate);
@@ -1281,7 +1281,7 @@ export function resolveKernelEntryJournalDirtyFinalBodies(
       const group = candidatesByRecord.get(recordOrdinal) ?? [];
       if (group.length !== 1) {
         throw new Error(
-          `kernel dirty final-body resolution requires exactly one final body for record ${recordOrdinal}; found ${group.length}`,
+          `journal dirty final-body resolution requires exactly one final body for record ${recordOrdinal}; found ${group.length}`,
         );
       }
       // Return an owned copy so callers cannot mutate a post-validation body before builder materialization.
@@ -1306,13 +1306,13 @@ export function kernelEntryJournalSettlementOutputSegments(
 }
 
 /** Backward-compatible convenience wrapper for callers that have not yet retained the full output plan. */
-export function planKernelEntryJournalSettlementOutputSegments(
+export function planJournalEntryJournalSettlementOutputSegments(
   plan: KernelEntryJournalSettlementPlan,
   resolve: (authority: KernelEntryJournalSettlementReference) => {
     collection: string; offset: number;
   },
 ): KernelEntryJournalSettlementOutputSegment[] {
-  return kernelEntryJournalSettlementOutputSegments(planKernelEntryJournalSettlementOutputs(plan, resolve));
+  return kernelEntryJournalSettlementOutputSegments(planJournalEntryJournalSettlementOutputs(plan, resolve));
 }
 
 export interface KernelEntryJournalRecordPosition {
@@ -1325,7 +1325,7 @@ export interface KernelEntryJournalRecordPosition {
 export interface KernelEntryJournalSegmentValidationOptions {
   /** Bind an authenticated external cardinality to the complete segmented vector. */
   expectedRecordCount?: number;
-  /** Route-entry witnesses must be clean; dirty records exist only after kernel execution. */
+  /** Route-entry witnesses must be clean; dirty records exist only after journal execution. */
   transportOnly?: boolean;
 }
 
@@ -1337,7 +1337,7 @@ function requireIdentity(name: string, value: Uint8Array, length: number): void 
  * Encode one independently bounded pending-entry record:
  * `0x05 || flags || collectionHash20 || slot32 || nextKey32 || valueTail`.
  */
-export function encodeKernelEntryJournalRecord(record: KernelEntryJournalRecord): Uint8Array {
+export function encodeJournalEntryJournalRecord(record: KernelEntryJournalRecord): Uint8Array {
   requireIdentity('collectionHash', record.collectionHash, COLLECTION_HASH_BYTES);
   requireIdentity('slot', record.slot, SLOT_BYTES);
   requireIdentity('nextKey', record.nextKey, SLOT_BYTES);
@@ -1377,14 +1377,14 @@ export function encodeKernelEntryJournalRecord(record: KernelEntryJournalRecord)
   return encoded;
 }
 
-export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntryJournalRecord {
-  if (encoded.length < HEADER_BYTES) throw new Error('kernel entry journal record is truncated');
+export function decodeJournalEntryJournalRecord(encoded: Uint8Array): KernelEntryJournalRecord {
+  if (encoded.length < HEADER_BYTES) throw new Error('journal entry journal record is truncated');
   if (encoded.length > HEADER_BYTES + KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES) {
     throw new Error(`journal value tail exceeds ${KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES} bytes`);
   }
-  if (encoded[0] !== KERNEL_ENTRY_JOURNAL_TAG) throw new Error('invalid kernel entry journal record tag');
+  if (encoded[0] !== KERNEL_ENTRY_JOURNAL_TAG) throw new Error('invalid journal entry journal record tag');
   const flags = encoded[1];
-  if ((flags & ~KNOWN_FLAGS) !== 0) throw new Error('kernel entry journal record has unknown flags');
+  if ((flags & ~KNOWN_FLAGS) !== 0) throw new Error('journal entry journal record has unknown flags');
   const authenticated = (flags & FLAG_AUTHENTICATED) !== 0;
   const dirty = (flags & FLAG_DIRTY) !== 0;
   const tombstone = (flags & FLAG_TOMBSTONE) !== 0;
@@ -1425,24 +1425,24 @@ export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntry
  * execution has authenticated and transformed a clean carrier; accepting one from the caller would bypass that
  * provenance check. Transport therefore admits only clean authenticated records and clean synthetic tombstones.
  */
-export function validateKernelEntryJournalTransportRecords(
+export function validateJournalEntryJournalTransportRecords(
   encodedRecords: readonly Uint8Array[],
 ): KernelEntryJournalRecord[] {
   return encodedRecords.map((encoded) => {
-    const record = decodeKernelEntryJournalRecord(encoded);
+    const record = decodeJournalEntryJournalRecord(encoded);
     if (record.dirty) {
-      throw new Error('dirty kernel entry journal records require final-flush settlement');
+      throw new Error('dirty journal entry journal records require final-flush settlement');
     }
     return record;
   });
 }
 
-function encodedKernelEntryJournalSegmentLength(segment: readonly Uint8Array[]): number {
+function encodedJournalEntryJournalSegmentLength(segment: readonly Uint8Array[]): number {
   return encodePushdataValue([...segment], 'bytes[]').length;
 }
 
 /** Encode one canonical record vector as the opaque, independently bounded wire carrier. */
-export function encodeKernelEntryJournalRecordSegment(segment: readonly Uint8Array[]): Uint8Array {
+export function encodeJournalEntryJournalRecordSegment(segment: readonly Uint8Array[]): Uint8Array {
   return encodePushdataValue([...segment], 'bytes[]');
 }
 
@@ -1450,7 +1450,7 @@ function requireSegmentRecordCount(recordCount: number): void {
   if (!Number.isSafeInteger(recordCount) || recordCount < 0
     || recordCount > KERNEL_ENTRY_JOURNAL_MAX_RECORDS) {
     throw new Error(
-      `kernel entry journal segmented record count must not exceed ${KERNEL_ENTRY_JOURNAL_MAX_RECORDS}`,
+      `journal entry journal segmented record count must not exceed ${KERNEL_ENTRY_JOURNAL_MAX_RECORDS}`,
     );
   }
 }
@@ -1464,7 +1464,7 @@ export function kernelEntryJournalRecordPosition(
 ): KernelEntryJournalRecordPosition {
   requireSegmentRecordCount(recordCount);
   if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= recordCount) {
-    throw new Error('kernel entry journal global record ordinal is out of range');
+    throw new Error('journal entry journal global record ordinal is out of range');
   }
   return {
     segmentIndex: Math.floor(ordinal / KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT),
@@ -1477,17 +1477,17 @@ export function kernelEntryJournalRecordPosition(
  * fixed capacity, and the final segment is non-empty. This unique partition is safe under later record mutation:
  * segment membership never depends on a record's current encoded length.
  */
-export function segmentKernelEntryJournalRecords(
+export function segmentJournalEntryJournalRecords(
   encodedRecords: readonly Uint8Array[],
 ): Uint8Array[][] {
   requireSegmentRecordCount(encodedRecords.length);
-  encodedRecords.forEach(decodeKernelEntryJournalRecord);
+  encodedRecords.forEach(decodeJournalEntryJournalRecord);
   const segments: Uint8Array[][] = [];
   for (let offset = 0; offset < encodedRecords.length; offset += KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT) {
     const segment = encodedRecords.slice(offset, offset + KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)
       .map((record) => new Uint8Array(record));
-    if (encodedKernelEntryJournalSegmentLength(segment) > MAX_JOURNAL_SEGMENT_BYTES) {
-      throw new Error('kernel entry journal segment exceeds the 520-byte BCH stack-item limit');
+    if (encodedJournalEntryJournalSegmentLength(segment) > MAX_JOURNAL_SEGMENT_BYTES) {
+      throw new Error('journal entry journal segment exceeds the 520-byte BCH stack-item limit');
     }
     segments.push(segment);
   }
@@ -1499,21 +1499,21 @@ export function segmentKernelEntryJournalRecords(
  * duplicated, or omitted records remain visible in that vector for the route's authenticated access-program
  * identity checks; this layer binds exact cardinality, framing, and the one permissible segment partition.
  */
-export function validateKernelEntryJournalRecordSegments(
+export function validateJournalEntryJournalRecordSegments(
   segments: readonly (readonly Uint8Array[])[],
   options: KernelEntryJournalSegmentValidationOptions = {},
 ): KernelEntryJournalRecord[] {
   if (segments.some((segment) => segment.length === 0)) {
-    throw new Error('kernel entry journal segments must form a non-empty prefix');
+    throw new Error('journal entry journal segments must form a non-empty prefix');
   }
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index];
     if (segment.length > KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT
       || (index + 1 < segments.length && segment.length !== KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)) {
-      throw new Error('kernel entry journal segments use a non-canonical record partition');
+      throw new Error('journal entry journal segments use a non-canonical record partition');
     }
-    if (encodedKernelEntryJournalSegmentLength(segment) > MAX_JOURNAL_SEGMENT_BYTES) {
-      throw new Error('kernel entry journal segment exceeds the 520-byte BCH stack-item limit');
+    if (encodedJournalEntryJournalSegmentLength(segment) > MAX_JOURNAL_SEGMENT_BYTES) {
+      throw new Error('journal entry journal segment exceeds the 520-byte BCH stack-item limit');
     }
   }
   const encodedRecords = segments.flatMap((segment) => [...segment]);
@@ -1521,41 +1521,41 @@ export function validateKernelEntryJournalRecordSegments(
   if (options.expectedRecordCount !== undefined) {
     requireSegmentRecordCount(options.expectedRecordCount);
     if (encodedRecords.length !== options.expectedRecordCount) {
-      throw new Error('kernel entry journal segment cardinality does not match the authenticated record count');
+      throw new Error('journal entry journal segment cardinality does not match the authenticated record count');
     }
   }
   return options.transportOnly
-    ? validateKernelEntryJournalTransportRecords(encodedRecords)
-    : encodedRecords.map(decodeKernelEntryJournalRecord);
+    ? validateJournalEntryJournalTransportRecords(encodedRecords)
+    : encodedRecords.map(decodeJournalEntryJournalRecord);
 }
 
 /**
  * Validate a compiler-provisioned segment slot vector. `segmentCount` is the authenticated active prefix:
  * exactly those slots are non-empty and every remaining capacity slot is the canonical empty array.
  */
-export function validateKernelEntryJournalRecordSegmentSlots(
+export function validateJournalEntryJournalRecordSegmentSlots(
   slots: readonly (readonly Uint8Array[])[],
   segmentCount: number,
   options: KernelEntryJournalSegmentValidationOptions = {},
 ): KernelEntryJournalRecord[] {
   if (!Number.isSafeInteger(segmentCount) || segmentCount < 0 || segmentCount > slots.length) {
-    throw new Error('kernel entry journal segment count is out of range');
+    throw new Error('journal entry journal segment count is out of range');
   }
   for (let index = 0; index < slots.length; index += 1) {
     if ((index < segmentCount) !== (slots[index].length > 0)) {
-      throw new Error('kernel entry journal segment slots must use the authenticated non-empty prefix');
+      throw new Error('journal entry journal segment slots must use the authenticated non-empty prefix');
     }
   }
-  return validateKernelEntryJournalRecordSegments(slots.slice(0, segmentCount), options);
+  return validateJournalEntryJournalRecordSegments(slots.slice(0, segmentCount), options);
 }
 
 /** Encode a planner's first-touch-ordered records for one collection into the exact covenant carrier format. */
-export function encodeKernelEntryJournalRecords(
+export function encodeJournalEntryJournalRecords(
   collectionHash: Uint8Array,
   records: readonly JournaledMutationRecord[],
 ): Uint8Array[] {
   requireIdentity('collectionHash', collectionHash, COLLECTION_HASH_BYTES);
-  return records.map((record) => encodeKernelEntryJournalRecord({
+  return records.map((record) => encodeJournalEntryJournalRecord({
     collectionHash,
     slot: record.slot,
     nextKey: record.nextKey,
@@ -1573,7 +1573,7 @@ export function encodeKernelEntryJournalRecords(
  * the pending value and predecessor topology produced by every earlier stream, while all streams address one
  * collection-wide first-touch record ordinal space.
  */
-export function planKernelEntryJournalStreams<T>(
+export function planJournalEntryJournalStreams<T>(
   list: SortedList,
   collectionHash: Uint8Array,
   streams: readonly (readonly JournaledUpsert<T>[])[],
@@ -1585,11 +1585,11 @@ export function planKernelEntryJournalStreams<T>(
   const encodedAccessStreams = streamLengths.map((length) => {
     const streamAccesses = mutationPlan.accesses.slice(accessOffset, accessOffset + length);
     accessOffset += length;
-    return encodeKernelEntryJournalAccesses(collectionHash, streamAccesses);
+    return encodeJournalEntryJournalAccesses(collectionHash, streamAccesses);
   });
   return {
     mutationPlan,
-    encodedRecords: encodeKernelEntryJournalRecords(collectionHash, mutationPlan.records),
+    encodedRecords: encodeJournalEntryJournalRecords(collectionHash, mutationPlan.records),
     encodedAccessStreams,
   };
 }
@@ -1597,9 +1597,9 @@ export function planKernelEntryJournalStreams<T>(
 /**
  * Plan record selection before concrete values are available. This intentionally returns no record carriers:
  * placeholder values are sufficient to determine presence, predecessor topology, and first-touch ordinals, but
- * must never be confused with the final values emitted by `planKernelEntryJournalStreams`.
+ * must never be confused with the final values emitted by `planJournalEntryJournalStreams`.
  */
-export function planKernelEntryJournalAccessTopology(
+export function planJournalEntryJournalAccessTopology(
   list: SortedList,
   collectionHash: Uint8Array,
   streams: readonly (readonly JournaledUpsert<KernelEntryJournalTopologyOperation>[])[],
@@ -1625,7 +1625,7 @@ export function planKernelEntryJournalAccessTopology(
     // records in source order later; neither form can be mistaken for an already-settled dirty output.
     encodedRecords: mutationPlan.records.map((record) => {
       const original = list.find(record.slot);
-      return encodeKernelEntryJournalRecord(original ? {
+      return encodeJournalEntryJournalRecord(original ? {
         collectionHash,
         slot: original.slot,
         nextKey: original.nextKey,
@@ -1648,7 +1648,7 @@ export function planKernelEntryJournalAccessTopology(
     encodedAccessStreams: streamLengths.map((length) => {
       const accesses = mutationPlan.accesses.slice(accessOffset, accessOffset + length);
       accessOffset += length;
-      return encodeKernelEntryJournalAccesses(collectionHash, accesses);
+      return encodeJournalEntryJournalAccesses(collectionHash, accesses);
     }),
   };
 }
@@ -1665,14 +1665,14 @@ function requireRecordOrdinal(name: string, ordinal: number): void {
  * updates, deletes, or observes absence. Canonical counter streams contain at most 64 operations, while the
  * format remains valid up to the largest fixed-width program which fits one 520-byte BCH stack item.
  */
-export function encodeKernelEntryJournalAccesses(
+export function encodeJournalEntryJournalAccesses(
   collectionHash: Uint8Array,
   accesses: readonly KernelEntryJournalAccess[],
 ): Uint8Array {
   requireIdentity('collectionHash', collectionHash, COLLECTION_HASH_BYTES);
   if (accesses.length > KERNEL_ENTRY_JOURNAL_MAX_ACCESSES) {
     throw new Error(
-      `kernel entry journal access stream exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES} operations`,
+      `journal entry journal access stream exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES} operations`,
     );
   }
   const encoded = new Uint8Array(ACCESS_HEADER_BYTES + accesses.length * ACCESS_BYTES);
@@ -1720,32 +1720,32 @@ export function encodeKernelEntryJournalAccesses(
 }
 
 /** Decode and canonically validate one compact row-owned mutation stream. */
-export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): KernelEntryJournalAccess[] {
-  if (encoded.length < ACCESS_HEADER_BYTES) throw new Error('kernel entry journal access stream is truncated');
+export function decodeJournalEntryJournalAccesses(encoded: Uint8Array): KernelEntryJournalAccess[] {
+  if (encoded.length < ACCESS_HEADER_BYTES) throw new Error('journal entry journal access stream is truncated');
   if (encoded[0] !== KERNEL_ENTRY_JOURNAL_ACCESS_TAG) {
-    throw new Error('invalid kernel entry journal access stream tag');
+    throw new Error('invalid journal entry journal access stream tag');
   }
   const count = encoded[1];
   if (count > KERNEL_ENTRY_JOURNAL_MAX_ACCESSES) {
-    throw new Error(`kernel entry journal access stream exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES} operations`);
+    throw new Error(`journal entry journal access stream exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES} operations`);
   }
   if (encoded.length !== ACCESS_HEADER_BYTES + count * ACCESS_BYTES) {
-    throw new Error('kernel entry journal access stream has a non-canonical length');
+    throw new Error('journal entry journal access stream has a non-canonical length');
   }
   return Array.from({ length: count }, (_unused, index) => {
     const offset = ACCESS_HEADER_BYTES + index * ACCESS_BYTES;
     const flags = encoded[offset];
     if ((flags & ~KNOWN_ACCESS_FLAGS) !== 0) {
-      throw new Error('kernel entry journal access stream has unknown flags');
+      throw new Error('journal entry journal access stream has unknown flags');
     }
     const targetRecordOrdinal = encoded[offset + 1] | (encoded[offset + 2] << 8);
     const predecessor = encoded[offset + 3] | (encoded[offset + 4] << 8);
     const hasPredecessor = (flags & ACCESS_FLAG_HAS_PREDECESSOR) !== 0;
     if (targetRecordOrdinal === NO_PREDECESSOR) {
-      throw new Error('kernel entry journal access stream uses the reserved target ordinal');
+      throw new Error('journal entry journal access stream uses the reserved target ordinal');
     }
     if (hasPredecessor !== (predecessor !== NO_PREDECESSOR)) {
-      throw new Error('kernel entry journal access stream has a non-canonical predecessor');
+      throw new Error('journal entry journal access stream has a non-canonical predecessor');
     }
     if (predecessor === targetRecordOrdinal) {
       throw new Error('journal target and predecessor record ordinals must differ');

@@ -192,7 +192,7 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
     if (!node) return false;
     if (node instanceof ReturnNode) return unsupported;
     // Loop exits require DesugarReturnInLoop's break/flag protocol. Do not append a synthetic tail return when an
-    // original return would survive inside a loop in this earlier kernel-only pass.
+    // original return would survive inside a loop in this earlier journal-only pass.
     const nestedUnsupported = unsupported || node instanceof WhileNode || node instanceof DoWhileNode;
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'definition'

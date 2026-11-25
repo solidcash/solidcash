@@ -139,7 +139,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
 
     // An upgrade swaps in caller-supplied bytecode and a deploy emits a child from caller-supplied arguments;
     // either must authenticate against a key the caller cannot choose or it is a permissionless takeover. The
-    // kernel lane manages lifecycle authority through its own signature policy, so this check is disabled there.
+    // journal lane manages lifecycle authority through its own signature policy, so this check is disabled there.
     checkLifecycleAuthorization(node, this.allowUnsafeOperations, this.lifecycleAuthorization);
 
     const visibility = node.visibility;

@@ -219,7 +219,7 @@ function encodeStoredSource(
     || recipe.mutationEffectOrdinal !== access.mutationEffectOrdinals[0]
     || !validate(recipe.expression, storedType)) return undefined;
   // Recipes execute in the decoded handler's value domain, not the SDK's public argument domain.
-  // In Solidity-compatible kernel rows, nested value addresses are ABI words while call targets stay native.
+  // In Solidity-compatible journal rows, nested value addresses are ABI words while call targets stay native.
   const executionArgs = wholeValue
     ? projectHandlerArguments(artifact, handler.name, handler.selector, functionArgs) : functionArgs;
   // Only this entry-aware boundary may bind entryPreValue. The general expression evaluator must

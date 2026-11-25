@@ -1877,7 +1877,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Event-only hold+initialize injection runs during route synthesis (before admission examines entry
-    // points). A late inject here would publish initialize as not-examined-by-route-synthesis → KERNEL_LAYOUT.
+    // points). A late inject here would publish initialize as not-examined-by-route-synthesis → JOURNAL_LAYOUT.
 
     // Register state variables with bin-packing layout computation
     const commitmentLimit = this.compilerOptions.commitmentLimit ?? 128;
@@ -3612,7 +3612,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     deployNode.foldedCollectionEntries = undefined;
     deployNode.deployedEntryNftCount = 0;
     // An implicit or implemented empty constructor is a complete zero-write transition. Mark it explicitly:
-    // kernel proof mode must distinguish this sound default genesis from a constructor that was never surveyed.
+    // journal proof mode must distinguish this sound default genesis from a constructor that was never surveyed.
     if (!ctor || statements.length === 0) {
       deployNode.ctorFoldFailed = false;
       deployNode.constructorStateFoldComplete = true;
@@ -5122,7 +5122,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // the stack through to the epilogue; adding the void record's own settlement there collides with it (its
     // returnOutputIdx pick is thrown off). Such entries keep their pre-fix-B settlement, so no void record is
     // injected. All three pieces (this witness, the reserved returnEvent slot, and the GTT settlement) derive from
-    // this injection, so gating it here keeps them consistent. A kernel direct participant's frame is the V5 proof
+    // this injection, so gating it here keeps them consistent. A journal direct participant's frame is the V5 proof
     // profile: its verifier binds the selector, so the record has no reader there and the profile admits no witness.
     const readsExternalStorage = (node.externalReads?.length ?? 0) > 0;
     // An entry that delegatecalls settles no record of its own: its delegate's answers the call.
@@ -16339,7 +16339,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * Whether a caller takes the arguments its calls leave to their callees as witnesses (leftCallArgumentPositions):
-   * every direct entry, a route build's (its bound compile included) and a kernel direct participant's, since a
+   * every direct entry, a route build's (its bound compile included) and a journal direct participant's, since a
    * spender may spend it whatever route the build also has, and the deployer program's `create`, whose constructor
    * calls digest their tagged records with them (deployer.ts fills them). A framed body binds its calls by their
    * frames (callSiteCheckScript).
@@ -16399,7 +16399,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * inputs, so they cannot both accept one run. The entry takes the index as a witness it does not check, since a
    * record naming another input is accepted by no caller. It precedes `__internal__returnOutputIdx`, after the genesis
    * call where the entry takes one, so the record witness keeps its depth and every push after it its place. A framed
-   * body binds its caller by its frame, and a kernel direct participant's V5 profile admits no witness: they take none,
+   * body binds its caller by its frame, and a journal direct participant's V5 profile admits no witness: they take none,
    * and a caller that names its reader refuses their records.
    */
   private injectCallRecordReaderParameter(node: FunctionDefinitionNode): void {
@@ -19278,7 +19278,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
 
         // Typed `I(cat).fn.call()` is the documented SolidCash invoke spelling, not a low-level
-        // payload `addr.call(bytes)`. Keep it on the regular/static graph modes the kernel loop already
+        // payload `addr.call(bytes)`. Keep it on the regular/static graph modes the journal loop already
         // lowers; `CALL` is the opaque raw-calldata mode.
         const callMode = node.methodName === 'staticcall'
           ? ExternalCallMode.STATICCALL
@@ -19966,7 +19966,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   /**
    * CRYPTO-4 binds every data NFT, mapping entry, value chunk and satoshi or token container to the master's exact
    * lock. An in-place upgrade moves the master to the replacement's lock, so a contract keeping any of them would
-   * strand them. The kernel's in-place append upgrade leaves its records at the old lock too. A framed record binds
+   * strand them. The journal's in-place append upgrade leaves its records at the old lock too. A framed record binds
    * no master lock.
    */
   private refuseUpgradeStrandingBoundRecords(contract: ContractNode): void {
@@ -19983,7 +19983,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     contract.keepsTokenContainer = slots.some((slot) => slot.kind === 'tokenContainer');
     contract.tokenContainerCount = slots.filter((slot) => slot.kind === 'tokenContainer').length;
     // Data NFTs and the satoshi container migrate on a pure direct upgrade (the bounded half of CRYPTO-4). A
-    // route kernel upgrade route (in-place append) keeps them at the old lock and still strands them, so it
+    // route journal upgrade route (in-place append) keeps them at the old lock and still strands them, so it
     // stays refused. Route synthesis runs before this pass, so its upgrade marker is present.
     const upgradeMigratesDataNfts = true;
     const records = [
@@ -20039,7 +20039,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    */
 
   /**
-   * Kernel row-loop clones settle trailing vmap upserts (`m[xs[i]] = v`) inside OP_INVOKE. Those writes index
+   * Runtime row-loop clones settle trailing vmap upserts (`m[xs[i]] = v`) inside OP_INVOKE. Those writes index
    * outputs from the route's `blockSize`, so the clone must share the route layout rather than the 1-slot
    * default an internal function would otherwise compile against. Source entry points keep their own layout
    * for direct calls. Distinct key identities on one collection stay distinct physical slots.
@@ -20455,7 +20455,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'transfer', offset: offset++, slotIndex: i, conditional: true });
     }
 
-    // TC transfers (output-only - one slot per transfer/transferNft operation). Kernel/graph frames
+    // TC transfers (output-only - one slot per transfer/transferNft operation). Graph frames
     // reserve `sites * tokenTransferWidth` so a loop dispatch can index row `s` at
     // `[base + s * width, ...)`, matching satoshi `graphTransfers` padding.
     if (node.tokenContainerAccesses) {

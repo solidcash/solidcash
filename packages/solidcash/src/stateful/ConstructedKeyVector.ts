@@ -24,7 +24,7 @@ export function assertConstructedKeyVectorRouteBinding(
   if (!descriptors?.length) return;
   if (binding?.kind === 'constructed-key-vector-replay' && binding.version === 1) return;
   throw new Error(
-    'kernel constructed key vector descriptors require an authenticated constructed-key-vector-replay route binding',
+    'journal constructed key vector descriptors require an authenticated constructed-key-vector-replay route binding',
   );
 }
 

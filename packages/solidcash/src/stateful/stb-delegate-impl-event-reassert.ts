@@ -56,7 +56,7 @@ export function ensureDistinctJobEventNfts(
 ): void {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DISABLE_JOBEVENT_DETACH === '1') return;
-  // Multi-emit receipt detach uses legacy-name discovery; kernel uses descriptor emits.
+  // Multi-emit receipt detach uses legacy-name discovery; journal uses descriptor emits.
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return;
   const eventSignature = 'JobEvent(uint256,JobEventData)';
   const publishers = [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups].filter((group) => {

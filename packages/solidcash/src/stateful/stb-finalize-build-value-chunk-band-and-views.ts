@@ -61,7 +61,7 @@ export function finalizeBuildValueChunkBandAndViews(
   const publishCategory = host.chunkableValueWriteCategory();
   const chunkLock = host.valueChunkRedeemLock
     ?? (publishCategory ? persistedCompatibilityValueChunkLock(publishCategory) : undefined);
-  // Kernel identity-scan pins count matching locks anywhere. A single persist band
+  // Identity-scan pins count matching locks anywhere. A single persist band
   // must not convert those trailing copies into OP_TRUE.
   const stagedLockHexes = new Set(
     host.valueChunkOutputs.flatMap((output) => {
@@ -106,7 +106,7 @@ export function finalizeBuildValueChunkBandAndViews(
     return 'rebuild';
   }
   // View-tail packing can still displace staged identity-scan chunks; restore before
-  // materialize/preflight so the kernel count pin observes the redeem locks.
+  // materialize/preflight so the journal count pin observes the redeem locks.
   host.reassertStagedValueChunkOutputs(builder);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && stagedLockHexes.size > 0) {

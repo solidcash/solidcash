@@ -30,7 +30,7 @@ describe('SOLIDC env registry compile-cache artifact identity', () => {
 
   it('execution-affecting options change buildArtifactCacheKey', () => {
     const base = buildArtifactCacheKey(src, { suppressWarnings: true }, 'CacheIdentityPin');
-    const withKernel = buildArtifactCacheKey(
+    const withJournal = buildArtifactCacheKey(
       src,
       { suppressWarnings: true, forceStateful: true},
       'CacheIdentityPin',
@@ -40,9 +40,9 @@ describe('SOLIDC env registry compile-cache artifact identity', () => {
       { suppressWarnings: true, ownerAltAnchor: true },
       'CacheIdentityPin',
     );
-    expect(withKernel).not.toBe(base);
+    expect(withJournal).not.toBe(base);
     expect(withOwnerAlt).not.toBe(base);
-    expect(withKernel).not.toBe(withOwnerAlt);
+    expect(withJournal).not.toBe(withOwnerAlt);
   });
 
   it('OPT-2 a bytecode-changing debug switch is not reused for a later compile', () => {

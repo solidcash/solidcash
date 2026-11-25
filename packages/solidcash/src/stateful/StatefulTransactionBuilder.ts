@@ -68,7 +68,7 @@ export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBa
   return outputBase < 0 ? outputBase : outputBase + blockBase;
 }
 import { decodeEntryCommitment, encodeEntryCommitment } from './SortedList.js';
-import { planKernelEntryJournalOutputLayout, type KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
+import { planJournalEntryJournalOutputLayout, type KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
@@ -2076,8 +2076,8 @@ export class StatefulTransactionBuilder {
       directCallDelegateBlock: this.directCallDelegateBlock,
       trailingLoopEntryVars: () => this._trailingLoopEntryVars(),
       delegateLoopEntryVars: () => this._delegateLoopEntryVars(),
-      validateKernelJournalSettlementOutputPlan: () => {
-        this.validateKernelJournalSettlementOutputPlan();
+      validateJournalJournalSettlementOutputPlan: () => {
+        this.validateJournalJournalSettlementOutputPlan();
       },
       kernelJournalOutputLayout: () => this.kernelJournalOutputLayout(),
       trailingLoopEntryOutputCount: () => this._trailingLoopEntryOutputCount(),
@@ -4887,7 +4887,7 @@ export class StatefulTransactionBuilder {
   /**
    * Identity-scan staging appends trailing redeem-lock NFTs. Later band/surplus passes can
    * convert those copies into OP_TRUE when the persist band collides with another participant.
-   * Re-append any missing staged locks so the kernel count pin still observes them.
+   * Re-append any missing staged locks so the journal count pin still observes them.
    */
   /**
    * A provisional empty-root NEW EntryNft can remain alongside the learned commitment at
@@ -6123,7 +6123,7 @@ export class StatefulTransactionBuilder {
         - this.runtimeLoopEventOutputs.length + eventIndex;
     }
     if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
-      return this.getKernelJournalTrailingEffectOutputIndex('events', eventIndex);
+      return this.getJournalJournalTrailingEffectOutputIndex('events', eventIndex);
     }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
@@ -6152,7 +6152,7 @@ export class StatefulTransactionBuilder {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length + transferIndex;
     }
     if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
-      return this.getKernelJournalTrailingEffectOutputIndex('transfers', transferIndex);
+      return this.getJournalJournalTrailingEffectOutputIndex('transfers', transferIndex);
     }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
@@ -6309,8 +6309,8 @@ export class StatefulTransactionBuilder {
       kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
       runtimeLoopTrailingSegments: this.runtimeLoopTrailingSegments,
       loopEntryCommitments: this.loopEntryCommitments,
-      validateKernelJournalSettlementOutputPlan: () => {
-        this.validateKernelJournalSettlementOutputPlan();
+      validateJournalJournalSettlementOutputPlan: () => {
+        this.validateJournalJournalSettlementOutputPlan();
       },
       kernelJournalOutputLayout: () => this.kernelJournalOutputLayout(),
       getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
@@ -6422,20 +6422,20 @@ export class StatefulTransactionBuilder {
    * The SDK derives this plan, but its coordinates must still be canonical before they decide output placement.
    * The route final flush independently authenticates each selected record against the resulting output.
    */
-  private validateKernelJournalSettlementOutputPlan(): void {
+  private validateJournalJournalSettlementOutputPlan(): void {
     this.kernelJournalOutputLayout();
   }
 
   /** Compose the explicit eager prefix and deferred dense band without deriving either from commitment order. */
   private kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan {
-    return planKernelEntryJournalOutputLayout(
+    return planJournalEntryJournalOutputLayout(
       this.kernelJournalEagerOutputPlan,
       this.kernelJournalSettlementOutputPlan,
     );
   }
 
   /** Runtime effects retain source order, but always follow the complete `E + D` journal entry band. */
-  private getKernelJournalTrailingEffectOutputIndex(
+  private getJournalJournalTrailingEffectOutputIndex(
     kind: 'events' | 'transfers', effectIndex: number,
   ): number {
     const layout = this.kernelJournalOutputLayout();
@@ -6493,7 +6493,7 @@ export class StatefulTransactionBuilder {
    * entries from emitTrailingWriteOutputBase, which steps down past the slot while the call's own
    * `__internal__returnOutputIdx` is negative, while emitRuntimeLoopEffectVerification reads the loop's events and
    * payments from past the complete fixed block. The slot then sits between the entries and the effects. A segment
-   * plan that also places entries (a route's rows), a kernel journal's band and a delegate's frame keep their
+   * plan that also places entries (a route's rows), a journal journal's band and a delegate's frame keep their
    * published coordinates, so they take nothing out.
    */
   private _runtimeLoopEntryBandCompaction(): number {

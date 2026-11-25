@@ -30,7 +30,7 @@ import { cloneNode } from '../ast/clone.js';
  *     -> Escrow e = escrows[id]; e.split = a; e.consensus = b;
  *        escrows[id] = Escrow(e.participant, e.releaser, e.amount, e.split, e.consensus, 1);
  *
- * Each successful fold replaces the field-write run (or the kernel's already-coalesced `__mefw` snapshot write)
+ * Each successful fold replaces the field-write run (or the journal's already-coalesced `__mefw` snapshot write)
  * with one whole-struct write sourced from the already-taken local, eliding exactly one entry re-read. The result
  * is byte-identical to the hand-written whole-struct write-back, so the unit test pins `elidedReads === 1` plus
  * byte-identity, never an absolute handler size.
@@ -56,7 +56,7 @@ export function rewriteStatements(
     if (!read) { out.push(statements[i]); i += 1; continue; }
 
     // Forward-scan: track the write-back of `m[k]` and every field of `e` modified before it. The write-back is
-    // either the un-coalesced field-write run (`m[k].f = ..`) or, under the kernel's early
+    // either the un-coalesced field-write run (`m[k].f = ..`) or, under the journal's early
     // CoalesceMappingEntryFieldWrites(true), an already-folded whole-struct write reading a `__mefw` snapshot.
     const run: MappingFieldAssignNode[] = [];
     const modified = new Set<string>();

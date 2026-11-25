@@ -777,7 +777,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Pre-admission saw the narrow local-vector shape; final compiler admission still requires emitted provenance. */
   /**
    * Normalized compiler-owned vector proof programs ready for artifact publication. Raw AST provenance is never
-   * serialized here: an unsupported expression leaves this absent and preserves the KERNEL_LAYOUT fence.
+   * serialized here: an unsupported expression leaves this absent and preserves the JOURNAL_LAYOUT fence.
    */
   /** Stable source-level identity used to attach pre-lowering constructed-key proof programs. */
   /** Source snapshots indexed exclusively by stable source-function identity. */
@@ -791,7 +791,7 @@ export class FunctionDefinitionNode extends Node implements Named {
    * clone names and locations are never authorization, and the value is useful only beside the binder's exact
    * completed-descriptor scope.
    */
-  /** Stable selector carried by every generated kernel handler clone for disposition authorization. */
+  /** Stable selector carried by every generated journal handler clone for disposition authorization. */
   /** Exact completed-descriptor families owned by this generated aggregate route. Compiler-private. */
 
   /** Ordered compiler-private disposition manifest owned by this generated aggregate route. */
@@ -863,19 +863,18 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-owned: this entry's reachable scalar-handler call graph contains
   // a direct or mutual recursion cycle and requires SDK VM preflight.
   scalarJournalRecursive?: boolean;
-  /** A recursive varying-key mapping read or write which no authenticated affine stream claimed. Kernel
+  /** A recursive varying-key mapping read or write which no authenticated affine stream claimed. Compiler
    * admission must retain this marker across speculative clones and refuse the generic tail-loop representation.
    * The name still says read; a write-only shape sets it too, because that loop also has no per-frame key witness. */
   unloweredVaryingRecursiveMappingRead?: boolean;
   /** An indirect internal call may reach a journal-context ABI without a statically complete target set. The
-   * kernel must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */
+   * journal must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */
   kernelJournalContextUnsafeCall?: boolean;
   /** A source entry reaches an internal effect helper which closes over a contract constructor parameter.
    * External-call lowering appends a physical settlement frame to that helper, but the constructor-captured
    * value has no source-row slot from which that frame can be rebuilt. Compiler admission records this before
-   * graph lowering so the handler remains a deterministic KERNEL_LAYOUT refusal rather than reaching type/codegen
+   * graph lowering so the handler remains a deterministic JOURNAL_LAYOUT refusal rather than reaching type/codegen
    * with a source-arity helper call. */
-  kernelConstructorCapturedHelperGraphEffect?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
@@ -885,7 +884,7 @@ export class FunctionDefinitionNode extends Node implements Named {
    * LowerCollectionJournalHelpers selects and updates those physical caches at runtime without expanding the
    * dispatcher's branches into their Cartesian product. */
   collectionJournalRuntimeAliases?: boolean;
-  /** Pooled kernel key lanes chosen at one handler call. The decoded row argument is matched to these lane
+  /** Pooled journal key lanes chosen at one handler call. The decoded row argument is matched to these lane
    * witnesses with a linear compare, instead of cloning the handler for every combination of pools. */
   collectionJournalLinearKeyPools?: Array<{ argumentName: string; lanes: string[] }>;
   // Compiler-only route batch physical route; dispatched on the reserved selector but
@@ -1111,7 +1110,7 @@ export class ParameterNode extends Node implements Named, Typed {
   // unused-variable warning must skip it.
   syntheticallyUsed = false;
   /**
-   * Physical kernel-journal context copied from a callee solely to keep an internal OP_INVOKE chain's frame
+   * Physical journal-journal context copied from a callee solely to keep an internal OP_INVOKE chain's frame
    * uniform. This operand belongs to the generated route, not to the source entry point's published ABI.
    */
   kernelJournalForwardedContext = false;
@@ -1534,7 +1533,7 @@ export class CatchClauseNode extends Node {
 
 export class DoWhileNode extends StatementNode {
   forLoopUpdateCount: number = 0;
-  /** Retains source-loop provenance across early kernel lowering and pristine binder recompilation. */
+  /** Retains source-loop provenance across early journal lowering and pristine binder recompilation. */
   sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
@@ -1555,7 +1554,7 @@ export class WhileNode extends StatementNode {
   // Number of trailing block statements that form a desugared for-loop update (see AstBuilder.visitForStatement).
   // Used by BreakContinueTransformation so `continue` still runs the update.
   forLoopUpdateCount: number = 0;
-  /** Retains source-loop provenance across early kernel lowering and pristine binder recompilation. */
+  /** Retains source-loop provenance across early journal lowering and pristine binder recompilation. */
   sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
@@ -2008,7 +2007,7 @@ export class FunctionCallNode extends ExpressionNode {
   // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
   // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
   graphEffectSite?: number;
-  // Kernel row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
+  // Runtime row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
   graphEffectSiteFromRow?: boolean;
   // Compiler-generated legacy route: every mutually exclusive handler call emitted for one logical row
   // carries that row's stable ordinal. Graph-effect planning uses it instead of counting each handler's calls

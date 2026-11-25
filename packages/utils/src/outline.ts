@@ -1776,7 +1776,7 @@ export function outlineSharedSpans(
       const target = corpus[body];
       // Consolidation is only valid for bodies above this size; small bodies must take the per-edit `splice`
       // path. Replacing the arrays cannot simply be applied everywhere: with the threshold removed, two
-      // route kernel tests regress ("threads one route-owned record carrier through each direct
+      // route journal tests regress ("threads one route-owned record carrier through each direct
       // journal-aware handler" and "moves the global verifier out of the scalar master and keeps both covenants
       // deployable") and a large integration fixture's bytecode changes, so the small-body rewrite has semantics this
       // consolidated form does not reproduce. Keeping the fallback makes the change provably output-identical.

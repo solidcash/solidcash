@@ -343,6 +343,7 @@ import {
   DeployerInternalError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
+import { isNativeAssemblySafe } from '../semantic/NativeAssemblySafety.js';
 import {
   externalResultEncoding, externalResultMayNeedPreimage, callArgumentListName, callArgumentWitnessName,
   CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES, namesCallRecordArguments,
@@ -17603,7 +17604,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const script = asmToScript(node.assemblyBody);
     const locationData = { location: node.location, positionHint: PositionHint.START };
-    const isolatedAssembly = false;
+    const isolatedAssembly = isNativeAssemblySafe(node);
 
     // Mirror each element's stack effect onto the tracker so later variable refs resolve correctly. A raw
     // conditional snapshots the post-condition stack, visits each arm independently, then joins equal-height

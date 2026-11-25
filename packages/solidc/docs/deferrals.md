@@ -3428,6 +3428,18 @@ digest and the reader, as typed loop calls do (`56ef7cfa7`, `d4a668146`), and th
 
 **Revisit if:** a port needs a batched low-level call (Kashi `cook`, a timelock's `executeBatch`).
 
+**Resolved 2026-11-25** (`842e3d3d2`): such a call in an entry point is `perTurn` and binds each turn to a callee run
+of its own. The turn's callee input is the next element of `__internal__lowLevelCallInputs<i>`, above the last turn's,
+and the list is spent to its end. A caller that keeps state reads the record each turn's run settles at
+`__internal__lowLevelCallRecordBase<i>` plus the turn, a carrier of that callee's category, by the payload's digest for
+a visible payload, and pins an opaque payload's run reader to its input. `.withCall()` lists one callee per turn. The
+three Kashi files compile again. Still refused by name: such a call outside an entry point, beside a delegatecall, or in
+a message-bus direct participant. Residuals: a `{value:}` pays from one turn per transaction (a second paying turn fails
+at the VM); the SDK refuses a turn that is a returning callee, a raw coin (where records are read) or a second run of
+one contract (`LowLevelCallTurnsError`). Open: the SDK's build of a stateful caller's turns fails its value balance
+before the VM runs (`LowLevelCallTurns.e2e`, its 4 stateful rows), so the record, reader and digest checks are not
+VM-run yet; the stateless list binding is (two callees, one callee twice as two runs, one run for two turns refused).
+
 ## Value calls nothing binds (2026-11-24)
 
 **Deferred:** a typed `{value:}` call in a loop, through a function pointer or a runtime selector, or to `msg.sender`

@@ -18,8 +18,8 @@ describe('callsite value metadata', () => {
       .toMatchObject([{ callValueEffect: expected }]);
   });
 
-  it('distinguishes helper calls with value and literal zero', () => {
-    const artifact = compileString(`pragma solidity ^0.8.20;
+  it('refuses two helper calls to one target with different value effects', () => {
+    expect(() => compileString(`pragma solidity ^0.8.20;
       interface ISink { function store(uint value) external returns (bool); }
       library Raw {
         function invoke(address target, uint amount, uint value) internal {
@@ -32,19 +32,16 @@ describe('callsite value metadata', () => {
           Raw.invoke(target, amount, 1);
           Raw.invoke(target, 0, 2);
         }
-      }`, options);
-    const calls = artifact.abi.find((fn) => fn.name === 'pay')!.externalCalls!;
-    expect(calls.map((call) => call.callValueEffect)).toEqual([true, false]);
+      }`, options)).toThrow(/REPEATED_CALL_UNSUPPORTED/);
   });
 
-  it('publishes explicit value-free markers on grouped logical rows', () => {
+  it('publishes one value-free direct call per repeated callsite', () => {
     const artifact = compileString(`pragma solidity ^0.8.20;
       interface ISink { function store(uint value) external; }
       contract Router {
         function run(address target) public { ISink(target).store(1); ISink(target).store(2); }
       }`, options);
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
-    expect(calls).toHaveLength(1);
-    expect(calls[0].batchInvocations?.map((row) => row.callValueEffect)).toEqual([false, false]);
+    expect(calls.map((call) => call.callValueEffect)).toEqual([false, false]);
   });
 });

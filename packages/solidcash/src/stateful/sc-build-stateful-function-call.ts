@@ -5,7 +5,7 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { Op, type AbiFunction } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import type { RouteRuntimeCall } from './route-runtime.js';
+import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import { addressToLockScript } from '../utils.js';
 import { peekBuildId } from './buildSequence.js';
 import { getDataNftAddress, getEntryNftAddress } from './covenant-helpers.js';

@@ -219,7 +219,7 @@ export function repairNestedCalleeOutputs(
   }> = [];
   const permitsLegacyNestedDelegateEventRepair = permitsLegacyDelegateEventRepair([
     ...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups,
-  ], host.directCallDelegateBlock, undefined);
+  ], host.directCallDelegateBlock);
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
     // Compiler-owned delegate routes materialize every declared event and entry inside their balanced frame.
     // The legacy nested-delegate repair below is only for layouts without that physical ownership boundary.

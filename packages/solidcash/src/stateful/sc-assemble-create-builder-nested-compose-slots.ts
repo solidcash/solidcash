@@ -25,7 +25,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import type { RouteRuntimeCall } from './route-runtime.js';
+import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import { addressToLockScript } from '../utils.js';
 import { artifactOraclePool, poolInfoCoSpend, readPoolTimestamp } from '../oracle/pool/reader.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
@@ -57,7 +57,7 @@ import {
   resolvePreparedProducerEntry,
   resolveRouteRowExpressionKey,
 } from './route-expression-key.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import {
   SortedList, getCachedSortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
 } from './SortedList.js';
@@ -763,7 +763,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         const internalArgs: Record<string, FunctionArgument> = {};
         const producerClaims: ValueChunkProducerResourceClaim[] = [];
         const productions: Array<NonNullable<
-        RouteRuntimeCall['valueChunkProductions']
+        RuntimeCallMetadata['valueChunkProductions']
         >[number]> = [];
         let producerStateOwner: { categoryId: string; lockingBytecode: string } | undefined;
         const effectiveRowArguments = rowArguments ?? discoveredProducerRows?.map((row, index, rows) => (
@@ -1052,7 +1052,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 logicalArtifact: sharedLogicalArtifact,
                 externalContract: { inner: { artifact: sharedLogicalArtifact } },
               }],
-              undefined,
             )) {
               stageJobEventsValue(callee.categoryId, nextValue);
             }

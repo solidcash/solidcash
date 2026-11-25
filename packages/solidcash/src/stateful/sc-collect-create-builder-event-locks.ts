@@ -12,7 +12,7 @@ import {
 } from '@solidcash/utils';
 import { scriptToLockingBytecode } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 
 export type CollectCreateBuilderEventLocksHost = {
   readonly categoryId: string;
@@ -58,24 +58,6 @@ export function collectCreateBuilderEventLocks(
   // A kernel route publishes no emits of its own: its HANDLERS are the emitters, and the route reserves one event
   // band per row (`rowIndex * width + emitIndex`). Without them the frame materializes no event output at all -
   // and a probed handler's own event check can never pass, so its return value can never be derived.
-  {
-    const routeRows = (entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.routeRowArguments;
-    const routeEventSlots = (entryAbiFunction?.blockLayout?.slots ?? [])
-      .filter((slot) => slot.kind === 'event');
-    const maximumRows = 0;
-    const routeEventWidth = maximumRows > 0 && routeEventSlots.length % maximumRows === 0
-      ? routeEventSlots.length / maximumRows : 0;
-    const known = new Set(emitInfos.map((emitInfo) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`));
-    for (const [rowIndex, row] of (routeRows ?? []).entries()) {
-      for (const emitted of row.handler.emits ?? []) {
-        const emitIndex = routeEventWidth > 0
-          ? rowIndex * routeEventWidth + emitted.emitIndex : emitted.emitIndex;
-        if (known.has(`${emitted.eventSignature}@${emitIndex}`)) continue;
-        known.add(`${emitted.eventSignature}@${emitIndex}`);
-        emitInfos.push({ ...emitted, emitIndex });
-      }
-    }
-  }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_EMIT_SOURCES === '1') {
     console.error('emit-sources', JSON.stringify({
@@ -84,11 +66,6 @@ export function collectCreateBuilderEventLocks(
       entryAbiFunction: entryAbiFunction?.name,
       abiEmits: (abiFunction?.emits ?? []).map((emitInfo) => emitInfo.eventSignature),
       entryEmits: (entryAbiFunction?.emits ?? []).map((emitInfo) => emitInfo.eventSignature),
-      routeRows: (entryAbiFunction as RouteRuntimeAbiFunction | undefined)
-        ?.routeRowArguments?.map((row: any) => ({
-          handler: row.handler.name,
-          emits: (row.handler.emits ?? []).map((emitInfo: any) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`),
-        })),
       eventSlots: (entryAbiFunction?.blockLayout?.slots ?? [])
         .filter((slot) => slot.kind === 'event').map((slot) => slot.offset),
       collected: emitInfos.map((emitInfo) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`),
@@ -112,8 +89,6 @@ export function collectCreateBuilderEventLocks(
   const runtimeEventMetadataSources = [
     abiFunction,
     entryAbiFunction,
-    ...(entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.routeRowArguments
-      ?.map((row) => row.handler) ?? [],
     ...lowLevelCallUtxoGroups.flatMap((group) => [
       group.directCall?.abiFunction,
       ...([] as any[]).map((row) => row.handler),

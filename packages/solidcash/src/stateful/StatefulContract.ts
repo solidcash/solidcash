@@ -1464,7 +1464,6 @@ export function routeValueRunFingerprint(chunks: readonly {
 export function recordRouteProbeObservation(
   observations: RouteProbeObservationHistory,
   observation: RouteProbeObservation,
-  convention?: 'legacy-unroll' | 'kernel-row-loop',
 ): 'new' | 'same' | 'changed' {
   const previous = observations.get(observation.identity);
   if (previous === undefined) {
@@ -1472,11 +1471,6 @@ export function recordRouteProbeObservation(
     return 'new';
   }
   if (previous === observation.fingerprint) return 'same';
-  if (convention === 'kernel-row-loop') {
-    throw new Error(
-      `Kernel route probe produced unstable materialization for ${observation.identity}.`,
-    );
-  }
   observations.set(observation.identity, observation.fingerprint);
   return 'changed';
 }
@@ -1522,10 +1516,9 @@ export function routeProbeRepairableEntryCoordinateCount(
 }
 
 export function permitsRouteValueChunkDerivation(
-  convention: 'legacy-unroll' | 'kernel-row-loop' | undefined,
-  writes: readonly ValueChunkWriteDescriptor[],
+  _writes: readonly ValueChunkWriteDescriptor[],
 ): boolean {
-  return convention !== 'kernel-row-loop' || writes.length > 0;
+  return true;
 }
 
 /** The exact ABI body carried by a physical participant. Routes outrank source-level names because
@@ -1544,7 +1537,6 @@ function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean {
  * list is authoritative and ambiguity fails closed. Source names remain only for artifacts with no effect list. */
 export function computedStateWriterGroupIndex(
   groups: readonly ExternalCallUtxoGroup[], candidateIndices: readonly number[],
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number | undefined {
   const described = candidateIndices.filter((index) => hasPublishedEntryEffects(groups[index]));
   const writers = described.filter((index) => {
@@ -1555,7 +1547,7 @@ export function computedStateWriterGroupIndex(
   if (writers.length === 1) return writers[0];
   if (described.length > 0) return undefined;
   if (!permitsLegacyNamedValueChunkFallback(
-    candidateIndices.map((index) => groups[index]), ownerConvention,
+    candidateIndices.map((index) => groups[index]),
   )) {
     return undefined;
   }
@@ -1569,7 +1561,6 @@ export function computedStateWriterGroupIndex(
 /** Select one physical chunkable-array writer by its published collection effects. */
 export function chunkableWriterGroupIndex(
   groups: readonly ExternalCallUtxoGroup[],
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   const candidates = groups.flatMap((group, index) => {
     const abi = physicalExternalCallFunction(group);
@@ -1577,7 +1568,7 @@ export function chunkableWriterGroupIndex(
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
-  if (!permitsLegacyNamedValueChunkFallback(groups, ownerConvention)) return -1;
+  if (!permitsLegacyNamedValueChunkFallback(groups)) return -1;
   const plannedLegacyCandidates = groups.flatMap((group, index) => (
     legacyPlannedChunkableValueWriteCollection(group) === undefined ? [] : [index]
   ));

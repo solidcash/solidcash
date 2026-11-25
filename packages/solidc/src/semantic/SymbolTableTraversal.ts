@@ -4534,7 +4534,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           throw new NonPayableCallValueError(slot.sourceCallNode, slot.interfaceName, slot.functionName);
         }
         if (target && (target.stateMutability === 'view' || target.stateMutability === 'pure')
-          && !slot.runtimeSelector && !slot.batchInvocations) {
+          && !slot.runtimeSelector) {
           slot.readonlyReturnSelector = this.computeAbiSelector(this.selectorSignatureFor(
             slot.functionName, target.parameterTypes,
           ));
@@ -4661,7 +4661,6 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar) continue;
             if (slot.runtimeTernaryAddress || slot.addressIsMsgSender || slot.addressIsSelf) continue;
             if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
-            if (slot.batchInvocations) continue;
             const calleeFns = this.getCalleeFunctions(slot.interfaceName);
             if (!calleeFns || calleeFns.length === 0) continue;
             const recordMethod = this.slotCalleeMethod(slot);
@@ -4687,7 +4686,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // a loop or a selector table is no single call.
           for (const slot of externalCallSlots) {
             if (!slot.fnPtrCall || !slot.runtimeSelector || slot.loopArrayVar || slot.selectorArrayVar
-              || slot.inlineLoopDispatch || slot.batchInvocations || slot.opaqueReturn) continue;
+              || slot.inlineLoopDispatch || slot.opaqueReturn) continue;
             if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
             if (slot.sourceCallNode === undefined || this.loopNestedExternalCalls.has(slot.sourceCallNode)) continue;
             const method = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
@@ -4706,7 +4705,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // state array reads it at the return base plus the element it claims.
           for (const slot of externalCallSlots) {
             if (!slot.loopArrayVar || slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
-            if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar || slot.batchInvocations) continue;
+            if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar) continue;
             if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
             const recordMethod = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
             if (!recordMethod || slot.sourceCallNode === undefined) continue;
@@ -4728,7 +4727,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           for (const slot of externalCallSlots) {
             if (!slot.loopArrayVar || !slot.selectorArrayVar || slot.loopRecordSelector === undefined) continue;
             if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn || slot.runtimeSelector
-              || slot.batchInvocations) continue;
+              ) continue;
             if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
             const method = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
             if (!method || slot.sourceCallNode === undefined) continue;
@@ -4756,12 +4755,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         // Logical calls removed from the physical layout point at their
         // representative's one physical slot.
-        for (const slot of logicalCallSlots) {
-          if (externalCallSlots.includes(slot)) continue;
-          const representative = externalCallSlots.find((candidate) =>
-            candidate.batchInvocations?.some((row) => row.parameters === slot.sourceCallNode?.parameters));
-          if (representative) slot.slotIndex = representative.slotIndex;
-        }
         const remapSerializedCallsites = (
           expression: ExternalCallExpression | undefined,
           seen = new Set<ExternalCallExpression>(),
@@ -4823,11 +4816,6 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (source.kind !== 'forward' || source.paramIndex === undefined) continue;
             const parameter = node.parameters[source.paramIndex];
             if (parameter) node.opRolls.delete(parameter.name);
-          }
-          for (const row of slot.batchInvocations ?? []) {
-            for (const parameter of row.parameters) {
-              if (parameter instanceof IdentifierNode) node.opRolls.delete(parameter.name);
-            }
           }
         }
 
@@ -4930,7 +4918,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             // so bake its selector as a constant the covenant checks against - a spender must not be able to point
             // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
             // selector (bound to `cond`).
-            if (!slot.runtimeSelector && !slot.batchInvocations) {
+            if (!slot.runtimeSelector) {
               const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               if (ifaceFunc) {
                 slot.compileTimeSelector = this.calleeMethodSelector(slot.functionName, ifaceFunc.parameterTypes);
@@ -5004,9 +4992,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           for (const slot of externalCallSlots) {
             if (slot.loopArrayVar || slot.inlineLoopDispatch || !slot.addressParam
               || slot.addressLiteral !== undefined || slot.addressIsMsgSender) continue;
-            const batchOwner = externalCallSlots.find((candidate) => candidate.slotIndex < slot.slotIndex
-              && candidate.addressParam === slot.addressParam && candidate.batchInvocations);
-            if (batchOwner) continue;
             const anchorName = `__internal__extcallAnchorIdx${slot.slotIndex}`;
             const anchorParam = new ParameterNode(PrimitiveType.BIGINT, anchorName);
             anchorParam.location = node.location;
@@ -8942,7 +8927,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private warnUncheckedComputedTarget(
     fn: FunctionDefinitionNode, slot: ExternalCallSlot, kind: ComputedCallTargetKind,
   ): void {
-    for (const call of slot.batchInvocations?.map((row) => row.sourceCallNode) ?? [slot.sourceCallNode]) {
+    for (const call of [slot.sourceCallNode]) {
       this.recordComputedCallTarget(fn, call?.callInfo ?? slot, call?.location, kind);
     }
   }
@@ -16401,7 +16386,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private leftDigestedPositions(slot: ExternalCallSlot): number[] {
     if (!slot.hasReturnValues || slot.callRecordSelector === undefined || slot.sourceCallNode === undefined
       || slot.opaqueReturn || slot.runtimeSelector || slot.selectorArrayVar || slot.fnPtrCall
-      || slot.batchInvocations || !this.interfaceMap.has(slot.interfaceName)) return [];
+      || !this.interfaceMap.has(slot.interfaceName)) return [];
     const declared = (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
       && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
     const named = slot.sourceCallNode.parameters.length;
@@ -20000,7 +19985,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Data NFTs and the satoshi container migrate on a pure direct upgrade (the bounded half of CRYPTO-4). A
     // route kernel upgrade route (in-place append) keeps them at the old lock and still strands them, so it
     // stays refused. Route synthesis runs before this pass, so its upgrade marker is present.
-    const upgradeMigratesDataNfts = !contract.functions.some((fn) => false);
+    const upgradeMigratesDataNfts = true;
     const records = [
       ...(!upgradeMigratesDataNfts && contract.stateVariables.length > 0
         ? ['state variables in data NFTs'] : []),
@@ -20318,7 +20303,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!slot.hasReturnValues || slot.opaqueReturn || slot.callRecordSelector === undefined
       || slot.sourceCallNode === undefined) return false;
     if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar
-      || slot.batchInvocations || slot.callOrdinal !== undefined) return false;
+      || slot.callOrdinal !== undefined) return false;
     const digested = (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
       && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
     return namesCallRecordArguments(digested, slot.sourceCallNode.parameters.length);
@@ -20350,7 +20335,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     return this.isStatefulContract && (attestsRawCall || attestsTypedCall)
       && this.compilerOptions.composition !== 'framed' && !false && !false
       && !slot.runtimeSelector && !slot.selectorArrayVar
-      && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined && !slot.batchInvocations
+      && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined
       && slot.condition === undefined && !slot.addressIsSelf && !slot.addressIsMsgSender;
   }
 

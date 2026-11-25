@@ -628,7 +628,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             journalName: entry.journalName,
           })),
         })),
-        graphFunctions: node.functions.filter((fn) => false).map((fn) => fn.name),
+        graphFunctions: [],
       }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
     }
 

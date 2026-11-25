@@ -5,7 +5,7 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, StateValue } from '@solidcash/utils';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
-import type { RouteRuntimeCall } from './route-runtime.js';
+import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type Signer from '../Signer.js';
 import {

@@ -278,7 +278,6 @@ export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): 
     host.externalCallUtxoGroups,
     (categoryId) => host.findMintingInputIndex(categoryId),
     band,
-    undefined,
   );
   const tokenGroup = collisionIndex >= 0
     ? host.externalCallUtxoGroups[collisionIndex]

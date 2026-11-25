@@ -23,7 +23,7 @@ import {
   extractFailingP2sh32OutputPin,
   lastExtractedComputedValue,
 } from './route-value-chunk-helpers.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlot } from './SortedList.js';
 import {
   sameDerivedChunkOutputObservation,
@@ -86,18 +86,14 @@ export function applyDeriveFullNestedEntryPins(
     const entryCollections = nestedEntryAbi
       ? chunkableValueWriteCollections(llc, nestedEntryAbi)
       : [];
-    const convention = undefined;
     const legacyGroups = [llc, proxyGroup].filter((group): group is ExternalCallUtxoGroup => group !== undefined);
     const entryCollection = resolveChunkableEntryCollection({
       writes: valueChunkWrites,
       categoryId: chunkCategory,
       publishedCollections: entryCollections,
-      // The enclosing dispatcher owns the convention. A legacy or descriptor-free child nested below
-      // a kernel route must not re-enable the compatibility fallback.
-      convention,
       // Compatibility for a descriptor-free historical publisher only.
       legacyFallback: legacyNamedJobEventCollectionFallback(
-        legacyGroups, permitsLegacyNamedValueChunkFallback(legacyGroups, convention),
+        legacyGroups, permitsLegacyNamedValueChunkFallback(legacyGroups),
       ),
     });
     const blockSize = nestedEntryAbi?.blockLayout?.blockSize

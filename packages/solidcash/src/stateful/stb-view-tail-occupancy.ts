@@ -76,7 +76,7 @@ export function writeViewTailsAfterWriterOccupancy(
       ? builder.outputs.length - suffixChunkCountForPack - 1
       : Math.max(0, host.allInputs.length - 1),
     tokenWriterPresent: host.externalCallUtxoGroups.some((group) =>
-      isCompilerDescribedMintingBandWriter(group, true, undefined)),
+      isCompilerDescribedMintingBandWriter(group, true)),
   };
   const planned = packTailReturnPlacements(
     host.externalCallUtxoGroups,

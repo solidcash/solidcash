@@ -131,7 +131,6 @@ export function selectProtectedLoopEntryCollections(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
   'functionName' | 'logicalFunctionName' | 'directCall' | 'logicalArtifact' | 'externalContract'
   | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites' | 'stateLayout'>>,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): ProtectedLoopEntryCollectionSelection {
   let described = false;
   let ambiguous = false;
@@ -184,7 +183,7 @@ export function selectProtectedLoopEntryCollections(
     return {
       status: 'absent',
       collections: [legacyNamedJobEventCollectionFallback(
-        groups, permitsLegacyNamedValueChunkFallback(groups, ownerConvention),
+        groups, permitsLegacyNamedValueChunkFallback(groups),
       )].filter((collection): collection is string => collection !== undefined),
     };
   }

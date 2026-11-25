@@ -401,15 +401,11 @@ const computeSideCarRecipesOf = (
 /** Fail-closed artifact publication gate for compiler-owned source-effect identities. */
 export const sourceEffectOrderForArtifact = (
   declared: FunctionDefinitionNode['sourceEffectOrder'],
-  externalCalls: readonly { sourceEffectOrdinal?: number; batchInvocations?: readonly {
-    sourceEffectOrdinal?: number;
-  }[] }[],
+  externalCalls: readonly { sourceEffectOrdinal?: number }[],
   entryAccesses: readonly Pick<EntryAccessInfo, 'operations' | 'mutationEffectOrdinals'>[],
 ): FunctionDefinitionNode['sourceEffectOrder'] => {
-  const complete = externalCalls.every((call) => safeSourceEffectOrdinal(call.sourceEffectOrdinal)
-    && (!call.batchInvocations || call.batchInvocations.every(
-      (row) => safeSourceEffectOrdinal(row.sourceEffectOrdinal),
-    ))) && entryAccesses.filter((access) =>
+  const complete = externalCalls.every((call) => safeSourceEffectOrdinal(call.sourceEffectOrdinal))
+    && entryAccesses.filter((access) =>
     access.operations.includes('write') || access.operations.includes('delete'))
     .every((access) => access.mutationEffectOrdinals?.length
       && access.mutationEffectOrdinals.every(safeSourceEffectOrdinal));
@@ -3470,16 +3466,6 @@ function buildFunctionAbiMetadata(
           domain.continueCondition, slot.slotIndex, 'iterationDomain',
         );
       }
-      for (const row of slot.batchInvocations ?? []) {
-        // A repeated-owner batch has one physical consumer lane, but each row retains its exact source position.
-        // Validate dominance against that source position while publishing the physical lane consumed by the SDK.
-        canonicalizeSources(row.argSources, slot.slotIndex, row.sourceCallsiteId);
-        if (row.condition) {
-          row.condition = canonicalize(
-            row.condition, slot.slotIndex, 'condition', row.sourceCallsiteId,
-          );
-        }
-      }
     }
     return [...result.values()].sort((left, right) =>
       left.consumerCallsiteId - right.consumerCallsiteId
@@ -4029,7 +4015,7 @@ function buildFunctionAbiMetadata(
     const matchingCalls = (func.externalCalls ?? []).filter((call) => call.sourceCallNode === returned[0]);
     if ((func.externalCalls ?? []).length !== 1 || matchingCalls.length !== 1
       || !matchingCalls[0].hasReturnValues
-      || matchingCalls[0].batchInvocations || matchingCalls[0].condition
+      || matchingCalls[0].condition
       || matchingCalls[0].callValueEffect || matchingCalls[0].opaqueReturn) return undefined;
     return { callsiteId: matchingCalls[0].slotIndex };
   })();
@@ -4212,14 +4198,11 @@ function buildFunctionAbiMetadata(
         const rawCall = ec.interfaceName === '__raw__' && ec.functionName === '__raw__';
         // A grouped call owns one physical route even when its logical rows are conditional or repeated.
         // Publish row cardinality below; the outer callsite itself is the singular co-spend.
-        const structuralOccurrence = ec.batchInvocations
-          ? { occurrence: 'once' as const }
-          : occurrenceInfoOf(func, ec.sourceCallNode);
+        const structuralOccurrence = occurrenceInfoOf(func, ec.sourceCallNode);
         // The source call can be hoisted out of its branch during lowering while its compiler-published
         // condition still records the branch that reaches it. In that case it is not a mandatory `once`
         // edge: the graph may have zero rows until the guard's authenticated producer result is known.
         const occurrenceInfo = ec.condition && structuralOccurrence.occurrence === 'once'
-          && !ec.batchInvocations
           ? { occurrence: 'conditional' as const, maximumOccurrences: 1 }
           : structuralOccurrence;
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
@@ -4241,7 +4224,7 @@ function buildFunctionAbiMetadata(
           ...occurrenceInfo,
           ...(ec.condition && { condition: ec.condition }),
           ...(ec.conditionUnpublished && { conditionUnpublished: true }),
-          ...(!ec.batchInvocations && ec.preCallRequires?.length && {
+          ...(ec.preCallRequires?.length && {
             preCallRequires: ec.preCallRequires,
           }),
           ...(iterationDomains.get(ec.slotIndex)?.length === 1 && {
@@ -4296,21 +4279,6 @@ function buildFunctionAbiMetadata(
           // Publish the empty list too. Omission means legacy/unknown provenance to SDK consumers; a present empty
           // list is the proof that this call has zero arguments and needs no runtime argument resolution.
           ...(ec.argSources && { argSources: ec.argSources }),
-          ...(ec.batchInvocations && {
-            batchInvocations: ec.batchInvocations.map((row) => ({
-              selector: binToHex(row.selector),
-              sourceCallsiteId: row.sourceCallsiteId,
-              sourceEffectOrdinal: row.sourceEffectOrdinal,
-              logicalIndex: row.logicalIndex,
-              callValueEffect: rawCall && (func.graphRawCallValueEffect === true || hasExternalCallValueEffect(row)),
-              inputs: row.parameterTypes.map((type, index) => ({
-                name: `arg${index}`, type: abiTypeString(type),
-              })),
-              ...(row.argSources && { argSources: row.argSources }),
-              ...(row.occurrence && row.occurrence !== 'once' && { occurrence: row.occurrence }),
-              ...(row.condition && { condition: row.condition }),
-            })),
-          }),
         };
       }),
     }),

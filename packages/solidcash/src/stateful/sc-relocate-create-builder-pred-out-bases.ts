@@ -7,7 +7,7 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { legacyLiveValueChunkBandWidth } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { mintingSwapShift } from './value-chunk-band-helpers.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -69,10 +69,7 @@ export function relocateCreateBuilderPredOutBases(params: {
     // band is swapped 4-wide to start+width. Its in-block return then occupies
     // postSwapMaster+blockSize-1 (33). Tail witnesses baked against the
     // pre-swap master (29) would still start at 33 and collide with that return.
-    const publishLlcIndex = chunkableWriterGroupIndex(
-      lowLevelCallUtxoGroups,
-      undefined,
-    );
+    const publishLlcIndex = chunkableWriterGroupIndex(lowLevelCallUtxoGroups);
     if (publishLlcIndex >= 0) {
       const publishLlc = lowLevelCallUtxoGroups[publishLlcIndex];
       const publishFn = physicalExternalCallFunction(publishLlc);
@@ -83,10 +80,7 @@ export function relocateCreateBuilderPredOutBases(params: {
       const chunkBase = publishImpl + (publishFn?.blockLayout?.blockSize ?? 5);
       for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
         if (group.sharedGroupIndex !== undefined) continue;
-        if (!isCompilerDescribedMintingBandWriter(
-          group, true,
-          undefined,
-        )) continue;
+        if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
         const tokenName = group.functionName ?? group.directCall?.abiFunction.name;
         const start = nestedMasterIndices[groupIdx];
         if (start === undefined || start < 0) continue;

@@ -24,7 +24,7 @@ import {
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
 } from './mapping-key-lookup.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
   groupLayoutTrailingBase,
@@ -812,7 +812,6 @@ export async function fixCreateBuilderDelegateUnlockers(
           const tokenNested = lowLevelCall?.target?.kind === 'computed'
             ? computedStateWriterGroupIndex(
               externalCallUtxoGroups, nestedGroups,
-              undefined,
             ) : undefined;
           const nestedGroup = explicitTarget ?? (tokenNested !== undefined ? tokenNested
             : targetSlot >= 0 ? nestedGroups[targetSlot] : nestedGroups[callIndex]);

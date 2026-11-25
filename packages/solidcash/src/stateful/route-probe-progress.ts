@@ -38,7 +38,6 @@ export function routeValueRunFingerprint(chunks: readonly {
 export function recordRouteProbeObservation(
   observations: RouteProbeObservationHistory,
   observation: RouteProbeObservation,
-  convention?: 'legacy-unroll' | 'kernel-row-loop',
 ): 'new' | 'same' | 'changed' {
   const previous = observations.get(observation.identity);
   if (previous === undefined) {
@@ -46,11 +45,6 @@ export function recordRouteProbeObservation(
     return 'new';
   }
   if (previous === observation.fingerprint) return 'same';
-  if (convention === 'kernel-row-loop') {
-    throw new Error(
-      `Kernel route probe produced unstable materialization for ${observation.identity}.`,
-    );
-  }
   observations.set(observation.identity, observation.fingerprint);
   return 'changed';
 }
@@ -96,10 +90,9 @@ export function routeProbeRepairableEntryCoordinateCount(
 }
 
 export function permitsRouteValueChunkDerivation(
-  convention: 'legacy-unroll' | 'kernel-row-loop' | undefined,
-  writes: readonly ValueChunkWriteDescriptor[],
+  _writes: readonly ValueChunkWriteDescriptor[],
 ): boolean {
-  return convention !== 'kernel-row-loop' || writes.length > 0;
+  return true;
 }
 
 export function routeProbeEntrySlotOffsetForOutput(

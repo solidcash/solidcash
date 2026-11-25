@@ -13,7 +13,7 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { RouteRuntimeCall } from './route-runtime.js';
+import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import { loadFixedEffectEntries } from './fixed-effect-entries.js';
 import { addressToLockScript } from '../utils.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
@@ -74,7 +74,7 @@ export interface ApplyOverridesHost {
     abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
     emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
     logicalIdentity?: ResolvedLogicalIdentity;
-    valueChunkProductions?: NonNullable<RouteRuntimeCall['valueChunkProductions']>;
+    valueChunkProductions?: NonNullable<RuntimeCallMetadata['valueChunkProductions']>;
   };
   selectedAbiFunction(): AbiFunction | undefined;
   resolveLibrariesFromRegistry(): Promise<void>;
@@ -395,7 +395,7 @@ export async function applyOverrides(
   // case, re-derive only when new context has been added and no manual .setState() was called.
   const vmErrored = !!(builder as any).__vmErrored;
   const transparentAtomicPromotion = ((builder as StatefulTransactionBuilder & {
-    __preparedAtomicCalls?: readonly RouteRuntimeCall[];
+    __preparedAtomicCalls?: readonly RuntimeCallMetadata[];
   }).__preparedAtomicCalls?.length ?? 0) > 0;
   const depositUnseen = host.containerDepositAmount > 0n || host.tokenContainerDeposits.length > 0;
   const shouldReDerive = (!derived || vmErrored || depositUnseen) && host.stateOverrides.length === 0;

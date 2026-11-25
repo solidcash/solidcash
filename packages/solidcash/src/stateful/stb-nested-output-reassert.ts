@@ -315,7 +315,7 @@ export function reassertNestedSameIndexMutables(
   const protectedCollections = selectProtectedLoopEntryCollections([
     ...host.externalCallUtxoGroups,
     ...host.lowLevelCallUtxoGroups,
-  ], undefined);
+  ]);
   const protectedNames = new Set(protectedCollections.collections);
   for (let index = 0; index < host.allInputs.length; index++) {
     const plannedInsert = plannedInsertByPredecessor.get(index);

@@ -237,7 +237,6 @@ export type CompilerTokenWriterGroup = {
 export function isCompilerDescribedMintingBandWriter(
   group: CompilerTokenWriterGroup,
   requireWideWriter = false,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
@@ -250,7 +249,6 @@ export function isCompilerDescribedMintingBandWriter(
   }
   // Kernel artifacts publish the resource authority used by layout planning. Missing entry effects in that
   // convention mean "not described", never permission to recover legacy geometry from an ABI name.
-  if (ownerConvention === 'kernel-row-loop') return false;
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
   return requireWideWriter
     ? isMintingBandSwapFunction(legacyName)
@@ -375,11 +373,10 @@ export function liveChunkSlotsByOwner(
     functionName?: string;
     logicalFunctionName?: string;
   }>,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): Map<number, number> {
   const byOwner = new Map<number, number>();
   for (const [index, group] of groups.entries()) {
-    if (isCompilerDescribedMintingBandWriter(group, true, ownerConvention)) continue;
+    if (isCompilerDescribedMintingBandWriter(group, true)) continue;
     const owner = group.sharedGroupIndex ?? index;
     const nNew = group.valueChunkOutputCount ?? 0;
     byOwner.set(owner, Math.max(byOwner.get(owner) ?? 0, nNew));
@@ -396,11 +393,10 @@ export function liveChunkWidthForGroup(
     logicalFunctionName?: string;
   }>,
   groupIndex: number,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   if (groupIndex < 0 || groupIndex >= groups.length) return 0;
   const owner = groups[groupIndex].sharedGroupIndex ?? groupIndex;
-  return liveChunkSlotsByOwner(groups, ownerConvention).get(owner) ?? 0;
+  return liveChunkSlotsByOwner(groups).get(owner) ?? 0;
 }
 
 /** A direct block that stops at its last slot, a record it does not carry: no input or output holds that slot. */
@@ -460,11 +456,10 @@ export function collidingParticipantGroupIndex(
   groups: ReadonlyArray<PhysicalReturnGroup>,
   findMintingInputIndex: (categoryId: string) => number,
   band: { start: number; end: number },
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   for (const [groupIdx, group] of groups.entries()) {
     if (group.sharedGroupIndex !== undefined) continue;
-    if (liveChunkWidthForGroup(groups, groupIdx, ownerConvention) > 0) continue;
+    if (liveChunkWidthForGroup(groups, groupIdx) > 0) continue;
     const master = findMintingInputIndex(group.categoryId);
     if (master < 0) continue;
     const width = physicalParticipantWidth(group);
@@ -483,13 +478,12 @@ export function selectTokenBandRepairOwner(
   groups: ReadonlyArray<PhysicalReturnGroup>,
   findMintingInputIndex: (categoryId: string) => number,
   band: { start: number; end: number } | undefined,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): TokenBandRepairOwnerSelection {
   if (!band) return { status: 'absent' };
   const owners = new Map<string, Extract<TokenBandRepairOwnerSelection, { status: 'exact' }>>();
   for (const [groupIndex, group] of groups.entries()) {
     if (group.sharedGroupIndex !== undefined
-      || liveChunkWidthForGroup(groups, groupIndex, ownerConvention) > 0) continue;
+      || liveChunkWidthForGroup(groups, groupIndex) > 0) continue;
     const masterIndex = findMintingInputIndex(group.categoryId);
     if (masterIndex < 0) continue;
     const width = physicalParticipantWidth(group);

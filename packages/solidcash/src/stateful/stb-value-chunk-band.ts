@@ -146,7 +146,6 @@ export function materializeValueChunkBand(
     host.externalCallUtxoGroups,
     (groupCategoryId) => host.findMintingInputIndex(groupCategoryId),
     band,
-    undefined,
   );
   const tokenWriterPresent = repairOwner.status !== 'absent'
     || host.mintingOutputSwap !== undefined;

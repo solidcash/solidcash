@@ -59,7 +59,7 @@ export function permitsLegacyNamedValueChunkFallbackForGroups(host: ChunkableWri
   return permitsLegacyNamedValueChunkFallback([
     ...host.externalCallUtxoGroups,
     ...host.lowLevelCallUtxoGroups,
-  ], undefined);
+  ]);
 }
 
 export function chunkableValueWriteExecution(

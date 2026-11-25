@@ -92,7 +92,7 @@ export interface ExpandResolveCreateBuilderExternalCallsResult {
  * expansion or a batched invocation list).
  */
 export function isRepeatedTypedLoopCallsite(call: ExternalCallAbi): boolean {
-  return call.occurrence === 'loop' && !call.loopArrayVar && !call.batchInvocations
+  return call.occurrence === 'loop' && !call.loopArrayVar
     && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1);
 }
 

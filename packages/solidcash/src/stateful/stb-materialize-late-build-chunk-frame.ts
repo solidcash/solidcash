@@ -52,7 +52,6 @@ export function materializeLateBuildChunkFrame(
     && !host.trailingFrameHost.directCallDelegateBlock
     && !host.valueDynamicHost.runtimeLoopOrComposed
     && isContractUnlocker(master)
-    && !('routeConvention' in master.abiFunction)
     && master.abiFunction.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase');
   // Ordinary witnessed runs may follow every callee and identity recreation. Appending earlier lets a
   // later fixed callee output overwrite a chunk before the root publishes its materialized coordinate.

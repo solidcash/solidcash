@@ -3936,7 +3936,7 @@ function deriveEntryCallSites(
         + ', so its call records are not a fixed set the head can check' };
     }
     if (slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined
-      || slot.inlineLoopDispatch === true || (slot.batchInvocations?.length ?? 0) > 1) {
+      || slot.inlineLoopDispatch === true) {
       return { calls: [], reason: `the call to '${slot.functionName}' runs repeatedly, so its call records are not `
         + 'a fixed set the head can check' };
     }

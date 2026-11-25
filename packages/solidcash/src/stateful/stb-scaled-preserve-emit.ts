@@ -146,7 +146,7 @@ export function emitDestinationIndices(host: ScaledPreserveEmitHost): number[] {
 
 export function hasMintingBandTokenWriter(host: ScaledPreserveEmitHost): boolean {
   return host.externalCallUtxoGroups.some((group) =>
-    isCompilerDescribedMintingBandWriter(group, true, undefined))
+    isCompilerDescribedMintingBandWriter(group, true))
     || host.mintingOutputSwap !== undefined;
 }
 
@@ -177,7 +177,7 @@ export function reassertScaledPreserveOneToOnes(
   const persistBand = host.getChunkableValueWriteBand();
   const returnWitnesses = returnWitnessOutputIndices(host.externalCallUtxoGroups);
   for (const group of host.externalCallUtxoGroups) {
-    if (!isCompilerDescribedMintingBandWriter(group, true, undefined)) continue;
+    if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
     const master = host.findMintingInputIndex(group.categoryId);
     if (master >= 0) {
       returnWitnesses.add(tokenWriterReturnIndex(master, group.blockLayout, persistBand));
@@ -244,7 +244,7 @@ export function scidReservedIndices(
     for (let index = range.start; index < range.endExclusive; index++) reserved.add(index);
   }
   for (const group of host.externalCallUtxoGroups) {
-    if (!isCompilerDescribedMintingBandWriter(group, true, undefined)) continue;
+    if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
     const master = host.findMintingInputIndex(group.categoryId);
     if (master >= 0) reserved.add(tokenWriterReturnIndex(master, group.blockLayout, band));
   }

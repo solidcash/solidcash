@@ -1218,7 +1218,7 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
   for (const slot of slots) {
     if (slot.addressIsSelf === true) refuse('ctor-self-call', 'the constructor calls C through this');
     if (slot.inlineLoopDispatch === true || slot.loopArrayVar !== undefined
-      || slot.batchInvocations !== undefined || slot.fnPtrCall === true
+      || slot.fnPtrCall === true
       || slot.addressIsMsgSender === true || slot.callOrdinal !== undefined) {
       refuse('ctor-call-shape', `the call to ${slot.interfaceName}.${slot.functionName} has a shape a call slot cannot bind`);
     }

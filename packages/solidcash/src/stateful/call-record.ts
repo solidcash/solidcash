@@ -197,7 +197,7 @@ export function assertCallSelectorScheme(
   call: ExternalCallAbi, caller: Pick<Artifact, 'compiler'>, callee: Pick<Artifact, 'compiler'>,
 ): void {
   const fixedMethod = call.interfaceName !== '__raw__' && call.callMode === undefined && call.fnPtrCall !== true
-    && call.selectorArrayVar === undefined && call.opaqueReturn !== true && call.batchInvocations === undefined;
+    && call.selectorArrayVar === undefined && call.opaqueReturn !== true;
   if (!fixedMethod || (call.needsSelectorVerification !== true && call.hasReturnValues !== true)) return;
   const callerEvmCompat = artifactUsesSolidityAbi(caller);
   if (callerEvmCompat !== artifactUsesSolidityAbi(callee)) {

@@ -32,7 +32,7 @@ import {
   appendEncodedArrayElement,
   concatenateEncodedArrays,
 } from './resource-fold-route.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import {
   extractAllRouteValueChunks,
   extractFailingP2sh32OutputPin,
@@ -267,10 +267,7 @@ export function applyDeriveFullNestedValueChunkPin(
   // position, or same-typed value is not producer authority.
   const legacyValueCandidates: Uint8Array[] = [];
   const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent'
-  && permitsLegacyNamedValueChunkFallback(
-    [llc, ...(proxyGroup ? [proxyGroup] : [])],
-    undefined,
-  );
+  && permitsLegacyNamedValueChunkFallback([llc, ...(proxyGroup ? [proxyGroup] : [])]);
   const publishName = llc.functionName ?? llc.logicalFunctionName
   ?? llc.directCall?.abiFunction?.name;
   // legacy JobEvent name adapter: JobEvent value-candidate discovery only via legacy adapter under the gate above.
@@ -438,8 +435,6 @@ export function applyDeriveFullNestedValueChunkPin(
       ));
       if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
         [llc, ...(proxyGroup ? [proxyGroup] : [])],
-        (llc.directCall?.abiFunction as RouteRuntimeAbiFunction | undefined)
-          ?.routeConvention,
       )) {
       // Compatibility only for descriptor-free artifacts.
         rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
@@ -456,8 +451,6 @@ export function applyDeriveFullNestedValueChunkPin(
     ));
     if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
       [llc, ...(proxyGroup ? [proxyGroup] : [])],
-      (llc.directCall?.abiFunction as RouteRuntimeAbiFunction | undefined)
-        ?.routeConvention,
     )) {
     // Compatibility only for descriptor-free artifacts.
       rememberJobEventsLock(chunkCategory, redeemLock);

@@ -53,10 +53,8 @@ export type ChunkableValueWriteGroup = {
  * declares `kernel-row-loop`, missing descriptors mean "not described", never permission to guess from names.
  */
 export function permitsLegacyNamedValueChunkFallback(
-  groups: ReadonlyArray<ChunkableValueWriteGroup>,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
+  _groups: ReadonlyArray<ChunkableValueWriteGroup>,
 ): boolean {
-  if (ownerConvention === 'kernel-row-loop') return false;
   return true;
 }
 
@@ -64,19 +62,17 @@ export function permitsLegacyNamedValueChunkFallback(
 export function permitsLegacyValueChunkEventReconstruction(
   groups: ReadonlyArray<ChunkableValueWriteGroup>,
   hasChunkableValueWriteMetadata: boolean,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
   return !hasChunkableValueWriteMetadata
-    && permitsLegacyNamedValueChunkFallback(groups, ownerConvention);
+    && permitsLegacyNamedValueChunkFallback(groups);
 }
 
 /** Legacy delegate event placement is unavailable once either the artifact or the active layout owns the frame. */
 export function permitsLegacyDelegateEventRepair(
   groups: ReadonlyArray<ChunkableValueWriteGroup>, compilerOwnedDelegateBlock: boolean,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
   return !compilerOwnedDelegateBlock
-    && permitsLegacyNamedValueChunkFallback(groups, ownerConvention);
+    && permitsLegacyNamedValueChunkFallback(groups);
 }
 
 export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGroup): string[] {
@@ -266,14 +262,12 @@ export function legacyPlannedChunkableValueWriteCollection(
     return undefined;
   }
   if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
-  const routeFunction = group.directCall?.abiFunction;
-  if ((routeFunction as (AbiFunction & { routeConvention?: string }) | undefined)
-    ?.routeConvention === 'kernel-row-loop') return undefined;
   const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact]
     .filter((artifact, index, all): artifact is Artifact => artifact !== undefined
       && all.indexOf(artifact) === index);
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const namedFunctions = routeFunction ? [routeFunction] : artifacts.flatMap((artifact) => (
+  const directFunction = group.directCall?.abiFunction;
+  const namedFunctions = directFunction ? [directFunction] : artifacts.flatMap((artifact) => (
     (artifact.abi as readonly AbiFunction[]).filter((candidate) => candidate.name === logicalName)
   ));
   const identities = new Set(namedFunctions.map((candidate) => (

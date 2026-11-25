@@ -1945,8 +1945,7 @@ export class CloseDirectEntryCaches extends AstTraversal {
       && !(col.innermostValueType instanceof ArrayType) && !(col.innermostValueType instanceof StructType)
       && !isChunkableValueType(col.innermostValueType)).map((col) => col.name));
     if (scalars.size === 0) return node;
-    const routed = (fn: FunctionDefinitionNode): boolean => false
-      || false;
+    const routed = (_fn: FunctionDefinitionNode): boolean => false;
     const flushes = (statement: StatementNode): boolean => scalars.has(cacheFlush(statement)?.write.name ?? '');
     const direct = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]
       .filter((fn): fn is FunctionDefinitionNode => fn?.body instanceof BlockNode && fn.isEntryPoint

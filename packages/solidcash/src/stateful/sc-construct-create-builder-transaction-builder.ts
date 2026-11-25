@@ -27,7 +27,7 @@ import {
 } from './route-resource-selection.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import { resolveMaterializedDynamicWriteOutputBase } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
 import {
   StatefulTransactionBuilder,
@@ -339,10 +339,7 @@ export function constructCreateBuilderTransactionBuilder(
         selectedDynamicWrites: new Set(abiFunction.dynamicWrites ?? []),
       }));
     };
-  const selectedRows = (entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.routeRowArguments;
-  const dynamicWriteActive = selectedRows === undefined
-    ? dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0
-    : selectedRouteResourceMetadata(selectedRows).dynamicWrites.length > 0;
+  const dynamicWriteActive = dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0;
   const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
     || directCallUsesPhysicalWrapper(
       overrides?.directCallSelector, physicalAbiFunction, abiFunction,

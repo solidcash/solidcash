@@ -14,7 +14,7 @@ import {
   logicalIdentityBandKey,
   resolveLogicalIdentity,
 } from './logical-identity.js';
-import type { RouteRuntimeCall } from './route-runtime.js';
+import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import { selectKernelDelegateForwardingGroupIndex } from './KernelDelegateForwarding.js';
 import { SortedList } from './SortedList.js';
 import type { OnChainState } from './StateReader.js';
@@ -69,7 +69,7 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
   preparedAtomicNodeByExternalGroup: Map<number, number>;
   latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
   preparedChildProducerPath: (
-    parent: RouteRuntimeCall | undefined,
+    parent: RuntimeCallMetadata | undefined,
     source: Pick<Parameters<typeof deriveValueChunkProducerChildPath>[0],
     'sourceCallsiteId' | 'sourceLogicalIndex' | 'occurrenceIndex' | 'sourceEffectOrdinal'>,
   ) => ValueChunkProducerPathDisposition;
@@ -299,7 +299,7 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
       candidateIndexes,
     });
   };
-type PreparedAtomicNode = RouteRuntimeCall & {
+type PreparedAtomicNode = RuntimeCallMetadata & {
   parent: number | null;
   callsiteId?: number;
   active: boolean;
@@ -321,7 +321,7 @@ type PreparedAtomicNode = RouteRuntimeCall & {
    */
   deriveRouteValueChunkProductions?: (
     rows: readonly any[],
-  ) => NonNullable<RouteRuntimeCall['valueChunkProductions']>;
+  ) => NonNullable<RuntimeCallMetadata['valueChunkProductions']>;
 };
 let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
 const preparedAtomicNodeByExternalGroup = new Map<number, number>();

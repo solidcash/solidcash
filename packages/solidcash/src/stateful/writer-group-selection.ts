@@ -24,7 +24,7 @@ import {
 import { legacyIsPublishJobEventName } from './legacy-job-event-helpers.js';
 
 /** Minimal runtime ABI narrowing used by writer/chunkable selection. */
-type RouteRuntimeAbiFunction = AbiFunction & {
+type RuntimeCallAbiFunction = AbiFunction & {
   routeActiveEntryRecipes?: ReadonlyMap<number, readonly { access: any; args: any; inputs: any }[]>;
   routeActiveWriteCollections?: readonly string[];
 };
@@ -53,7 +53,6 @@ export function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean 
  * list is authoritative and ambiguity fails closed. Source names remain only for artifacts with no effect list. */
 export function computedStateWriterGroupIndex(
   groups: readonly ExternalCallUtxoGroup[], candidateIndices: readonly number[],
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number | undefined {
   const described = candidateIndices.filter((index) => hasPublishedEntryEffects(groups[index]));
   const writers = described.filter((index) => {
@@ -64,7 +63,7 @@ export function computedStateWriterGroupIndex(
   if (writers.length === 1) return writers[0];
   if (described.length > 0) return undefined;
   if (!permitsLegacyNamedValueChunkFallback(
-    candidateIndices.map((index) => groups[index]), ownerConvention,
+    candidateIndices.map((index) => groups[index]),
   )) {
     return undefined;
   }
@@ -78,7 +77,6 @@ export function computedStateWriterGroupIndex(
 /** Select one physical chunkable-array writer by its published collection effects. */
 export function chunkableWriterGroupIndex(
   groups: readonly ExternalCallUtxoGroup[],
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   const candidates = groups.flatMap((group, index) => {
     const abi = physicalExternalCallFunction(group);
@@ -86,7 +84,7 @@ export function chunkableWriterGroupIndex(
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
-  if (!permitsLegacyNamedValueChunkFallback(groups, ownerConvention)) return -1;
+  if (!permitsLegacyNamedValueChunkFallback(groups)) return -1;
   const plannedLegacyCandidates = groups.flatMap((group, index) => (
     legacyPlannedChunkableValueWriteCollection(group) === undefined ? [] : [index]
   ));
@@ -217,7 +215,7 @@ export function describeValueChunkWrites(
       writes.push(write);
     }
   };
-  const activeRecipes = (abiFunction as RouteRuntimeAbiFunction).routeActiveEntryRecipes;
+  const activeRecipes = (abiFunction as RuntimeCallAbiFunction).routeActiveEntryRecipes;
   if (activeRecipes !== undefined && activeRecipes.size > 0) {
     for (const [routeSlot, recipes] of activeRecipes) {
       for (const recipe of recipes) {

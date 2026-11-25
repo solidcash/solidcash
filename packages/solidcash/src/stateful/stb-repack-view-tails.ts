@@ -52,7 +52,7 @@ export function repackViewTailsAfterMaterialization(
     ))
     .filter((index) => index >= 0);
   const tokenWriterPresent = host.externalCallUtxoGroups.some((group) => {
-    if (!isCompilerDescribedMintingBandWriter(group, false, undefined)) return false;
+    if (!isCompilerDescribedMintingBandWriter(group, false)) return false;
     return host.findMintingInputIndex(group.categoryId) >= 0;
   });
   // FakeToken already parks view tails after its swapped block. Do not steal

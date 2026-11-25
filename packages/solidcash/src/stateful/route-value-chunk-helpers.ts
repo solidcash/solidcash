@@ -71,10 +71,7 @@ import {
   publishIdentityScanValueChunkRange,
 } from './identity-scan-value-chunk-range.js';
 
-type RouteRuntimeAbiFunction = AbiFunction & {
-  routeConvention?: never;
-  routeRowArguments?: readonly any[];
-};
+type RuntimeCallAbiFunction = AbiFunction;
 
 type RouteValueChunkProgress = { changed: boolean; discovered: boolean };
 
@@ -423,7 +420,6 @@ function deriveFixedEntryLockPin(
   trace: AuthenticationProgramStateCommon[],
   stb: StatefulTransactionBuilder,
   observations: RouteProbeObservationHistory,
-  convention?: 'legacy-unroll' | 'kernel-row-loop',
   fixedIndex = false,
 ): RouteValueChunkProgress {
   // A cold fixed entry may fail its bytecode check before the VM exposes its new commitment. Bind the
@@ -467,7 +463,7 @@ function deriveFixedEntryLockPin(
       const identity = `entry-lock:${group.categoryId}:${entryBlockSlot}`;
       const discovered = recordRouteProbeObservation(observations, {
         identity, fingerprint: binToHex(expected),
-      }, convention) !== 'same';
+      }) !== 'same';
       return { changed: true, discovered };
     }
   }
@@ -478,7 +474,6 @@ export function deriveRouteValueChunks(
   group: ExternalCallUtxoGroup, bOutputBase: number, trace: AuthenticationProgramStateCommon[],
   stb: StatefulTransactionBuilder,
   observations: RouteProbeObservationHistory,
-  convention?: 'legacy-unroll' | 'kernel-row-loop',
 ): RouteValueChunkProgress {
   if (!group.blockLayout) return { changed: false, discovered: false };
   const sharedBand = stb.getChunkableValueWriteBand();
@@ -507,7 +502,7 @@ export function deriveRouteValueChunks(
     ?? extractFailingP2sh32OutputPin(trace, pinBand));
   const pin = scanPin ?? positionalPin;
   if (!pin) return deriveFixedEntryLockPin(
-    group, bOutputBase, trace, stb, observations, convention,
+    group, bOutputBase, trace, stb, observations,
     explicitBase !== undefined && !usesSharedBand,
   );
   if (usesSharedBand && isP2sh32LockingBytecode(pin.lockingBytecode)) {
@@ -536,24 +531,13 @@ export function deriveRouteValueChunks(
   // In a multi-resource kernel row, the failing pin's redeem lock can identify one compiler-described
   // write only when that write's complete value is visible in the VM trace. Require a unique exact-lock
   // match; never infer a collection/key merely from the shape or output position of a chunk.
-  const pinBoundWrite = (() => {
-    if (convention !== 'kernel-row-loop' || localSelection.status !== 'multi') return undefined;
-    const stacks = trace.flatMap((state) => [
-      state.stack,
-      ...('alternateStack' in state
-        ? [(state as { alternateStack?: Uint8Array[] }).alternateStack ?? []] : []),
-    ]);
-    const pinMasterLock = ownerMasterLock(group.valueChunkStateOwner);
-    const matches = localSelection.writes.filter((write) => selectHashedValueForChunkPin(
-      stacks, pin.lockingBytecode, 0, [], undefined, false, write, pinMasterLock,
-    ) !== undefined);
-    return matches.length === 1 ? matches[0] : undefined;
-  })();
+  const pinBoundWrite = undefined;
+
   const writes = pinBoundWrite ? [pinBoundWrite] : localWrites;
   // Compiler-authored kernel descriptors are authoritative. A P2SH32 equality in a carrier with no chunkable
   // write describes an entry/resource lock, never permission to infer a value-chunk resource by output shape.
   /* eslint-disable @typescript-eslint/indent */
-  if (permitsRouteValueChunkDerivation(convention, localWrites)) {
+  if (permitsRouteValueChunkDerivation(localWrites)) {
   const resourceSelection = selectValueChunkWriteCategory(writes);
   const valueChunkCategoryId = resourceSelection.status === 'exact'
     ? resourceSelection.write.categoryId
@@ -597,20 +581,15 @@ export function deriveRouteValueChunks(
   /* eslint-enable @typescript-eslint/indent */
     if (usesSharedBand && group.categoryId && lastExtractedComputedValue) {
       const selection = resourceSelection;
-      if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
-        [group], (physicalExternalCallFunction(group) as RouteRuntimeAbiFunction | undefined)
-          ?.routeConvention,
-      )) {
+      if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback([group])) {
       // Compatibility only for descriptor-free artifacts.
         legacyRememberValueChunkValue(group.categoryId, lastExtractedComputedValue);
       }
-      if (convention !== 'kernel-row-loop') {
-        stb.rememberJobEventsChunks(group.categoryId, allChunks.map((chunk) => ({
-          ...chunk,
-          categoryId: group.categoryId,
-        })));
-        if (stb.bumpChunkableValueWriteWidth(allChunks.length)) stb._refreshInputs();
-      }
+      stb.rememberJobEventsChunks(group.categoryId, allChunks.map((chunk) => ({
+        ...chunk,
+        categoryId: group.categoryId,
+      })));
+      if (stb.bumpChunkableValueWriteWidth(allChunks.length)) stb._refreshInputs();
     }
     const resourceIdentity = resourceSelection.status === 'exact'
       ? valueChunkWriteResourceIdentity(resourceSelection.write) : undefined;
@@ -674,13 +653,8 @@ export function deriveRouteValueChunks(
         discovered = true;
       }
     }
-    const exactRunObservation = convention === 'kernel-row-loop'
-    && resourceIdentity !== undefined && allChunks.length > 0
-      ? recordRouteProbeObservation(observations, {
-        identity: `value-run:${resourceIdentity}`,
-        fingerprint: routeValueRunFingerprint(allChunks),
-      }, convention)
-      : undefined;
+    const exactRunObservation = undefined;
+
     if (resourceIdentity !== undefined && allChunks.length > 0) {
       if (group.valueChunkWrites === undefined) group.valueChunkWrites = [...writes];
       if (witness && witness.carrier.valueChunkWrites === undefined) {
@@ -742,12 +716,6 @@ export function deriveRouteValueChunks(
     }
     if (progressed) {
       const selection = resourceSelection;
-      if (convention === 'kernel-row-loop'
-      && selection.status !== 'exact') {
-        throw new Error(
-          'Kernel route value-chunk derivation requires one exact compiler-published resource identity.',
-        );
-      }
       if (exactRunObservation !== undefined) {
         discovered = exactRunObservation !== 'same' || exactRunRelocated;
       } else {
@@ -756,7 +724,7 @@ export function deriveRouteValueChunks(
           : `value-coordinate:${group.categoryId}:${pin.outputIndex}`;
         const fingerprint = routeValueRunFingerprint(allChunks.length > 0 ? allChunks : [pin]);
         discovered = recordRouteProbeObservation(
-          observations, { identity, fingerprint }, convention,
+          observations, { identity, fingerprint },
         ) !== 'same';
       }
       return { changed: true, discovered };
@@ -764,7 +732,7 @@ export function deriveRouteValueChunks(
   }
 
   return deriveFixedEntryLockPin(
-    group, bOutputBase, trace, stb, observations, convention,
+    group, bOutputBase, trace, stb, observations,
     explicitBase !== undefined && !usesSharedBand,
   );
 }

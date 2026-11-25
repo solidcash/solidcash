@@ -22,7 +22,7 @@ import { callNamesNoReader } from './call-record.js';
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
 } from './mapping-key-lookup.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
   groupLayoutTrailingBase,
@@ -268,7 +268,7 @@ export async function completeCreateBuilderNestedUnlockers(
         '__internal__graphCallers', '__internal__graphCompletionPositions',
         '__internal__graphSettlementTable'].includes(input.name)) {
         // This unlocker exists only for ordinary graph discovery. If the completed graph requires atomic
-        // execution, send() rebuilds it from RouteRuntimeCall and the composer supplies the
+        // execution, send() rebuilds it from RuntimeCallMetadata and the composer supplies the
         // finalized verifier/manifest values. Preserve the route's typed provisional values here
         // so discovery cannot silently fall back to a direct handler outside OP_INVOKE.
         const provisional = child.directCall?.internalArgs?.[input.name];
@@ -368,7 +368,7 @@ export async function completeCreateBuilderNestedUnlockers(
         const call = childFn.externalCalls?.[slot];
         const nestedGroupIndex = childNestedGroupIndexForSlot(slot);
         // Pin the selector on the physical co-spend. Shared logical calls inherit the first group's proxy
-        // delegate, and a compiler-batched delegate unlocks with the route selector (`SCB1`), not a row selector.
+        // delegate, and a batched delegate unlocks with the call-batch selector (`SCB1`), not a row selector.
         const selected = physicalExternalCallSelectorHex(
           externalCallUtxoGroups, lowLevelCallUtxoGroups, nestedGroupIndex,
         );
@@ -437,7 +437,6 @@ export async function completeCreateBuilderNestedUnlockers(
         const computedTarget = lowLevelCall?.target?.kind === 'computed'
           ? computedStateWriterGroupIndex(
             externalCallUtxoGroups, nestedGroups,
-            undefined,
           )
           : undefined;
         const nestedGroupIndex = explicitTarget ?? computedTarget

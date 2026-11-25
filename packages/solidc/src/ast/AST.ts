@@ -3272,33 +3272,6 @@ export interface ExternalCallSlot {
   // across many fn-ptr calls (each call reads its own index). Identity + runtime selector + preservation are the
   // normal checks. See emitExternalCallVerification.
   fnPtrCall?: boolean;
-  // Release 5 repeated-callee grouping: several straight-line logical calls
-  // share this one physical callee block and are bound to its route batch blob.
-  batchInvocations?: {
-    selector: Uint8Array;
-    parameters: ExpressionNode[];
-    parameterTypes: Type[];
-    logicalIndex: number;
-    /** @internal Traversal-stable source callsite used to prove producer dominance before physical batching. */
-    sourceCallsiteId: number;
-    /** Function-local program point retained independently of physical batch order. */
-    sourceEffectOrdinal?: number;
-    argSources?: ExternalCallArgSource[];
-    /** Runtime cardinality of this source callsite within the grouped physical route. */
-    occurrence?: 'once' | 'conditional' | 'loop';
-    /** Compiler-serialized predicate guarding this logical row. */
-    condition?: ExternalCallExpression;
-    opaqueReturn?: boolean;
-    /** The logical source call carries an effective `{ value: ... }` transfer. */
-    callValueEffect?: boolean;
-    returnTypes?: Type[];
-    /** @internal Conditional row whose arguments are entry-frame derivable and are committed eagerly. */
-    eager?: boolean;
-    /** @internal Source node used to lower an eager row before the body. */
-    sourceCallNode?: ExternalFunctionCallNode;
-  }[];
-  /** @internal Physical representative for a logical row removed by repeated-callee grouping. */
-  batchRepresentative?: ExternalCallSlot;
   /** @internal Source node retained until Release 5 grouping/codegen. */
   sourceCallNode?: ExternalFunctionCallNode;
   /** @internal Callsite may be absent at runtime; its master-index witness is -1 when not reached. */

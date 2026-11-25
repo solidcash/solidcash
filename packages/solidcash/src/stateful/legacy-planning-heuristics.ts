@@ -83,10 +83,8 @@ export function legacyNamedJobEventCollectionFallback(
  * Kernel convention always returns false — typed arg→field matching may still run.
  */
 export function permitsLegacyScalarNameHeuristics(
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
   artifactConvention?: 'legacy-unroll' | 'kernel-row-loop' | string,
 ): boolean {
-  if (ownerConvention === 'kernel-row-loop') return false;
   if (artifactConvention === 'kernel-row-loop') return false;
   return true;
 }

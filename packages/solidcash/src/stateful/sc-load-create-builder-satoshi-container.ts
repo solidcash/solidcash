@@ -5,7 +5,7 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { buildSatoshiContainerCovenantScript, type AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import {
   createSatoshiContainerUnlocker,

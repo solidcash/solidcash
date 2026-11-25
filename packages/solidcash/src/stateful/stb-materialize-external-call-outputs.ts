@@ -709,7 +709,7 @@ export function materializeExternalCallOutputs(
               },
             });
           } else if (group.directCall
-          && !isCompilerDescribedMintingBandWriter(group, true, undefined)) {
+          && !isCompilerDescribedMintingBandWriter(group, true)) {
           // A route route reserves the union of every handler's event slots. Slots not reached by
           // this dispatch are ordinary balanced funding slots and the route covenant binds them by
           // preservation. Mirroring the input also works as the active-slot probe: its empty commitment

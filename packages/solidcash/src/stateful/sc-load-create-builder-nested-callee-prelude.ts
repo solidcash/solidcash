@@ -9,7 +9,7 @@ import type {
   StateLayout,
   StateValue,
 } from '@solidcash/utils';
-import { selectGraphBlockhashReads } from './route-runtime.js';
+import { selectGraphBlockhashReads } from './runtime-call-metadata.js';
 import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE, parseChunkCommitment } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';

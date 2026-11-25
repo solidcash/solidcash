@@ -15,7 +15,7 @@ import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   collidingParticipantGroupIndex,
@@ -190,7 +190,7 @@ export async function allocateCreateBuilderFunders(
       // A void entry's slot is its call record: the covenant steps its chunk coordinates down when no record runs.
       || (dynamicChunkInputs.length > 0 && (entryAbiFunction?.outputs?.length ?? 0) > 0)
       || trailingDisposalInputs.length > 0
-      || ((entryAbiFunction as RouteRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
+      || ((entryAbiFunction as RuntimeCallAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
       || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true
       // A recovery loop reads iteration k's triple at blockSize + 3k.
@@ -307,10 +307,9 @@ export async function allocateCreateBuilderFunders(
     });
     timing?.('sender-delegate-scan');
     if (usesMsgSenderKey || usesTxOriginSender || delegateUsesMsgSender) neededFunders = Math.max(neededFunders, 1);
-    const routeConventionLocal = undefined;
     const predictedBandWidth = Math.max(
       0,
-      ...liveChunkSlotsByOwner(externalCallUtxoGroups, routeConventionLocal).values(),
+      ...liveChunkSlotsByOwner(externalCallUtxoGroups).values(),
       ...externalCallUtxoGroups.map((group) => group.valueChunkOutputCount ?? 0),
       ...lowLevelCallUtxoGroups.map((group) => group.valueChunkOutputCount ?? 0),
     );
@@ -337,7 +336,6 @@ export async function allocateCreateBuilderFunders(
         externalCallUtxoGroups,
         (categoryId) => builder.findMintingInputIndex(categoryId),
         predictedDynamicBand,
-        routeConventionLocal,
       )
       : -1;
     const collidingParticipant = externalCallUtxoGroups[collidingParticipantIndex];

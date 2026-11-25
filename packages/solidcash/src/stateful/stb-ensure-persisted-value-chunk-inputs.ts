@@ -53,7 +53,7 @@ export async function ensurePersistedValueChunkInputs(
   host: EnsurePersistedValueChunkInputsHost,
 ): Promise<void> {
   const tokenWriterPresent = host.externalCallUtxoGroups.some((group) =>
-    isCompilerDescribedMintingBandWriter(group, true, undefined));
+    isCompilerDescribedMintingBandWriter(group, true));
   const band = host.getChunkableValueWriteBand();
   const categoryId = host.persistedValueChunkCategory() ?? host.chunkableValueWriteCategory();
   if (!shouldRestorePersistedContinuationInputs({

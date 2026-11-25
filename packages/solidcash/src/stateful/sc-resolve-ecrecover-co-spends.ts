@@ -18,7 +18,7 @@ import {
   computeSideCarStandIn,
   hasOutpoint,
 } from './stateful-abi-resolve.js';
-import type { GraphEcrecoverCall } from './route-runtime.js';
+import type { GraphEcrecoverCall } from './runtime-call-metadata.js';
 
 // A neutral coin, P2SH32(OP_TRUE) with no token, for a slot no covenant reads, where the host has no coin of its own:
 // a probe that is never sent, or a route graph whose composer funds such slots with this lock. Only a mock

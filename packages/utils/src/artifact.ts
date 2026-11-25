@@ -1517,8 +1517,6 @@ export interface CallsiteCallerIdentityAbi {
  *
  * Callsite identity is a four-tuple carried through discovery → composition → result consumption:
  * - **Physical callsite ID** (`callsiteId`): post-collapse co-spend / consumer lane.
- * - **Source callsite ID** (`batchInvocations[].sourceCallsiteId`): pre-collapse syntactic edge.
- * - **Batch logical index** (`batchInvocations[].logicalIndex`): ordered row inside one physical batch.
  * - **Occurrence** (`occurrence` / runtime `occurrenceIndex`): reach index of that source row.
  *
  * Non-batched calls: physical === source; logical index absent; occurrence 0 unless loop/conditional.
@@ -1650,24 +1648,6 @@ export interface ExternalCallAbi {
    * whose failure is the callee's own, and for a low-level call no `require` checks.
    */
   failedCallMessage?: string;
-  batchInvocations?: readonly {
-    selector: string;
-    /**
-     * Pre-collapse source callsite. Required on kernel-convention artifacts for every batch row;
-     * absence is legacy-only and must be admitted via explicit `sourceCallsiteProvenance: 'legacy-logical'`.
-     */
-    sourceCallsiteId?: number;
-    /** Compiler-authored program point of the source row before physical batching. */
-    sourceEffectOrdinal?: number;
-    /** Ordered row inside this physical batch template (0..n-1, dense). */
-    logicalIndex: number;
-    /** Value bit for this exact logical source row, never inherited from its physical representative. */
-    callValueEffect?: boolean;
-    inputs: readonly AbiInput[];
-    argSources?: readonly ArgSource[];
-    occurrence?: 'once' | 'conditional' | 'loop';
-    condition?: ExternalCallExpression;
-  }[];
 }
 
 export interface ExternalOutStateAbi {

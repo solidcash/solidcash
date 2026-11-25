@@ -100,12 +100,8 @@ export function getChunkableValueWriteBand(
   }
   const plannedWidth = Math.max(
     0,
-    liveChunkWidthForGroup(
-      host.externalCallUtxoGroups, publishExternalIndex, undefined,
-    ),
-    ...selected.externalIndices.map((index) => liveChunkWidthForGroup(
-      host.externalCallUtxoGroups, index, undefined,
-    )),
+    liveChunkWidthForGroup(host.externalCallUtxoGroups, publishExternalIndex),
+    ...selected.externalIndices.map((index) => liveChunkWidthForGroup(host.externalCallUtxoGroups, index)),
     ...(publishLlcIndex >= 0
       ? [host.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
       : []),
@@ -123,7 +119,7 @@ export function getChunkableValueWriteBand(
       selectedGroups,
       permitsLegacyNamedValueChunkFallback([
         ...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups,
-      ], undefined),
+      ]),
     );
   const valueChunkEntryCount = activeCollection === undefined ? 0 : new Set(
     host.getLoopEntryCommitments(activeCollection)
@@ -156,7 +152,7 @@ export function getChunkableValueWriteBand(
   const forcedStart = host.forcedChunkableValueWriteBandStart;
   const publishImpl = host.chunkableValueWriteInputIndex();
   const tokenWriter = host.externalCallUtxoGroups.find((group) =>
-    isCompilerDescribedMintingBandWriter(group, true, undefined));
+    isCompilerDescribedMintingBandWriter(group, true));
   const tokenMaster = tokenWriter?.categoryId
     ? host.findMintingInputIndex(tokenWriter.categoryId) : -1;
   const keepAtLayout = shouldKeepPersistAtLayoutBase({

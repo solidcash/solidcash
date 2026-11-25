@@ -50,12 +50,10 @@ export function applyDerivedValueChunks(
     host.externalCallUtxoGroups,
     (categoryId) => host.findMintingInputIndex(categoryId),
     band,
-    undefined,
   );
   const tokenWriterPresent = repairOwner.status !== 'absent'
     || host.mintingOutputSwap !== undefined;
-  if (band && undefined !== 'kernel-row-loop'
-    && !tokenWriterPresent && host.derivedChunkOutputs.size > 0) {
+  if (band && !tokenWriterPresent && host.derivedChunkOutputs.size > 0) {
     const keys = [...host.derivedChunkOutputs.entries()]
       .filter(([, chunk]) => !chunk.fixedIndex)
       .map(([index]) => index)

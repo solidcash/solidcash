@@ -865,7 +865,7 @@ export async function orchestrateCreateBuilderExternalCalls(
             bEntryLoopCollection,
             bValueChunkOutputCount,
             bDirectChunkValue,
-            ordinaryProducerPath: !directCall && !ec.batchInvocations
+            ordinaryProducerPath: !directCall
               && (ec.occurrence === 'once' || (ec.occurrence === 'conditional' && ec.maximumOccurrences === 1))
               ? deriveValueChunkProducerChildPath({
                 parent: rootProducerPath,

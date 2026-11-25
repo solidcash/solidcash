@@ -66,7 +66,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
   const swapCategoryId = host.mintingOutputSwap?.categoryId
     ?? host.externalCallUtxoGroups.find((group) =>
       group.sharedGroupIndex === undefined
-      && isCompilerDescribedMintingBandWriter(group, true, undefined))?.categoryId;
+      && isCompilerDescribedMintingBandWriter(group, true))?.categoryId;
   if (!swapCategoryId) {
     host.writeViewTailsAfterWriterOccupancy(builder, returnOutputRefs);
     host.reassertInBlockWriterReturns(builder);

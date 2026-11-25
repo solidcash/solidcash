@@ -16,7 +16,7 @@ import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import { AuthenticatedProducerResults } from './authenticated-producer-results.js';
-import type { RouteRuntimeCall } from './route-runtime.js';
+import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 
 export type MaterializeCreateBuilderReturnEmitHost = {
   readonly categoryId: string;
@@ -51,7 +51,7 @@ export function selectPreparedAtomicReturnSeed(
  * explicitly prepared results retain the composer's strict producer-result comparison.
  */
 export function discoveredReturnFollowsParticipantWrite(
-  nodes: readonly (Pick<RouteRuntimeCall,
+  nodes: readonly (Pick<RuntimeCallMetadata,
   'contract' | 'functionName' | 'selector' | 'executionArtifact'> & {
     parent?: number | null;
     active?: boolean;

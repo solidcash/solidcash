@@ -7,7 +7,7 @@ CTR="${BCHN_CONTAINER:-cashscript-bchn-1}"
 docker exec "$CTR" sh -c '
 CLI="bitcoin-cli -regtest -rpcuser=user -rpcpassword=password"
 # Two OP_RETURN outputs (data), no inputs; fundrawtransaction adds an input + change.
-RAW=$($CLI createrawtransaction "[]" "[{\"data\":\"04534342310011\"},{\"data\":\"6a08deadbeefcafe\"}]")
+RAW=$($CLI createrawtransaction "[]" "[{\"data\":\"04deadbeef0011\"},{\"data\":\"6a08deadbeefcafe\"}]")
 FUNDED=$($CLI fundrawtransaction "$RAW")
 FHEX=$(echo "$FUNDED" | sed -n "s/.*\"hex\": *\"\([0-9a-f]*\)\".*/\1/p")
 SIGNED=$($CLI signrawtransactionwithwallet "$FHEX")

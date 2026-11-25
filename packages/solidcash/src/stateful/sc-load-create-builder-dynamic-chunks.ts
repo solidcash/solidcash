@@ -34,7 +34,7 @@ import {
 } from './runtime-loop-event-domain.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { OnChainState } from './StateReader.js';
-import type { RouteRuntimeAbiFunction } from './route-runtime.js';
+import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { RuntimeLoopTransferOutput } from './StatefulTransactionBuilder.js';
 
 export type LoadCreateBuilderDynamicChunksHost = {
@@ -412,15 +412,11 @@ export async function loadCreateBuilderDynamicChunks(
   const delegateStateContract = delegateProxyGroupIndex === undefined
     ? host.inner : externalCallUtxoGroups[delegateProxyGroupIndex].externalContract.inner;
   const delegateRouteAbi = delegateRouteGroup?.directCall?.abiFunction;
-  const delegateRouteRows: any[] | undefined = undefined;
+  const delegateRouteRows = undefined as any[] | undefined;
   const selectedRowsFor = (
-    source: AbiFunction | undefined,
-  ): RouteRuntimeAbiFunction['routeRowArguments'] => (
-    source !== undefined && source === delegateRouteAbi && delegateRouteRows !== undefined
-      ? delegateRouteRows
-      : (source as RouteRuntimeAbiFunction | undefined)?.routeRowArguments
-  );
-  const entryRouteRows = selectedRowsFor(entryAbiFunction);
+    _source: AbiFunction | undefined,
+  ): any[] | undefined => undefined;
+  const entryRouteRows = undefined as any[] | undefined;
   const selectedRouteLoopMetadata = selectedRouteResourceMetadata([
     ...(entryRouteRows ?? []),
     ...(delegateRouteRows ?? []),
@@ -486,7 +482,7 @@ export async function loadCreateBuilderDynamicChunks(
   // Runtime loop events and their fixed peers are planned from compiler metadata, never from a contract name
   // or storage schema. A hidden permutation carries a loop segment's exact cardinality; exact-count segments
   // preserve events around it. Repeat each resolved site list without inspecting mapping keys.
-  const selectedRuntimeEventRows = (entryRouteRows?.some((row) =>
+  const selectedRuntimeEventRows: any[] = (entryRouteRows?.some((row) =>
     (row.handler.runtimeLoopEvents?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
   const runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
@@ -762,7 +758,7 @@ export async function loadCreateBuilderDynamicChunks(
   // Runtime BCH transfers use the same logical counter domain as runtime events, but their recipient and
   // amount are covenant-derived later. Plan only the exact number and source-row ordering here; every output
   // starts as a harmless probe placeholder which the faithful VM trace replaces before handoff.
-  const selectedRuntimeTransferRows = (entryRouteRows?.some((row) =>
+  const selectedRuntimeTransferRows: any[] = (entryRouteRows?.some((row) =>
     (row.handler.runtimeLoopTransfers?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
   const runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   const runtimeLoopTransferSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];

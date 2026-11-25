@@ -3128,7 +3128,7 @@ export class StatefulTransactionBuilder {
       // boundary when the caller derived it from an actual output layout.
       suffixStart,
       tokenWriterPresent: this.externalCallUtxoGroups.some((group) =>
-        isCompilerDescribedMintingBandWriter(group, true, undefined)),
+        isCompilerDescribedMintingBandWriter(group, true)),
     };
   }
 

@@ -7,7 +7,7 @@ import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 
-export type CreateBuilderEntryCompilerRoute = NonNullable<ExternalCallUtxoGroup['directCall']>;
+export type CreateBuilderEntryDirectCall = NonNullable<ExternalCallUtxoGroup['directCall']>;
 
 export type CreateBuilderEntryResolvedCall = {
   type?: string;
@@ -16,7 +16,7 @@ export type CreateBuilderEntryResolvedCall = {
   };
   functionName?: string;
   args?: FunctionArgument[];
-  directCall?: CreateBuilderEntryCompilerRoute;
+  directCall?: CreateBuilderEntryDirectCall;
 };
 
 export interface ResolveCreateBuilderEntryAbiResult {
@@ -25,7 +25,7 @@ export interface ResolveCreateBuilderEntryAbiResult {
   entryArtifact: Artifact;
   /** Matches `_createBuilder` `args: any[]` so later loop/journal planning can rewrite frames. */
   entryArgs: any[];
-  entryCompilerRoute: CreateBuilderEntryCompilerRoute | undefined;
+  entryDirectCall: CreateBuilderEntryDirectCall | undefined;
 }
 
 /**
@@ -43,7 +43,7 @@ export function resolveCreateBuilderEntryAbi(
   let entryAbiFunction = abiFunction;
   let entryArtifact: Artifact = ownerArtifact;
   let entryArgs: any[] = args;
-  let entryCompilerRoute: CreateBuilderEntryCompilerRoute | undefined;
+  let entryDirectCall: CreateBuilderEntryDirectCall | undefined;
 
   // A delegatecall'd impl that writes a mapping does so against the PROXY's grafted collections (this.categoryId).
   // __forward itself has no entryAccesses, so route the impl fn's - the entry machinery below then mints/updates
@@ -73,10 +73,10 @@ export function resolveCreateBuilderEntryAbi(
         entryAccesses = implFn.entryAccesses;
         entryAbiFunction = implFn;
         entryArtifact = ci.contract.inner.artifact;
-        entryCompilerRoute = ci.directCall;
-        if (entryCompilerRoute) {
-          const directCall = entryCompilerRoute;
-          // Compiler routes retain a compact visible-only argument frame. Entry planning indexes arguments by
+        entryDirectCall = ci.directCall;
+        if (entryDirectCall) {
+          const directCall = entryDirectCall;
+          // Routes retain a compact visible-only argument frame. Entry planning indexes arguments by
           // the complete route ABI, so expand that frame by name before resolving collection keys/values.
           // Treating the compact vector as ABI-positioned makes every witness after the first hidden input
           // undefined (or, with a longer frame, assigns an unrelated graph value to the collection key).
@@ -120,6 +120,6 @@ export function resolveCreateBuilderEntryAbi(
     entryAbiFunction,
     entryArtifact,
     entryArgs,
-    entryCompilerRoute,
+    entryDirectCall,
   };
 }

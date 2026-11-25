@@ -2,7 +2,7 @@
 """
 X49: is the 100,000-byte ceiling POLICY or CONSENSUS, and which policy rules does this node actually apply?
 
-F1 measured the compiler route envelope against real BCH-2026 constants and found that C3 sits inside every
+F1 measured the route envelope against real BCH-2026 constants and found that C3 sits inside every
 consensus limit and outside exactly one relay limit. A refusal from `sendrawtransaction` cannot by itself
 tell those apart: the mempool applies consensus and policy together. The distinction only becomes visible
 when the SAME bytes are offered by the other path, inside a block.

@@ -516,7 +516,7 @@ export function deriveFullPhase1ReturnAndEvents(
     }
   }
 
-  // A compiler route can verify conditional events before its deferred collection-entry settlement.
+  // A route can verify conditional events before its deferred collection-entry settlement.
   // The pre-event entry pass above then legitimately reveals only an event commitment. Once reached
   // events are installed, converge the entry band again so the route can advance to its return output.
   if (group.directCall && group.blockLayout && group.blockInputs

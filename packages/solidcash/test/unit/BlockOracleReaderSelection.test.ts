@@ -75,7 +75,7 @@ describe('root block oracle band selection', () => {
       selectedLayout: readingAbi.blockLayout, sharedGroupIndex: -1, childWritesState: true,
       preserveFirstConditionalWriter: false, proxyCallee: { implementation: child }, callee: { inner: { artifact } },
       childState: { masterUtxo: master, state: {} }, childData: [], childRequired: [],
-      childLayout: { variables: [], collections: [], dataNftCount: 0 }, childCompilerRoute: undefined,
+      childLayout: { variables: [], collections: [], dataNftCount: 0 },
       childFunctionName: 'read', childFunctionArgs: [], nestedArgs: [], routePlanningArgs: [],
       proxyImplementationState: { masterUtxo: master, state: {} }, delegateCallGroupIndex: undefined,
       childExternalGroupIndex: 0, externalCallUtxoGroups: [], lowLevelCallUtxoGroups: [], timingEnabled: false,

@@ -246,7 +246,7 @@ export function buildInputs(
       ? Math.max(0, host.trailingLoopEntryOutputCount() - host.insertLoopPredecessorInputs.length)
       : 0;
     const loopAlignmentFunders = funderPool.splice(0, loopAlignmentCount);
-    // Legacy delegate upsert predecessors sit immediately after the implementation block. A compiler-routed
+    // Legacy delegate upsert predecessors sit immediately after the implementation block. A routed
     // delegate is different: its published trailing capacity already owns both the predecessor and the neutral
     // input balancing any output-only expansion, so moving either beyond the block violates participant width.
     const earlyInsertPredecessors = host.delegateLoopEntryVars().length > 0
@@ -454,7 +454,7 @@ export function buildInputs(
 
     // Fill the reserved gap (offsets between last readOnly and first entry/SC/TC)
     // with external outState and external call inputs
-    // A compiler-route delegate executes immediately after the complete owner block, and its own nested
+    // A route delegate executes immediately after the complete owner block, and its own nested
     // participants follow that implementation block. Placing those external participants into otherwise-empty
     // owner offsets moves them before the executing delegate, while the generated route correctly requires
     // `externalCallInputBase == OP_INPUTINDEX + blockSize`. Reserve the owner gaps with neutral funders and

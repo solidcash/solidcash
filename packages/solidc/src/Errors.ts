@@ -89,7 +89,7 @@ export type SolidcDiagnosticCode =
   | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
   // A call through a collection entry its function writes before the call where the call cannot read the written entry.
   | 'ENTRY_TARGET_WRITTEN_BEFORE_CALL'
-  // A compiler-route handler whose call the route checks before the handler's body runs writes that call's target first.
+  // A route handler whose call the route checks before the handler's body runs writes that call's target first.
   | 'ROUTE_TARGET_WRITTEN_BEFORE_CALL'
   // A framed master's call whose target the function read at its top and then wrote before the call.
   | 'FRAMED_TARGET_WRITTEN_BEFORE_CALL'
@@ -105,9 +105,9 @@ export type SolidcDiagnosticCode =
   | 'CALL_VALUE_UNBOUND'
   // F1: an entry reads a contract-caller msg.sender but its call digest is not in scope where the caller edge binds.
   | 'CALLER_EDGE_DIGEST_UNAVAILABLE'
-  // A compiler-route entry whose looped call only the route binds, where the route does not serve that entry.
+  // A route entry whose looped call only the route binds, where the route does not serve that entry.
   | 'ROUTE_ONLY_ENTRY_UNSERVED'
-  // A compiler-route verifier that reaches a function-pointer target reading block.*, whose pool helper it cannot carry.
+  // A route verifier that reaches a function-pointer target reading block.*, whose pool helper it cannot carry.
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'
@@ -491,7 +491,7 @@ export class DirectHeterogeneousDeployError extends SolidCashError {
   constructor(public node: InstantiationNode) {
     super(node,
       'conditional deployment of different child contract types is not SDK-derivable in the direct route: '
-      + 'deployFrom accepts one child artifact for every fired site. Use the compiler-route route with '
+      + 'deployFrom accepts one child artifact for every fired site. Use the route route with '
       + 'per-site child descriptors, or split the child types into separate entry points');
   }
 }
@@ -2301,7 +2301,7 @@ export class ContractTypeConstructorArgCountError extends SolidCashError {
  * slot for it, so there is no return-event output to read the result from.
  *
  * Code generation aborted here with a bare internal sentinel (`Unbound return call in <fn>; graph=<flag>`) -
- * no error name, no position and no remedy, which is the shape the compiler-route board treats as a defect in
+ * no error name, no position and no remedy, which is the shape the route board treats as a defect in
  * its own right. X22 closed one instance by refusing the shape in route synthesis; this is the gate in front
  * of every shape that still reaches the generator, whichever upstream gate missed it.
  */

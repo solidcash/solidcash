@@ -105,7 +105,7 @@ export function prepareDeriveFullValueChunkWrites(
     const lowLevelIndex = lowLevelGroups.indexOf(group);
     const stateOwnerGroup = lowLevelIndex >= 0
       ? delegateStateOwners.get(lowLevelIndex) : group;
-    // A direct delegatecall (no compiler-route external group to own it) executes the implementation against the
+    // A direct delegatecall (no route external group to own it) executes the implementation against the
     // TOP-LEVEL contract's state, so its entries and value chunks live under that root category and master lock,
     // not the implementation's own deployment category.
     const rootOwner = lowLevelIndex >= 0 && stateOwnerGroup === undefined
@@ -168,7 +168,7 @@ export function prepareDeriveFullValueChunkWrites(
         ) : undefined;
         if (matchingWrites.length !== 1 || selection?.status !== 'exact') {
           throw new Error(
-            'Transported value production does not match one final compiler-routed write.',
+            'Transported value production does not match one final routed write.',
           );
         }
       }
@@ -179,7 +179,7 @@ export function prepareDeriveFullValueChunkWrites(
           owner: group.valueChunkStateOwner,
           functionName: group.functionName,
           callMode: group.callMode,
-          hasCompilerRoute: group.directCall !== undefined,
+          hasDirectCall: group.directCall !== undefined,
           rowCount: 0,
           claim: claim?.producer,
           transportedClaims: group.valueChunkProducerClaims?.map((candidate) => candidate.producer),

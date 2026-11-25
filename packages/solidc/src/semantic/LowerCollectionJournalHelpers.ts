@@ -413,7 +413,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.walk(fn.body, (candidate) => {
         if (candidate instanceof EmitStatementNode) emitsEvent = true;
       });
-      // A compiler-route graph clone does not emit directly from the OP_INVOKE frame: code generation projects its
+      // A route graph clone does not emit directly from the OP_INVOKE frame: code generation projects its
       // event into the authenticated route-owned effect frame. It can therefore share the value-threaded
       // collection-journal exit. Ordinary internal helpers still have no such projection and retain X118's gate.
       if (emitsEvent && !false) continue;
@@ -617,7 +617,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
-      console.error('collection-journal-compiler-route-candidates', JSON.stringify({
+      console.error('collection-journal-route-candidates', JSON.stringify({
         contract: node.name,
         candidates: [...this.candidates.keys()],
         multiCandidates: [...this.multiCandidates.entries()].map(([key, candidate]) => ({
@@ -762,7 +762,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   /**
    * Resolve a journal candidate for a call. Candidates are registered by name AND arity, but arity MUTATES:
-   * semantic analysis appends synthetic parameters after registration, and a compiler-generated compiler-route
+   * semantic analysis appends synthetic parameters after registration, and a compiler-generated route
    * route writes some of those synthetics at the call site itself. The exact key then misses on both sides -
    * the callee keeps a leading `__cj_` parameter its call site never supplies. Fall back to the name when it
    * identifies exactly one candidate; an overloaded name keeps the strict arity match.
@@ -1516,7 +1516,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
     }
     if (debugRoute && caches.size > 0) {
-      console.error('collection-journal-compiler-route-pool', JSON.stringify({
+      console.error('collection-journal-route-pool', JSON.stringify({
         calls: debugCalls,
         pools: [...caches.entries()].map(([key, cache]) => ({
           key: key.name,

@@ -11,7 +11,7 @@ import { fixedForMaximum } from './FixedForLoop.js';
 /**
  * X6 - stable diagnostics for unadmitted low-level call shapes.
  *
- * The admitted compiler-route low-level class is exactly ONE unconditional `address.call(payload)`,
+ * The admitted route low-level class is exactly ONE unconditional `address.call(payload)`,
  * returning `address.call{value: amount}(payload)`, or `address.staticcall(payload)` per handler. Solidity's
  * optional `gas` hint is inert on BCH, so it may accompany an otherwise admitted value transfer. The callManifest
  * row binds mode, target, calldata, result and the value-option bit; the transfer effect separately binds the
@@ -33,13 +33,13 @@ import { fixedForMaximum } from './FixedForLoop.js';
  * This module produces one stable, named diagnostic per shape instead, against the SOURCE function and the
  * source construct, before any route synthesis renames the handler.
  *
- * NOT YET WIRED. `validateLowLevelCallShapes` has no call site: the compiler-route route is synthesized entirely
+ * NOT YET WIRED. `validateLowLevelCallShapes` has no call site: the route route is synthesized entirely
  * inside `compiler.ts`, which is a single-writer collision file. The wiring is one call from
- * `compileString`/`compileFile`, immediately after the compiler-route graph mode is computed and before
+ * `compileString`/`compileFile`, immediately after the route graph mode is computed and before
  * the route synthesis pass.
  */
 
-/** Stable, exact rejection for a low-level call shape the compiler-route route does not admit. */
+/** Stable, exact rejection for a low-level call shape the route route does not admit. */
 export class LowLevelCallShapeError extends SolidCashError {
   constructor(node: Node, detail: string) {
     super(node, `Batch low-level call shape is not admitted: ${detail}`);
@@ -334,7 +334,7 @@ export function describeFunctionLowLevelCallsites(fn: FunctionDefinitionNode): r
 }
 
 /**
- * Reject every low-level call shape the compiler-route route does not admit, in one pass over one function.
+ * Reject every low-level call shape the route route does not admit, in one pass over one function.
  *
  * `delegatecall` is deliberately NOT checked here: it is a delegate participant edge with its own class
  * enumeration and its own authority argument, not a callManifest-bound low-level row.
@@ -356,7 +356,7 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
         `function '${fn.name}' issues a low-level '${callMode}' carrying the call option(s) `
         + `${options.map((name) => `'${name}'`).join(', ')}. A callManifest row binds mode, target, calldata and `
         + 'result, and has no field for a call option, so the option would execute unbound. Move the option out '
-        + 'of the compiler-route handler, or use a typed interface call whose transfer is a block slot',
+        + 'of the route handler, or use a typed interface call whose transfer is a block slot',
       );
     }
     if (context === 'loop') {
@@ -408,9 +408,9 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
 }
 
 /**
- * Reject every unadmitted low-level call shape in a contract compiled for the compiler-route route.
+ * Reject every unadmitted low-level call shape in a contract compiled for the route route.
  *
- * Call this only when the compiler-route graph mode is on: the direct (non-graph) route compiles call options and
+ * Call this only when the route graph mode is on: the direct (non-graph) route compiles call options and
  * iterated low-level calls today, and this function must not change that.
  */
 export function validateLowLevelCallShapes(contract: ContractNode): void {

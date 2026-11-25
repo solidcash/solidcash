@@ -49,9 +49,8 @@ export async function precomputeCreateBuilderNestedComposeReturns(
     nestedSources: readonly any[] | undefined;
     delegateVisibleArgs: readonly FunctionArgument[];
     delegateVisibleInputs: readonly { name: string }[];
-    childCompilerRoute: any | undefined;
     childWritesState: boolean;
-    sharedCompilerRouteCoversCall: boolean;
+    sharedDirectCallCoversCall: boolean;
     graphPlanningResults: unknown;
     publicSelfAddress: FunctionArgument;
     childFunctionName: string;
@@ -64,8 +63,8 @@ export async function precomputeCreateBuilderNestedComposeReturns(
 ): Promise<PrecomputeCreateBuilderNestedComposeReturnsResult> {
   const {
     nested, proxyCallee, callee, selectedFn, proxyTargetFn, nestedArgs,
-    delegateVisibleArgs, delegateVisibleInputs, childCompilerRoute, childWritesState,
-    sharedCompilerRouteCoversCall, graphPlanningResults, publicSelfAddress,
+    delegateVisibleArgs, delegateVisibleInputs, childWritesState,
+    sharedDirectCallCoversCall, graphPlanningResults, publicSelfAddress,
     childFunctionName, childFunctionArgs, callInfoContract, onChainState, delegateSelfAddress,
     nestedProxyReadCache,
   } = params;
@@ -119,142 +118,6 @@ export async function precomputeCreateBuilderNestedComposeReturns(
       : host.deriveReturnValue(fn.name, readArgs, undefined, undefined, undefined,
         publicSelfAddress, host.categoryId) as Promise<FunctionArgument>;
   };
-  if (childCompilerRoute && nested.hasReturnValues && !sharedCompilerRouteCoversCall) {
-    const firstWrite = childCompilerRoute.rowArguments.findIndex(
-      (row: any) => row.handler.writesState === true,
-    );
-    const returningRows = childCompilerRoute.rowArguments
-      .map((row: any, index: number) => ({ row, index }))
-      .filter(({ row }: any) => (row.handler.outputs?.length ?? 0) > 0);
-    // A completed route leaves no failed return comparison for trace extraction. When every
-    // returning row runs before the route's first mutation, its aggregate return is exactly the
-    // concatenation of those ordinary pre-state view results and can be computed up front.
-    if (returningRows.length > 0
-      && returningRows.every(({ index }: any) => firstWrite < 0 || index < firstWrite)) {
-      const encodedResults: Uint8Array[] = [];
-      for (const { row } of returningRows as any[]) {
-        const evaluateReturn = (): Promise<FunctionArgument | undefined> =>
-          evaluateProxyRead(row.handler, row.args);
-        const returnCallsiteId = row.sourceCallsiteId ?? nested.callsiteId;
-        const values = returnCallsiteId === undefined
-          ? await evaluateReturn()
-          : await host.memoizeGraphPlanningProducerResult(
-            graphPlanningResults,
-            returnCallsiteId,
-            row.args,
-            callee.categoryId,
-            false,
-            evaluateReturn,
-          );
-        if (values === undefined) {
-          throw new Error(`Could not precompute return for graph callsite ${returnCallsiteId}.`);
-        }
-        const outputs = row.handler.outputs ?? [];
-        const resultValues = outputs.length === 1
-          ? [values as StateValue] : values as unknown as StateValue[];
-        encodedResults.push(encodeExternalReturnValues(
-          resultValues, outputs.map((output: any) => output.type), returnStructs,
-          calleeUsesSolidityAbi, returnEnums,
-        ));
-      }
-      precomputedReturnCommitment = scriptToBytecode([
-        host.concatBytes(...encodedResults),
-      ]);
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
-        console.error('precomputed-route-return', binToHex(precomputedReturnCommitment));
-      }
-    }
-  } else if (nested.hasReturnValues && effectiveReturnFn && !childWritesState
-    && effectiveReturnFn.outputs?.length === 1) {
-    const proxyStateAccessor = proxyCallee && proxyStateNames?.has(nested.functionName)
-      ? (proxyCallee.proxy.state as unknown as Record<
-      string, (...values: FunctionArgument[]) => Promise<StateValue>
-      >)[nested.functionName]
-      : undefined;
-    const readAccess = effectiveReturnFn.entryAccesses?.length === 1
-      && effectiveReturnFn.entryAccesses[0].operations.every((operation) => operation === 'read')
-      ? effectiveReturnFn.entryAccesses[0] : undefined;
-    const visibleReturnInputs = effectiveReturnFn.inputs.filter(
-      (input) => !input.name.startsWith('__internal__'),
-    );
-    const collectionReadArgs = readAccess?.keyParams.map((keyParam) => {
-      const index = visibleReturnInputs.findIndex((input) => input.name === keyParam);
-      return index < 0 ? undefined : nestedArgs[index];
-    });
-    const proxyCollectionStateAccessor = proxyCallee && readAccess
-      && collectionReadArgs?.every((argument) => argument !== undefined)
-      ? (proxyCallee.proxy.state as unknown as Record<
-      string, (...values: FunctionArgument[]) => Promise<StateValue>
-      >)[readAccess.collection]
-      : undefined;
-    let collectionValue: StateValue | undefined;
-    if (proxyCollectionStateAccessor && collectionReadArgs) {
-      try {
-        const argKey = collectionReadArgs.map((argument) => argument instanceof Uint8Array
-          ? `b:${binToHex(argument)}` : `${typeof argument}:${String(argument)}`).join('|');
-        const key = `${callee.categoryId}:${readAccess!.collection}:${argKey}`;
-        let pending = nestedProxyReadCache.get(key);
-        if (!pending) {
-          pending = proxyCollectionStateAccessor(...collectionReadArgs as FunctionArgument[]);
-          nestedProxyReadCache.set(key, pending);
-        }
-        collectionValue = await pending;
-      } catch {
-        // This lookup is an optional seed for fixed-point assembly, not execution. A preceding caller
-        // guard can make the nested edge unreachable (for example, bounds-check before indexed read),
-        // so a speculative getter failure must be deferred to the authenticated caller route.
-        collectionValue = undefined;
-      }
-    }
-    const evaluateReturn = async (): Promise<StateValue | undefined> => {
-      if (proxyStateAccessor && !readAccess) return proxyStateAccessor(...nestedArgs);
-      if (nested.functionName === readAccess?.collection && collectionValue !== undefined) {
-        return collectionValue;
-      }
-      if (effectiveReturnFn.outputs![0].type === 'bool'
-        && /Registered$/.test(nested.functionName) && collectionValue !== undefined) {
-        if (collectionValue !== null && typeof collectionValue === 'object'
-          && 'publicKey' in collectionValue) {
-          const publicKey = (collectionValue as { publicKey?: unknown }).publicKey;
-          return publicKey instanceof Uint8Array ? publicKey.length > 0
-            : typeof publicKey === 'string' ? publicKey.length > 0 : false;
-        }
-        if (collectionValue === null) return false;
-      }
-      if (proxyCallee) {
-        try {
-          const publicMethod = (proxyCallee as unknown as Record<string, unknown>)[nested.functionName];
-          return typeof publicMethod === 'function'
-            ? await (publicMethod as (...args: FunctionArgument[]) => Promise<StateValue>)(...nestedArgs)
-            : await (proxyCallee.forward(nested.functionName, nestedArgs).staticCall() as Promise<StateValue>);
-        } catch {
-          // A forwarded view can require the complete parent transaction, or be unreachable behind a
-          // caller guard. This is optional precomputation; the final route remains the authority for
-          // both the result and any source-level failure.
-          return undefined;
-        }
-      }
-      return host.deriveReturnValue(childFunctionName, childFunctionArgs, undefined, undefined,
-        undefined, publicSelfAddress, host.categoryId) as Promise<StateValue | undefined>;
-    };
-    const value = nested.callsiteId === undefined
-      ? await evaluateReturn()
-      : await host.memoizeGraphPlanningProducerResult(
-        graphPlanningResults,
-        nested.callsiteId,
-        nestedArgs,
-        callee.categoryId,
-        false,
-        evaluateReturn as () => Promise<FunctionArgument | undefined>,
-      ) as StateValue | undefined;
-    if (value !== undefined) {
-      const returnType = effectiveReturnFn.outputs![0].type;
-      precomputedReturnCommitment = encodeExternalReturnValue(
-        value, returnType, returnStructs, calleeUsesSolidityAbi, returnEnums,
-      );
-    }
-  }
   if (nested.occurrence === 'loop' && nested.hasReturnValues) {
     const returnType = effectiveReturnFn?.outputs?.[0]?.type ?? 'string';
     const encodeReturn = (value: StateValue): Uint8Array => encodeExternalReturnValue(

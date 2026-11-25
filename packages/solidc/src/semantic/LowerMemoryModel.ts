@@ -549,7 +549,7 @@ export default class LowerMemoryModel extends AstTraversal {
       && !fn.modifiers.includes(FunctionModifier.EXTERNAL);
     if (vis !== 'internal' && vis !== 'private' && !freeInternal && !(entry && vis === 'public')) return false;
     // A graph handler's external-call manifest is authenticated at its OP_INVOKE boundary. Inlining that
-    // compiler-owned body into the compiler-route row loop changes the current codegen function to the route,
+    // compiler-owned body into the route row loop changes the current codegen function to the route,
     // whose layout intentionally owns no per-handler external-return slots. Besides making returning calls
     // unbound, flattening would bypass recomputation of every outgoing graph row. Reference-typed arguments
     // do not weaken that boundary: keep the handler as a subroutine and lower its memory values in its own body.

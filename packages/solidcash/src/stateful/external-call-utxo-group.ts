@@ -414,7 +414,7 @@ export interface ExternalCallUtxoGroup {
   plannedEntryInsertHandles?: number[];
   /** Hidden output-index arguments stored block-relative until this group's absolute output base is known. */
   relativeOutputInternalArgs?: string[];
-  /** Exact vmap predecessor recreations reserved in compiler-route trailing slots. */
+  /** Exact vmap predecessor recreations reserved in route trailing slots. */
   batchPredecessorOutputs?: Array<{
     outputBlockSlot: number; lockingBytecode: Uint8Array; commitment: string;
   }>;
@@ -433,7 +433,7 @@ export interface ExternalCallUtxoGroup {
   batchEntryCommitments?: Map<number, string>;
   /** Direct, unambiguous dynamic-write values derived from the callee ABI arguments. */
   dynamicStateValues?: Readonly<Record<string, StateValue>>;
-  /** Dynamic chunk inputs occupying a compiler route's balanced trailing band. Write spends are rebound once the
+  /** Dynamic chunk inputs occupying a route's balanced trailing band. Write spends are rebound once the
    * physical state-owner master coordinate is known; inactive union resources remain preservation spends. */
   dynamicChunkResources?: Array<{
     blockSlot: number; name: string; type: string; write: boolean;

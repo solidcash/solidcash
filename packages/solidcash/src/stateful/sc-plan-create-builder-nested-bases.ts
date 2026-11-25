@@ -150,7 +150,7 @@ export function planCreateBuilderNestedBases(params: {
     }));
     nestedInputBase += calleeOutputSpan(child);
     nestedOutputBase += calleeOutputSpan(child);
-    // Legacy layouts interleave each proxy's implementation. A compiler route has already included the
+    // Legacy layouts interleave each proxy's implementation. A route has already included the
     // complete implementation band in nestedInputBase, while outputs remain interleaved.
     if (child.delegateCallGroupIndex !== undefined && !child.delegateEmbeddedInBlock) {
       const delegate = lowLevelCallUtxoGroups[child.delegateCallGroupIndex];
@@ -256,7 +256,7 @@ export function planCreateBuilderNestedBases(params: {
     delegateTailReturnRank += width;
   }
   timing?.('return-indexes-complete');
-  // Compiler routes reserve their return event inside the callee's fixed
+  // Routes reserve their return event inside the callee's fixed
   // block. Unlike legacy fused calls, no appended return output exists.
   const physicalReturnIndexForGroup = new Map(returnIndexForGroup);
   for (const groupIdx of returningExternalGroups) {

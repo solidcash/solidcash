@@ -38,7 +38,7 @@ export function containsIndirectCall(node: Node | undefined): boolean {
  */
 export const MAXIMUM_POINTER_TABLE_BOUND = 24;
 
-/** Stable, exact rejection for a compiler-route pointer-table loop the compiler cannot bound. */
+/** Stable, exact rejection for a route pointer-table loop the compiler cannot bound. */
 export class PointerTableBoundError extends SolidCashError {
   constructor(node: Node, detail: string) {
     super(node, `Batch pointer-table loop is not compiler-bounded: ${detail}`);

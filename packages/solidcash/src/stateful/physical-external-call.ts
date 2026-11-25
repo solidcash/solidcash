@@ -89,7 +89,7 @@ export function externalReturnParamSlot(
 }
 
 /**
- * These witnesses describe the assembled transaction, not the compiler route which requested it. Route builders
+ * These witnesses describe the assembled transaction, not the route which requested it. Route builders
  * may carry provisional values from an isolated probe, but composition can omit conditional calls, fuse groups,
  * or move participant blocks. The SDK must therefore resolve these names after the physical layout is known.
  */
@@ -167,13 +167,7 @@ type PhysicalSelectorGroup = {
   externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
 };
 
-/**
- * Bytes argument for a baked `__forward(bytes)` proxy. The caller covenant extracts the first 4-byte
- * unlocking push (skipping a short delegate-index prefix) and EQUALVERIFYs it against the logical
- * implementation selector. A compiler route forwards `SCB1` through both proxy and implementation.
- */
-const COMPILER_ROUTE_SELECTOR_HEX = '53434231';
-
+/** Bytes argument for a baked `__forward(bytes)` proxy: its implementation selector. */
 const isFunctionSelectorHex = (value: string | undefined): value is string => (
   !!value && /^[0-9a-fA-F]{8}$/i.test(value)
 );
@@ -181,19 +175,11 @@ const isFunctionSelectorHex = (value: string | undefined): value is string => (
 export function selectProxyForwardInput(
   logicalSelectorHex: string | undefined,
   functionArgs: readonly FunctionArgument[] = [],
-  preferCompilerRoute = false,
 ): Uint8Array {
   const arg = functionArgs[0];
   const argHex = arg instanceof Uint8Array && arg.length === 4 ? binToHex(arg) : undefined;
-  if (preferCompilerRoute && argHex?.toLowerCase() === COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
   // A shared proxy master is created by the first nested call (often a view) and later retargeted
   // to the state-writing handler. Prefer that 4-byte functionArgs selector over a stale logical name.
-  // A compiler route opts in above because the proxy itself verifies the implementation's SCB1 selector.
-  if (argHex && argHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
-  if (isFunctionSelectorHex(logicalSelectorHex)
-    && logicalSelectorHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) {
-    return hexToBin(logicalSelectorHex);
-  }
   if (argHex) return arg as Uint8Array;
   if (isFunctionSelectorHex(logicalSelectorHex)) return hexToBin(logicalSelectorHex);
   const got = logicalSelectorHex

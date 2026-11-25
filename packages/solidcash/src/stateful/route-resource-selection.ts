@@ -1,7 +1,7 @@
 /**
  * Route-resource selection helpers used by the create-builder and external-call planners.
  *
- * A direct call selects no compiler route rows, so the published metadata is the entry's own.
+ * A direct call selects no route rows, so the published metadata is the entry's own.
  */
 
 import type { AbiFunction } from '@solidcash/utils';
@@ -49,7 +49,7 @@ export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown 
   return anchored;
 }
 
-/** A compiler route needs the physical entry ABI only when an actual wrapper entry point carries it. */
+/** A route needs the physical entry ABI only when an actual wrapper entry point carries it. */
 export function directCallUsesPhysicalWrapper(
   directCallSelector: Uint8Array | undefined,
   physicalAbiFunction: AbiFunction | undefined,

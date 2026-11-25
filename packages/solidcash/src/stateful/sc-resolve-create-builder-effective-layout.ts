@@ -27,7 +27,7 @@ export type ResolveCreateBuilderEffectiveLayoutResult = {
 };
 
 /**
- * After dynamic chunks: select the compiler-route delegate layout (or legacy
+ * After dynamic chunks: select the route delegate layout (or legacy
  * execution layout), fold projected delegate event slots into the effective
  * block layout (X56 return-event relocate), and resolve logical identity for
  * nested msg.sender observers.

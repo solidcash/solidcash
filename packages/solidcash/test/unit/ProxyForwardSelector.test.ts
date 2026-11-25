@@ -6,7 +6,7 @@ import {
 } from '../../src/stateful/StatefulContract.js';
 
 describe('selectProxyForwardInput', () => {
-  it('prefers the logical 4-byte implementation selector over a compiler-route SCB1 argument', () => {
+  it('prefers the logical 4-byte implementation selector over a route SCB1 argument', () => {
     const scb1 = hexToBin('53434231');
     const selected = selectProxyForwardInput('a826ee9c', [scb1]);
     expect(binToHex(selected)).toBe('a826ee9c');

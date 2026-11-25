@@ -37,7 +37,7 @@ export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFu
   return (artifact?.abi as readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === name);
 }
 
-/** The exact ABI body carried by a physical participant. Compiler routes outrank source-level names because
+/** The exact ABI body carried by a physical participant. Routes outrank source-level names because
  * overloads and shared participants can execute a different body than the logical call which introduced them. */
 export function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
   return group.directCall?.abiFunction

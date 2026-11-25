@@ -880,7 +880,7 @@ export type ReturnAbiPlan<T> = {
 
 /**
  * Select the ABI which describes a call's logical value independently from the ABI which physically carries
- * its return event. A compiler route can aggregate many rows, so a facade with no direct result fails closed
+ * its return event. A route can aggregate many rows, so a facade with no direct result fails closed
  * unless exactly one selected row returns a value.
  */
 export function selectReturnAbiPlan<T>(
@@ -895,7 +895,7 @@ export function selectReturnAbiPlan<T>(
   if (returning.length > 1) {
     throw new Error(
       `staticCall: '${functionName}' selects ${returning.length} logical return rows; `
-      + 'an aggregate compiler route has no single return value.',
+      + 'an aggregate route has no single return value.',
     );
   }
   const selected = returning[0];
@@ -1528,7 +1528,7 @@ export function permitsRouteValueChunkDerivation(
   return convention !== 'kernel-row-loop' || writes.length > 0;
 }
 
-/** The exact ABI body carried by a physical participant. Compiler routes outrank source-level names because
+/** The exact ABI body carried by a physical participant. Routes outrank source-level names because
  * overloads and shared participants can execute a different body than the logical call which introduced them. */
 function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
   return group.directCall?.abiFunction
@@ -2853,7 +2853,7 @@ export function externalReturnParamSlot(
 }
 
 /**
- * These witnesses describe the assembled transaction, not the compiler route which requested it. Route builders
+ * These witnesses describe the assembled transaction, not the route which requested it. Route builders
  * may carry provisional values from an isolated probe, but composition can omit conditional calls, fuse groups,
  * or move participant blocks. The SDK must therefore resolve these names after the physical layout is known.
  */
@@ -2924,13 +2924,7 @@ type PhysicalSelectorGroup = {
   externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
 };
 
-/**
- * Bytes argument for a baked `__forward(bytes)` proxy. The caller covenant extracts the first 4-byte
- * unlocking push (skipping a short delegate-index prefix) and EQUALVERIFYs it against the logical
- * implementation selector. A compiler route forwards `SCB1` through both proxy and implementation.
- */
-const COMPILER_ROUTE_SELECTOR_HEX = '53434231';
-
+/** Bytes argument for a baked `__forward(bytes)` proxy: its implementation selector. */
 const isFunctionSelectorHex = (value: string | undefined): value is string => (
   !!value && /^[0-9a-fA-F]{8}$/i.test(value)
 );
@@ -2938,19 +2932,11 @@ const isFunctionSelectorHex = (value: string | undefined): value is string => (
 export function selectProxyForwardInput(
   logicalSelectorHex: string | undefined,
   functionArgs: readonly FunctionArgument[] = [],
-  preferCompilerRoute = false,
 ): Uint8Array {
   const arg = functionArgs[0];
   const argHex = arg instanceof Uint8Array && arg.length === 4 ? binToHex(arg) : undefined;
-  if (preferCompilerRoute && argHex?.toLowerCase() === COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
   // A shared proxy master is created by the first nested call (often a view) and later retargeted
   // to the state-writing handler. Prefer that 4-byte functionArgs selector over a stale logical name.
-  // A compiler route opts in above because the proxy itself verifies the implementation's SCB1 selector.
-  if (argHex && argHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
-  if (isFunctionSelectorHex(logicalSelectorHex)
-    && logicalSelectorHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) {
-    return hexToBin(logicalSelectorHex);
-  }
   if (argHex) return arg as Uint8Array;
   if (isFunctionSelectorHex(logicalSelectorHex)) return hexToBin(logicalSelectorHex);
   const got = logicalSelectorHex
@@ -2994,7 +2980,7 @@ const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),sch
 
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
-  /** Exact selected handler selector when transported by a compiler route. */
+  /** Exact selected handler selector when transported by a route. */
   selector?: string;
   /** Compiler-owned row arguments which are not encoded as public handler inputs. */
   internalArgs?: Readonly<Record<string, FunctionArgument>>;
@@ -5686,7 +5672,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       persistWidthAtEntry,
     } = prepareDeriveFullValueChunkWritesImpl(stb);
 
-    // Atomic participant extraction evaluates a compiler-routed delegate in a transaction-local coordinate
+    // Atomic participant extraction evaluates a routed delegate in a transaction-local coordinate
     // system before embedding that participant in the final graph. Temporarily rebase proxy identity witnesses.
     const {
       probeDelegate, restoreProbeWitnesses,
@@ -6917,7 +6903,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     const isComposedRoute = overrides?.calls?.some((call) => call.type === 'stateful') === true;
     // Start the wallet snapshot before expanding the very large composed route. Waiting until funding is planned
-    // makes the same provider query run while several gigabytes of transient compiler-route objects are live.
+    // makes the same provider query run while several gigabytes of transient route objects are live.
     const earlySignerUtxos = overrides?.signerUtxos ?? ((isComposedRoute || functionName === '__forward') && this._signer
       // Resolve the snapshot before route expansion. Leaving this promise pending retains the expanded route
       // while the mock/provider drains prior transaction work, producing the same peak-memory stall as a late scan.
@@ -7081,7 +7067,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryAbiFunction,
       entryArtifact,
       entryArgs,
-      entryCompilerRoute,
+      entryDirectCall,
     } = resolveCreateBuilderEntryAbiImpl(
       abiFunction,
       args,
@@ -7100,7 +7086,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...onChainState.state, __block_timestamp: oracleClock.timestamp, __block_number: oracleClock.number,
     };
 
-    // Direct stateful calls publish no compiler route rows: every entry settles its own physical inputs.
+    // Direct stateful calls publish no route rows: every entry settles its own physical inputs.
     const selectedRouteRows: readonly RouteExpressionKeyRow[] = [];
     const planAuthenticatedKernelJournalDispositionChain = undefined as never;
     const selectedJournalHandlers = entryAbiFunction ? [entryAbiFunction] : [];
@@ -9334,10 +9320,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
             if (completePushIndex >= 0) {
               if (entryAbiFunction === abiFunction) finalArgs[completePushIndex] = resolvedWholeValue;
-              if (entryCompilerRoute) {
+              if (entryDirectCall) {
                 const name = entryAbiFunction!.inputs[completePushIndex]!.name;
-                entryCompilerRoute.internalArgs = {
-                  ...entryCompilerRoute.internalArgs,
+                entryDirectCall.internalArgs = {
+                  ...entryDirectCall.internalArgs,
                   [name]: resolvedWholeValue,
                 };
               }
@@ -9772,9 +9758,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           while (routeValue.length <= rowIndex) routeValue.push([]);
           routeValue[rowIndex] = value;
           entryArgs[routeIndex] = routeValue;
-          if (entryCompilerRoute) {
-            entryCompilerRoute.internalArgs = {
-              ...entryCompilerRoute.internalArgs,
+          if (entryDirectCall) {
+            entryDirectCall.internalArgs = {
+              ...entryDirectCall.internalArgs,
               [input.name]: routeValue,
             };
           } else {
@@ -11483,7 +11469,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const routeKeyWitnessInputs = new Set((entryAbiFunction?.entryAccesses ?? []).flatMap((access) =>
       access.keyParams.map((name) => name.startsWith('id:') ? name.slice(3) : name)));
     const replaceJournalArgument = (argumentIndex: number, records: Uint8Array[] | Uint8Array): void => {
-      if (entryCompilerRoute) {
+      if (entryDirectCall) {
         // A delegated route's complete argument frame belongs to the nested OP_INVOKE call. Its directCall
         // metadata is published below and later re-encodes the proxy payload; extending the outer __forward
         // arguments with route witnesses would instead corrupt that two-argument ABI.
@@ -11523,9 +11509,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           [name]: records,
         };
       }
-      if (entryCompilerRoute) {
-        entryCompilerRoute.internalArgs = {
-          ...entryCompilerRoute.internalArgs,
+      if (entryDirectCall) {
+        entryDirectCall.internalArgs = {
+          ...entryDirectCall.internalArgs,
           [name]: records,
         };
       }
@@ -11584,8 +11570,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             `Batch route is missing compiler-owned loop argument '${input.name}'`,
           );
           entryArgs[routeIndex] = value;
-          if (entryCompilerRoute) {
-            entryCompilerRoute.internalArgs = { ...entryCompilerRoute.internalArgs, [input.name]: value };
+          if (entryDirectCall) {
+            entryDirectCall.internalArgs = { ...entryDirectCall.internalArgs, [input.name]: value };
           } else {
             args[routeIndex] = value;
             finalArgs[routeIndex] = value;
@@ -12279,7 +12265,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), maxBhLocktime);
     }
     // A forwarder slices no oracle itself, but the implementation it delegates to may. That reader reads the pool
-    // its own contract binds. Outside a compiler route its recreate rides the implementation band.
+    // its own contract binds. Outside a route its recreate rides the implementation band.
     const rootOracleReader = selectRootOracleReader();
     const oracleDelegate = rootOracleReader?.delegateIndex === undefined
       ? undefined : lowLevelCallUtxoGroups[rootOracleReader.delegateIndex];
@@ -12681,7 +12667,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const runtimeEventNftLockingBytecodes = eventLocks.runtimeEventNftLockingBytecodes;
     // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
     const selectedDynamicRows: RouteExpressionKeyRow[] = [];
-    // A compiler route's dynamic layout is the union of every dispatchable handler and determines the ordering
+    // A route's dynamic layout is the union of every dispatchable handler and determines the ordering
     // of all trailing read/write runs. Preserve that geometry, but separately authenticate which variables this
     // concrete envelope can mutate; only those may receive speculative output placeholders.
     const dynamicWrites = [...(abiFunction?.dynamicWrites ?? [])];
@@ -14023,7 +14009,7 @@ export class StatefulFunctionCall {
     }
   }
 
-  /** Exact source ABI selected when this call was prepared (the compiler route, when present, is physical). */
+  /** Exact source ABI selected when this call was prepared (the route, when present, is physical). */
   private _selectedAbiFunction(): AbiFunction | undefined {
     if (!this.parentContract || this.functionName === undefined) return undefined;
     if (this.functionSelector !== undefined) {
@@ -14267,7 +14253,7 @@ export class StatefulFunctionCall {
   }
 
   /** @internal Attach a compiler-owned delegate route while retaining the public proxy's physical state owner. */
-  _withCompilerRouteDelegatecall(
+  _withDirectCallDelegatecall(
     contract: StatefulContract,
     directCall: NonNullable<ExternalCallUtxoGroup['directCall']>,
   ): this {
@@ -14796,7 +14782,7 @@ export class StatefulFunctionCall {
   }
 
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
-    // A compiler-route call is not the ordinary call path.
+    // A route call is not the ordinary call path.
     if (this.directCall === undefined && this.parentContract) {
       refuseOrdinarySelfdestructCall(this.parentContract.inner.artifact, this._selectedAbiFunction());
     }

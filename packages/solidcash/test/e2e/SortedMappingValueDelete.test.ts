@@ -17,7 +17,7 @@ import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
 // `delete m[k]` on a vmap sorted VALUE mapping. In Solidity `delete m[k]` sets m[k] to the type default, so the
-// compiler routes it through the upsert with value = 0: a present key updates to 0, an absent key inserts a 0.
+// routes it through the upsert with value = 0: a present key updates to 0, an absent key inserts a 0.
 // A subsequent read returns 0 either way - Solidity-equivalent. (A SET delete needs a splice and fails closed.)
 const SRC = `contract C() {
   mapping(int => int) bal;

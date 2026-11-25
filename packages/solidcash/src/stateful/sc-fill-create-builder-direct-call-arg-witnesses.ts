@@ -301,7 +301,7 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     const group = externalCallUtxoGroups[i];
     const band = await resolveAnchorBand(i, i);
     if (band === undefined) {
-      // -2 selects the authenticated compiler-route selector witness while
+      // -2 selects the authenticated route selector witness while
       // retaining ordinary direct locking-bytecode identity. -1 is the
       // ordinary source-selector/direct-identity path.
       const physicalGroup = group === undefined ? undefined

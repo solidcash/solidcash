@@ -240,7 +240,7 @@ export async function deriveReturnValue(
     );
   }
   const abiFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
-  // A compiler route is the physical carrier, not the logical result schema: its aggregate `bytes` output and
+  // A route is the physical carrier, not the logical result schema: its aggregate `bytes` output and
   // hidden route name cannot decode a selected handler's uint/struct result. Preserve every selected row's
   // stable handler identity and fail closed if one static read would expose multiple logical return values.
   const delegatedReturnCandidates: ReturnAbiCandidate<LogicalReturnContext>[] = (calls ?? [])
@@ -486,7 +486,7 @@ export async function deriveReturnValue(
       },
     );
     blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined;
-    // A compiler route's physical result coordinate and delegate input belong to the route carrier. Falling back
+    // A route's physical result coordinate and delegate input belong to the route carrier. Falling back
     // to the logical handler's slot can decode an unrelated output as an authenticated result. Direct and legacy
     // calls retain the established same-function slot fallback.
     if (!blob && !delegatedReturn?.call.directCall) {

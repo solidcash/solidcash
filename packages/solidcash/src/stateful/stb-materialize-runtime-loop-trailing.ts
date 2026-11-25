@@ -246,7 +246,7 @@ export function materializeRuntimeLoopTrailing(
     if (host.loopEntriesBeforeDynamicChunks || host.delegateEntriesAfterLowLevel) {
       // Legacy delegated upsert collections are restored at transaction-suffix coordinates by
       // `_reassertDelegateLoopEntries`. Appending them here as well would duplicate their outputs and shift
-      // the indexed P'/NEW lane. Compiler-routed delegates instead own these entries inside their authenticated
+      // the indexed P'/NEW lane. Routed delegates instead own these entries inside their authenticated
       // participant frame, so they must be emitted here exactly once.
       const delegateCollections = new Set((host.directCallDelegateBlock
         ? [] : host.delegateLoopEntryVars()).map((variable) => variable.collection));

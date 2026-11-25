@@ -197,8 +197,8 @@ export class Contract<
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!artifact.isLibrary || artifact.delegateOnly === true);
     // The multi-call entry is a second selector in the redeem script.
-    const soleFnSharesCompilerRoute = typeof artifact.callBatch === 'object';
-    if (soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute) {
+    const soleFnSharesCallBatch = typeof artifact.callBatch === 'object';
+    if (soleFn && !soleFnIsProxyImpl && !soleFnSharesCallBatch) {
       // @ts-ignore TODO: see if we can use generics to make TypeScript happy
       this.unlock[soleFn.name] = this.createUnlocker(soleFn);
     } else {
@@ -749,8 +749,8 @@ export class Contract<
     const soleFn = this.artifact.abi.length === 1 ? this.artifact.abi[0] : undefined;
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!this.artifact.isLibrary || this.artifact.delegateOnly === true);
-    const soleFnSharesCompilerRoute = typeof this.artifact.callBatch === 'object';
-    const selector = soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute
+    const soleFnSharesCallBatch = typeof this.artifact.callBatch === 'object';
+    const selector = soleFn && !soleFnIsProxyImpl && !soleFnSharesCallBatch
       ? undefined
       : abiFunction.selector ? hexToBin(abiFunction.selector) : undefined;
     return this.createUnlocker(abiFunction, selector);

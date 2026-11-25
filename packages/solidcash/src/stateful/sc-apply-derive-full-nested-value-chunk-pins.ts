@@ -151,7 +151,7 @@ export function applyDeriveFullNestedValueChunkPin(
     ? -1 : (proxyGroup?.sharedGroupIndex ?? proxyGroupIndex);
   const proxyPhysicalGroup = proxyPhysicalGroupIndex < 0
     ? undefined : stb.getExternalCallUtxoGroups()[proxyPhysicalGroupIndex];
-  // An implementation embedded in a compiler-routed participant executes from an input in the
+  // An implementation embedded in a routed participant executes from an input in the
   // delegate band, but its output covenants remain relative to the owning participant block. These
   // coordinates can be far apart after route fusion (and are intentionally not reconstructible from
   // the implementation input alone). Use the materialized physical owner for output discovery; legacy

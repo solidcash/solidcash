@@ -30,7 +30,7 @@ export interface PatchRelocatedDelegateOutputBasesHost {
 }
 
 /**
- * Compiler-route delegate inputs can live in a leading implementation band while their recreations follow
+ * Route delegate inputs can live in a leading implementation band while their recreations follow
  * all external participant blocks and derived INSERT outputs. Patch the shared unlockers before inputs are
  * registered, using the exact output ordering this build method emits.
  */

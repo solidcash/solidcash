@@ -9,11 +9,11 @@ type MultiOptions = NonNullable<Parameters<typeof compileStringMultiRaw>[1]>;
 type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
 
 /**
- * Compile fixtures which exercise the pre-compiler-route batch direct transaction APIs.
+ * Compile fixtures which exercise the pre-route batch direct transaction APIs.
  *
- * These suites verify language and SDK behavior outside compiler route. Atomic
+ * These suites verify language and SDK behavior outside route. Atomic
  * composition tests deliberately import the production compiler instead so the
- * inferred compiler-route batch route remains under test there.
+ * inferred route batch route remains under test there.
  */
 export const compileString = (
   source: string, options: StringOptions = {},

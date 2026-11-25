@@ -384,7 +384,7 @@ export interface TokenContainerAccessInfo {
   readsOutput?: boolean;      // the body reads the output side of the amount (`this.outState.tokens[c]`)
 }
 
-// X29. Owner-local effect frames an compiler-route batch route reserves on behalf of an effect-carrying graph emission handler
+// X29. Owner-local effect frames an route batch route reserves on behalf of an effect-carrying graph emission handler
 // it invokes behind OP_INVOKE. Dispatch site `s` owns `[base + s * width, base + s * width + width)` of each
 // kind; the site ordinal rides to the shared subroutine as hidden context.
 export interface GraphEffectFrame {
@@ -537,7 +537,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   entryAccesses?: EntryAccessInfo[];
   /** Whether shared source-effect ordinals are complete for this straight-line handler. */
   sourceEffectOrder?: 'linear' | 'unsupported-flow';
-  /** Compiler-owned compiler-route handler mapping from its function-local entry
+  /** Compiler-owned route handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
   /** Route-slot projection for compiler-owned entry witness parameters. A lowered clone can intentionally own
    * no fixed entry slots while still forwarding the source handler's local witness ABI. */
@@ -545,20 +545,20 @@ export class FunctionDefinitionNode extends Node implements Named {
    * later slots are compiler-authenticated tuple alternatives, never maximum-row copies. */
   /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
   /** Route-wide read-only chunk runs preserved before streamed effects; an empty list is authoritative. */
-  /** Authenticated participant-master offset used by compiler-route handler code generation. */
+  /** Authenticated participant-master offset used by route handler code generation. */
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
   /**
    * Route synthesis pushed this clone's owner operand as the call's LAST argument, so at body entry it is the top
    * item (depth 0) and can be captured without depending on any frame-model position.
    */
-  /** Set on compiler-cloned compiler-route handlers; identifies the source handler the clone was made from. */
+  /** Set on compiler-cloned route handlers; identifies the source handler the clone was made from. */
   /**
-   * Set on every compiler-cloned compiler-route handler, whatever its name. The route owns the clone's collection
+   * Set on every compiler-cloned route handler, whatever its name. The route owns the clone's collection
    * topology, so the clone's sorted records take the scalar path and carry no batch witnesses (ROUTE-SKIP-1).
    */
   ownRecordsScalarOnly?: boolean;
   /**
-   * The compiler-route route's declared input names, in push order. A route handler shares the caller's stack, so these
+   * The route route's declared input names, in push order. A route handler shares the caller's stack, so these
    * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
    * makes a deep read address the item the runtime actually has there.
    */
@@ -575,7 +575,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Exact OP_INVOKE signing body per detached root parameter and signature leaf. */
   /** Compiler-owned row clone kept as a stable OP_INVOKE signing body on delegate routes. */
   /** Stable KTS1 identity captured before journal lowering appends physical value-threading parameters. */
-  /** Physical route entry slots whose transition covenant is emitted by a compiler-route handler subroutine. */
+  /** Physical route entry slots whose transition covenant is emitted by a route handler subroutine. */
   tokenContainerAccesses?: TokenContainerAccessInfo[];
   /** Number of statically allocated token-transfer output coordinates after branch alternatives share indices. */
   tokenContainerTransferSiteCount?: number;
@@ -888,7 +888,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Pooled kernel key lanes chosen at one handler call. The decoded row argument is matched to these lane
    * witnesses with a linear compare, instead of cloning the handler for every combination of pools. */
   collectionJournalLinearKeyPools?: Array<{ argumentName: string; lanes: string[] }>;
-  // Compiler-only compiler-route batch physical route; dispatched on the reserved selector but
+  // Compiler-only route batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
   /**
@@ -900,7 +900,7 @@ export class FunctionDefinitionNode extends Node implements Named {
    * claims any; absent where the C3 record pin keeps the whole block to the census.
    */
 
-  /** Compiler-owned compiler-route batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
+  /** Compiler-owned route batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
 
   /** Kernel route: this handler's emits settle as records on its runtime effect stream, not in event windows. */
   /** A stream emit can pass one commitment, so every record of the stream is chunked (head, then continuations). */
@@ -929,7 +929,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // physical-route key witnesses. The SDK derives these from canonical rows;
   // the route compares decoded row arguments before any handler executes.
 
-  /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local compiler-route journal. */
+  /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local route journal. */
   nativeSelfBatchDispatcher?: boolean;
 
   /** Codegen: this entry's return carrier is the record of the direct call it answers. */
@@ -969,7 +969,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Exact signatures of collections whose split facet authenticates complete input and output cardinality.
    * The root excludes only these addresses from its otherwise-strict mutable-NFT conservation. */
   splitDelegateCensusedCollectionSignatures?: string[];
-  /** Block-local delegate covenants reserved by an compiler-route batch graph clone/route. */
+  /** Block-local delegate covenants reserved by an route batch graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;
   isReceive: boolean = false;
@@ -990,7 +990,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   usesMsgData?: boolean;
   usesMsgValue?: boolean;
   /**
-   * Compiler-owned compiler-route batch clone whose one supported tail external call is verified against the authenticated
+   * Compiler-owned route batch clone whose one supported tail external call is verified against the authenticated
    * participant emission frame instead of performing ordinary physical-call settlement.
    */
   /** This graph handler owns the admitted raw-call `{ value: ... }` edge. */
@@ -2003,7 +2003,7 @@ export class FunctionCallNode extends ExpressionNode {
   // A lexical function-pointer variable/parameter may shadow a same-named contract function. Symbol resolution
   // marks that exceptional call so type checking does not consult the contract-wide overload map.
   lexicalIndirectCall?: boolean;
-  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the compiler-route batch route body.
+  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the route batch route body.
   // The handler is one shared OP_INVOKE subroutine, so its event / transfer OUTPUT indices cannot be compile-time
   // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
   // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
@@ -2994,7 +2994,7 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   resolvedCallee?: { name: string; parameterTypes: Type[]; stateMutability?: string };
   /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
   resultArrayOutput?: number;
-  /** Ordered row identity within one inferred repeated-callee compiler-route batch. */
+  /** Ordered row identity within one inferred repeated-callee route batch. */
   externalBatchLogicalIndex?: number;
   /** Function-local program point shared with mapping-write effects. */
   sourceEffectOrdinal?: number;
@@ -3273,7 +3273,7 @@ export interface ExternalCallSlot {
   // normal checks. See emitExternalCallVerification.
   fnPtrCall?: boolean;
   // Release 5 repeated-callee grouping: several straight-line logical calls
-  // share this one physical callee block and are bound to its compiler-route batch blob.
+  // share this one physical callee block and are bound to its route batch blob.
   batchInvocations?: {
     selector: Uint8Array;
     parameters: ExpressionNode[];
@@ -3367,7 +3367,7 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
-  // Set by the table lowerings for a broadcast call outside a compiler-route graph: the called element's selector,
+  // Set by the table lowerings for a broadcast call outside a route graph: the called element's selector,
   // `bytes4(sel[i])`, which its record's digest names; threaded to the external call slot in semantic analysis.
   loopRecordSelector?: ExpressionNode;
   // Set by LowerStaticLowLevelCalls for a framed low-level call it lowered to this typed call; threaded to the

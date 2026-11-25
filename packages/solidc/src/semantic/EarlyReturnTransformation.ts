@@ -56,7 +56,7 @@ export default class EarlyReturnTransformation extends AstTraversal {
   /**
    * `sealBareReturns` false: a bare return ends no covenant path here (a framed body, an inlined helper).
    * `keepRestPastFailingArms` false: the rest after an arm that can only fail moves into the other arm, as it did
-   * before, for a compiler-route compile, whose graph emission was not shown to settle a rest kept after such an arm.
+   * before, for a route compile, whose graph emission was not shown to settle a rest kept after such an arm.
    */
   constructor(
     private readonly canonicalizeScalarReturns = false, private readonly sealBareReturns = true,
@@ -152,7 +152,7 @@ export function holdsUnconfinedReturn(ast: SourceFileNode): boolean {
  * Refuses a call an assembly return in its callee would not end. `return(ptr, size)` and `stop()` halt the whole call
  * on the EVM, the internal functions it runs through included, but a function called as a subroutine only returns,
  * and its caller runs on. So a function holding one is called only where the halt ends no more than that function:
- * by an external `this.f()` call, whose own frame is all it ends, or by a compiler-route route, whose dispatches are
+ * by an external `this.f()` call, whose own frame is all it ends, or by a route route, whose dispatches are
  * frames of their own. One inlined into its caller is no call: its halt is the caller's return.
  */
 export function refuseHaltingCalls(ast: SourceFileNode): void {

@@ -159,7 +159,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
       // This provisional unlocker is replaced below once the complete hidden frame is known.
       const bBlockArgs = bRouteArgs;
       const bMasterUnlocker = directCall
-        ? callInfo.externalContract.inner.createCompilerRouteUnlocker(
+        ? callInfo.externalContract.inner.createUnlocker(
           directCall.abiFunction, directCall.selector,
         )(...bBlockArgs)
         : ((callInfo.externalContract.inner.unlock as any)[callInfo.functionName]

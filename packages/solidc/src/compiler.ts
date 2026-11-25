@@ -2688,7 +2688,7 @@ function recordExternalHandlerSpan(
 
 
 
-/** A source-owned refusal whose outcome cannot depend on which optional compiler-route handlers are admitted. */
+/** A source-owned refusal whose outcome cannot depend on which optional route handlers are admitted. */
 function isAdmissionIndependentSourceError(error: unknown): boolean {
   return error instanceof CounterLoopReadWriteConflictError
     // A child genesis the direct creator cannot fold fails its direct entry too.
@@ -4597,7 +4597,7 @@ function parseGeneratedHostFunction(
 
 
 /**
- * Parsed compiler-route helper functions, keyed by the generated text that produced them. The helpers are
+ * Parsed route helper functions, keyed by the generated text that produced them. The helpers are
  * contract-independent by construction - their text depends only on the route shape - so one parse serves
  * every contract in the process that generates the same shape.
  *
@@ -4885,7 +4885,7 @@ function compileResolvedAst(
   const inlineDelegateStateHelpers = (mergedCompilerOptions.autoDelegate ?? false)
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
   // The SDK signs over an entry point's body, so a helper's transaction-signature check is inlined into it. A
-  // compiler-route build keeps the helper and publishes its body to the route's signer instead.
+  // route build keeps the helper and publishes its body to the route's signer instead.
   const signatureChecksInlined = inlinesSignatureChecks(mergedCompilerOptions);
   // Auto-delegate compilation is an explicit whole-artifact owner context even before every function is marked.
   // Ordinary explicit/inferred surfaces are resolved from the actual oracle-consumer graph in the synthesis pass.
@@ -4912,7 +4912,7 @@ function compileResolvedAst(
   }
 
   // A4.4/B7.3: in the deployer program, a constructor that reaches a collection keeps journals. Inline the helpers it
-  // reaches into it first, as the compiler-route prefix does, then rewrite every collection access of the constructor
+  // reaches into it first, as the route prefix does, then rewrite every collection access of the constructor
   // into journal code, before any pass that reasons about collections can act on it.
   if (isDeployerProgram && constructorReachesCollections(ast)) {
     checkConstructorCollectionShapes(ast);
@@ -4936,7 +4936,7 @@ function compileResolvedAst(
   // expandModifiers so factory uses inside OZ initializer/reinitializer modifiers (now inlined into fn bodies) are
   // rewritten too (else the factory method is dropped with a dangling call left in the modifier body).
   //
-  // X115. This MUST precede the early compiler-route synthesis below. A storage-slot pointer access is not a
+  // X115. This MUST precede the early route synthesis below. A storage-slot pointer access is not a
   // Mapping* node until this pass runs, so `analyseFunctionFootprint` reported NO `collection:` resource for a
   // handler that reads or writes `__evm_storage`. The route's whole collection-eligibility branch is gated on
   // that resource, so every such handler was admitted with no key witness and no reserved entry slot, and the
@@ -5025,7 +5025,7 @@ function compileResolvedAst(
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
   // A fixed loop that pays, sends or emits unrolls too: the counter-loop lowering below admits no literal-bound
   // `for`, journals no send and refuses an effect in a nested loop, while a rolled loop's effect has one output
-  // register for every turn. A framed body binds a looped effect where it makes it. A compiler-route compile whose route
+  // register for every turn. A framed body binds a looped effect where it makes it. A route compile whose route
   // was synthesized above keeps the loop its route admission saw; those loops unrolled before it (`unrollBusLoopEffects`).
   const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed';
   if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
@@ -5380,7 +5380,7 @@ function compileResolvedAst(
   // branch on it that never runs; drop it, so a write in that arm never reaches the entry's write analysis. Per-call
   // entries keep the arms only literals decide; a framed constructor folds them too, as its genesis refuses a read
   // after a branch arm's write to an entry the read may name (`_mint` inlines `_update(address(0), to, v)`). A
-  // compiler-route compile of the default composition keeps them (see the fold on the compiler-route path above).
+  // route compile of the default composition keeps them (see the fold on the route path above).
   if (hasInternalHelpers || framedInlinedHelpers) {
     ast = ast.accept(new FoldConstantBoolBranches(
       mergedCompilerOptions.composition === 'framed' ? 'constructor' : true,
@@ -5411,7 +5411,7 @@ function compileResolvedAst(
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache. A framed body keeps the
   // cache inside the segments its own accesses run in, so the upsert lands where the source writes the entry.
-  // Without the compiler route no route clones a body after this pass, so a mapping the body composes stays uncached.
+  // Without the route no route clones a body after this pass, so a mapping the body composes stays uncached.
   if (needsLoop || needsCollectionJournal) {
     ast = ast.accept(new CacheMappingEntryInLoop(
       false, mergedCompilerOptions.composition === 'framed', true,
@@ -6856,7 +6856,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
       continue;
     }
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
-    // Use the same complete pipeline as the single-artifact API. In particular, compiler-route compilation is a
+    // Use the same complete pipeline as the single-artifact API. In particular, route compilation is a
     // two-pass operation: the first pass extracts the verifier program and the second binds the compact route to
     // it. Calling the lower-level admission ladder here published route ABI from pass one beside bytecode that
     // could not select a participant-local verifier in an atomic graph.
@@ -7464,7 +7464,7 @@ function compileStringSplitUnchecked(
   // handlers (`atomic-delegate-context-unpreservable`), leaving only incidental root-owned getters on the hidden
   // route; on UniswapV2Pair that unusable getter-only route inflated the otherwise valid forwarding root to
   // 13,658 bytes. Keep every ordinary ABI selector and one-hop forwarder, but omit the root's incoming batch route.
-  // Facet bodies retain their normal external-call/compiler-route lowering; this changes only the synthetic root.
+  // Facet bodies retain their normal external-call/route lowering; this changes only the synthetic root.
   const rootOptions = { ...merged };
   const root = compileResolvedAst(
     rootAst, code, rootOptions, false, true, true, true, true, true, undefined,
@@ -7907,7 +7907,7 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
   contract.parentInvocations = [];
   // Public getters are synthesized later than split planning. Without suppressing them here, every facet silently
   // regains every public state/collection/constant getter after its function set was filtered. Besides publishing
-  // unrelated selectors on every shard, those getters make each facet synthesize the full incoming compiler-route
+  // unrelated selectors on every shard, those getters make each facet synthesize the full incoming route
   // route (UniswapV2Pair's one-entry `approve` facet measured 13,066 bytes for this reason). The logical root keeps
   // all getters and their ABI routes; a facet contains only the entries assigned to it and their call closure.
   contract.flattenedPublicStructGetters = [];
@@ -7933,7 +7933,7 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
     // Any entry that is only KEPT here - including a root-owned view such as UniswapV2Pair.getReserves - is
     // reachable in this facet solely through an internal call from one of `plans`. Emitting its entry-point arm
     // as well would charge this facet for selector dispatch, ABI decoding, and (for an otherwise delegate-only
-    // facet) an entire incoming compiler-route route it can never enter. Demote it to a plain internal helper; the
+    // facet) an entire incoming route route it can never enter. Demote it to a plain internal helper; the
     // body, and every modifier already expanded into it, is untouched. The logical root retains its real selector.
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC, FunctionModifier.DELEGATE,
@@ -9849,7 +9849,7 @@ export function parseCode(
     // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
     // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
     // across instances; do the same, so a process that parses many sources - a compile also parses the generated
-    // compiler-route route - reuses that work instead of repaying it.
+    // route route - reuses that work instead of repaying it.
     parser._interp = new ParserATNSimulator(
       parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
     );

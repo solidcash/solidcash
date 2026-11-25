@@ -47,7 +47,7 @@ export function checksTransactionSignature(
 
 /**
  * Whether the helper inliners keep transaction-signature checks in the entry point, which is what the SDK signs.
- * A compiler-route build does not: it keeps such a helper behind OP_INVOKE and publishes that body for each signature
+ * A route build does not: it keeps such a helper behind OP_INVOKE and publishes that body for each signature
  * its route takes. A framed artifact carries no route, so its helpers are inlined as in a direct build.
  */
 export function inlinesSignatureChecks(options: CompilerOptions): boolean {

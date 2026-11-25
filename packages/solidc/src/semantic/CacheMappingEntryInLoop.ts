@@ -707,7 +707,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   /**
    * `callsCloseSegments` holds under the framed composition, whose calls each close a segment. `composesAliases`
-   * holds when no compiler-route route can clone a body after this pass: only then is a composed mapping left uncached.
+   * holds when no route route can clone a body after this pass: only then is a composed mapping left uncached.
    */
   constructor(
     private routeSnapshotKeysOnly = false, private callsCloseSegments = false, private composesAliases = false,
@@ -756,7 +756,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
    * assignComposeAliasPriors) rather than caches: two or more entries of keys that are not distinct literals, each
    * written once by a whole-value statement of the body itself before any return. A cache would read every entry
    * before any is written, so a write could not reach the read of an entry its key aliases. Only under
-   * `composesAliases`: a compiler-route route cloned from the body after this pass never composes and keeps the cache.
+   * `composesAliases`: a route route cloned from the body after this pass never composes and keeps the cache.
    * A chunkable value never composes either.
    */
   private composedMappings(fn: FunctionDefinitionNode, constructor: boolean): Set<string> {
@@ -901,7 +901,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (lastWrite >= 0 && calling.slice(lastWrite + 1).some(Boolean)) closings.set(item, statements[lastWrite]!);
       }
     }
-    // DS-6 (closeBeforeGuardedDelete). Under the compiler route a route cloned from this body stages no alias write, so
+    // DS-6 (closeBeforeGuardedDelete). Under the route a route cloned from this body stages no alias write, so
     // the body keeps its end flush here and CloseDirectEntryCaches moves it in the direct body once routes are cloned.
     const writeOnly = new Set<(typeof prepared)[number]>();
     if (this.composesAliases && !this.callsCloseSegments && !this.routeSnapshotKeysOnly) {
@@ -1642,7 +1642,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (scope.declaredInLoop.has(key.name) || scope.reassigned.has(key.name)) { keyUsable = false; break; }
         if (!scope.assigned.has(key.name)) continue;
         // The route-snapshot instance runs before kernel route synthesis, where a handler's collection accesses are
-        // the ones the compiler-route covenant and the SDK's argument derivation both read by name. An anchored local
+        // the ones the route covenant and the SDK's argument derivation both read by name. An anchored local
         // there changes that shape, so the anchored form stays with the ordinary pipeline; kernel handlers keep
         // their established snapshot-key caching.
         if (this.routeSnapshotKeysOnly) { keyUsable = false; break; }
@@ -1829,7 +1829,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   /**
    * A write-back may drop its dirty guard where nothing replays or moves it as the guarded flush: not in a framed
-   * body, whose write activation reads the flag; not under the compiler route, whose routes clone the body and whose
+   * body, whose write activation reads the flag; not under the route, whose routes clone the body and whose
    * CloseDirectEntryCaches moves the flush (`composesAliases` holds only without it); not for a guarded kernel
    * activation.
    */
@@ -1923,7 +1923,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 }
 
 /**
- * DS-6 under the compiler route: each direct entry body's read-modify-write caches take the placement
+ * DS-6 under the route: each direct entry body's read-modify-write caches take the placement
  * `closeBeforeGuardedDelete` gives, once route synthesis has cloned the bodies. A route and its handler clones compile
  * without alias staging, so a flush moved before the delete there would skip the write where the keys meet and the
  * delete does not run: they keep the end flush, as does an entry a route invokes itself and a cache also flushed before

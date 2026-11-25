@@ -41,7 +41,7 @@ function forEachCall(root: Node, visit: (call: FunctionCallNode, inLoop: boolean
  *
  * A stateless contract and a framed compile keep their helpers, and so does a helper the constructor calls (a
  * constructor's loop reads no triple after its block) or one whose name and arity another overload shares. A
- * compiler-owned function (`__`: a compiler-route route, its clones and handlers, the deployer's `__construct`) is neither
+ * compiler-owned function (`__`: a route route, its clones and handlers, the deployer's `__construct`) is neither
  * a call site nor a helper here: a route's row loop dispatches calls, and no recovery loop runs in a route.
  */
 export function recoveryLoopHelpers(contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[]): Set<string> {

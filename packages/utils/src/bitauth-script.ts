@@ -76,7 +76,7 @@ export function formatBitAuthScript(
 
   const maxSourceCodeLength = Math.max(...sourceCodeLineLengths);
   const maxBytecodeLength = Math.max(...bytecodeLineLengths);
-  // A compiler route can map thousands of opcodes to one source line. Padding every other source line to
+  // A route can map thousands of opcodes to one source line. Padding every other source line to
   // that line's full width turns a small debug script into tens of megabytes without adding useful alignment.
   const annotationWidth = Math.min(maxBytecodeLength, 512);
 

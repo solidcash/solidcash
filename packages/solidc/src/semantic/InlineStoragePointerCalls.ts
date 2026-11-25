@@ -280,7 +280,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // `entry -> _checkOwner -> owner()` after the returning getter has been reduced into `_checkOwner`.
       const scalarJournalEligible = !this.inlineDelegateStateHelpers && this.isScalarJournalEligible(fn);
       // OZ `_checkInitializing` / `_checkOwner` often still look context-only after the first IRSH
-      // (ERC-7201 `$._initializing` / `owner()`). A later IRSH exposes the read, but a compiler-route
+      // (ERC-7201 `$._initializing` / `owner()`). A later IRSH exposes the read, but a route
       // compile can leave the wrapper as OP_INVOKE. Force those guards into the delegate entry so
       // they inherit proxy-master + pending writes instead of INPUTINDEX+1 on the impl.
       const delegateGuard = this.inlineDelegateStateHelpers
@@ -711,7 +711,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         let args = stmt.call.parameters;
         // `using L for T; recv.method(x)` is still `recv.method` here. Physical-effect library helpers
         // (`Address.sendValue`) are selected for inlining by their `L.method` name; without rewriting this
-        // spelling the helper is dropped and ST later reports `recv.method` as undefined on the compiler-route path.
+        // spelling the helper is dropped and ST later reports `recv.method` as undefined on the route path.
         const dot = name.lastIndexOf('.');
         if (!callee && dot > 0) {
           const method = name.slice(dot + 1);

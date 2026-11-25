@@ -138,7 +138,7 @@ export function placeValueChunkPredecessorInputs(
 ): void {
   // A compiler-published balanced block is a complete ownership map. Legacy persistence recovery infers
   // destinations from cached input shape, so applying it after fixed-width assembly can replace a declared
-  // route slot with an unrelated resource. Compiler routes must receive every live/disposal input through the
+  // route slot with an unrelated resource. Routes must receive every live/disposal input through the
   // ordinary builder options and leave the materialized block immutable.
   if (host.preserveBlockLayoutWidth || host.directCallDelegateBlock
     || host.blockLayout?.trailingCapacity !== undefined) return;

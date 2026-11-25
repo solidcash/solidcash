@@ -1170,7 +1170,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       return write.keys.findIndex((key) => containsIdentifier(key, logical));
     };
     const hasObservableEffect = (x: Node): boolean => this.hasObservableEffect(x);
-    // The compiler-route effect frame has one fixed window per OUTER message row. Reaching the same emit/transfer
+    // The route effect frame has one fixed window per OUTER message row. Reaching the same emit/transfer
     // site N times in this inner runtime loop would therefore address one slot N times, while the SDK can only
     // materialize the statically declared site once. Typed external calls are different: their call manifest
     // already carries a runtime occurrence loop, so leave those in source order. Ordinary explicitly-pure

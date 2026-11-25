@@ -2,7 +2,7 @@
  * A8: a payment to a stateful contract's master lock is stuck for good.
  *
  * A master lock spends only a coin that carries its category's minting NFT: a direct master starts with pin(X), and a
- * framed master's prologue makes the same check. A payment carries no such NFT. The compiler routes a payment to a
+ * framed master's prologue makes the same check. A payment carries no such NFT. The routes a payment to a
  * `new` result to the child's container and refuses or warns on a contract-typed recipient, but a lock passed as
  * `bytes` is known only once a transaction is built. This refuses such an output then, and names the satoshi container
  * the payment belongs at when the chain shows which coin that is.

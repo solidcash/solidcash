@@ -298,7 +298,7 @@ export async function prepareCreateBuilderDerivePrelude(
     }
   }
   // Event placeholders are materialized by the STB's effective physical
-  // layout. For compiler-routed delegates that layout can be substantially
+  // layout. For routed delegates that layout can be substantially
   // wider than the public implementation ABI; using the latter maps event
   // ordinals onto unrelated participant outputs and learns false commits.
   const eventBlockLayoutForDerive = effectiveBlockLayout

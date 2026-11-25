@@ -133,7 +133,7 @@ export function materializeExternalCallOutputs(
       });
     }
 
-    // Plain .staticcall / .delegatecall groups preserve exact input commitments. A compiler-routed
+    // Plain .staticcall / .delegatecall groups preserve exact input commitments. A routed
     // proxy group still owns a balanced output block (entries, events, and its return slot), even
     // when its implementation is invoked with delegatecall, so it must continue through the full
     // block materialization below.
@@ -280,7 +280,7 @@ export function materializeExternalCallOutputs(
 
     // Full block: output B's remaining slots (entries, SC, TCs, transfers, events, etc.)
     if (group.blockInputs && group.blockLayout) {
-      // Only a compiler route reserves a trailing band, so only a route can run out of capacity.
+      // Only a route reserves a trailing band, so only a route can run out of capacity.
       const runBlocker = group.directCall === undefined ? directRunBlocker(group, group.blockLayout) : undefined;
       const chunksFollowBlock = group.directCall === undefined && runBlocker === undefined;
       if (runBlocker !== undefined && externalDynamicChunks.length > 0) {

@@ -224,7 +224,7 @@ export async function allocateCreateBuilderFunders(
       neededFunders += 1;
     }
     // A delegated sorted INSERT consumes fewer predecessor inputs than the entry outputs it creates. Legacy
-    // geometry needs the exact output-only surplus before ordinary nested participant blocks. Compiler-routed
+    // geometry needs the exact output-only surplus before ordinary nested participant blocks. Routed
     // routes instead settle predecessor and surplus pads inside their published trailing capacity, so adding
     // another funder would exceed the participant's balanced width. This applies to direct participant routes
     // as well as delegate routes: both use the same balanced trailing input placer.

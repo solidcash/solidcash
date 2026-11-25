@@ -186,7 +186,7 @@ export function createAppendDelegateOutputHelpers(
     const lastTransferOffset = delegateFn?.blockLayout?.slots
       .filter((slot) => slot.kind === 'transfer')
       .reduce((max, slot) => Math.max(max, slot.offset), -1) ?? -1;
-    // A compiler-route delegate's side-cars are slots of the proxy-owned balanced route and were recreated at
+    // A route delegate's side-cars are slots of the proxy-owned balanced route and were recreated at
     // those route offsets above. Only legacy delegate geometry places compute resources after the executor.
     const lastComputeOffset = host.delegateComputeResources && !host.directCallDelegateBlock
       ? delegateFn?.blockLayout?.slots

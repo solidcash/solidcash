@@ -133,7 +133,7 @@ const pushedNumber = (element: Script[number]): number | undefined => {
  *
  * Later compiler/SDK derivation changes made 10 pass the vmap and runtime regressions again. Solidc now probes
  * 12 through 10 for ordinary contracts and keeps a narrower window only when its measured whole-script result is smaller;
- * compiler-route contracts retain 12 because their exact active-bytecode resource model is separately pinned.
+ * route contracts retain 12 because their exact active-bytecode resource model is separately pinned.
  * Keeping 12 as this API's default preserves conservative behavior for direct utility callers.
  */
 export const MINIMUM_WINDOW_ELEMENTS = 12;
@@ -1776,7 +1776,7 @@ export function outlineSharedSpans(
       const target = corpus[body];
       // Consolidation is only valid for bodies above this size; small bodies must take the per-edit `splice`
       // path. Replacing the arrays cannot simply be applied everywhere: with the threshold removed, two
-      // compiler-route kernel tests regress ("threads one route-owned record carrier through each direct
+      // route kernel tests regress ("threads one route-owned record carrier through each direct
       // journal-aware handler" and "moves the global verifier out of the scalar master and keeps both covenants
       // deployable") and a large integration fixture's bytecode changes, so the small-body rewrite has semantics this
       // consolidated form does not reproduce. Keeping the fallback makes the change provably output-identical.

@@ -328,7 +328,7 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
       // while the nonzero outputs stay available for fees and compiler-owned block slots. This changes the
       // account's coin geometry, never its configured coin count or per-coin value.
       return (await anyProvider.getSigners(count, {
-        // Bounded compiler-route participant blocks can require dozens of
+        // Bounded route participant blocks can require dozens of
         // category-neutral filler inputs in one call. Keep the Hardhat-style
         // mock accounts generously pre-split so those compiler-owned slots do
         // not turn into an artificial wallet-funding limit.

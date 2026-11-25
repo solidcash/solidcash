@@ -147,7 +147,7 @@ export function mutatedNames(nodes: Node[]): Set<string> {
  * bound fails on-chain rather than silently executing a truncated prefix.
  *
  * Fixed literal trip counts are handled earlier by UnrollFixedBoundEntryLoop; this pass only sees the loops that
- * pass could not enumerate. It runs only for compiler-route route compilation, so direct (non-graph) lowering
+ * pass could not enumerate. It runs only for route route compilation, so direct (non-graph) lowering
  * is unchanged.
  */
 export default class ExpandBoundedPointerTableLoop extends AstTraversal {

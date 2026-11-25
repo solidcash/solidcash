@@ -3,7 +3,7 @@
  *
  * An arm's head is the code it opens with: the positional items its kind takes, then `OP_DEPTH n OP_NUMEQUALVERIFY`
  * with n the number of items the compiler's model holds there. A dispatched entry's selector was taken by the
- * dispatcher, so its head is the check alone. A compiler-route route first drops its positional items; under the
+ * dispatcher, so its head is the check alone. A route route first drops its positional items; under the
  * proxy-forward envelope it keeps the drop's decision across the check and then re-reads the proxy master index
  * where the model holds it. A body that can also run as a frame of the multi-call entry takes its call context and
  * checks only a standalone run. The multi-call entry takes its frames before its check.

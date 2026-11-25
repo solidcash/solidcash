@@ -1189,7 +1189,7 @@ export class TransactionBuilder {
 
     this.addOutput(changeOutput);
     try {
-      // A compiler-route density reserve depends on the complete input/output population. Measure with the
+      // A route density reserve depends on the complete input/output population. Measure with the
       // change output present: adding only its serialized size misses growth in those unlocking scripts
       // (and output-count varint boundaries). Satoshi amounts themselves always occupy eight bytes.
       const transactionSize = this.getTransactionSize();

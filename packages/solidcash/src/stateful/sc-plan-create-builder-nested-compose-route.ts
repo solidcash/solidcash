@@ -16,7 +16,6 @@ import {
 } from './ValueChunkProducerIdentity.js';
 
 export type PlanCreateBuilderNestedComposeRouteHost = {
-  buildRepeatedExternalBatch: (...args: any[]) => any;
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
   externalReturnsForCallsites: (...args: any[]) => Map<string, FunctionArgument>;
   selectProxyForwardInput: (...args: any[]) => FunctionArgument;
@@ -27,7 +26,6 @@ export type PlanCreateBuilderNestedComposeRouteHost = {
   }[]>;
   nestedFullState: (contract: any) => Promise<OnChainState>;
   nestedMasterState: (contract: any) => Promise<OnChainState>;
-  preparedChildProducerPath: (depth: number, row: any) => ValueChunkProducerPathDisposition;
   readonly timingEnabled: boolean;
 };
 
@@ -38,8 +36,6 @@ export type PlanCreateBuilderNestedComposeRouteResult = {
     nextArgs: FunctionArgument[];
   } | undefined) | undefined;
   resolveGraphNestedArgs: ((results: ReadonlyMap<number, FunctionArgument>) => FunctionArgument[] | undefined) | undefined;
-  childCompilerRoute: any;
-  replanChildRoute: ((resolved: { externalReturns: ReadonlyMap<string, FunctionArgument> }) => any) | undefined;
   childState: OnChainState & { masterUtxo: NonNullable<OnChainState['masterUtxo']> };
   childLayout: StateLayout;
   nestedAbiFn: AbiFunction | undefined;
@@ -62,7 +58,7 @@ export type PlanCreateBuilderNestedComposeRouteResult = {
 };
 
 /**
- * Plan the nested-compose compiler route, load callee/proxy state and data NFTs,
+ * Plan the nested-compose route, load callee/proxy state and data NFTs,
  * select the physical handler, and build direct-invocation producer rows.
  * Mutates nestedIndices / nestedByCallsite / lowLevelCallUtxoGroups bags in place.
  */
@@ -107,7 +103,7 @@ export async function planCreateBuilderNestedComposeRoute(
 
   // One authenticated producer-result epoch for this callsite: the returns it publishes plus the caller
   // arguments they re-resolve. Every consumer of the epoch (the nested call itself and any shared
-  // compiler route planned from the same callsite) must observe exactly these values, so it is
+  // route planned from the same callsite) must observe exactly these values, so it is
   // computed once here instead of per consumer.
   const resolveGraphNestedReturns = preparedAtomicNodes && nestedSources
     ? (results: ReadonlyMap<number, FunctionArgument>) => {
@@ -134,32 +130,6 @@ export async function planCreateBuilderNestedComposeRoute(
   const calleeRouteArtifact = proxyCallee?.implementation.inner.artifact.delegateArtifact
   ?? proxyCallee?.implementation.inner.artifact
   ?? callee.inner.artifact;
-  const childCompilerRoute = host.buildRepeatedExternalBatch(
-    nested, delegateVisibleArgs, callee, callInfoContract.inner.artifact, onChainState.state,
-    calleeRouteArtifact,
-    delegateVisibleInputs,
-    false,
-    delegateSelfAddress,
-    undefined,
-    delegateCallerIdentity,
-    (row: any) => host.preparedChildProducerPath(0, row),
-  );
-  if (timingEnabled) console.error('nested-callsite-route-built', {
-    callsiteId: nested.callsiteId, route: childCompilerRoute?.abiFunction.name,
-    rows: childCompilerRoute?.rowArguments.length, blobBytes: childCompilerRoute?.blob.length,
-  });
-  // A shared compiler route is planned once, before any producer result is authenticated. Re-planning
-  // it from the same inputs plus that result epoch yields the rows the compiler would have planned
-  // with those values, which is what the non-promoted batch derives in its single planning pass.
-  const replanChildRoute = childCompilerRoute && resolveGraphNestedReturns
-    ? (resolved: { externalReturns: ReadonlyMap<string, FunctionArgument> }) =>
-      host.buildRepeatedExternalBatch(
-        nested, delegateVisibleArgs, callee, callInfoContract.inner.artifact, onChainState.state,
-        calleeRouteArtifact, delegateVisibleInputs, false,
-        delegateSelfAddress, resolved.externalReturns, delegateCallerIdentity,
-        (row: any) => host.preparedChildProducerPath(0, row),
-      )
-    : undefined;
   const childState = await host.nestedFullState(callee);
   if (timingEnabled) console.error('nested-callsite-state-loaded', { callsiteId: nested.callsiteId });
   if (!childState.masterUtxo) {
@@ -285,63 +255,6 @@ export async function planCreateBuilderNestedComposeRoute(
       groupProxyMasterIndices.push(0);
     }
   }
-  if (childCompilerRoute && proxyCallee) {
-    if (delegateCallGroupIndex === undefined) {
-      throw new Error('Nested proxy batch route has no delegate implementation group');
-    }
-    const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
-    delegate.functionName = childCompilerRoute.abiFunction.name;
-    delegate.functionArgs = childCompilerRoute.args;
-    delegate.directCall = childCompilerRoute;
-    // The proxy's forwarder authenticates the selector on the co-spent implementation unlocker.
-    // For a compiler batch, both inputs therefore carry SCB1; the batch envelope binds the
-    // individual logical selectors and arguments.
-    childFunctionName = '__forward';
-    childFunctionArgs = [host.selectProxyForwardInput(
-      (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
-        .find((fn) => fn.name === nested.functionName)?.selector,
-      [childCompilerRoute.selector],
-      true,
-    )];
-    childWritesState = true;
-    childRequired = Array.from(
-      { length: childLayout.dataNftCount ?? 0 }, (_, nftIndex) => nftIndex,
-    );
-    childData = childRequired.map((nftIndex) => {
-      const utxo = childState.dataNftUtxos[nftIndex];
-      if (!utxo) throw new Error(
-        `Proxy data NFT at index ${nftIndex} not found for ${nested.interfaceName}`,
-      );
-      return {
-        ...utxo,
-        unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
-      };
-    });
-  } else if (childCompilerRoute) {
-    childFunctionName = childCompilerRoute.abiFunction.name;
-    childFunctionArgs = childCompilerRoute.args;
-    // A repeated route is selected precisely to execute one physical owner for several logical
-    // handlers. Treat that owner as mutating: even a read-only prefix can be followed by a write,
-    // and probing the synthetic route through staticCall cannot supply its hidden batch frame.
-    childWritesState = true;
-    childRequired = [...new Set(
-      (childCompilerRoute.abiFunction.blockLayout?.slots ?? [])
-        .filter((slot: any) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
-        .map((slot: any) => slot.nftIndex as number),
-    )] as number[];
-    childData = childRequired.map((nftIndex) => {
-      const utxo = childState.dataNftUtxos[nftIndex];
-      if (!utxo) {
-        throw new Error(
-          `External data NFT at index ${nftIndex} not found for ${nested.interfaceName}`,
-        );
-      }
-      return {
-        ...utxo,
-        unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
-      };
-    });
-  }
   const sharedGroupIndex = externalCallUtxoGroups.findIndex(
     (group) => group.categoryId === callee.categoryId,
   );
@@ -349,10 +262,7 @@ export async function planCreateBuilderNestedComposeRoute(
     ? (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
       .find((fn) => fn.name === nested.functionName)
     : undefined;
-  // The compiler route is the physical implementation program. Keep the logical proxy target for
-  // return typing below, but size and fund the co-spent delegate from the route's authoritative block.
-  const selectedFn = childCompilerRoute?.abiFunction
-  ?? proxyTargetFn
+  const selectedFn = proxyTargetFn
   ?? (callee.inner.artifact.abi as readonly AbiFunction[])
     .find((fn) => fn.name === childFunctionName);
   // Producer identity is only as exact as the entry point behind it. `selectedFn` above is a legacy
@@ -380,7 +290,7 @@ export async function planCreateBuilderNestedComposeRoute(
     occurrenceIndex,
     sourceEffectOrdinal: nested.sourceEffectOrdinal,
   });
-  const affineOccurrences = !childCompilerRoute && nested.iterationDomain
+  const affineOccurrences = nested.iterationDomain
     ? await host.planExternalCallOccurrences(nested, {
       functionArgs: delegateVisibleArgs,
       artifact: callInfoContract.inner.artifact,
@@ -393,7 +303,7 @@ export async function planCreateBuilderNestedComposeRoute(
     ? host.externalCallReachedOccurrenceIndices(nested, delegateVisibleArgs)
     : affineOccurrences.map((row) => row.sourceIteration);
   const directInvocationRows: readonly RouteExpressionKeyRow[] | undefined =
-  !childCompilerRoute && selectedFn && producerSelector
+  selectedFn && producerSelector
     ? directOccurrenceIndices?.map((occurrenceIndex, rowIndex): RouteExpressionKeyRow => {
       const occurrenceArgs = affineOccurrences?.[rowIndex]?.args ?? (occurrenceIndex === 0
         ? graphNestedArgs
@@ -455,8 +365,6 @@ export async function planCreateBuilderNestedComposeRoute(
     calleeRouteArtifact,
     resolveGraphNestedReturns,
     resolveGraphNestedArgs,
-    childCompilerRoute,
-    replanChildRoute,
     childState: childState as OnChainState & { masterUtxo: NonNullable<OnChainState['masterUtxo']> },
     childLayout,
     nestedAbiFn,

@@ -48,7 +48,7 @@ export function compileProject(source: string): ArtifactMap {
 
 /**
  * Compiles a unit with the framed convention and the Solidity compatibility layer only, as the conformance rows
- * do: no compiler-route route is generated beside the framed bodies.
+ * do: no route route is generated beside the framed bodies.
  */
 export function compileFramed(source: string): ArtifactMap {
   return compileStringMulti(source, { evmCompat: true, composition: 'framed' } as never);

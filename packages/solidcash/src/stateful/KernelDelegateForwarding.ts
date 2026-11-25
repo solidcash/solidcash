@@ -490,7 +490,7 @@ export function resolvePreparedKernelDelegateExecution(input: {
 /**
  * Bind a promoted delegate execution to its exact logical ABI owner.
  *
- * A compiler route and its logical handler can have equally plausible argument counts. Once forwarding promotion
+ * A route and its logical handler can have equally plausible argument counts. Once forwarding promotion
  * has authenticated the implementation selector, nested calls must resolve against that handler and its decoded
  * arguments rather than rediscovering a frame by function name or arity.
  */

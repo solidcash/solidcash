@@ -68,7 +68,7 @@ export function buildCreateBuilderStateUnlockers(
   ) ?? -1;
   if (overrides?.directCallSelector && abiFunction && physicalAbiFunction
     && physicalAbiFunction !== abiFunction) {
-    // A compiler route executed through a proxy has two distinct ABIs: the route ABI determines the complete
+    // A route executed through a proxy has two distinct ABIs: the route ABI determines the complete
     // participant layout, while the physical proxy ABI determines the master input's unlocking stack. Encode
     // the latter from its visible call arguments and resolve its hidden geometry witnesses by name. Feeding the
     // route frame to the proxy places the proxy selector in the delegate-index slot and makes OP_UTXO interpret
@@ -123,7 +123,7 @@ export function buildCreateBuilderStateUnlockers(
     }
   } else {
     const unlockFn = overrides?.directCallSelector && abiFunction
-      ? host.inner.createCompilerRouteUnlocker(abiFunction, overrides.directCallSelector)
+      ? host.inner.createUnlocker(abiFunction, overrides.directCallSelector)
       : ((exactUnlockName && (host.inner.unlock as any)[exactUnlockName])
         ?? (host.inner.unlock as any)[unlockName] ?? (host.inner.unlock as any)[functionName]);
     buildStateInputUnlocker = () => unlockFn(...finalArgs);

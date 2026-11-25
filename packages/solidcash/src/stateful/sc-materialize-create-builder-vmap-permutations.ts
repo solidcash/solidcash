@@ -56,7 +56,7 @@ export async function materializeCreateBuilderVmapPermutations(
     const permutationSpec = vmapCounterPermutationSpec(input.name);
     if (!permutationSpec) continue;
     const hiddenIdx = abiFunction!.inputs.findIndex((p) => p.name === input.name);
-    // A compiler route derives this row-owned witness before entering the ordinary builder. It is already in
+    // A route derives this row-owned witness before entering the ordinary builder. It is already in
     // the complete route argument frame, so do not look for the source bound on the wrapper ABI (`n` lives in
     // the authenticated row blob, not as a route parameter).
     if (Array.isArray(nextArgs[hiddenIdx])) continue;

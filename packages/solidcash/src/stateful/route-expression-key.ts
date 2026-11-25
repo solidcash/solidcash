@@ -258,7 +258,7 @@ const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),sch
 
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
-  /** Exact selected handler selector when transported by a compiler route. */
+  /** Exact selected handler selector when transported by a route. */
   selector?: string;
   /** Compiler-owned row arguments which are not encoded as public handler inputs. */
   internalArgs?: Readonly<Record<string, FunctionArgument>>;

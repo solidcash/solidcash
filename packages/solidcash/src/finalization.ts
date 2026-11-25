@@ -74,6 +74,6 @@ export function assertFinalizedTransactionCovenants(
 ): void {
   const objection = covenantObjectionOf(builder, transaction);
   if (objection !== undefined) {
-    throw new Error(`finalized transaction refused by its covenant: ${objection}`);
+    throw new Error(`BCH-2026 preflight failed at ${objection}`);
   }
 }

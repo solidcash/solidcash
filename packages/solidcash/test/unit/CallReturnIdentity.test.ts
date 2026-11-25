@@ -18,7 +18,7 @@ const abi = (
   }),
 });
 
-describe('compiler route return identity', () => {
+describe('call return identity', () => {
   it('uses the selected row for logical schema and the route for physical layout', () => {
     const route = abi('__route', 'bytes', 19);
     const handler = abi('readValue', 'uint256', 4);

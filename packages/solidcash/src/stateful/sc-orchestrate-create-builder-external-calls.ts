@@ -110,7 +110,6 @@ export type OrchestrateCreateBuilderExternalCallsHost = {
   readonly callerContract: any;
   getFullState: () => any;
   resolveExternalArgs: (...args: any[]) => any;
-  buildRepeatedExternalBatch?: (...args: any[]) => any;
   resolveExternalKeccakSideCars: (...args: any[]) => any;
   resolveExternalBlockhashCoSpends: (...args: any[]) => any;
   keysMatch: (...args: any[]) => any;
@@ -614,7 +613,6 @@ export async function orchestrateCreateBuilderExternalCalls(
 
       const nestedPrelude = await loadCreateBuilderNestedCalleePreludeImpl(
         {
-          buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch?.(...a),
           resolveExternalKeccakSideCars: (...a: any[]) => host.resolveExternalKeccakSideCars(...a),
           lockingBytecode: host.inner.lockingBytecode,
         },

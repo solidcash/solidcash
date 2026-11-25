@@ -309,7 +309,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       executingOraclePool(implementation, implementation.artifact), publishedNestedExternalCalls),
   };
   // A call the delegate may skip, under a guard no frame can decide, is refused: co-spent on a guess, its callee would
-  // run without being called whenever the guard is false. A compiler route binds the rows it runs instead.
+  // run without being called whenever the guard is false. A route binds the rows it runs instead.
   const refuseUndecided = (nested: ExternalCallAbi, reason?: string): never => {
     const connected = (host.selfContract?._externalRegistry?.get(nested.interfaceName)
       ?? callInfo.contract?._externalRegistry?.get(nested.interfaceName)) as

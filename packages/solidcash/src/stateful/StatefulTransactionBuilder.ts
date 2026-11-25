@@ -6383,7 +6383,7 @@ export class StatefulTransactionBuilder {
   private _trailingLoopEntryVars(): typeof this.loopEntryVars {
     return this.loopEntryVars.filter((variable) => (
       (variable.categoryId === undefined || variable.categoryId === this.categoryId)
-      // Legacy delegates own a transaction suffix outside the caller's block. A compiler-routed delegate instead
+      // Legacy delegates own a transaction suffix outside the caller's block. A routed delegate instead
       // executes against the authenticated participant owner, so its resources belong to that participant's frame.
       && (variable.delegate !== true || this.directCallDelegateBlock)
     ));
@@ -6523,7 +6523,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * Output index where loop entry NFTs begin. They share the trailing region with dynamic chunks (mutually
-   * exclusive in a given function by construction), placed after any chunk outputs. A compiler-routed delegate
+   * exclusive in a given function by construction), placed after any chunk outputs. A routed delegate
    * executes against its authenticated participant owner, so its loop entries remain inside that owner's declared
    * trailing region; the `delegate` marker selects token ownership, not a transaction-suffix placement policy.
    */
@@ -6751,7 +6751,7 @@ export class StatefulTransactionBuilder {
       if (g.sharedGroupIndex !== undefined) continue;
       base += calleeOutputSpan(g);
       // A proxied participant's implementation output follows that participant block in both the legacy and
-      // compiler-route layouts. Compiler routes move the implementation INPUT into a leading band, but their
+      // route layouts. Routes move the implementation INPUT into a leading band, but their
       // outputs remain interleaved; omitting it makes every later participant output base one slot too low.
       if (g.delegateCallGroupIndex !== undefined && !g.delegateEmbeddedInBlock) {
         const delegate = this.lowLevelCallUtxoGroups[g.delegateCallGroupIndex];

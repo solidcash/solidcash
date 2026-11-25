@@ -21,7 +21,7 @@ export function physicalBalancedTrailingOutputCount(
   return Math.max(0, currentOutputCount - (blockSize - trailingCapacity));
 }
 
-/** Compiler-routed delegates own their entry recreations inside the balanced block. */
+/** Routed delegates own their entry recreations inside the balanced block. */
 export const shouldReassertLegacyDelegateLoopEntries = (directCallDelegateBlock: boolean): boolean => (
   !directCallDelegateBlock
 );
@@ -69,7 +69,7 @@ export interface MaterializeTrailingFrameAndPendingHost {
 
 /**
  * Emit trailing loop-entry NFTs (when not already placed), enforce/pad balanced trailing capacity,
- * place remaining compiler-route delegate executors, and append buffered pending outputs.
+ * place remaining route delegate executors, and append buffered pending outputs.
  */
 export function materializeTrailingFrameAndPending(
   host: MaterializeTrailingFrameAndPendingHost,

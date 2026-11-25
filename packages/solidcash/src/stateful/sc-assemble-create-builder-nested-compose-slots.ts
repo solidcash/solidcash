@@ -140,7 +140,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
     childData: UnlockableUtxo[];
     childRequired: number[];
     childLayout: StateLayout;
-    childCompilerRoute: any | undefined;
     childFunctionName: string;
     childFunctionArgs: FunctionArgument[];
     nestedArgs: FunctionArgument[];
@@ -168,7 +167,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
   const {
     nested, selectedLayout, sharedGroupIndex, childWritesState,
     preserveFirstConditionalWriter, proxyCallee, callee, childState, childData,
-    childRequired, childLayout, childCompilerRoute,
+    childRequired, childLayout,
     routePlanningArgs, proxyImplementationState, delegateCallGroupIndex,
     childExternalGroupIndex, externalCallUtxoGroups, lowLevelCallUtxoGroups, timingEnabled,
     bags, publishRouteValueChunkProducerBinding,
@@ -195,7 +194,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
     ? undefined : await readPoolTimestamp(host.inner.provider, recipeOraclePool);
   const recipeState = recipeTimestamp === undefined
     ? childState.state : { ...childState.state, __block_timestamp: recipeTimestamp };
-  // A delegated callee's records belong to its proxy. A direct delegate and a compiler route alike bind them to the
+  // A delegated callee's records belong to its proxy. A direct delegate and a route alike bind them to the
   // proxy master's lock.
   const recordContract = callee.inner;
   const directInvocationRows = params.directInvocationRows as any[] | undefined;
@@ -346,21 +345,9 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 candidate.collection === access.collection
                 && (candidate.keySources ?? []).some((candidateSource: any) =>
                   isMsgSenderKeySource(candidateSource)));
-              if (childCompilerRoute?.rowArguments && !selectedUsesSender
-                && !childCompilerRoute.rowArguments.some(
-                  (row: any) => (row.handler.entryAccesses ?? []).some((candidate: any) =>
-                    candidate.collection === access.collection
-                  && (candidate.keySources ?? []).some((candidateSource: any) =>
-                    isMsgSenderKeySource(candidateSource))),
-                )) {
-                // Sorted-batch planning still needs a deterministic target for every reserved
-                // route slot. Use the same canonical inactive address carried by the route ABI;
-                // it avoids colliding with an active argument-keyed read of the caller itself.
-                return encodeLockingBytecodeP2pkh(new Uint8Array(20));
-              }
               // CALL observes the calling contract, while DELEGATECALL preserves the transaction
-              // caller. Resolve the same identity carried by _buildRepeatedExternalBatch's route
-              // witness or the selected entry and covenant key diverge.
+              // caller. Resolve the same identity carried by the route witness or the selected entry
+              // and covenant key diverge.
               if (selectedFn.modifiers?.includes('delegate')) {
                 const sender = host.signer ?? host.logicalNonceSigner;
                 if (!sender) throw new Error(
@@ -382,7 +369,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
               const auto = resolveRouteRowExpressionKey({
                 expressionLabel: source.expressionLabel,
                 collection: access.collection,
-                rowArguments: childCompilerRoute?.rowArguments,
                 routePlanningArgs,
                 routeVisibleInputs: selectedFn.inputs.filter(
                   (input) => !input.name.startsWith('__internal__'),
@@ -394,11 +380,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 rowIndexHint: perRowHint ? Number(perRowHint[1]) : undefined,
               });
               if (auto) return auto;
-              if (parseRowArgsDecodeLabel(source.expressionLabel)
-                && childCompilerRoute?.rowArguments) {
-                // No matching active row means this fixed route slot is intentionally inactive.
-                return undefined;
-              }
             }
             const encodedName = source.paramName
               ?? ('expressionLabel' in source ? source.expressionLabel : undefined)
@@ -412,12 +393,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
             const participatesInSortedBatch = (selectedFn.sortedBatchInfo ?? []).some(
               (batch) => batch.slotIndices.includes(slot.slotIndex ?? -1),
             );
-            if (perRowLane && childCompilerRoute?.rowArguments && !participatesInSortedBatch) {
-              const row = childCompilerRoute.rowArguments[Number(perRowLane[1])];
-              if (!row || !(row.handler.entryAccesses ?? []).some(
-                (candidate: any) => candidate.collection === access.collection,
-              )) return undefined;
-            }
             const paramName = encodedName?.startsWith('id:')
               ? encodedName.slice(3) : encodedName;
             const visibleInputs = selectedFn.inputs
@@ -643,12 +618,12 @@ export async function assembleCreateBuilderNestedComposeSlots(
       }
     }
     const insertBase = selectedLayout.trailingBase ?? selectedLayout.blockSize;
-    // A compiler route publishes the union of every handler's dynamic-storage footprint. Its read
+    // A route publishes the union of every handler's dynamic-storage footprint. Its read
     // loops therefore always address the physical union run at trailingBase, even when this envelope
     // selects a handler which does not touch those variables. Materialize the old chunks in the same
     // order as a direct call: read-only variables in ABI order, followed by written variables in state
     // declaration order. Inactive union writes are preservation spends, not write-authorized spends.
-    const selectedResources = selectedRouteResourceMetadata(childCompilerRoute?.rowArguments);
+    const selectedResources = selectedRouteResourceMetadata(undefined);
     const routeDynamicWrites = selectedFn?.dynamicWrites ?? [];
     const routeDynamicNames = [
       ...(selectedFn?.dynamicReads ?? []).filter((name) => !routeDynamicWrites.includes(name)),
@@ -662,7 +637,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         candidate.dynamic && candidate.name === name
       ));
       if (!variable) {
-        throw new Error(`Nested compiler route references unknown dynamic state '${name}'`);
+        throw new Error(`Nested route references unknown dynamic state '${name}'`);
       }
       const chunkAddress = getDynamicChunkAddress(
         recordContract, callee.categoryId, variable.name, variable.type,
@@ -678,7 +653,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         .sort((left, right) => left.chunkIndex - right.chunkIndex);
       const activeWrite = selectedResources.dynamicWrites.includes(variable.name);
       for (const { utxo } of chunks) {
-        // A balanced compiler route publishes a finite trailing window shared by every participant.
+        // A balanced route publishes a finite trailing window shared by every participant.
         // Ordinary direct functions have no `trailingCapacity`: their runtime chunk run simply extends
         // past blockSize. Treating an absent capacity as zero rejected the first chunk of every nested
         // dynamic read (for example an external `itemAt()` call after items became non-empty).
@@ -748,7 +723,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         ?? sharedPriorDelegateFunctionName ?? sharedPriorFunctionName;
       const priorFunctionArgs = sharedPriorAtomicNode?.args
         ?? sharedPriorDelegateFunctionArgs ?? sharedPriorFunctionArgs;
-      const sequentialRows = !childCompilerRoute && priorFunctionName
+      const sequentialRows = priorFunctionName
         && priorFunctionArgs && directInvocationRows?.length
         ? (() => {
           const priorHandler = sharedPriorAtomicNode
@@ -771,11 +746,9 @@ export async function assembleCreateBuilderNestedComposeSlots(
             producerPath: sharedPriorAtomicNode?.producerPath,
           }, ...directInvocationRows];
         })() : undefined;
-      // A direct nested handler is still one authenticated graph row even when no repeated-owner
-      // compiler batch was needed. Keep that exact callsite row available to terminal producer
-      // selection: `childCompilerRoute` describes a physical batch, not whether the semantic call
-      // exists. The selector resolver and producer path both fail closed for overloaded or
-      // incompletely-coordinated edges, so this cannot turn a name-derived SDK guess into authority.
+      // A direct nested handler is still one authenticated graph row. Keep that exact callsite row
+      // available to terminal producer selection; the selector resolver and producer path both fail
+      // closed for overloaded or incompletely-coordinated edges.
       const discoveredProducerRows = sequentialRows ?? directInvocationRows;
       const valueResultsByPath = new Map<string, ReadonlyMap<number, FunctionArgument>>();
       refreshChunkableRouteWitnesses = (
@@ -1096,7 +1069,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         return { internalArgs, payloadBytes: encodedPayloadBytes };
       };
       const refreshed = refreshChunkableRouteWitnesses(
-        childCompilerRoute?.rowArguments ?? discoveredProducerRows,
+        discoveredProducerRows,
         routePlanningArgs,
         valueChunkWriteStagingSession,
       );

@@ -391,7 +391,7 @@ export interface FunctionBlockLayout {
 }
 
 /**
- * Compiler-authored geometry for one typed stateful child-creation site reached by a compiler-route handler.
+ * Compiler-authored geometry for one typed stateful child-creation site reached by a route handler.
  *
  * This is published even while the kernel admission gate remains closed, so transaction assemblers can grow
  * against an exact, application-neutral topology rather than rediscovering `new C(...)` from contract names.
@@ -551,7 +551,7 @@ export interface ValueProvenance {
 
 /**
  * Exact, fail-closed recipe for collapsing a source forwarding function into an authenticated delegate
- * execution frame. Publication alone grants no compiler-route admission: the kernel verifier must still bind the
+ * execution frame. Publication alone grants no route admission: the kernel verifier must still bind the
  * resolved implementation and payload to the executor input while keeping state and outputs owned by the
  * participant block.
  */
@@ -2211,7 +2211,7 @@ export interface Artifact {
   genesisCalls?: boolean;
   /**
    * True: compiled as record-sound (its code marker says so). False: a record-publishing entry meets an arm that
-   * prevents it, or the contract is a compiler-route build.
+   * prevents it, or the contract is a route build.
    */
   recordSound?: boolean;
   /** True for a marked creator: a contract that creates a sender-reading child. */
@@ -2234,7 +2234,7 @@ export interface Artifact {
   // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.
   delegateArtifact?: Artifact;
   /** Compiler-only call graph/resource summary shared by splitting, journal
-   * eligibility, diagnostics, and compiler-route planning. No covenant capability
+   * eligibility, diagnostics, and route planning. No covenant capability
    * is implied by its presence. */
   invocationAnalysis?: InvocationAnalysisArtifact;
   /**

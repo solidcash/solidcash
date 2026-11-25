@@ -385,15 +385,15 @@ export async function fixCreateBuilderDelegateUnlockers(
         // Repeated routes are first built with a -1 graph sentinel while the SDK discovers their call tree.
         // Only the atomic composer publishes a non-negative fixed size and a complete ABI-positioned frame.
         // Before that point, resolve visible and storage witnesses through the ordinary compact route path.
-        const graphCompilerRoute = typeof graphFixedSize === 'bigint' && graphFixedSize >= 0n;
-        if (graphCompilerRoute
+        const graphCallLayout = typeof graphFixedSize === 'bigint' && graphFixedSize >= 0n;
+        if (graphCallLayout
           && !isSdkResolvedExternalCallTopologyWitness(inp.name)
           && !isSdkResolvedParticipantStorageWitness(inp.name)) {
           // Atomic routes already carry a complete ABI-positioned argument vector. Treating it as the
           // visible-only argument list shifts every non-internal witness following the first graph field
           // (an address key then receives a bigint). Graph-owned internal values may be refreshed by name;
           // every other position remains exactly directCall.args[inpIndex].
-          // Compiler-route args retain the compact visible-only frame during graph discovery. Consume every
+          // Route args retain the compact visible-only frame during graph discovery. Consume every
           // visible argument sequentially; graph-owned internal values are addressed by name below. Treating
           // the compact frame as ABI-positioned shifts the first route witness by the graph-field count.
           if (!inp.name.startsWith('__internal__')) {
@@ -596,7 +596,7 @@ export async function fixCreateBuilderDelegateUnlockers(
             // authoritative coordinate for every fixed proxy-state output.
             return BigInt(nestedOutputBases[physicalProxyGroup]);
           }
-          // A compiler-route delegate is the implementation of THIS builder's proxy block. Its balanced
+          // A route delegate is the implementation of THIS builder's proxy block. Its balanced
           // state outputs are rooted at the caller-supplied physical block base, not at any nested external
           // group which happens to carry one of the route's logical calls.
           if (directCallDelegateLayout) {
@@ -666,7 +666,7 @@ export async function fixCreateBuilderDelegateUnlockers(
         if (inp.name.startsWith('__internal__vmapBatch')) {
           // Atomic graph routes are first compiled with placeholder storage proofs. Only standalone routes
           // can own these values; graph participants resolve them from the final materialized UTXO block.
-          const directCallValue = graphCompilerRoute
+          const directCallValue = graphCallLayout
             ? undefined
             : group.directCall?.internalArgs?.[inp.name];
           if (directCallValue !== undefined) {
@@ -696,7 +696,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           // directly by OP_OUTPUT*, so only those are converted to absolute transaction coordinates.
           const groupInternalValue = group.internalArgs?.[inp.name];
           if (groupInternalValue !== undefined) {
-            if (!graphCompilerRoute && /^__internal__vmapBatchProof_\d+$/.test(inp.name)
+            if (!graphCallLayout && /^__internal__vmapBatchProof_\d+$/.test(inp.name)
               && typeof groupInternalValue === 'bigint' && groupInternalValue >= 0n) {
               return batchProofInputOffset(groupInternalValue);
             }
@@ -715,7 +715,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           if (value !== undefined) {
             // The compiler adds the participant master to proof offsets. PredOut is the exception: its
             // OP_OUTPUT* consumers take an absolute coordinate and therefore require SDK-side resolution.
-            if (!graphCompilerRoute && /^__internal__vmapBatchProof_\d+$/.test(inp.name)
+            if (!graphCallLayout && /^__internal__vmapBatchProof_\d+$/.test(inp.name)
               && typeof value === 'bigint' && value >= 0n) {
               return batchProofInputOffset(value);
             }
@@ -750,9 +750,9 @@ export async function fixCreateBuilderDelegateUnlockers(
           // them on the route's internalArgs; `entryValueWitnesses` stays the fallback for an ordinary
           // delegate, whose entries really are the caller's.
           // A probe-learned witness is persisted on the physical delegate group. It is newer than the
-          // compiler-route seed (often the empty/default value), so preserve it across later input refreshes.
+          // route seed (often the empty/default value), so preserve it across later input refreshes.
           const routeWitness = group.internalArgs?.[inp.name]
-            ?? (graphCompilerRoute ? undefined : group.directCall?.internalArgs?.[inp.name]);
+            ?? (graphCallLayout ? undefined : group.directCall?.internalArgs?.[inp.name]);
           if (routeWitness !== undefined) return routeWitness;
           if (['SOLIDC_DEBUG_COLLECTION_FETCH', 'SOLIDC_DEBUG_VALUE_WITNESS'].some((name) =>
             debugEnv()?.[name] === '1')) {
@@ -974,7 +974,7 @@ export async function fixCreateBuilderDelegateUnlockers(
         group.masterUtxo = {
           ...(group.masterUtxo as UnlockableUtxo),
           unlocker: group.directCall
-            ? group.externalContract.inner.createCompilerRouteUnlocker(
+            ? group.externalContract.inner.createUnlocker(
               group.directCall.abiFunction, group.directCall.selector,
             )(...encodedArgs)
             : group.externalContract.inner.unlockerFor(bFunc as AbiFunction)(...encodedArgs),

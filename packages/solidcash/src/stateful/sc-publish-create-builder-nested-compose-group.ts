@@ -20,7 +20,6 @@ export type PublishCreateBuilderNestedComposeGroupParams = {
   childFunctionArgs: FunctionArgument[];
   nestedArgs: FunctionArgument[];
   resolvedRawFunctionName: string | undefined;
-  childCompilerRoute: any | undefined;
   childCompilerInternalArgs: Record<string, FunctionArgument>;
   childValueWitnesses: Map<number, Uint8Array>;
   childRelativeOutputInternalArgs: string[];
@@ -63,7 +62,7 @@ export function publishCreateBuilderNestedComposeGroup(
   const {
     nested, proxyCallee, callee, childLayout, childState, childData, childRequired,
     childFunctionName, childFunctionArgs, nestedArgs, resolvedRawFunctionName,
-    childCompilerRoute, childCompilerInternalArgs, childValueWitnesses,
+    childCompilerInternalArgs, childValueWitnesses,
     childRelativeOutputInternalArgs, childBlockInputs, childPlannedEntryInserts,
     childBatchPredecessorOutputs, childBatchEntryLockingBytecodes,
     childBatchEntryCommitments, childDynamicChunkResources, selectedLayout,
@@ -119,7 +118,7 @@ export function publishCreateBuilderNestedComposeGroup(
   if (delegateCallGroupIndex !== undefined && childHasInternalArgs) {
     const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
     delegate.internalArgs = { ...delegate.internalArgs, ...childCompilerInternalArgs };
-    const delegateRoute = delegate.directCall ?? childCompilerRoute;
+    const delegateRoute = delegate.directCall;
     if (delegateRoute) {
       const previous = (delegateRoute as { internalArgs?: Record<string, FunctionArgument> })
         .internalArgs;
@@ -143,13 +142,7 @@ export function publishCreateBuilderNestedComposeGroup(
     logicalFunctionArgs: nestedArgs,
     logicalContract: callee,
     logicalArtifact: proxyCallee?.implementation.inner.artifact ?? callee.inner.artifact,
-    ...(childCompilerRoute && { directCall: {
-      ...childCompilerRoute,
-      ...(childHasInternalArgs && {
-        internalArgs: childCompilerInternalArgs,
-      }),
-    } }),
-    // Ordinary nested callees (no compiler route) still own SDK-derived hidden witnesses. Preserve
+    // Ordinary nested callees (no route) still own SDK-derived hidden witnesses. Preserve
     // them on the physical group so its unlocker can fill vmap batches and value witnesses later.
     ...(childHasInternalArgs && { internalArgs: childCompilerInternalArgs }),
     ...(delegateCallGroupIndex !== undefined && { delegateCallGroupIndex }),

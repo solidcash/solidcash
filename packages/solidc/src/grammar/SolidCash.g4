@@ -474,7 +474,7 @@ parameter
 // A control-flow body: either a braced block or a single unbraced statement. Spelled as ONE alternative
 // because `statement` already covers the braced form through `blockStatement`. A second `'{' statement* '}'`
 // alternative here would match the identical shape, and ANTLR resolves that ambiguity by simulating the WHOLE
-// body at every nested block - 85% of parse time on the generated compiler-route route. AstBuilder reads a braced
+// body at every nested block - 85% of parse time on the generated aggregate route. AstBuilder reads a braced
 // body's statements straight off the nested blockStatement, so the built BlockNode is unchanged.
 block
     : statement

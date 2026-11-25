@@ -207,7 +207,7 @@ export async function completeCreateBuilderNestedUnlockers(
       ) : undefined;
     const encoded = childFn.inputs.map((input, inputIndex) => {
       if (!input.name.startsWith('__internal__')) {
-        // A compiler route has its own visible ABI (`batchBlob` plus route witnesses), distinct from the
+        // A route has its own visible ABI (`batchBlob` plus route witnesses), distinct from the
         // logical handler arguments retained on the group for graph metadata. Use the route's exact vector;
         // selecting by coincidental arity can shift a handler amount into an address witness.
         const visibleArgs = child.directCall?.args ?? selectVisibleCallArguments(
@@ -269,7 +269,7 @@ export async function completeCreateBuilderNestedUnlockers(
         '__internal__graphSettlementTable'].includes(input.name)) {
         // This unlocker exists only for ordinary graph discovery. If the completed graph requires atomic
         // execution, send() rebuilds it from RouteRuntimeCall and the composer supplies the
-        // finalized verifier/manifest values. Preserve the compiler route's typed provisional values here
+        // finalized verifier/manifest values. Preserve the route's typed provisional values here
         // so discovery cannot silently fall back to a direct handler outside OP_INVOKE.
         const provisional = child.directCall?.internalArgs?.[input.name];
         if (provisional !== undefined) return provisional;
@@ -549,7 +549,7 @@ export async function completeCreateBuilderNestedUnlockers(
     // For a proxied callee, directCall describes the co-spent implementation and the proxy master still
     // executes its ordinary __forward entry. The implementation group below owns the route unlocker.
     const childUnlocker = child.directCall && child.delegateCallGroupIndex === undefined
-      ? child.externalContract.inner.createCompilerRouteUnlocker(
+      ? child.externalContract.inner.createUnlocker(
         child.directCall.abiFunction, child.directCall.selector,
       )(...encoded)
       : child.externalContract.inner.unlock[child.functionName]!(...encoded);
@@ -603,7 +603,7 @@ export async function completeCreateBuilderNestedUnlockers(
         }
       }
       const unlocker = child.directCall && child.delegateCallGroupIndex === undefined
-        ? child.externalContract.inner.createCompilerRouteUnlocker(
+        ? child.externalContract.inner.createUnlocker(
           child.directCall.abiFunction, child.directCall.selector,
         )(...capturedChildArgs)
         : child.externalContract.inner.unlock[child.functionName]!(...capturedChildArgs);

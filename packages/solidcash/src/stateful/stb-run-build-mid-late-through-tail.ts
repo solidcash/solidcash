@@ -83,7 +83,7 @@ export function runBuildMidLateThroughTail(
     host.finalizeBuildDerivedSuffixHost(), builder, debugAtomicOutputStage,
   );
 
-  // Output materialization is authoritative: shared/compiler-routed groups can expand into balanced blocks
+  // Output materialization is authoritative: shared/routed groups can expand into balanced blocks
   // whose physical width is not known from their logical call record. Resolve each delegate's preservation
   // coordinate now; the input unlocker closures above read these references when the final transaction encodes.
   if (finalizeBuildTail(

@@ -196,7 +196,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       }
     }
 
-    // Compiler routes may interleave hidden inputs with published witnesses (for example
+    // Routes may interleave hidden inputs with published witnesses (for example
     // __internal__msgSenderCategory immediately after batchBlob). Treating all visible args as an ABI prefix
     // shifts every later witness into the preceding hidden slot. Assemble routed calls in exact ABI order;
     // ordinary function calls retain their existing visible-prefix behavior.
@@ -241,7 +241,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
 
       if (group.directCall && !paramName.startsWith('__internal__')) {
         if (routeArgIndex >= routeArgs.length) {
-          throw new Error(`Compiler route '${group.functionName}' is missing visible ABI argument '${paramName}'`);
+          throw new Error(`Route '${group.functionName}' is missing visible ABI argument '${paramName}'`);
         }
         bFinalArgs.push(routeArgs[routeArgIndex++]);
         continue;
@@ -487,7 +487,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     // Create master unlocker
     const hasResolvedHiddenArgs = !group.directCall && bFinalArgs.length !== routeArgs.length;
     let bMasterUnlocker = group.directCall
-      ? group.externalContract.inner.createCompilerRouteUnlocker(
+      ? group.externalContract.inner.createUnlocker(
         group.directCall.abiFunction, group.directCall.selector,
       )(...bFinalArgs)
       : hasResolvedHiddenArgs && bAbiFunc
@@ -497,7 +497,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
 
     if (group.directCall && routeArgIndex !== routeArgs.length) {
       throw new Error(
-        `Compiler route '${group.functionName}' supplied ${routeArgs.length} visible arguments, `
+        `Route '${group.functionName}' supplied ${routeArgs.length} visible arguments, `
         + `but its ABI consumed ${routeArgIndex}`,
       );
     }
@@ -566,7 +566,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         }
       }
       const unlocker = group.directCall
-        ? group.externalContract.inner.createCompilerRouteUnlocker(
+        ? group.externalContract.inner.createUnlocker(
           group.directCall.abiFunction, group.directCall.selector,
         )(...capturedUnlockerArgs)
         : hasResolvedHiddenArgs && bAbiFunc

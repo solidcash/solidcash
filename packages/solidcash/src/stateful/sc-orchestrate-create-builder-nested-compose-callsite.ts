@@ -45,8 +45,6 @@ export type OrchestrateCreateBuilderNestedComposeCallsiteHost = {
   readonly externalRegistry: Map<string, any>;
   resolveExternalArgs: (...args: any[]) => any;
   resolveExternalExpressionReturns: (...args: any[]) => Promise<any>;
-  buildRepeatedExternalBatch?: (...args: any[]) => any;
-  replaceRepeatedExternalBatchRow?: (...args: any[]) => any;
   encodeStoredElementSource: (...args: any[]) => any;
   encodeStoredValueSource: (...args: any[]) => any;
   nestedIdentity: (address: string) => Promise<any>;
@@ -57,7 +55,6 @@ export type OrchestrateCreateBuilderNestedComposeCallsiteHost = {
   shiftSharedFunder: () => UnlockableUtxo | undefined;
   nextNestedFunderIndex: () => number;
   describeValueChunkWrites: (...args: any[]) => any;
-  preparedChildProducerPath: (...args: any[]) => any;
   selectProxyForwardInput: (...args: any[]) => any;
   resolvePreparedProducerEntry: (...args: any[]) => any;
   externalReturnsForCallsites: (...args: any[]) => any;
@@ -138,7 +135,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   const nestedFullState = host.nestedFullState;
   const nestedMasterState = host.nestedMasterState;
   const nestedAddressUtxos = host.nestedAddressUtxos;
-  const preparedChildProducerPath = host.preparedChildProducerPath;
   const selectProxyForwardInput = host.selectProxyForwardInput;
   const resolvePreparedProducerEntry = host.resolvePreparedProducerEntry;
   const externalReturnsForCallsites = host.externalReturnsForCallsites;
@@ -239,7 +235,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     const callee = resolvedCallee as any;
     const plannedRoute = await planCreateBuilderNestedComposeRouteImpl(
       {
-        buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch?.(...a),
         resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
         externalReturnsForCallsites,
         selectProxyForwardInput,
@@ -250,7 +245,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         planExternalCallOccurrences: (...a: any[]) => host.planExternalCallOccurrences(...a),
         nestedFullState,
         nestedMasterState,
-        preparedChildProducerPath,
         timingEnabled,
       },
       {
@@ -283,12 +277,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     const calleeRouteArtifact = plannedRoute.calleeRouteArtifact;
     const resolveGraphNestedReturns = plannedRoute.resolveGraphNestedReturns;
     const resolveGraphNestedArgs = plannedRoute.resolveGraphNestedArgs;
-    const childCompilerRoute = plannedRoute.childCompilerRoute as ReturnType<
-    any['_buildRepeatedExternalBatch']
-    > | undefined;
-    const replanChildRoute = plannedRoute.replanChildRoute as undefined | ((
-      resolved: { externalReturns: ReadonlyMap<string, FunctionArgument> },
-    ) => any);
     let childState = plannedRoute.childState;
     const childLayout = plannedRoute.childLayout;
     const childRequired = plannedRoute.childRequired;
@@ -306,35 +294,23 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     let selectedFn = plannedRoute.selectedFn as AbiFunction | undefined;
     const producerSelector = plannedRoute.producerSelector;
     const directInvocationRows = plannedRoute.directInvocationRows;
-    // A compiler route created by an earlier logical call owns the callee's one physical UTXO block
+    // A route created by an earlier logical call owns the callee's one physical UTXO block
     // and executes every selector in its batch blob. Solidity lowering still publishes the individual
     // callsites (including mutually-exclusive SafeERC20 approve branches), so they arrive here too.
     // Represent those as shared logical groups only; planning their ordinary handler layouts again
     // would require a second master and, for an absent vmap key, invent a trailing insert slot that the
     // direct handler deliberately does not have.
     const logicalSelector = proxyTargetFn?.selector ?? selectedFn?.selector;
-    const sharedCompilerRouteCoversCall = sharedGroupIndex >= 0
+    const sharedDirectCallCoversCall = sharedGroupIndex >= 0
   && logicalSelector !== undefined
   && externalCallUtxoGroups[sharedGroupIndex].directCall
     ?.abiFunction !== undefined && false;
-    if (childCompilerRoute
-  && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE === '1') {
-      console.error('nested-route-visible-args', selectedFn?.inputs
-        .filter((input) => !input.name.startsWith('__internal__'))
-        .map((input, index) => ({
-          name: input.name,
-          value: childFunctionArgs[index] instanceof Uint8Array
-            ? binToHex(childFunctionArgs[index] as Uint8Array)
-            : String(childFunctionArgs[index]),
-        })));
-    }
-    if (!proxyCallee && !sharedCompilerRouteCoversCall) {
+    if (!proxyCallee && !sharedDirectCallCoversCall) {
       childWritesState ||= selectedFn?.writesState === true;
     }
-    if (sharedCompilerRouteCoversCall) childWritesState = false;
+    if (sharedDirectCallCoversCall) childWritesState = false;
     if (proxyCallee && delegateCallGroupIndex !== undefined
-  && childWritesState && !childCompilerRoute) {
+  && childWritesState) {
       const primaryDelegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
       primaryDelegate.functionName = nested.functionName;
       primaryDelegate.functionArgs = nestedArgs;
@@ -357,9 +333,8 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         nestedSources,
         delegateVisibleArgs,
         delegateVisibleInputs,
-        childCompilerRoute,
         childWritesState,
-        sharedCompilerRouteCoversCall,
+        sharedDirectCallCoversCall,
         graphPlanningResults,
         publicSelfAddress,
         childFunctionName,
@@ -421,8 +396,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       commitment?: string; newCommitment?: string;
     }> = [];
     const selectedLayout = selectedFn?.blockLayout;
-    const routePlanningArgs = childCompilerRoute?.args
-  ?? (proxyTargetFn ? nestedArgs : childFunctionArgs);
+    const routePlanningArgs = proxyTargetFn ? nestedArgs : childFunctionArgs;
     let routeValueChunkProducerAliases: ExternalCallUtxoGroup[] = [];
     let routeValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
     let routeValueChunkProducerEpoch: number | undefined;
@@ -494,7 +468,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         childData,
         childRequired,
         childLayout,
-        childCompilerRoute,
         childFunctionName,
         childFunctionArgs,
         nestedArgs,
@@ -560,7 +533,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       childFunctionArgs,
       nestedArgs,
       resolvedRawFunctionName,
-      childCompilerRoute,
       childCompilerInternalArgs,
       childValueWitnesses,
       childRelativeOutputInternalArgs,
@@ -595,28 +567,22 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       const finished = finishCreateBuilderNestedComposeImpl(
         {
           resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
-          buildRepeatedExternalBatch: (...a: any[]) =>
-            host.buildRepeatedExternalBatch?.(...a),
-          replaceRepeatedExternalBatchRow: (...a: any[]) =>
-            host.replaceRepeatedExternalBatchRow?.(...a),
           describeValueChunkWrites,
-          preparedChildProducerPath,
-        },
+          preparedChildProducerPath: (...a: any[]) => (host.preparedChildProducerPath as any)(...a),
+          },
         {
           nested,
           selectedFn,
           sharedGroupIndex,
           delegateCallGroupIndex,
           childExternalGroupIndex,
-          childCompilerRoute,
-          childCompilerInternalArgs,
+            childCompilerInternalArgs,
           childFunctionName,
           nestedArgs,
           nestedSources,
           needsExpressionReturns,
           directInvocationRows,
-          replanChildRoute,
-          resolveGraphNestedReturns,
+            resolveGraphNestedReturns,
           resolveGraphNestedArgs,
           graphNestedArgs,
           delegateVisibleArgs,

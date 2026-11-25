@@ -144,7 +144,7 @@ export function repairNestedCalleeOutputs(
       builder.addOutput(entryOutput);
     }
   }
-  // A compiler route can settle a nested delegate's runtime mapping loop alongside the root's own dynamic
+  // A route can settle a nested delegate's runtime mapping loop alongside the root's own dynamic
   // storage. Its covenant addresses NEW after callee identity preservation but before the caller's own logical
   // identity anchor. The distinct token category is the ownership boundary that keeps these outputs out of the
   // root's reserved trailing capacity.
@@ -416,7 +416,7 @@ export function repairNestedCalleeOutputs(
   // implementation sits after the proxy block. Materialize every recovered
   // pin; extractRouteChunkPin already rejected non-chunk OUTPUTBYTECODE checks.
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
-    // The balanced compiler route owns its trailing dynamic-resource frame. Replaying the legacy absolute
+    // The balanced route owns its trailing dynamic-resource frame. Replaying the legacy absolute
     // delegate placement would duplicate those chunks beyond the route block.
     if (host.directCallDelegateBlock) continue;
     if (llc.callMode !== 'delegatecall') continue;

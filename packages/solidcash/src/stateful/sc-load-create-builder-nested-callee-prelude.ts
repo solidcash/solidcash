@@ -43,10 +43,9 @@ export type NestedCalleeCallInfo = {
   args: FunctionArgument[];
 };
 
-export type NestedCalleeCompilerRoute = NonNullable<ExternalCallUtxoGroup['directCall']>;
+export type NestedCalleeDirectCall = NonNullable<ExternalCallUtxoGroup['directCall']>;
 
 export interface LoadCreateBuilderNestedCalleePreludeHost {
-  buildRepeatedExternalBatch(...args: any[]): NestedCalleeCompilerRoute | undefined;
   resolveExternalKeccakSideCars(
     bAbiFunc: AbiFunction | undefined,
     args: FunctionArgument[],
@@ -58,7 +57,7 @@ export interface LoadCreateBuilderNestedCalleePreludeHost {
 
 export interface LoadCreateBuilderNestedCalleePreludeResult {
   externalCategoryId: string;
-  directCall: NestedCalleeCompilerRoute | undefined;
+  directCall: NestedCalleeDirectCall | undefined;
   bGraphBlockhashSelections: ReturnType<typeof selectGraphBlockhashReads>;
   bState: NestedCalleeOnChainState;
   bStatelayout: StateLayout;
@@ -100,7 +99,7 @@ export function writtenDynamicChunkInputs(
 }
 
 /**
- * Resolve one direct nested callee's compiler route, on-chain state, required data NFTs,
+ * Resolve one direct nested callee's route, on-chain state, required data NFTs,
  * ABI/layout selection, pre-known chunkable values, and keccak side-cars — everything needed
  * before assembling that callee's full block inputs.
  */
@@ -128,20 +127,7 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // bake the callee address, so its category comes from the registered external instance).
   const externalCategoryId = callInfo.externalContract.categoryId;
   // A direct caller never builds a bus batch: its repeated calls run as frames of a multi-call spend.
-  const directCall = isDirectConventionArtifact(artifact) ? undefined : host.buildRepeatedExternalBatch(
-    ec, args, callInfo.externalContract,
-    artifact, callerStateSnapshot, undefined, abiFunction?.inputs,
-    false, publicSelfAddress, undefined, publicSelfIdentity,
-    (row: any) => deriveValueChunkProducerChildPath({
-      parent: rootProducerPath,
-      parentExecutionLockingBytecode: host.lockingBytecode,
-      parentSelector: abiFunction?.selector,
-      sourceCallsiteId: row.sourceCallsiteId,
-      sourceLogicalIndex: row.sourceLogicalIndex,
-      occurrenceIndex: row.occurrenceIndex,
-      sourceEffectOrdinal: row.sourceEffectOrdinal,
-    }),
-  );
+  const directCall = undefined as NestedCalleeDirectCall | undefined;
   const bGraphBlockhashSelections = directCall
     ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, new Uint8Array())
     : [];

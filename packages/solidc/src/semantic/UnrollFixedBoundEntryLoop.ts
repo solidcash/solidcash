@@ -96,7 +96,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     private readonly expansions?: PointerTableExpansionMap,
     private readonly fixedCollectionIterations = false,
     // A fixed loop whose body makes an effect unrolls (see the class comment); `'only'` leaves every other loop to a
-    // later pass, for a legacy compiler-route compile whose route admission runs between the two.
+    // later pass, for a legacy route compile whose route admission runs between the two.
     private readonly effects: boolean | 'only' = false,
   ) {
     super();
@@ -136,7 +136,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   /**
    * A native entry-backed fixed array has a compiler-owned cardinality and identities: `T[N]` is exactly the
-   * entry set 0..N-1. In compiler-route mode, expand its collection iteration to the same static indexed reads a
+   * entry set 0..N-1. In route mode, expand its collection iteration to the same static indexed reads a
    * user could write by hand. The ordinary entry-slot machinery then authenticates the exact count, source
    * order, and every index identity. Enumerable mappings and dynamic arrays deliberately retain their runtime
    * CollectionIterationNode and the route's named fail-closed refusal.
@@ -336,12 +336,12 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // Only unroll a NON-empty loop whose body writes a mapping, calls keccak256, or deploys a child (else
     // needless). A child deployment has the same fixed-resource requirement as a mapping write: each exact
     // iteration owns an independent genesis input/output span and must therefore become an ordinary syntactic
-    // site before compiler-route admission assigns site and transfer ordinals. A keccak256 in
+    // site before route admission assigns site and transfer ordinals. A keccak256 in
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Static break/continue replay below preserves their source target;
     // returns and runtime-selected escapes remain rolled.
-    // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (compiler-route route) mode.
+    // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (route route) mode.
     // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
     // WHOLE table after the loop, and unrolling it into N single-element callsites changes the direct ABI
     // (per-element selector and master-index witnesses) that shipped broadcast callers use.
@@ -369,7 +369,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
     // across the N copies (Solidity block scoping). A single iteration is inlined into the enclosing block so
-    // compiler-route admission still sees a top-level mapping write (computed-key journal).
+    // route admission still sees a top-level mapping write (computed-key journal).
     const result: StatementNode[] = [];
     for (const v of values) {
       const iterStmts: StatementNode[] = [];

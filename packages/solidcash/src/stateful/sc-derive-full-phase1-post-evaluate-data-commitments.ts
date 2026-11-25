@@ -141,7 +141,7 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
       && lockingBytecode.every((byte, index) => byte === expectedMasterLockingBytecode[index]);
   });
   // The concrete probe is authoritative: output-only caller slots and sorted INSERT expansion can shift
-  // participant bands in ways the pre-build dense-coordinate helper cannot reconstruct. Compiler-routed
+  // participant bands in ways the pre-build dense-coordinate helper cannot reconstruct. Routed
   // proxies deliberately emit a spacer in their nominal master slot, so retain the helper as their fallback.
   const bOutputBase = builtOutputBase >= 0
     ? builtOutputBase : stb.getExternalCallOutputBase(groupIdx);

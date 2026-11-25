@@ -359,7 +359,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   delegateReturnEventAfterEvents?: boolean;
   /** Absolute input offset selected by the caller's encoded low-level-call index. */
   lowLevelCallInputBase?: number;
-  /** The first low-level input is a compiler-route delegate implementation placed after the balanced root block. */
+  /** The first low-level input is a route delegate implementation placed after the balanced root block. */
   directCallDelegateBlock?: boolean;
   /** Preserve every compiler-published block coordinate, including inactive union-route resource slots. */
   preserveBlockLayoutWidth?: boolean;

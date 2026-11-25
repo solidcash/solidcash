@@ -69,7 +69,7 @@ export function deriveFullPhase1ProgressiveEntries(
         slots: group.blockLayout.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset })),
       });
     }
-    // The initial trace commonly stops at the data-NFT placeholder. Compiler routes derive entry
+    // The initial trace commonly stops at the data-NFT placeholder. Routes derive entry
     // outputs progressively, so begin that process from a fresh transaction after the data commitment
     // above has been installed; otherwise an empty first map terminates the loop before any entry write
     // (for example ERC20 approve's allowance update) can be revealed. A direct callee checks its data

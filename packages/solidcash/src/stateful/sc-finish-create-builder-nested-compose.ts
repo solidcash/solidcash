@@ -18,8 +18,6 @@ import {
 
 export type FinishCreateBuilderNestedComposeHost = {
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
-  buildRepeatedExternalBatch: (...args: any[]) => any;
-  replaceRepeatedExternalBatchRow: (...args: any[]) => any;
   describeValueChunkWrites: (group: ExternalCallUtxoGroup) => any;
   preparedChildProducerPath: (depth: number, row: any) => ValueChunkProducerPathDisposition;
 };
@@ -48,14 +46,12 @@ export function finishCreateBuilderNestedCompose(
     sharedGroupIndex: number;
     delegateCallGroupIndex: number | undefined;
     childExternalGroupIndex: number;
-    childCompilerRoute: any | undefined;
     childCompilerInternalArgs: Record<string, FunctionArgument>;
     childFunctionName: string;
     nestedArgs: FunctionArgument[];
     nestedSources: readonly any[] | undefined;
     needsExpressionReturns: boolean;
     directInvocationRows: readonly any[] | undefined;
-    replanChildRoute: ((resolved: { externalReturns: ReadonlyMap<string, FunctionArgument> }) => any) | undefined;
     resolveGraphNestedReturns: ((results: ReadonlyMap<number, FunctionArgument>) => {
       externalReturns: Map<string, FunctionArgument>;
       nextArgs: FunctionArgument[];
@@ -84,8 +80,8 @@ export function finishCreateBuilderNestedCompose(
 ): FinishCreateBuilderNestedComposeBags {
   const {
     nested, selectedFn, sharedGroupIndex, delegateCallGroupIndex, childExternalGroupIndex,
-    childCompilerRoute, childCompilerInternalArgs, nestedArgs, nestedSources,
-    needsExpressionReturns, directInvocationRows, replanChildRoute, resolveGraphNestedReturns,
+    childCompilerInternalArgs, nestedArgs, nestedSources,
+    needsExpressionReturns, directInvocationRows, resolveGraphNestedReturns,
     delegateVisibleArgs, delegateVisibleInputs, callInfoContract, onChainState,
     publishedNestedExternalCalls, proxyCallee, refreshChunkableRouteWitnesses,
     valueChunkProductionsForPath, publishRouteValueChunkProducerBinding,
@@ -135,7 +131,7 @@ export function finishCreateBuilderNestedCompose(
   publishRouteValueChunkProducerBinding(latestRouteValueChunkProducerBinding);
   if (preparedAtomicNodes) {
     const atomicNodeIndex = preparedAtomicNodes.length;
-    const runtimeRows = childCompilerRoute?.rowArguments ?? directInvocationRows;
+    const runtimeRows = directInvocationRows;
     if (runtimeRows?.length) {
       const runtimeRowsWithProducerPaths = runtimeRows.map((row: any) => ({
         row,
@@ -157,24 +153,7 @@ export function finishCreateBuilderNestedCompose(
       ) => FunctionArgument[] | undefined) | undefined;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_SKIP_ROW_RESULT_RESOLVER !== '1') {
-        if (replanChildRoute && resolveGraphNestedReturns) {
-          const planRoute = replanChildRoute;
-          const resolveReturns = resolveGraphNestedReturns;
-          resolveRowArgsFromResults = (row, results) => {
-            const resolved = resolveReturns(results);
-            if (!resolved) return undefined;
-            const replanned = planRoute(resolved);
-            if (!replanned) return undefined;
-            const sourceCallsiteId = row.sourceCallsiteId ?? nested.callsiteId;
-            const replannedRow = replanned.rowArguments.find((candidate: any) => (
-              candidate.selector === row.selector
-            && candidate.sourceCallsiteId === sourceCallsiteId
-            && candidate.sourceLogicalIndex === row.sourceLogicalIndex
-            && candidate.occurrenceIndex === row.occurrenceIndex
-            ));
-            return replannedRow ? [...replannedRow.args] : undefined;
-          };
-        } else if (resolveGraphNestedReturns && nestedSources) {
+        if (resolveGraphNestedReturns && nestedSources) {
         // Without a compiled batch route these rows are the reached occurrences of one callsite, so
         // their arguments are re-resolved from the same authenticated result epoch at that
         // occurrence. Argument recipes only run once their producer result is authenticated, which is
@@ -250,10 +229,6 @@ export function finishCreateBuilderNestedCompose(
               return routeRows.flatMap((routeRow: any) => valueChunkProductionsForPath(routeRow.producerPath));
             },
           }),
-          ...(childCompilerRoute && {
-            batchLogicalIndex: row.sourceLogicalIndex,
-            batchOccurrenceIndex: row.occurrenceIndex,
-          }),
           // These rows were planned before any producer result existed. Once an authenticated result
           // for this callsite arrives, re-plan the route with it and adopt the matching row's
           // arguments, so a row argument sourced from another call's return carries the value that
@@ -275,7 +250,6 @@ export function finishCreateBuilderNestedCompose(
           functionName: nested.functionName, callsiteId: nested.callsiteId,
           hasSources: nestedSources !== undefined,
           hasReturns: resolveGraphNestedReturns !== undefined,
-          hasReplan: replanChildRoute !== undefined,
           hasResolver: preparedAtomicNodes[preparedAtomicNodes.length - 1]!.resolveArgsFromResults !== undefined,
         }));
       }
@@ -347,7 +321,6 @@ export function finishCreateBuilderNestedCompose(
         functionName: nested.functionName, callsiteId: nested.callsiteId,
         hasSources: nestedSources !== undefined,
         hasReturns: resolveGraphNestedReturns !== undefined,
-        hasReplan: replanChildRoute !== undefined,
         hasResolver: preparedAtomicNodes[atomicNodeIndex]!.resolveArgsFromResults !== undefined,
       }));
     }
@@ -365,8 +338,6 @@ export function finishCreateBuilderNestedCompose(
   if (nestedSources && needsExpressionReturns && preparedAtomicNodes) {
     const atomicNodeIndex = preparedAtomicNodeByExternalGroup.get(childExternalGroupIndex);
     let currentLogicalArgs = nestedArgs;
-    let currentCompilerRoute: NonNullable<ExternalCallUtxoGroup['directCall']> | undefined =
-      childCompilerRoute;
     if (atomicNodeIndex !== undefined) {
       preparedAtomicNodes[atomicNodeIndex].refreshArgsFromResults = (results: any) => {
         const externalReturns = externalReturnsForCallsites(
@@ -392,23 +363,6 @@ export function finishCreateBuilderNestedCompose(
           || routeValueChunkProducerEpoch === undefined
           || routeValueChunkProducerEpochByPhysicalGroup.get(routeValueChunkProducerPhysicalGroup)
             === routeValueChunkProducerEpoch;
-        const activeCompilerRoute = currentCompilerRoute
-          ?? (proxyCallee && delegateCallGroupIndex !== undefined
-            ? lowLevelCallUtxoGroups[delegateCallGroupIndex]?.directCall
-            : externalCallUtxoGroups[physicalGroupIndex]?.directCall);
-        const nextCompilerRoute = currentCompilerRoute
-          ? host.buildRepeatedExternalBatch(
-            nested, delegateVisibleArgs, callee, callInfo.contract.inner.artifact,
-            onChainState.state, calleeRouteArtifact, delegateVisibleInputs, false,
-            delegateSelfAddress, externalReturns, delegateCallerIdentity,
-            (row: any) => preparedChildProducerPath(0, row),
-          )
-          : activeCompilerRoute
-            ? host.replaceRepeatedExternalBatchRow(
-              activeCompilerRoute, currentLogicalArgs, nextLogicalArgs,
-              calleeRouteArtifact, hexToBin(delegateCallerIdentity.lockingBytecode),
-            )
-            : undefined;
         const routeDerivedRefresher = refreshChunkableRouteWitnesses
           ?? physicalGroup?.refreshRouteDerivedArguments;
         const logicalArgsChanged = !functionArgumentListsEqual(
@@ -418,7 +372,7 @@ export function finishCreateBuilderNestedCompose(
         if (!logicalArgsChanged && !routeChanged) return false;
         const refreshedRouteInternalArgs = routeDerivedRefresher
           ? routeDerivedRefresher(
-            nextCompilerRoute?.rowArguments, nextLogicalArgs,
+            undefined, nextLogicalArgs,
           ).internalArgs
           : {};
 
@@ -436,57 +390,18 @@ export function finishCreateBuilderNestedCompose(
           ...preparedAtomicNodes![atomicNodeIndex],
           args: [...nextGraphArgs],
         };
-        if (nextCompilerRoute) {
-          currentCompilerRoute = nextCompilerRoute;
-          if (logicalGroup !== physicalGroup || ownsPhysicalRefresh) {
-            const logicalInternalArgs = {
-              ...(logicalGroup.directCall?.internalArgs ?? logicalGroup.internalArgs),
-              ...refreshedRouteInternalArgs,
-            };
-            logicalGroup.directCall = {
-              ...nextCompilerRoute,
-              ...(Object.keys(logicalInternalArgs).length > 0 && { internalArgs: logicalInternalArgs }),
-            };
-          }
-        }
-
         if (!ownsPhysicalRefresh) return true;
-        const selectedFunctionName = nextCompilerRoute?.abiFunction.name
-          ?? resolvedRawFunctionName ?? nested.functionName;
+        const selectedFunctionName = resolvedRawFunctionName ?? nested.functionName;
         if (proxyCallee && delegateCallGroupIndex !== undefined) {
           const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
-          if (nextCompilerRoute) {
-            const internalArgs = {
-              ...(delegate.directCall?.internalArgs ?? delegate.internalArgs),
-              ...refreshedRouteInternalArgs,
-            };
-            delegate.functionName = selectedFunctionName;
-            delegate.directCall = {
-              ...nextCompilerRoute,
-              ...(internalArgs && { internalArgs }),
-            };
-            delegate.refreshFunctionArgs?.(nextCompilerRoute.args);
-            delegate.refreshInternalArgs?.(refreshedRouteInternalArgs);
-          } else if (delegate.functionName === selectedFunctionName) {
+          if (delegate.functionName === selectedFunctionName) {
             delegate.refreshFunctionArgs?.(nextLogicalArgs);
             if (Object.keys(refreshedRouteInternalArgs).length > 0) {
               delegate.refreshInternalArgs?.(refreshedRouteInternalArgs);
             }
           }
         } else {
-          if (nextCompilerRoute) {
-            const internalArgs = {
-              ...(physicalGroup.directCall?.internalArgs ?? physicalGroup.internalArgs),
-              ...refreshedRouteInternalArgs,
-            };
-            physicalGroup.functionName = selectedFunctionName;
-            physicalGroup.directCall = {
-              ...nextCompilerRoute,
-              ...(internalArgs && { internalArgs }),
-            };
-            physicalGroup.refreshFunctionArgs?.(nextCompilerRoute.args);
-            physicalGroup.refreshInternalArgs?.(refreshedRouteInternalArgs);
-          } else if (physicalGroup.functionName === selectedFunctionName
+          if (physicalGroup.functionName === selectedFunctionName
             || physicalGroup.logicalFunctionName === selectedFunctionName) {
             physicalGroup.refreshFunctionArgs?.(nextLogicalArgs);
             if (Object.keys(refreshedRouteInternalArgs).length > 0) {

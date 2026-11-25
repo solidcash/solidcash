@@ -61,7 +61,7 @@ export function resolvePreparedKernelDelegateExecution(input: {
 /**
  * Bind a promoted delegate execution to its exact logical ABI owner.
  *
- * A compiler route and its logical handler can have equally plausible argument counts. Once forwarding promotion
+ * A route and its logical handler can have equally plausible argument counts. Once forwarding promotion
  * has authenticated the implementation selector, nested calls must resolve against that handler and its decoded
  * arguments rather than rediscovering a frame by function name or arity.
  */
@@ -295,7 +295,7 @@ export interface SelectedKernelJournalStream {
  * Whether duplicate physical proof discovery belongs to the authenticated carrier planner.
  *
  * Read occurrences may intentionally authenticate the same present entry or absence predecessor. Once the
- * compiler route has transferred the complete journal batch to deferred materialization, the global physical
+ * route has transferred the complete journal batch to deferred materialization, the global physical
  * planner owns that deduplication. Mutations and every legacy/direct path retain the established fail-closed
  * duplicate-input checks.
  */
@@ -473,7 +473,7 @@ export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown 
   return anchored;
 }
 
-/** A compiler route needs the physical entry ABI only when an actual wrapper entry point carries it. Synthetic
+/** A route needs the physical entry ABI only when an actual wrapper entry point carries it. Synthetic
  * routes live exclusively in route metadata, so the absence of a same-named physical ABI is not a wrapper. */
 export function directCallUsesPhysicalWrapper(
   directCallSelector: Uint8Array | undefined,
@@ -486,7 +486,7 @@ export function directCallUsesPhysicalWrapper(
     && physicalAbiFunction !== effectiveAbiFunction;
 }
 
-/** Rebase compiler-route proof offsets when an implementation block is embedded after a proxy's state prefix.
+/** Rebase route proof offsets when an implementation block is embedded after a proxy's state prefix.
  * Batch proof witnesses are relative to the authenticated state owner, unlike ordinary implementation block slots
  * which are relative to the executor. Negative sentinels and output-relative witnesses are intentionally unchanged. */
 export function rebaseRoutedBatchProofOffsets(

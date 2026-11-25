@@ -170,7 +170,7 @@ export function registerCreateBuilderBuilderState(
   // Break the first-probe ordering cycle when a scalar vmap INSERT follows newly-written dynamic state chunks:
   // reserve one chunk candidate so NEW is placed after the dynamic region and the VM can reach both commitment
   // checks. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
-  // Compiler-route proxy callees (compose executionArtifact/executor) publish trailingCapacity for ChunkNft
+  // Route proxy callees (compose executionArtifact/executor) publish trailingCapacity for ChunkNft
   // co-spends, but empty first-writes have no pre-state chunks. Without a speculative placeholder the trailing
   // band stays OP_TRUE density pads and the executor EQUALVERIFYs ChunkNft P2SH32 against 0x51.
   const directCallEmptyDynamicMint = directCallDelegateLayout !== undefined
@@ -195,7 +195,7 @@ export function registerCreateBuilderBuilderState(
         const seedFloor = dv.delegateSuffix === true || usesComposedDelegateDynamicTail
           || selectedBatchEmptyDynamicMint ? 2 : 1;
         const seedCount = Math.max(oldDynamicChunkCounts.get(dv.name) ?? 0, seedFloor);
-        // Empty first-writes of fixed-width T[] under a compiler-route proxy callee often never expose an
+        // Empty first-writes of fixed-width T[] under a route proxy callee often never expose an
         // OTC pin for graph convergence (unlike bytes/string). When the pre-state is empty and the selected
         // row's visible args are exactly one element, seed the packed one-element array commitment directly.
         const currentValue = (onChainState as unknown as Record<string, unknown>)[dv.name];

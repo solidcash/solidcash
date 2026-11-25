@@ -483,7 +483,7 @@ export async function expandCreateBuilderLateTransitive(
       // was provisionally owned by an earlier read or conditional alternative, the state-writing edge is
       // the physical transition which must execute. Apply the same ownership rule as direct composition:
       // repeated conditional alternatives selecting one handler keep their first carrier, while a distinct
-      // writer replaces an ordinary (non-routed) carrier. A compiler route already owns all selectors it
+      // writer replaces an ordinary (non-routed) carrier. A route already owns all selectors it
       // advertises and must not be dismantled here.
       const preserveConditionalOwner = nested.occurrence === 'conditional'
         && selectedFn.writesState === true

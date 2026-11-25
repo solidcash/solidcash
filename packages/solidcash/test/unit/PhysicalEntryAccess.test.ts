@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { AbiFunction, EntryAccessAbi } from '@solidcash/utils';
-import { buildEntryNftCovenantScript, computeCollectionHash } from '@solidcash/utils';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth';
 import {
   cachedEntryOutputOwnsLock, physicalEntryAccessForSlot,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
-import { externalEntryLockingBytecode } from '../../src/stateful/stb-minting-swap-predecessors.js';
-import { scriptToLockingBytecode } from '../../src/utils.js';
 
 const access = (collection: string): EntryAccessAbi => ({
   collection,
@@ -14,51 +11,13 @@ const access = (collection: string): EntryAccessAbi => ({
   operations: ['read'],
 });
 
-describe('physical compiler-route entry ownership', () => {
-  it('uses the route slot instead of a logical handler local ordinal', () => {
-    const routeEntries = Array<EntryAccessAbi | undefined>(19);
-    routeEntries[18] = access('journal');
-    const route = { entryAccesses: routeEntries } as unknown as Pick<AbiFunction, 'entryAccesses'>;
+describe('physical entry ownership', () => {
+  it('reads a handler entry access at its slot ordinal', () => {
     const logicalHandler = {
       entryAccesses: [access('labels')],
     } as Pick<AbiFunction, 'entryAccesses'>;
 
-    expect(physicalEntryAccessForSlot(route, [logicalHandler], 18)?.collection).toBe('journal');
-    expect(physicalEntryAccessForSlot(undefined, [logicalHandler], 0)?.collection).toBe('labels');
-  });
-
-  it('treats a route collection as authoritative when both layouts define the ordinal', () => {
-    const route = { entryAccesses: [access('physical')] } as Pick<AbiFunction, 'entryAccesses'>;
-    const logical = { entryAccesses: [access('logical')] } as Pick<AbiFunction, 'entryAccesses'>;
-
-    expect(physicalEntryAccessForSlot(route, [logical], 0)?.collection).toBe('physical');
-  });
-
-  it('constructs the physical route collection lock even when the selected handler uses that ordinal locally', () => {
-    const categoryId = '11'.repeat(31) + 'ee';
-    const physicalSignature = 'physical:mapping(bigint => bigint)';
-    const logicalSignature = 'logical:mapping(bigint => bigint)';
-    const group = {
-      categoryId,
-      stateLayout: { collections: [
-        { name: 'physical', signature: physicalSignature },
-        { name: 'logical', signature: logicalSignature },
-      ] },
-      directCall: { abiFunction: { name: '__message_bus1', entryAccesses: [access('physical')] } },
-      logicalFunctionName: 'write',
-      logicalArtifact: { abi: [{ name: 'write', entryAccesses: [access('logical')] }] },
-    } as never;
-    const lock = externalEntryLockingBytecode(group, { kind: 'entry', offset: 1, slotIndex: 0 } as never);
-    const expected = scriptToLockingBytecode(
-      buildEntryNftCovenantScript(hexToBin(categoryId), computeCollectionHash(physicalSignature)),
-      'p2sh32',
-    );
-    expect(lock).toEqual(expected);
-    expect(externalEntryLockingBytecode({
-      ...group,
-      directCall: { abiFunction: { name: '__message_bus1', entryAccesses: [] } },
-      stateLayout: { collections: [{ name: 'physical', signature: physicalSignature }] },
-    } as never, { kind: 'entry', offset: 1, slotIndex: 0 } as never)).toBeUndefined();
+    expect(physicalEntryAccessForSlot([logicalHandler], 0)?.collection).toBe('labels');
   });
 
   it('does not replay a learned entry transition onto a new collection at the same coordinate', () => {

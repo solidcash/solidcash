@@ -26,10 +26,6 @@ import {
   type TokenContainerInfo,
 } from './external-call-utxo-group.js';
 import {
-  type KernelEntryJournalEagerOutputPlanEntry,
-  type KernelEntryJournalSettlementOutputPlanEntry,
-} from './KernelEntryJournal.js';
-import {
   legacyNamedJobEventCollectionFallback,
 } from './legacy-planning-heuristics.js';
 import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
@@ -79,8 +75,7 @@ export function rebaseValueChunkWriteDescriptors(
 
 /** Rebind a continuation coordinate only on the concrete unlocker ABI which captured that hidden argument. */
 export function ownsCapturedValueChunkOutputBase(group: ExternalCallUtxoGroup): boolean {
-  const inputNames = group.internalArgNames
-    ?? group.directCall?.abiFunction.inputs.map((input) => input.name);
+  const inputNames = group.internalArgNames;
   if (inputNames?.includes('__internal__valueChunkOutputBase') === true) return true;
   const masterUnlocker = (group.masterUtxo as UnlockableUtxo | undefined)?.unlocker as {
     abiFunction?: { inputs?: readonly { name: string }[] };
@@ -129,7 +124,7 @@ export type ProtectedLoopEntryCollectionSelection =
 /** Select collection locks which same-index INSERT repair must not use as disposable relocation pads. */
 export function selectProtectedLoopEntryCollections(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'functionName' | 'logicalFunctionName' | 'directCall' | 'logicalArtifact' | 'externalContract'
+  'functionName' | 'logicalFunctionName' | 'logicalArtifact' | 'externalContract'
   | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites' | 'stateLayout'>>,
 ): ProtectedLoopEntryCollectionSelection {
   let described = false;
@@ -156,8 +151,7 @@ export function selectProtectedLoopEntryCollections(
     described = true;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
-    const abiFunction = group.directCall?.abiFunction
-      ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
+    const abiFunction = artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
     const layout = abiFunction?.blockLayout ?? group.blockLayout;
     if (!abiFunction?.entryAccesses || !layout) {
       if (group.plannedEntryInserts.length > 0) ambiguous = true;
@@ -210,7 +204,7 @@ export function selectExternalEventProbeInput(
 }
 
 export type CompilerWriterEventCandidate = Pick<ExternalCallUtxoGroup,
-'categoryId' | 'blockLayout' | 'directCall' | 'eventOutputs'>;
+'categoryId' | 'blockLayout' | 'eventOutputs'>;
 
 export type CompilerWriterEventSelection =
   | { status: 'absent' }
@@ -226,17 +220,10 @@ export function selectCompilerWriterEvent(
 ): CompilerWriterEventSelection {
   const claims = new Map<string, Extract<CompilerWriterEventSelection, { status: 'exact' }>>();
   for (const candidate of candidates) {
-    const fn = candidate.directCall?.abiFunction;
-    const layout = fn?.blockLayout ?? candidate.blockLayout;
-    const slots = layout?.slots.filter((slot) => slot.kind === 'event') ?? [];
-    const routedSignatures = undefined;
+    const slots = candidate.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
     for (const [ordinal, slot] of slots.entries()) {
-      const declared = routedSignatures !== undefined
-        ? routedSignatures[ordinal]
-        : fn?.emits?.find((emit) => emit.emitIndex === ordinal)?.eventSignature;
       const observed = candidate.eventOutputs?.[ordinal];
-      if (declared && observed && declared !== observed.eventSignature) return { status: 'ambiguous' };
-      const eventSignature = declared ?? observed?.eventSignature;
+      const eventSignature = observed?.eventSignature;
       if (!eventSignature) continue;
       const key = `${candidate.categoryId.toLowerCase()}:${slot.offset}:${eventSignature}`;
       const prior = claims.get(key);
@@ -328,10 +315,6 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   | { kind: 'events'; offset: number; count: number }
   | { kind: 'transfers'; offset: number; count: number }
   >;
-  /** Canonical global-record to physical-entry ordering for a journal carrier settlement. */
-  kernelJournalSettlementOutputPlan?: KernelEntryJournalSettlementOutputPlanEntry[];
-  /** Source/materialization-ordered outputs which precede the route-final carrier settlement band. */
-  kernelJournalEagerOutputPlan?: KernelEntryJournalEagerOutputPlanEntry[];
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -399,7 +382,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
 /** Absolute event coordinates owned by materialized external-call blocks. */
 export function externalCallEventDestinations(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'sharedGroupIndex' | 'blockLayout' | 'directCall' | 'streamedEventPlan'>>,
+  'sharedGroupIndex' | 'blockLayout'>>,
   outputBaseForGroup: (groupIndex: number) => number,
 ): number[] {
   const destinations: number[] = [];
@@ -409,11 +392,9 @@ export function externalCallEventDestinations(
     if (group.sharedGroupIndex !== undefined) continue;
     const base = outputBaseForGroup(groupIndex);
     if (base < 0) continue;
-    const layout = group.blockLayout ?? group.directCall?.abiFunction.blockLayout;
-    for (const slot of layout?.slots ?? []) {
+    for (const slot of group.blockLayout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'eventChunk') destinations.push(base + slot.offset);
     }
-    for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) destinations.push(base + offset);
   }
   return destinations;
 }
@@ -423,16 +404,9 @@ export type ParticipantImmutableEventDestination = {
   destination: number;
 };
 
-/** Event signatures follow compiler-published physical slot identities when present. */
-export function groupEventSignatures(
-  group: Pick<ExternalCallUtxoGroup, 'directCall'>,
-  abiFunction?: Pick<AbiFunction, 'emits'>,
-): Array<string | undefined> {
-  const published: Array<string | undefined> = [];
-  const declared = abiFunction?.emits ?? [];
-  return Array.from({ length: Math.max(published.length, declared.length) }, (_, index) => (
-    published[index] ?? declared[index]?.eventSignature
-  ));
+/** Event signatures in the function's declared emit order. */
+export function groupEventSignatures(abiFunction?: Pick<AbiFunction, 'emits'>): Array<string | undefined> {
+  return (abiFunction?.emits ?? []).map((emit) => emit.eventSignature);
 }
 
 /** Delegate execution mutates the physical proxy's state, not the implementation's. */
@@ -466,7 +440,7 @@ export function lowLevelCallStateOwnerCategory(
  */
 export function lowLevelCallImmutableEventDestinations(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'categoryId' | 'callMode' | 'blockLayout' | 'directCall'>>,
+  'categoryId' | 'callMode' | 'blockLayout'>>,
   proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
   'categoryId' | 'delegateCallGroupIndex' | 'sharedGroupIndex'>>,
   inputBaseForGroup: (groupIndex: number) => number,
@@ -476,8 +450,7 @@ export function lowLevelCallImmutableEventDestinations(
     const base = inputBaseForGroup(groupIndex);
     if (base < 0) continue;
     const categoryId = lowLevelCallStateOwnerCategory(groupIndex, group, proxyGroups);
-    const layout = group.blockLayout ?? group.directCall?.abiFunction.blockLayout;
-    for (const slot of layout?.slots ?? []) {
+    for (const slot of group.blockLayout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'returnEvent') {
         destinations.push({ categoryId, destination: base + slot.offset });
       }

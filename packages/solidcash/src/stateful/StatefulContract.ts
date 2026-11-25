@@ -27,40 +27,14 @@ import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
-import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
+import { isScidIdentityCommitment, resolveLogicalIdentity } from './logical-identity.js';
 
 import { addressToLockScript, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode, tryCashAddressToLockScript } from '../utils.js';
 
 import { SortedList, keyToSlotMulti, bytesToSlotValue, encodeEntryCommitment, decodeEntryCommitment } from './SortedList.js';
 import { integerKey, type MappingKey } from './mapping-key-lookup.js';
-import {
-  decodeJournalEntryJournalRecord,
-  decodeJournalEntryJournalAccesses,
-  encodeJournalEntryJournalAccesses,
-  KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
-
-  kernelEntryJournalSettlementOutputSegments,
-
-
-
-
-  planJournalEntryJournalAccessTopology,
-  scheduleJournalEntryJournalOccurrences,
-  planJournalEntryJournalPhysicalSettlement,
-  resolveJournalEntryJournalDirtyFinalBodies,
-  validateJournalEntryJournalSettlementGroups,
-
-
-  type KernelEntryJournalAccess,
-
-  type KernelEntryJournalSettlementOccurrence,
-  type KernelEntryJournalSettlementReference,
-  type KernelEntryJournalDirtyFinalBodyCandidate,
-  type KernelEntryJournalTopologyOperation,
-} from './KernelEntryJournal.js';
 import { fillLeftCallArgumentWitnesses } from './call-record.js';
-import { KERNEL_JOURNAL_ACCESS_STREAMS, KERNEL_JOURNAL_RECORDS, assertJournalJournalRecordBudget, defaultInternalFunctionArg, kernelJournalAccessStreamPlaceholders, kernelJournalRecordSegmentWitnesses, readCarrierOwnsDuplicateProof, materializeInternalFunctionArgument } from './entry-journal-planning.js';
-import { directCallUsesPhysicalWrapper } from './route-resource-selection.js';
+import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './entry-journal-planning.js';
 import type { GraphEcrecoverCall } from './runtime-call-metadata.js';
 import { completeInternalFunctionArguments } from './internal-function-args.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
@@ -388,9 +362,6 @@ import {
   prepareDeriveFullValueChunkWrites as prepareDeriveFullValueChunkWritesImpl,
 } from './sc-prepare-derive-full-value-chunk-writes.js';
 import {
-  rebaseDeriveFullProbeDelegateWitnesses as rebaseDeriveFullProbeDelegateWitnessesImpl,
-} from './sc-rebase-derive-full-probe-delegate-witnesses.js';
-import {
   reconcileDeriveFullReturnWitnesses as reconcileDeriveFullReturnWitnessesImpl,
   rebindDeriveFullExternalResourceMaster as rebindDeriveFullExternalResourceMasterImpl,
 } from './sc-derive-full-return-witness-helpers.js';
@@ -434,7 +405,6 @@ import {
   deriveFullPhase2ApplyRuntimeLoop as deriveFullPhase2ApplyRuntimeLoopImpl,
 } from './sc-derive-full-phase2-apply-runtime-loop.js';
 import { traceRuntimeEffectStreamRuns } from './runtime-effect-stream-trace.js';
-import { deriveNestedStreamedEvents } from './nested-streamed-events.js';
 import {
   deriveFullPhase2ApplyValueChunks as deriveFullPhase2ApplyValueChunksImpl,
 } from './sc-derive-full-phase2-apply-value-chunks.js';
@@ -672,22 +642,8 @@ export async function memoizeGraphPlanningProducerResult(
 }
 
 /** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
-// Entry-journal planners live in their own plugin module.
-export {
-  materializeInternalFunctionArgument,
-  type KernelJournalRecordSegmentWitnesses,
-  assertJournalJournalRecordBudget,
-  kernelJournalRecordSegmentWitnesses,
-  kernelJournalAccessStreamPlaceholders,
-  type SelectedJournalJournalStream,
-  readCarrierOwnsDuplicateProof,
-  type SelectedJournalJournalHandler,
-  shouldDeferJournalJournalMaterialization,
-  shouldDeferJournalJournalBatchMaterialization,
-  type KernelJournalEagerOutputOccurrence,
-} from './entry-journal-planning.js';
-export { directCallUsesPhysicalWrapper } from './route-resource-selection.js';
-export type { GraphBlockhashSelection, GraphEcrecoverCall } from './runtime-call-metadata.js';
+export { materializeInternalFunctionArgument } from './entry-journal-planning.js';
+export type { GraphEcrecoverCall } from './runtime-call-metadata.js';
 
 /**
  * Compute the minimum relay fee for a built TransactionBuilder at 1 sat/byte.
@@ -979,8 +935,6 @@ export type CallInfo = {
   contract: StatefulContract;
   functionName: string;
   args: FunctionArgument[];
-  /** Compiler-owned route selected for this physical callee (used by atomic delegate composition). */
-  directCall?: NonNullable<ExternalCallUtxoGroup['directCall']>;
   /** For delegatecall: the proxy's master input index in the transaction. Defaults to 0. */
   proxyMasterIndex?: number;
   /**
@@ -1449,12 +1403,10 @@ export function permitsRouteValueChunkDerivation(
   return true;
 }
 
-/** The exact ABI body carried by a physical participant. Routes outrank source-level names because
- * overloads and shared participants can execute a different body than the logical call which introduced them. */
+/** The ABI body carried by a physical participant. */
 function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
-  return group.directCall?.abiFunction
-    ?? (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
-      ?.find((candidate) => candidate.name === group.functionName);
+  return (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
+    ?.find((candidate) => candidate.name === group.functionName);
 }
 
 function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean {
@@ -1481,7 +1433,7 @@ export function computedStateWriterGroupIndex(
   }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
-    const name = groups[index]?.directCall?.abiFunction.name ?? groups[index]?.functionName;
+    const name = groups[index]?.functionName;
     return name === 'transferFrom' || name === 'transfer' || name === 'approve';
   });
 }
@@ -1526,8 +1478,7 @@ export function describeValueChunkWrites(
   stateOwnerCategoryId?: string,
 ): ValueChunkWriteDescriptor[] {
   const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-  const abiFunction = group.directCall?.abiFunction
-    ?? artifact?.abi.find((candidate) => candidate.name === group.functionName);
+  const abiFunction = artifact?.abi.find((candidate) => candidate.name === group.functionName);
   if (!abiFunction) return [];
   const layout = abiFunction.blockLayout ?? group.blockLayout;
   if (!layout) return [];
@@ -2837,7 +2788,6 @@ type PhysicalSelectorGroup = {
   sharedGroupIndex?: number;
   delegateCallGroupIndex?: number;
   functionName: string;
-  directCall?: { selector: Uint8Array };
   externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
 };
 
@@ -2888,7 +2838,6 @@ export function physicalExternalCallSelectorHex(
   const delegate = physical.delegateCallGroupIndex === undefined
     ? undefined : delegateGroups[physical.delegateCallGroupIndex];
   const selected = delegate ?? physical;
-  if (selected.directCall?.selector) return binToHex(selected.directCall.selector);
   return selected.externalContract.inner.artifact.abi
     .find((candidate) => candidate.name === selected.functionName)?.selector;
 }
@@ -5563,11 +5512,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       persistWidthAtEntry,
     } = prepareDeriveFullValueChunkWritesImpl(stb);
 
-    // Atomic participant extraction evaluates a routed delegate in a transaction-local coordinate
-    // system before embedding that participant in the final graph. Temporarily rebase proxy identity witnesses.
-    const {
-      probeDelegate, restoreProbeWitnesses,
-    } = rebaseDeriveFullProbeDelegateWitnessesImpl(stb, delegatecallInputIndex, debugTargetDerivation);
     try {
       // Wrap the entire derivation body so any error becomes AutoDerivationError.
       // This cleanly separates derivation failures from programming bugs.
@@ -5657,9 +5601,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const group = externalCallUtxoGroups[groupIdx];
           const ec = externalCalls[groupIdx];
           if (group.sharedGroupIndex !== undefined) continue;
-          // Lifted emits execute before the route's final data-NFT settlement. Fill their probe records first
-          // so Phase 1 can reach and authenticate the callee's final state commitment.
-          await deriveNestedStreamedEvents(this.inner.provider, stb, group, groupIdx);
           const phase1Front = deriveFullPhase1GroupFrontImpl(
             {
               categoryId: this.categoryId,
@@ -5692,7 +5633,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             valueChunkWitness, debugTargetDerivation,
           );
 
-          await deriveNestedStreamedEvents(this.inner.provider, stb, group, groupIdx);
           deriveFullPhase1ReturnAndEventsImpl(
             { inner: this.inner as any },
             stb, externalCallUtxoGroups, group, groupIdx, externalCalls, ec?.hasReturnValues,
@@ -6432,10 +6372,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const logicalFunctionNames = [
             executedUnlocker?.abiFunction?.name,
             ...stb.getLowLevelCallUtxoGroups().flatMap((group) => [
-              group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name,
+              group.logicalFunctionName, group.functionName,
             ]),
             ...stb.getExternalCallUtxoGroups().flatMap((group) => [
-              group.logicalFunctionName, group.functionName, group.directCall?.abiFunction?.name,
+              group.logicalFunctionName, group.functionName,
             ]),
           ].filter((name): name is string => !!name);
           const activeInstructions = (lastStep as {
@@ -6575,11 +6515,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Wrap unexpected errors from the derivation try-body as AutoDerivationError
       // so that callers get a consistent error type for derivation failures.
       throw e;
-    } finally {
-      if (probeDelegate?.refreshInternalArgs && Object.keys(restoreProbeWitnesses).length > 0) {
-        probeDelegate.refreshInternalArgs(restoreProbeWitnesses, { shiftPredOut: false });
-        stb._refreshInputs();
-      }
     }
   }
 
@@ -6645,20 +6580,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /** Validate one Solidity-visible ABI frame without starting provider, state, or route work. */
-  _validateAbiFrame(
-    abiFunction: AbiFunction,
-    args: FunctionArgument[],
-    options: { implicitMsgSenderCategory?: boolean } = {},
-  ): FunctionArgument[] {
+  _validateAbiFrame(abiFunction: AbiFunction, args: FunctionArgument[]): FunctionArgument[] {
     const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
-    // A direct compiler-owned batch route may carry other physical witnesses while leaving only its caller
-    // category for the builder to derive. Keep those supplied witnesses aligned with their actual ABI slots.
-    const implicitCallerInputs = options.implicitMsgSenderCategory
-      && false
-      && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')
-      ? abiFunction.inputs.filter((input) => input.name !== '__internal__msgSenderCategory') : undefined;
-    if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length
-      && args.length !== implicitCallerInputs?.length) {
+    if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length) {
       throw new Error(
         `Incorrect number of arguments passed to function ${abiFunction.name}. `
         + `Expected ${visibleInputs.length} arguments (${visibleInputs.map((input) => input.type)}) `
@@ -6668,8 +6592,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // A caller normally supplies the compact visible frame. Contract.createUnlocker also accepts a complete
     // physical frame, so retain exact ABI indices when that form is used; internal parameters need not be a
     // suffix.
-    const frameInputs = args.length === abiFunction.inputs.length ? abiFunction.inputs
-      : args.length === implicitCallerInputs?.length ? implicitCallerInputs : visibleInputs;
+    const frameInputs = args.length === abiFunction.inputs.length ? abiFunction.inputs : visibleInputs;
     const normalized = args.map((arg, index) => {
       // Imported Solidity callers may pass a native signer address where an EVM caller supplied its
       // hexadecimal identity as bytes. Normalize that identity before validation and retain the result
@@ -6683,8 +6606,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && typeof (arg as { address?: unknown }).address === 'string'
         ? (arg as { address: string }).address : arg;
       if (typeof addressArg !== 'string') return addressArg;
-      // The registry distinguishes a plain contract's execution lock from a journal participant's authenticated
-      // public CREATE identity. Use that same value for ABI arguments and genesis state, so both paths agree.
+      // The registry distinguishes a plain contract's execution lock from the authenticated public CREATE identity
+      // of a contract that has one. Use that same value for ABI arguments and genesis state, so both paths agree.
       // An external-call target takes the same treatment: the covenant compares addresses as values, and a raw
       // CashAddress string left in the frame reaches it as UTF-8 text instead of a lock.
       const registered = registeredValueAddressLockingBytecode(this.inner.provider, addressArg);
@@ -6758,7 +6681,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
       returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
-      directCallSelector?: Uint8Array;
       signerUtxos?: Utxo[];
       logicalIdentity?: Awaited<ReturnType<typeof resolveLogicalIdentity>>;
       /** Absolute base when this local balanced block is concatenated after another participant. */
@@ -6780,9 +6702,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (refusal !== undefined) throw new Error(`${refusedName} is refused by the compiler: ${refusal.reason}`);
     // Stateful derivation can copy a supplied value into a larger state/row blob. Validate first so an invalid
     // bytesN reports its ABI error rather than an incidental PUSHDATA limit reached by that derived blob.
-    if (abiFunction) args = this._validateAbiFrame(abiFunction, args, {
-      implicitMsgSenderCategory: overrides?.directCallSelector !== undefined,
-    });
+    if (abiFunction) args = this._validateAbiFrame(abiFunction, args);
     const valueChunkWriteStagingSession = new ValueChunkWriteStagingSession();
     const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
@@ -6854,8 +6774,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const logicalCreateLock = storedLogicalLock !== undefined
       && binToHex(storedLogicalLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase()
       ? storedLogicalLock : undefined;
-    const authenticatesOwnSelf = usesOrdinarySelfIdentity(abiFunction)
-      && !directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction);
+    const authenticatesOwnSelf = usesOrdinarySelfIdentity(abiFunction);
     const publicSelfAddress = authenticatesOwnSelf && logicalCreateLock !== undefined
       ? logicalCreateLock : authenticatedSelfAddress;
     // The identity a CHILD callee observes as `msg.sender` (anchor witness and msg.sender-keyed entries). A plain
@@ -6956,7 +6875,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryAbiFunction,
       entryArtifact,
       entryArgs,
-      entryDirectCall,
     } = resolveCreateBuilderEntryAbiImpl(
       abiFunction,
       args,
@@ -6977,7 +6895,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Direct stateful calls publish no route rows: every entry settles its own physical inputs.
     const selectedRouteRows: readonly RouteExpressionKeyRow[] = [];
-    const deferRuntimeJournalMaterialization = false;
     const selectedUpsertRows: never[] = [];
     const upsertPlanningFrames: Array<{
       abiFunction: AbiFunction; args: FunctionArgument[]; routed: boolean; row?: RouteExpressionKeyRow;
@@ -9196,13 +9113,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
             if (completePushIndex >= 0) {
               if (entryAbiFunction === abiFunction) finalArgs[completePushIndex] = resolvedWholeValue;
-              if (entryDirectCall) {
-                const name = entryAbiFunction!.inputs[completePushIndex]!.name;
-                entryDirectCall.internalArgs = {
-                  ...entryDirectCall.internalArgs,
-                  [name]: resolvedWholeValue,
-                };
-              }
             }
             // The complete vmap node is known exactly. Batch verification authenticates the transition as a whole,
             // so generic OTC trace extraction can otherwise replace this value-bearing node with a structural
@@ -9415,55 +9325,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // predecessors (iterationEntryInputs, in loop order -> input[master+blockSize+i]) and emit N interleaved (P', NEW)
     // commitment pairs at the trailing loop-entry outputs (output[master+blockSize+2i / +2i+1]). Both are known
     // EXACTLY from the off-chain sorted list (SortedList.planInsert); the covenant pins them, so no trace derivation.
-    // Transaction-local scalar journal carriers allow later rows to update or extend an earlier row's output.
     // Unsupported removal, aggregate, and dynamic-value shapes remain fail-closed below.
     let sortedLoopCommitments = new Map<string, string[]>();
     let insertLoopPredecessors: UnlockableUtxo[] = [];
-    // Existing fixed-width scalar records are co-spent and assigned one output at first touch. Later journal rows
-    // update that same eventual commitment in source order; the route covenant carries the value between rows and
-    // verifies the one final output. Topology-changing and aggregate values never enter this table.
-    type RuntimeJournalPendingScalar = {
-      value: bigint; commitments: string[]; commitmentIndex: number; slot: Uint8Array; nextKey: Uint8Array;
-      /** Present only for deferred carrier materialization; aliases the retained intent's producer vector. */
-      producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][];
-    };
-    const runtimeJournalPendingScalar = new Map<string, RuntimeJournalPendingScalar>();
     const runtimeLoopEntrySegments: Array<{
       rowIndex: number; collection: string; offset: number; count: number;
     }> = [];
-    let kernelJournalSettlementEntrySegments: Array<{
-      collection: string; offset: number; count: number;
-    }> | undefined;
-    let kernelJournalSettlementOutputPlan: Array<{
-      recordOrdinal: number; outputOrdinal: number; collection: string; offset: number;
-    }> | undefined;
-    let kernelJournalEagerOutputPlan: Array<{
-      eagerOutputOrdinal: number; collection: string; offset: number;
-    }> | undefined;
     const runtimeJournalInputIds = new Set<string>();
     /**
-     * A handler describes its physical journal effects while it is traversed.  The legacy materializer below
-     * deliberately drains those descriptions at the end of that handler for now, preserving its established
-     * input/output geometry.  Keeping description and materialization distinct is the seam used by a later
-     * transaction-wide carrier topology planner; it must not be mistaken for an enabled carrier capability.
+     * A handler describes its physical journal effects while it is traversed; the materializer below drains those
+     * descriptions at the end of that handler, preserving its input/output geometry.
      */
     type RuntimeJournalMaterializationIntent =
       | { kind: 'input'; input: UnlockableUtxo; collection: string }
-      | { kind: 'outputs'; collection: string; commitments: string[];
-        stream?: { handlerSelector: string; journalAccessStreamIndex: number };
-        materializedOffset?: number;
-        /** Exact access/record-role producer for each commitment, retained in the same vector order. */
-        producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][] };
+      | { kind: 'outputs'; collection: string; commitments: string[]; materializedOffset?: number };
     const runtimeJournalMaterializationIntents: RuntimeJournalMaterializationIntent[] = [];
-    const captureRuntimeJournalInputIntent = (
-      input: UnlockableUtxo, collection: string, allowExistingScalarReuse = false,
-    ): boolean => {
+    const captureRuntimeJournalInputIntent = (input: UnlockableUtxo, collection: string): void => {
       const id = `${input.txid}:${input.vout}`;
       if (runtimeJournalInputIds.has(id)) {
-        // In the capability-gated path, topology is retained until global record ordinals exist. The unified
-        // planner, not this early discovery walk, then decides whether the second logical access is a zero-auth
-        // consumer. Keep the first physical witness as the canonical candidate.
-        if (allowExistingScalarReuse || deferRuntimeJournalMaterialization) return false;
         throw new Error(
           `Batch runtime mapping rows overlap the '${collection}' pre-state journal at ${id}; `
           + 'a read-your-writes transition is required.',
@@ -9471,21 +9350,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       runtimeJournalInputIds.add(id);
       runtimeJournalMaterializationIntents.push({ kind: 'input', input, collection });
-      return true;
     };
-    const captureRuntimeJournalOutputIntent = (
-      collection: string,
-      commitments: string[],
-      producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][],
-      stream?: { handlerSelector: string; journalAccessStreamIndex: number },
-    ): void => {
-      if (producers !== undefined && producers.length !== commitments.length) {
-        throw new Error('Entry journal output commitments and producer identities have different cardinality.');
-      }
-      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments, producers, stream });
+    const captureRuntimeJournalOutputIntent = (collection: string, commitments: string[]): void => {
+      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments });
     };
     const materializeLegacyRuntimeJournalIntents = (start: number): void => {
-      if (deferRuntimeJournalMaterialization) return;
       for (const intent of runtimeJournalMaterializationIntents.slice(start)) {
         if (intent.kind === 'input') {
           insertLoopPredecessors.push(intent.input);
@@ -9497,16 +9366,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error('Entry journal eager output intent was materialized more than once.');
         }
         intent.materializedOffset = offset;
-        const merged = [...prior, ...intent.commitments];
-        sortedLoopCommitments.set(intent.collection, merged);
-        for (const pending of runtimeJournalPendingScalar.values()) {
-          if (pending.commitments === prior) {
-            pending.commitments = merged;
-          } else if (pending.commitments === intent.commitments) {
-            pending.commitments = merged;
-            pending.commitmentIndex += offset;
-          }
-        }
+        sortedLoopCommitments.set(intent.collection, [...prior, ...intent.commitments]);
       }
     };
     {
@@ -9555,22 +9415,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const index = inputs.findIndex((input) => input.name === name);
       return index < 0 ? undefined : row.args[index];
     };
-    const runtimeJournalJournalStreams: Array<{
-      collection: string;
-      collectionHash: Uint8Array;
-      frameIndex: number;
-      executionGroup: number;
-      executionOrder: number;
-      accessStreamIndex: number;
-      settlementIdentity?: SortedUpsertLoopAbi['settlementIdentity'];
-      /** Source-loop occurrences which consume each compact access. These deliberately remain in selected-frame
-       * order when the key permutation is sorted/reordered: source frame i executes the next physical key, so the
-       * occurrence pairs with the compact access position, not with the key's pre-permutation logical identity. */
-      sourceOccurrences?: number[];
-      list: SortedList;
-      writes: Array<{ slot: Uint8Array; operation: KernelEntryJournalTopologyOperation }>;
-      publish: (encoded: Uint8Array) => void;
-    }> = [];
     const runtimeLoopsByCollection = new Map<string, Array<(typeof upsertPlanningFrames)[number]>>();
     for (const frame of upsertPlanningFrames) {
       for (const info of frame.abiFunction.sortedUpsertLoopInfo ?? []) {
@@ -9608,42 +9452,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         outputs: prior.outputs + outputs,
       });
     };
-    for (const [upsertFrameIndex, upsertFrame] of upsertPlanningFrames.entries()) {
+    for (const upsertFrame of upsertPlanningFrames) {
       const loopAbiFunction = upsertFrame.abiFunction;
       const loopArgs = upsertFrame.args;
       const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
-        if (upsertFrame.routed) {
-          const input = loopAbiFunction.inputs[index];
-          if (!input?.name.startsWith('__internal__')) {
-            throw new Error(
-              `Batch runtime loop in '${loopAbiFunction.name}' requires public argument reordering; `
-              + 'split this invocation into an order already accepted by the collection topology.',
-            );
-          }
-          const mutableInternal = upsertFrame.row!.internalArgs as Record<string, FunctionArgument>;
-          mutableInternal[input.name] = value;
-          const routeIndex = entryAbiFunction!.inputs.findIndex((candidate) => candidate.name === input.name);
-          if (routeIndex < 0) {
-            throw new Error(`Batch route is missing compiler-owned loop argument '${input.name}'`);
-          }
-          const rowIndex = routeRowIndex(upsertFrame.row!);
-          if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
-          const current = entryArgs[routeIndex];
-          const routeValue = Array.isArray(current) ? [...current] : [];
-          while (routeValue.length <= rowIndex) routeValue.push([]);
-          routeValue[rowIndex] = value;
-          entryArgs[routeIndex] = routeValue;
-          if (entryDirectCall) {
-            entryDirectCall.internalArgs = {
-              ...entryDirectCall.internalArgs,
-              [input.name]: routeValue,
-            };
-          } else {
-            args[routeIndex] = routeValue;
-            finalArgs[routeIndex] = routeValue;
-          }
-          return;
-        }
         loopArgs[index] = value;
         finalArgs[index] = value;
       };
@@ -9680,7 +9492,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const {
           collection,
           list,
-          entryAddr,
           argOf,
           visibleInputs,
           conditionArgs,
@@ -10210,59 +10021,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
         }
-        const journalArgumentIndex = loopAbiFunction.inputs.findIndex(
-          (input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS,
-        );
-        if (journalArgumentIndex >= 0) {
-        // An unconditional compiler-owned counter stream still executes at source occurrences 0..N-1. Publish
-        // those coordinates explicitly so two write sites in the same loop are planned A0,B0,A1,B1 after their
-        // key arrays have independently been permuted for physical topology.
-          const journalSourceOccurrences = sourceOccurrences
-          ?? (counterSpec ? keysArr.map((_key, occurrence) => occurrence) : undefined);
-          const streamIndex = info.journalAccessStreamIndex;
-          const streamCount = loopAbiFunction.sortedUpsertLoopInfo?.length ?? 0;
-          if (!Number.isSafeInteger(streamIndex) || streamIndex < 0 || streamIndex >= streamCount) {
-            throw new Error(
-              `Runtime loop in '${loopAbiFunction.name}' has invalid journal stream ordinal ${streamIndex}.`,
-            );
-          }
-          // Mapping `delete` resets a present value but leaves an absent target absent. Keep that distinction
-          // in the authenticated topology rather than inserting an enumerable zero-valued node.
-          const operation: KernelEntryJournalTopologyOperation = info.op === 'read' ? 'read'
-            : info.op === 'delete' ? 'nullify' : 'write';
-          runtimeJournalJournalStreams.push({
-            collection: info.collection,
-            collectionHash: computeCollectionHash(collection.signature),
-            frameIndex: upsertFrameIndex,
-            executionGroup: Number.isSafeInteger(info.journalExecutionGroup) && info.journalExecutionGroup! >= 0
-              ? info.journalExecutionGroup! : info.journalAccessStreamIndex,
-            executionOrder: info.journalAccessStreamIndex,
-            accessStreamIndex: info.journalAccessStreamIndex,
-            ...(info.settlementIdentity && { settlementIdentity: info.settlementIdentity }),
-            ...(journalSourceOccurrences && { sourceOccurrences: journalSourceOccurrences }),
-            list,
-            writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
-            publish: (encoded) => {
-              const current = argOf(KERNEL_JOURNAL_ACCESS_STREAMS);
-              const initialized = current === undefined || (Array.isArray(current) && current.length === 0)
-                ? kernelJournalAccessStreamPlaceholders(loopAbiFunction) : current;
-              if (!Array.isArray(initialized) || initialized.length !== streamCount
-              || initialized.some((stream) => !(stream instanceof Uint8Array))) {
-                const actual = !Array.isArray(initialized) ? typeof initialized
-                  : `${initialized.length} (${initialized.map((stream) => (
-                    stream instanceof Uint8Array ? 'bytes' : typeof stream
-                  )).join(', ')})`;
-                throw new Error(
-                  `Runtime handler '${loopAbiFunction.name}' requires ${streamCount} journal access streams; `
-                + `received ${actual}.`,
-                );
-              }
-              const streams = [...initialized] as Uint8Array[];
-              streams[streamIndex] = encoded;
-              replaceLoopArgument(journalArgumentIndex, streams);
-            },
-          });
-        }
         if (info.valueRuntimeLocal) {
           const oldWitnesses: ConstructorArgument[] = [];
           const runtimeSlots = new Set<string>();
@@ -10491,16 +10249,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
         // recipient. cospent = co-spent UTXO ids for conflict detection (an entry / predecessor can be co-spent once).
         const commitments: string[] = [];
-        const commitmentProducers: KernelEntryJournalDirtyFinalBodyCandidate['producer'][] = [];
-        const commitmentProducer = (
-          accessOrdinal: number,
-          recordRole: KernelEntryJournalDirtyFinalBodyCandidate['producer']['recordRole'],
-        ): KernelEntryJournalDirtyFinalBodyCandidate['producer'] => ({
-          frameIndex: upsertFrameIndex,
-          accessStreamIndex: info.journalAccessStreamIndex,
-          accessOrdinal,
-          recordRole,
-        });
         const seenSlots = new Set<string>();
         const cospent = new Set<string>();
         const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
@@ -10547,10 +10295,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const amt: bigint | Uint8Array = perKeyRawbytes ? encodeValueTail((valsArr as unknown[])[i])
           : isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
-          // The compact access stream still retains this logical occurrence. In authenticated carrier mode the
-          // later transaction-wide physical planner collapses its shared proof to one input/output; do not reject
-          // it in this collection-local discovery pass.
-          if (readCarrierOwnsDuplicateProof(deferRuntimeJournalMaterialization, info.op)) continue;
           // DUPLICATE `+=` / `-=`: compiler-owned counter permutations preserve every source occurrence, while public
           // key arrays may have been pre-merged above. Accumulate this occurrence into the pending commitment exactly
           // as the covenant does, without attempting to co-spend the entry again.
@@ -10559,7 +10303,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             lastDeferred.newVal = (lastDeferred.newVal as bigint) + (info.op === '-' ? -(amt as bigint) : (amt as bigint));
             commitments[lastDeferred.commitIndex] =
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(lastDeferred.newVal)));
-            commitmentProducers[lastDeferred.commitIndex] = commitmentProducer(i, 'target');
             continue;
           }
           // A compiler-owned permutation leaves public key/value arrays untouched. Repeated logical keys therefore
@@ -10570,60 +10313,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             lastDeferred.newVal = amt;
             commitments[lastDeferred.commitIndex] =
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(amt)));
-            commitmentProducers[lastDeferred.commitIndex] = commitmentProducer(i, 'target');
             continue;
           }
           throw new Error(`vmap upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
         }
         seenSlots.add(slotHex);
-        const journalSettledScalar = journalArgumentIndex >= 0
-          && !collection.chunkableValue
-          && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
-          && (info.op === '+' || info.op === '-' || info.op === 'set' || isDelete);
         const originalEntry = list.find(slot);
-        const journalIdentity = `${info.collectionHash}:${entryAddr}:${slotHex}`;
-        // Pending scalar state is semantic, not physical: the same table carries read-your-writes values whether
-        // outputs are appended immediately or retained for the transaction-wide final flush. In deferred mode its
-        // producer vector aliases the retained intent, so a later access changes both the body and its authenticated
-        // final-owner coordinate rather than relabelling a stale provisional value.
-        const priorPending = journalSettledScalar
-          ? runtimeJournalPendingScalar.get(journalIdentity) : undefined;
-        if (originalEntry || priorPending) {
+        if (originalEntry) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
           // Collection hash and resolved covenant address are compiler/owner identities; source-level names are not.
           const entry = originalEntry;
-          if (entry && cospent.has(uidOf(entry.utxo)) && !priorPending
-            && !readCarrierOwnsDuplicateProof(deferRuntimeJournalMaterialization, info.op)) {
+          if (cospent.has(uidOf(entry.utxo))) {
             throw new Error(
               `vmap upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx; `
                 + 'a read-your-writes transition is required',
             );
           }
-          if (entry) cospent.add(uidOf(entry.utxo));
-          const oldVal = priorPending?.value ?? (info.op === '+' || info.op === '-'
-            ? vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false }) as bigint : 0n);
+          cospent.add(uidOf(entry.utxo));
+          const oldVal = info.op === '+' || info.op === '-'
+            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n;
           const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' || info.op === 'read' ? amt
             : info.op === '-' ? oldVal - (amt as bigint) : oldVal + (amt as bigint);
-          if (priorPending) {
-            if (!priorPending.commitments[priorPending.commitmentIndex]) {
-              throw new Error('Pending scalar journal lost its first-touch output');
-            }
-            priorPending.value = newVal as bigint;
-            priorPending.commitments[priorPending.commitmentIndex] = binToHex(encodeEntryCommitment(
-              priorPending.slot, priorPending.nextKey, commitValue(priorPending.value),
-            ));
-            if (deferRuntimeJournalMaterialization) {
-              if (!priorPending.producers) {
-                throw new Error('Pending scalar journal lost its deferred producer vector');
-              }
-              priorPending.producers[priorPending.commitmentIndex] = commitmentProducer(i, 'target');
-            }
-            // This row consumes no second input and creates no intermediate output. Its access program selects the
-            // dirty carrier returned by the earlier row.
-            continue;
-          }
-          if (!entry) throw new Error('Pending scalar entry lost its transaction-local carrier.');
-          captureRuntimeJournalInputIntent({ ...entry.utxo, unlocker: wUnlocker }, info.collection, journalSettledScalar);
+          captureRuntimeJournalInputIntent({ ...entry.utxo, unlocker: wUnlocker }, info.collection);
           if (collection.chunkableValue && info.op !== 'read') {
             const oldTail = entry.value;
             if (oldTail.length >= 36
@@ -10643,7 +10354,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             };
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
-          commitmentProducers.push(commitmentProducer(i, 'target'));
           if (info.op === 'read') {
             priorReadProof = {
               uid: uidOf(entry.utxo), slot: entry.slot, nextKey: entry.nextKey,
@@ -10667,22 +10377,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             cospent.add(predecessorId);
             captureRuntimeJournalInputIntent({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
             commitments.push(binToHex(encodeEntryCommitment(basePred.slot, basePred.nextKey, basePred.value)));
-            commitmentProducers.push(commitmentProducer(i, 'predecessor'));
             continue;
-          }
-          let pendingPred: RuntimeJournalPendingScalar | undefined;
-          if (journalSettledScalar) {
-            const targetSlotValue = bytesToSlotValue(slot);
-            for (const [identity, candidate] of runtimeJournalPendingScalar) {
-              const candidateSlotValue = bytesToSlotValue(candidate.slot);
-              const candidateNextValue = bytesToSlotValue(candidate.nextKey);
-              const bracketsTarget = candidateSlotValue < targetSlotValue
-                && (candidateNextValue === 0n || targetSlotValue < candidateNextValue);
-              if (identity.startsWith(`${info.collectionHash}:${entryAddr}:`) && bracketsTarget
-                && (!pendingPred || bytesToSlotValue(pendingPred.slot) < candidateSlotValue)) {
-                pendingPred = candidate;
-              }
-            }
           }
           if (info.op === 'read') {
             const predecessorId = uidOf(basePred.utxo);
@@ -10692,15 +10387,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               && (bytesToSlotValue(priorReadProof.nextKey) === 0n
                 || slotValue < bytesToSlotValue(priorReadProof.nextKey));
             if (reusesPriorProof) continue;
-            if (cospent.has(predecessorId)
-              && !readCarrierOwnsDuplicateProof(deferRuntimeJournalMaterialization, info.op)) {
+            if (cospent.has(predecessorId)) {
               throw new Error(`vmap read loop ${info.collection}: absent key ${i} shares an already co-spent `
                 + 'predecessor; a shared absence proof is required');
             }
             cospent.add(predecessorId);
             captureRuntimeJournalInputIntent({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
             commitments.push(binToHex(encodeEntryCommitment(basePred.slot, basePred.nextKey, basePred.value)));
-            commitmentProducers.push(commitmentProducer(i, 'predecessor'));
             priorReadProof = { uid: predecessorId, slot: basePred.slot, nextKey: basePred.nextKey };
             continue;
           }
@@ -10718,34 +10411,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const nV = bytesToSlotValue(d.oldNext); // 0 = +inf
             if (pV < sV && (nV === 0n || sV < nV)) {
               commitments[d.commitIndex] = binToHex(encodeEntryCommitment(d.slot, slot, commitValue(d.newVal)));
-              commitmentProducers[d.commitIndex] = commitmentProducer(i, 'predecessor');
               const newCommitIndex = commitments.length;
               commitments.push(binToHex(encodeEntryCommitment(slot, d.oldNext, commitValue(amt)))); // NEW
-              commitmentProducers.push(commitmentProducer(i, 'target'));
               const chained: DeferredEntry = { uid: '', commitIndex: newCommitIndex, slot, newVal: amt, oldNext: d.oldNext };
               lastDeferred = chained;
               continue;
             }
-          }
-          if (pendingPred) {
-            const oldNext = pendingPred.nextKey;
-            pendingPred.nextKey = slot;
-            pendingPred.commitments[pendingPred.commitmentIndex] = binToHex(encodeEntryCommitment(
-              pendingPred.slot, slot, commitValue(pendingPred.value),
-            ));
-            if (deferRuntimeJournalMaterialization) {
-              if (!pendingPred.producers) {
-                throw new Error('Pending predecessor lost its deferred producer vector');
-              }
-              pendingPred.producers[pendingPred.commitmentIndex] = commitmentProducer(i, 'predecessor');
-            }
-            const pendingCommitmentIndex = commitments.length;
-            commitments.push(binToHex(encodeEntryCommitment(slot, oldNext, commitValue(amt))));
-            commitmentProducers.push(commitmentProducer(i, 'target'));
-            lastDeferred = {
-              uid: '', commitIndex: pendingCommitmentIndex, slot, newVal: amt, oldNext,
-            };
-            continue;
           }
           if (debitEntry && uidOf(debitEntry.utxo as { txid: string; vout: number }) === uidOf(basePred.utxo)) {
             // MERGE with the debit (R1): the covenant re-points the debit's output to R1 (via the register) and DEFERS
@@ -10759,7 +10430,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             mergedNewCount += 1;
             const mCommitIndex = commitments.length;
             commitments.push(binToHex(encodeEntryCommitment(slot, basePred.nextKey, commitValue(amt)))); // NEW = 0 + amt (R1)
-            commitmentProducers.push(commitmentProducer(i, 'target'));
             lastDeferred = { uid: '', commitIndex: mCommitIndex, slot, newVal: amt, oldNext: basePred.nextKey };
             continue;
           }
@@ -10771,10 +10441,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           cospent.add(uidOf(basePred.utxo));
           captureRuntimeJournalInputIntent({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
           commitments.push(binToHex(encodeEntryCommitment(basePred.slot, slot, basePred.value)));           // P' (re-pointed)
-          commitmentProducers.push(commitmentProducer(i, 'predecessor'));
           const uCommitIndex = commitments.length;
           commitments.push(binToHex(encodeEntryCommitment(slot, basePred.nextKey, commitValue(amt)))); // NEW = 0 + amt
-          commitmentProducers.push(commitmentProducer(i, 'target'));
           // DEFER this new node (mirrors the covenant's chain-defer) so a further new key in this same UNTOUCHED / HEAD
           // gap chains off it - a fresh-map airdrop cluster. The reorder groups + ascending-sorts same-gap inserts.
           if (foldActive) lastDeferred = { uid: '', commitIndex: uCommitIndex, slot, newVal: amt, oldNext: basePred.nextKey };
@@ -10782,31 +10450,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (commitments.length > 0) {
         const prior = sortedLoopCommitments.get(info.collection) ?? [];
-        captureRuntimeJournalOutputIntent(info.collection, commitments, commitmentProducers, {
-          handlerSelector: loopAbiFunction.selector!,
-          journalAccessStreamIndex: info.journalAccessStreamIndex,
-        });
+        captureRuntimeJournalOutputIntent(info.collection, commitments);
         materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
-        // Deferred carrier materialization deliberately leaves the legacy collection-local output cache empty.
-        // Keep using this handler's exact final commitments for its local bookkeeping; global settlement will bind
-        // each dirty body to a record ordinal once topology has assigned the transaction-wide coordinates.
-        const merged = deferRuntimeJournalMaterialization ? commitments
-          : sortedLoopCommitments.get(info.collection)!;
-        if (journalArgumentIndex >= 0 && !collection.chunkableValue
-          && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
-          && (info.op === '+' || info.op === '-' || info.op === 'set' || isDelete)) {
-          merged.forEach((commitment, commitmentIndex) => {
-            const decoded = decodeEntryCommitment(hexToBin(commitment));
-            runtimeJournalPendingScalar.set(
-              `${info.collectionHash}:${entryAddr}:${binToHex(decoded.slot)}`,
-              {
-                value: vmNumberToBigInt(decoded.value, { requireMinimalEncoding: false }) as bigint,
-                commitments: merged, commitmentIndex, slot: decoded.slot, nextKey: decoded.nextKey,
-                ...(deferRuntimeJournalMaterialization ? { producers: commitmentProducers } : {}),
-              },
-            );
-          });
-        }
         if (upsertFrame.routed) {
           const rowIndex = routeRowIndex(upsertFrame.row!);
           if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
@@ -10848,437 +10493,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    const journalStreamsByCollection = new Map<string, typeof runtimeJournalJournalStreams>();
-    const settlementIdentityStreamCount = runtimeJournalJournalStreams.filter(
-      (stream) => stream.settlementIdentity !== undefined,
-    ).length;
-    if (settlementIdentityStreamCount > 0
-      && settlementIdentityStreamCount !== runtimeJournalJournalStreams.length) {
-      throw new Error(
-        'Entry journal cannot mix compiler settlement identities with legacy access streams.',
-      );
-    }
-    for (const stream of runtimeJournalJournalStreams) {
-      if (stream.settlementIdentity
-        && stream.settlementIdentity.accessStreamIndex !== stream.accessStreamIndex) {
-        throw new Error(
-          `Entry journal settlement identity stream ${stream.settlementIdentity.accessStreamIndex} does not match `
-          + `its containing access stream ${stream.accessStreamIndex}.`,
-        );
-      }
-    }
-    validateJournalEntryJournalSettlementGroups(runtimeJournalJournalStreams.map((stream) => ({
-      executionGroup: `${stream.frameIndex}:${stream.executionGroup}`,
-      mutates: stream.writes.some((write) => write.operation !== 'read'),
-      identity: stream.settlementIdentity,
-    })));
-    for (const stream of runtimeJournalJournalStreams) {
-      const collectionIdentity = binToHex(stream.collectionHash);
-      const collectionStreams = journalStreamsByCollection.get(collectionIdentity) ?? [];
-      collectionStreams.push(stream);
-      journalStreamsByCollection.set(collectionIdentity, collectionStreams);
-    }
-    type PlannedJournalCollection = {
-      records: Uint8Array[];
-      globalOrdinals: Map<number, number>;
-    };
-    const plannedJournalCollections = new Map<string, PlannedJournalCollection>();
-    const plannedJournalStreamAccesses = new Map<
-    (typeof runtimeJournalJournalStreams)[number], ReturnType<typeof decodeJournalEntryJournalAccesses>
-    >();
-    for (const [collectionIdentity, collectionStreams] of journalStreamsByCollection) {
-      // The topology transition must see operations in language execution order. Multiple write sites in one
-      // counter loop publish separate compact streams, so flattening whole streams would incorrectly execute
-      // A0,A1,B0,B1 instead of A0,B0,A1,B1 and can assign an invalid predecessor topology.
-      const scheduledWrites = scheduleJournalEntryJournalOccurrences(collectionStreams, (stream) => stream.writes);
-      const plan = planJournalEntryJournalAccessTopology(
-        collectionStreams[0].list,
-        collectionStreams[0].collectionHash,
-        [scheduledWrites.map(({ value }) => value)],
-      );
-      const scheduledAccesses = decodeJournalEntryJournalAccesses(plan.encodedAccessStreams[0]);
-      const accessesByStream = new Map<
-      (typeof runtimeJournalJournalStreams)[number], ReturnType<typeof decodeJournalEntryJournalAccesses>
-      >();
-      for (const stream of collectionStreams) accessesByStream.set(stream, Array(stream.writes.length));
-      scheduledWrites.forEach(({ stream, compactIndex }, index) => {
-        accessesByStream.get(stream)![compactIndex] = scheduledAccesses[index];
-      });
-      const accesses = collectionStreams.map((stream) => accessesByStream.get(stream)!);
-      // Discover dependencies on a prior carrier mutation, including same-stream and interleaved-stream chains.
-      // Every dependency marks both its consumer and producer before the transaction-wide carrier phase marks the
-      // remaining mutations. Global record ordinals and last-mutating ownership keep cross-stream identity stable.
-      const priorProducer = new Map<number, {
-        stream: (typeof runtimeJournalJournalStreams)[number];
-        access: ReturnType<typeof decodeJournalEntryJournalAccesses>[number];
-      }>();
-      for (const { stream, value: access } of scheduleJournalEntryJournalOccurrences(
-        collectionStreams, (candidate) => accessesByStream.get(candidate)!,
-      )) {
-        const dependencies: number[] = [];
-        if (access.presentBefore && !access.authenticatesTarget) dependencies.push(access.targetRecordOrdinal);
-        if (access.predecessorRecordOrdinal !== undefined && !access.authenticatesPredecessor) {
-          dependencies.push(access.predecessorRecordOrdinal);
-        }
-        const carrierProducers = dependencies.map((ordinal) => priorProducer.get(ordinal))
-          .filter((producer): producer is NonNullable<typeof producer> => (
-            producer !== undefined
-          ));
-        if (carrierProducers.length > 0) {
-          access.pending = true;
-          for (const producer of carrierProducers) {
-            producer.access.pending = true;
-          }
-        }
-        if (access.mutates) {
-          priorProducer.set(access.targetRecordOrdinal, { stream, access });
-          if (access.predecessorRecordOrdinal !== undefined) {
-            priorProducer.set(access.predecessorRecordOrdinal, { stream, access });
-          }
-        }
-      }
-      collectionStreams.forEach((stream, index) => plannedJournalStreamAccesses.set(stream, accesses[index]));
-      plannedJournalCollections.set(collectionIdentity, {
-        records: plan.encodedRecords,
-        globalOrdinals: new Map(),
-      });
-    }
-    assertJournalJournalRecordBudget(
-      [...plannedJournalCollections.values()].map((plan) => plan.records.length),
-    );
-
-    // Materialize record carriers in source execution order. Streams in one compiler-published execution group
-    // are operations from the same row loop, so iteration N of each stream executes before iteration N+1. The
-    // group and stream ordinals are opaque structural metadata; no contract, collection, or function names
-    // participate in this schedule.
-    const kernelJournalRecords: Uint8Array[] = [];
-    const remappedJournalStreamAccesses = new Map<
-    (typeof runtimeJournalJournalStreams)[number], ReturnType<typeof decodeJournalEntryJournalAccesses>
-    >();
-    const settlementOccurrences: KernelEntryJournalSettlementOccurrence[] = [];
-    const recordOriginStreams = new Map<number, (typeof runtimeJournalJournalStreams)[number]>();
-    const globalRecordOrdinal = (stream: (typeof runtimeJournalJournalStreams)[number], local: number): number => {
-      const collectionIdentity = binToHex(stream.collectionHash);
-      const collectionPlan = plannedJournalCollections.get(collectionIdentity)!;
-      const prior = collectionPlan.globalOrdinals.get(local);
-      if (prior !== undefined) return prior;
-      if (kernelJournalRecords.length >= KERNEL_ENTRY_JOURNAL_MAX_RECORDS) {
-        throw new Error(
-          `Entry journal exceeds the protocol cap of ${KERNEL_ENTRY_JOURNAL_MAX_RECORDS} records.`,
-        );
-      }
-      const ordinal = kernelJournalRecords.length;
-      const record = collectionPlan.records[local];
-      if (record === undefined) throw new Error('Entry journal references an unknown local record ordinal.');
-      collectionPlan.globalOrdinals.set(local, ordinal);
-      kernelJournalRecords.push(record);
-      recordOriginStreams.set(ordinal, stream);
-      return ordinal;
-    };
-    for (const { stream, value: access, compactIndex } of scheduleJournalEntryJournalOccurrences(
-      runtimeJournalJournalStreams, (candidate) => plannedJournalStreamAccesses.get(candidate) ?? [],
-    )) {
-      const remapped = {
-        ...access,
-        ...(access.predecessorRecordOrdinal !== undefined && {
-          predecessorRecordOrdinal: globalRecordOrdinal(stream, access.predecessorRecordOrdinal),
-        }),
-        targetRecordOrdinal: globalRecordOrdinal(stream, access.targetRecordOrdinal),
-      };
-      const streamAccesses = remappedJournalStreamAccesses.get(stream) ?? [];
-      streamAccesses.push(remapped);
-      remappedJournalStreamAccesses.set(stream, streamAccesses);
-      if (stream.settlementIdentity) settlementOccurrences.push({
-        frameIndex: stream.frameIndex,
-        identity: stream.settlementIdentity,
-        accessOrdinal: compactIndex,
-        access: remapped,
-      });
-    }
-    for (const [collectionIdentity, plan] of plannedJournalCollections) {
-      if (plan.globalOrdinals.size !== plan.records.length) {
-        throw new Error(
-          `Entry journal for collection ${collectionIdentity} contains an unreachable record carrier.`,
-        );
-      }
-    }
-    // Do not infer a physical carrier protocol from ordinary journal flags. When (and only when) the compiler has
-    // published the exact in-route marker capability, this one plan owns every cross-stream decision: first input,
-    // rewritten zero-auth consumer, final output, and per-stream cardinality. A partial identity vector is not a
-    // compatibility mode; it is an invalid claim for a route which asked the SDK to defer materialization.
-    if (deferRuntimeJournalMaterialization
-      && settlementOccurrences.length !== runtimeJournalJournalStreams.reduce(
-        (count, stream) => count + (remappedJournalStreamAccesses.get(stream)?.length ?? 0), 0,
-      )) {
-      throw new Error(
-        'Compiler internal-read-carrier capability requires settlement identities for every runtime journal access.',
-      );
-    }
-    const physicalSettlementPlan = deferRuntimeJournalMaterialization && settlementOccurrences.length > 0
-      ? planJournalEntryJournalPhysicalSettlement(settlementOccurrences) : undefined;
-
-    if (physicalSettlementPlan) {
-      // Replace only accesses returned by the authenticated global planner. Mapping by object identity keeps the
-      // source-coordinate association intact even when a counter permutation makes compact stream order differ from
-      // source execution order.
-      const rewrittenAccesses = new Map<object, KernelEntryJournalAccess>();
-      for (const planned of physicalSettlementPlan.occurrences) {
-        rewrittenAccesses.set(planned.occurrence.access, planned.access);
-      }
-      for (const [stream, accesses] of remappedJournalStreamAccesses) {
-        remappedJournalStreamAccesses.set(stream, accesses.map((access) => {
-          const rewritten = rewrittenAccesses.get(access);
-          if (!rewritten) {
-            throw new Error('Journal settlement lost a runtime journal access coordinate.');
-          }
-          return rewritten;
-        }));
-      }
-
-      // The retained intent list supplies concrete UTXOs/unlockers only. Record identity and ownership come from
-      // the planner, never from discovery order or application collection names.
-      const inputByRecord = new Map<string, UnlockableUtxo>();
-      for (const intent of runtimeJournalMaterializationIntents) {
-        if (intent.kind !== 'input') continue;
-        const commitment = intent.input.token?.nft?.commitment;
-        if (!commitment) continue;
-        const decoded = decodeEntryCommitment(hexToBin(commitment));
-        const key = `${intent.collection}:${binToHex(decoded.slot)}`;
-        const prior = inputByRecord.get(key);
-        if (prior && (prior.txid !== intent.input.txid || prior.vout !== intent.input.vout)) {
-          throw new Error(`Journal settlement has ambiguous input candidates for ${key}.`);
-        }
-        inputByRecord.set(key, intent.input);
-      }
-      for (const input of physicalSettlementPlan.inputs) {
-        const record = decodeJournalEntryJournalRecord(kernelJournalRecords[input.recordOrdinal]!);
-        const owner = runtimeJournalJournalStreams.find((stream) => stream.frameIndex === input.firstOwner.frameIndex
-          && stream.accessStreamIndex === input.firstOwner.accessStreamIndex);
-        if (!owner) throw new Error('Journal settlement input has no owning stream.');
-        const candidate = inputByRecord.get(`${owner.collection}:${binToHex(record.slot)}`);
-        if (!candidate) {
-          throw new Error(`Journal settlement input ${input.recordOrdinal} has no retained UTXO intent.`);
-        }
-        insertLoopPredecessors.push(candidate);
-      }
-
-      // Output records are dense in global ordinal order. Clean bodies are reconstructed from their authenticated
-      // carrier. Dirty bodies are never inferred from the old per-handler commitment cache: after the planner has
-      // assigned global record ordinals, bind one complete candidate commitment to each dirty final authority.
-      // This path remains behind the compiler-authenticated capability so public artifact metadata cannot revive
-      // the legacy source-order cache.
-      const finalRecords = kernelJournalRecords.map((encoded) => decodeJournalEntryJournalRecord(encoded));
-      const streamForSettlementReference = (
-        reference: KernelEntryJournalSettlementReference,
-      ): { stream: (typeof runtimeJournalJournalStreams)[number]; access: KernelEntryJournalAccess } => {
-        const stream = runtimeJournalJournalStreams.find((candidate) => (
-          candidate.frameIndex === reference.frameIndex
-          && candidate.accessStreamIndex === reference.accessStreamIndex
-        ));
-        if (!stream) throw new Error('Journal settlement output has no owning stream.');
-        const access = remappedJournalStreamAccesses.get(stream)?.[reference.accessOrdinal];
-        if (!access) {
-          throw new Error(
-            `Journal settlement output has no access ${reference.accessOrdinal} in its owning stream.`,
-          );
-        }
-        return { stream, access };
-      };
-      // Replay authenticated target-presence transitions in source order before assigning final output owners.
-      // A synthetic target created by one insertion can be the predecessor owned by a later insertion, so its
-      // final owner alone does not describe the earlier tombstone-to-live transition.
-      for (const occurrence of physicalSettlementPlan.occurrences) {
-        const access = occurrence.access;
-        if (!access.mutates) continue;
-        const record = finalRecords[access.targetRecordOrdinal]!;
-        record.dirty = true;
-        record.tombstone = !access.presentAfter;
-        if (!access.presentBefore && access.presentAfter) {
-          const predecessorOrdinal = access.predecessorRecordOrdinal;
-          if (predecessorOrdinal === undefined) {
-            throw new Error('Entry journal insertion has no predecessor record.');
-          }
-          const predecessor = finalRecords[predecessorOrdinal]!;
-          record.synthetic = true;
-          record.nextKey = new Uint8Array(predecessor.nextKey);
-          predecessor.nextKey = new Uint8Array(record.slot);
-          predecessor.dirty = true;
-        } else if (access.presentBefore && !access.presentAfter) {
-          const predecessorOrdinal = access.predecessorRecordOrdinal;
-          if (predecessorOrdinal === undefined) {
-            throw new Error('Entry journal deletion has no predecessor record.');
-          }
-          const predecessor = finalRecords[predecessorOrdinal]!;
-          predecessor.nextKey = new Uint8Array(record.nextKey);
-          predecessor.dirty = true;
-        }
-      }
-      for (const output of physicalSettlementPlan.outputs) {
-        const { access } = streamForSettlementReference(output.finalOwner);
-        if ((output.finalOwner.settlementRole === 'mutation-settlement') !== access.mutates) {
-          throw new Error('Journal settlement final authority disagrees with its compact access.');
-        }
-        if (access.mutates) finalRecords[output.recordOrdinal]!.dirty = true;
-      }
-
-      // `runtimeJournalMaterializationIntents` carries the exact complete commitments calculated from current
-      // state and user arguments. It is not an authority map. Each commitment retains the exact access/role which
-      // produced it; the authenticated final settlement plan alone maps that producer to a global record ordinal.
-      const dirtyProducerKey = (producer: KernelEntryJournalDirtyFinalBodyCandidate['producer']): string => (
-        `${producer.frameIndex}:${producer.accessStreamIndex}:${producer.accessOrdinal}:${producer.recordRole}`
-      );
-      const dirtyProducerKeys = new Set(physicalSettlementPlan.outputs
-        .filter((output) => finalRecords[output.recordOrdinal]!.dirty)
-        .map((output) => dirtyProducerKey(output.finalOwner)));
-      const deferredOutputCandidates = runtimeJournalMaterializationIntents
-        .filter((intent): intent is Extract<RuntimeJournalMaterializationIntent, { kind: 'outputs' }> => (
-          intent.kind === 'outputs'
-        ))
-        .flatMap((intent) => {
-          if (!intent.producers || intent.producers.length !== intent.commitments.length) {
-            throw new Error('Journal settlement output body has no stable access producer identity.');
-          }
-          return intent.commitments.map((commitment, index) => ({
-            commitment: hexToBin(commitment),
-            producer: intent.producers![index]!,
-          }));
-        })
-        .filter((candidate) => dirtyProducerKeys.has(dirtyProducerKey(candidate.producer)));
-      const dirtyCandidates: KernelEntryJournalDirtyFinalBodyCandidate[] = deferredOutputCandidates;
-      const dirtyBodies = new Map(resolveJournalEntryJournalDirtyFinalBodies(
-        physicalSettlementPlan, finalRecords, dirtyCandidates,
-      ).map((body) => [body.recordOrdinal, body.commitment]));
-      const physicalLocations = new Map<number, { collection: string; offset: number }>();
-      for (const output of physicalSettlementPlan.outputs) {
-        const record = finalRecords[output.recordOrdinal]!;
-        const { stream: owner } = streamForSettlementReference(output.finalOwner);
-        const commitments = sortedLoopCommitments.get(owner.collection) ?? [];
-        const offset = commitments.length;
-        const commitment = record.dirty ? dirtyBodies.get(output.recordOrdinal)
-          : encodeEntryCommitment(record.slot, record.nextKey, record.value);
-        if (!commitment) {
-          throw new Error(`Journal settlement lost resolved dirty body for record ${output.recordOrdinal}.`);
-        }
-        commitments.push(binToHex(commitment));
-        sortedLoopCommitments.set(owner.collection, commitments);
-        physicalLocations.set(output.recordOrdinal, { collection: owner.collection, offset });
-      }
-      kernelJournalSettlementOutputPlan = physicalSettlementPlan.outputs.map((output) => {
-        const location = physicalLocations.get(output.recordOrdinal);
-        if (!location) throw new Error('Journal settlement lost a dense output location.');
-        return { recordOrdinal: output.recordOrdinal, outputOrdinal: output.outputOrdinal, ...location };
-      });
-      kernelJournalSettlementEntrySegments = kernelEntryJournalSettlementOutputSegments(
-        kernelJournalSettlementOutputPlan,
-      );
-
-      // The route witnesses transaction-wide collection cardinality. Recompute it solely from physical ownership;
-      // the deferred discovery walk deliberately did not advance the legacy per-handler counters.
-      runtimeLoopCardinality.clear();
-      const addPhysicalCardinality = (collection: string, inputs: number, outputs: number): void => {
-        const prior = runtimeLoopCardinality.get(collection) ?? { inputs: 0, outputs: 0 };
-        runtimeLoopCardinality.set(collection, {
-          inputs: prior.inputs + inputs,
-          outputs: prior.outputs + outputs,
-        });
-      };
-      for (const input of physicalSettlementPlan.inputs) {
-        const stream = runtimeJournalJournalStreams.find((candidate) => candidate.frameIndex === input.firstOwner.frameIndex
-          && candidate.accessStreamIndex === input.firstOwner.accessStreamIndex);
-        if (!stream) throw new Error('Journal settlement input cardinality has no stream.');
-        addPhysicalCardinality(stream.collection, 1, 0);
-      }
-      for (const output of physicalSettlementPlan.outputs) {
-        const stream = runtimeJournalJournalStreams.find((candidate) => candidate.frameIndex === output.finalOwner.frameIndex
-          && candidate.accessStreamIndex === output.finalOwner.accessStreamIndex);
-        if (!stream) throw new Error('Journal settlement output cardinality has no stream.');
-        addPhysicalCardinality(stream.collection, 0, 1);
-      }
-    }
-    for (const stream of runtimeJournalJournalStreams) {
-      stream.publish(encodeJournalEntryJournalAccesses(
-        stream.collectionHash,
-        remappedJournalStreamAccesses.get(stream) ?? [],
-      ));
-    }
-    const journalRecordsIndex = entryAbiFunction?.inputs.findIndex(
-      (input) => input.name === KERNEL_JOURNAL_RECORDS,
-    ) ?? -1;
-    const segmentWitnesses = kernelJournalRecordSegmentWitnesses(
-      entryAbiFunction?.inputs ?? [], kernelJournalRecords,
-    );
-    if (kernelJournalRecords.length > 0 && journalRecordsIndex < 0 && segmentWitnesses.slots.length === 0) {
-      throw new Error('Runtime journal records have no compiler-owned route input.');
-    }
-    const routeKeyWitnessInputs = new Set((entryAbiFunction?.entryAccesses ?? []).flatMap((access) =>
-      access.keyParams.map((name) => name.startsWith('id:') ? name.slice(3) : name)));
-    const replaceJournalArgument = (argumentIndex: number, records: Uint8Array[] | Uint8Array): void => {
-      if (entryDirectCall) {
-        // A delegated route's complete argument frame belongs to the nested OP_INVOKE call. Its directCall
-        // metadata is published below and later re-encodes the proxy payload; extending the outer __forward
-        // arguments with route witnesses would instead corrupt that two-argument ABI.
-        entryArgs[argumentIndex] = records;
-        return;
-      }
-      while (finalArgs.length <= argumentIndex) {
-        const pending = entryAbiFunction!.inputs[finalArgs.length];
-        const routeKeyWitness = false
-          && routeKeyWitnessInputs.has(pending.name);
-        if (!pending?.name.startsWith('__internal__') && !routeKeyWitness) {
-          throw new Error(
-            `Internal error: missing user argument '${pending?.name ?? finalArgs.length}' before journal records.`,
-          );
-        }
-        if (routeKeyWitness) {
-          const value = entryArgs[finalArgs.length];
-          if (value === undefined) {
-            throw new Error(`Compiler-generated route key witness '${pending.name}' was not materialized.`);
-          }
-          finalArgs.push(value);
-        } else {
-          finalArgs.push(defaultInternalFunctionArg(pending));
-        }
-      }
-      while (entryArgs.length <= argumentIndex) {
-        entryArgs.push(defaultInternalFunctionArg(entryAbiFunction!.inputs[entryArgs.length]));
-      }
-      entryArgs[argumentIndex] = records;
-      finalArgs[argumentIndex] = records;
-    };
-    const publishJournalWitness = (name: string, records: Uint8Array[] | Uint8Array): void => {
-      for (const frame of upsertPlanningFrames) {
-        if (!frame.routed) continue;
-        frame.row!.internalArgs = {
-          ...frame.row!.internalArgs,
-          [name]: records,
-        };
-      }
-      if (entryDirectCall) {
-        entryDirectCall.internalArgs = {
-          ...entryDirectCall.internalArgs,
-          [name]: records,
-        };
-      }
-    };
-    if (segmentWitnesses.slots.length > 0) {
-      for (const slot of segmentWitnesses.slots) {
-        replaceJournalArgument(slot.inputIndex, slot.carrier);
-        publishJournalWitness(slot.name, slot.carrier);
-      }
-    } else if (journalRecordsIndex >= 0) {
-      const encodedJournalJournalCarrier = encodeFunctionArgument(
-        kernelJournalRecords, 'bytes[]', stateLayout.structs,
-      ) as Uint8Array;
-      if (encodedJournalJournalCarrier.length > 520) {
-        throw new Error(
-          'Entry journal requires segmented carrier inputs, but this compiler published only the legacy '
-          + `${encodedJournalJournalCarrier.length}-byte monolithic carrier.`,
-        );
-      }
-      replaceJournalArgument(journalRecordsIndex, kernelJournalRecords);
-      publishJournalWitness(KERNEL_JOURNAL_RECORDS, kernelJournalRecords);
-    }
-
     // Every row which can touch a collection receives the same transaction-wide runtime cardinality. The route
     // verifies that witness against the authenticated physical collection, then each selected handler subtracts
     // its locally proven width. Empty rows receive the same initial total and subtract zero.
@@ -11299,27 +10513,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           continue;
         }
         const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
-          if (!upsertFrame.routed) {
-            upsertFrame.args[index] = value;
-            // A promoted delegate entry encodes its own frame from entryArgs by name; the outer forwarder's
-            // arguments must keep their own ABI shape.
-            if (entryAbiFunction === abiFunction) finalArgs[index] = value;
-            return;
-          }
-          const input = upsertFrame.abiFunction.inputs[index];
-          const mutableInternal = upsertFrame.row!.internalArgs as Record<string, FunctionArgument>;
-          mutableInternal[input.name] = value;
-          const routeIndex = entryAbiFunction!.inputs.findIndex((candidate) => candidate.name === input.name);
-          if (routeIndex < 0) throw new Error(
-            `Batch route is missing compiler-owned loop argument '${input.name}'`,
-          );
-          entryArgs[routeIndex] = value;
-          if (entryDirectCall) {
-            entryDirectCall.internalArgs = { ...entryDirectCall.internalArgs, [input.name]: value };
-          } else {
-            args[routeIndex] = value;
-            finalArgs[routeIndex] = value;
-          }
+          upsertFrame.args[index] = value;
+          // A promoted delegate entry encodes its own frame from entryArgs by name; the outer forwarder's
+          // arguments must keep their own ABI shape.
+          if (entryAbiFunction === abiFunction) finalArgs[index] = value;
         };
         replaceLoopArgument(inputIndex, BigInt(cardinality.inputs));
         replaceLoopArgument(outputIndex, BigInt(cardinality.outputs));
@@ -11576,9 +10773,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         rootOwned: !nestedDelegateProxyGroupByLowLevel.has(groupIndex),
         reader: group.externalContract.inner,
         callMode: group.callMode,
-        abiFunction: group.directCall?.abiFunction
-          ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-            .find((candidate) => candidate.name === group.functionName),
+        abiFunction: (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === group.functionName),
       })));
     const nestedBlockOraclePools = new Set<string>();
     for (const group of externalCallUtxoGroups) {
@@ -11810,22 +11006,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && physicalAbiFunction.blockLayout?.slots.some((slot) => slot.kind === 'lowLevelCall') === true;
       const authenticatedDelegateGroup = activeDelegateGroupIndex === undefined
         ? undefined : lowLevelCallUtxoGroups[activeDelegateGroupIndex];
-      const directCallDelegate = authenticatedDelegateGroup?.directCall?.abiFunction.blockLayout
-        ? authenticatedDelegateGroup
-        : lowLevelCallUtxoGroups.find(
-          (g, groupIndex) => g.callMode === 'delegatecall'
-            && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
-            && g.directCall?.abiFunction.blockLayout,
-        );
-      const directCallDelegateLayout = directCallDelegate?.directCall?.abiFunction.blockLayout
-        ?? (physicalAbiFunction?.delegateForwarding || physicalDelegateCarrierOwnsCallSlot
-          ? undefined
-          : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel));
+      const directCallDelegateLayout = physicalAbiFunction?.delegateForwarding || physicalDelegateCarrierOwnsCallSlot
+        ? undefined
+        : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel);
       timing('delegate-route-selected');
       lowLevelCallInputBase = directCallDelegateLayout
-        // A compiler-owned route executes against the proxy's state, but its entry/proof resources still occupy
-        // the complete balanced route block rooted at the proxy master. As for nested proxies, the implementation
-        // follows that physical block; placing it after only the proxy data NFTs overwrites route slot 3.
+        // The delegate executes against the proxy's state, but its resources occupy the complete balanced block
+        // rooted at the proxy master. As for nested proxies, the implementation follows that physical block.
         ? directCallDelegateLayout.blockSize
         : hasDelegatecallGroup
         // Delegate bytecode binds its proxy-master witness to the physical relation
@@ -11837,12 +11024,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && !nestedDelegateProxyGroupByLowLevel.has(groupIndex))
         .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
       const hasNestedDelegate = delegateInputCount > 0;
-      const legacyRouteDelegate = authenticatedDelegateGroup ?? directCallDelegate ?? lowLevelCallUtxoGroups.find(
+      const legacyRouteDelegate = authenticatedDelegateGroup ?? lowLevelCallUtxoGroups.find(
         (group) => group.callMode === 'delegatecall' && group.externalContract,
       );
-      const legacyRouteDelegateFn = legacyRouteDelegate?.directCall?.abiFunction
-        ?? (legacyRouteDelegate?.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
-          ?.find((candidate) => candidate.name === legacyRouteDelegate?.functionName);
+      const legacyRouteDelegateFn = (legacyRouteDelegate?.externalContract?.inner.artifact.abi as
+        readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === legacyRouteDelegate?.functionName);
       const legacyRouteTrailingBase = legacyRouteDelegateFn?.blockLayout?.trailingBase
         ?? legacyRouteDelegateFn?.blockLayout?.blockSize;
       const delegatedLoopCollections = new Set([
@@ -11929,7 +11115,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             plannedInserts: group.plannedEntryInserts,
             predecessorOutputs: group.batchPredecessorOutputs,
             internalArgs: Object.fromEntries(Object.entries({
-              ...group.directCall?.internalArgs,
               ...group.internalArgs,
             }).filter(([name]) => name.includes('vmapBatch')).map(([name, value]) => [
               name,
@@ -12146,13 +11331,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       {
         functionName,
         abiFunction,
-        physicalAbiFunction,
         finalArgs,
-        args,
         activeDelegateGroupIndex,
         delegateInputArgumentIndex,
         lowLevelCallUtxoGroups,
-        lowLevelCallInputBase,
         filteredDataNftUtxos,
         overrides,
       },
@@ -12179,7 +11361,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const rootOracleReader = selectRootOracleReader();
     const oracleDelegate = rootOracleReader?.delegateIndex === undefined
       ? undefined : lowLevelCallUtxoGroups[rootOracleReader.delegateIndex];
-    delegateBlockInfoOracle = oracleDelegate !== undefined && oracleDelegate.directCall === undefined;
+    delegateBlockInfoOracle = oracleDelegate !== undefined;
     if (rootOracleReader !== undefined) {
       const { reader } = rootOracleReader;
       const pool = reader.oraclePool;
@@ -12293,9 +11475,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // every ordinary journal handler and incorrectly moves its fixed compute slots behind the owner block.
       const ecrecoverExecutingGroup = ecrecoverAbiFunction !== abiFunction
         ? lowLevelCallUtxoGroups.find((group) => (
-          group.callMode === 'delegatecall'
-          && (group.directCall?.abiFunction === ecrecoverAbiFunction
-            || group.functionName === ecrecoverAbiFunction.name)
+          group.callMode === 'delegatecall' && group.functionName === ecrecoverAbiFunction.name
         ))
         : undefined;
       const delegatedEcrecover = ecrecoverExecutingGroup !== undefined;
@@ -12415,7 +11595,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // side-cars, with the witness naming them there as the build encodes it, so a read made before the loop
       // reaches them. The probe's master is input 0.
       const readChunks = readChunksFollowKeccakSideCars(abiFunction) && dynamicReadChunkInputs.length > 0
-        && topLevelDynamicChunkArgumentIndex >= 0 && overrides?.directCallSelector === undefined
+        && topLevelDynamicChunkArgumentIndex >= 0
         ? keccakLoopReadSuccessors(dynamicReadChunkInputs, (firstInputIndex) => {
           const witness = finalArgs[topLevelDynamicChunkArgumentIndex];
           finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(firstInputIndex, 0, false);
@@ -12454,9 +11634,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ? abiFunction : entryAbiFunction!;
       const executingGroup = keccakAbiFunction !== abiFunction
         ? lowLevelCallUtxoGroups.find((group) => (
-          group.callMode === 'delegatecall'
-          && (group.directCall?.abiFunction === keccakAbiFunction
-            || group.functionName === keccakAbiFunction.name)
+          group.callMode === 'delegatecall' && group.functionName === keccakAbiFunction.name
         ))
         : undefined;
       const delegatedKeccak = executingGroup !== undefined;
@@ -12588,14 +11766,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const delegateDynamicWrites = new Set<string>();
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
-      const gFn = g.directCall?.abiFunction ?? (g.externalContract.inner.artifact.abi as readonly {
+      const gFn = (g.externalContract.inner.artifact.abi as readonly {
         name: string;
         dynamicWrites?: readonly string[];
       }[]).find((f) => f.name === g.functionName);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_INPUTS === '1') {
         console.error('delegate-dynamic-write-source', {
           groupFunction: g.functionName,
-          routeFunction: g.directCall?.abiFunction.name,
           resolvedFunction: gFn?.name,
           writes: gFn?.dynamicWrites,
         });
@@ -12654,7 +11831,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction,
         entryAbiFunction,
         lowLevelCallUtxoGroups,
-        nestedDelegateProxyGroupByLowLevel,
         batchPredCommitments,
         sortedLoopCommitments,
         runtimeLoopDerivedCounts,
@@ -12668,15 +11844,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         executionSelfAddress,
         functionName,
         tokenContainers,
-        routeRowIndex,
-        selectedRowArgument,
-        kernelJournalSettlementEntrySegments,
         runtimeLoopEntrySegments,
         entryAccesses: abiFunction?.entryAccesses,
         dynamicWrites,
         activeDynamicWrites,
-        activeDelegateGroupIndex,
-        externalCallUtxoGroups,
         entryNftLockingBytecodes,
       },
     );
@@ -12688,7 +11859,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const runtimeLoopEventOutputs = dynamicChunks.runtimeLoopEventOutputs;
     const runtimeLoopTransferOutputs = dynamicChunks.runtimeLoopTransferOutputs;
     const runtimeLoopTrailingSegments = dynamicChunks.runtimeLoopTrailingSegments;
-    const delegateRouteGroup = dynamicChunks.delegateRouteGroup;
     // verified at proxyMaster+offset (emitMasterInputIndex=proxyMasterIndex), which is INSIDE the proxy's block -
     // so the proxy must reserve those output-only slots (funder input + event output), shifting the co-spent impl
     // UTXOs after them. __forward's own layout has none. Offsets align: proxy blockSize == impl master+dataNfts.
@@ -12699,7 +11869,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         setLogicalAddress: (address: string) => { this._logicalAddress = address; },
       },
       {
-        delegateRouteGroup,
         physicalAbiFunction,
         abiFunction,
         lowLevelCallUtxoGroups,
@@ -12747,7 +11916,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         finalArgs,
         abiFunction,
         entryAbiFunction,
-        physicalAbiFunction,
         functionName,
         effectiveBlockLayout,
         entryAccesses,
@@ -12769,8 +11937,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         runtimeLoopEventOutputs,
         runtimeLoopTransferOutputs,
         runtimeLoopTrailingSegments,
-        kernelJournalSettlementOutputPlan,
-        kernelJournalEagerOutputPlan,
         tokenContainers,
         tokenContainerLockingBytecodes,
         satoshiContainerUtxo,
@@ -13869,11 +13035,8 @@ export class StatefulFunctionCall {
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
   private consumesLogicalNonce = true;
-  private directCall?: {
-    abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
-    emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
-    logicalIdentity?: ResolvedLogicalIdentity;
-  };
+  /** A call whose ABI function its creator fixes and whose return it emits: a creation's callee run (deployer). */
+  private directCall?: { abiFunction: AbiFunction; emitReturn?: boolean };
 
   private splitFundingConfig?: {
     utxos: Utxo[];
@@ -13896,11 +13059,7 @@ export class StatefulFunctionCall {
     parentContract?: StatefulContract,
     functionName?: string,
     functionArgs?: any[],
-    directCall?: {
-      abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
-      emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
-      logicalIdentity?: ResolvedLogicalIdentity;
-    },
+    directCall?: { abiFunction: AbiFunction; emitReturn?: boolean },
     private readonly functionSelector?: string,
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
@@ -13919,7 +13078,7 @@ export class StatefulFunctionCall {
     }
   }
 
-  /** Exact source ABI selected when this call was prepared (the route, when present, is physical). */
+  /** Exact source ABI selected when this call was prepared. */
   private _selectedAbiFunction(): AbiFunction | undefined {
     if (!this.parentContract || this.functionName === undefined) return undefined;
     if (this.functionSelector !== undefined) {
@@ -14158,26 +13317,6 @@ export class StatefulFunctionCall {
     return this;
   }
 
-  /** @internal Attach a compiler-owned delegate route while retaining the public proxy's physical state owner. */
-  _withDirectCallDelegatecall(
-    contract: StatefulContract,
-    directCall: NonNullable<ExternalCallUtxoGroup['directCall']>,
-  ): this {
-    this.callInfos.push({
-      type: 'stateful',
-      contract,
-      functionName: directCall.abiFunction.name,
-      args: directCall.args as FunctionArgument[],
-      directCall,
-      // The implementation frame this CallInfo later materializes executes for THIS call object's contract, so
-      // that contract's identity is the frame's caller - the authority its `msg.sender`-keyed mappings must hash.
-      ...(this.parentContract !== undefined && {
-        callerLockingBytecode: hexToBin(this.parentContract.inner.lockingBytecode),
-      }),
-    });
-    return this;
-  }
-
   /**
    * Convenience method for delegatecall: stores the implementation contract, function name,
    * and args as a low-level call. The proxy's fallback will receive the calldata automatically.
@@ -14395,7 +13534,6 @@ export class StatefulFunctionCall {
 
   async build(): Promise<TransactionBuilder> {
     const builder = await buildStatefulFunctionCallImpl({
-      directCall: this.directCall,
       functionName: this.functionName,
       sequenceOverride: this.sequenceOverride,
       parentContract: this.parentContract,
@@ -14687,7 +13825,7 @@ export class StatefulFunctionCall {
   }
 
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
-    // A route call is not the ordinary call path.
+    // A creation's callee run is not the ordinary call path.
     if (this.directCall === undefined && this.parentContract) {
       refuseOrdinarySelfdestructCall(this.parentContract.inner.artifact, this._selectedAbiFunction());
     }

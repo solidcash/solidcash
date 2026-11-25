@@ -19,7 +19,6 @@ export type CreateBuilderEarlyArgsStatefulCall = {
   };
   functionName: string;
   args: FunctionArgument[];
-  directCall?: { abiFunction?: AbiFunction };
 };
 
 export type CreateBuilderEarlyArgsExternalCall = {
@@ -99,7 +98,6 @@ export async function materializeCreateBuilderEarlyArgs(
   const delegatedReturnFunction = overrides?.calls
     ?.filter((call): call is CreateBuilderEarlyArgsStatefulCall => call.type === 'stateful')
     .map((call) => {
-      if (call.directCall?.abiFunction) return call.directCall.abiFunction;
       const candidates = call.contract.inner.artifact.abi.filter((fn) => fn.name === call.functionName);
       return candidates.find((fn) => fn.inputs
         .filter((input) => !input.name.startsWith('__internal__')).length === call.args.length)

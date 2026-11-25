@@ -21,7 +21,6 @@ import { materializeInternalFunctionArgument } from './internal-function-args.js
 import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import { directCallUsesPhysicalWrapper } from './route-resource-selection.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import { resolveMaterializedDynamicWriteOutputBase } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
@@ -58,7 +57,6 @@ export function constructCreateBuilderTransactionBuilder(
     finalArgs: FunctionArgument[];
     abiFunction: AbiFunction | undefined;
     entryAbiFunction: AbiFunction | undefined;
-    physicalAbiFunction: AbiFunction | undefined;
     functionName: string;
     effectiveBlockLayout: FunctionBlockLayout | undefined;
     entryAccesses: any;
@@ -80,8 +78,6 @@ export function constructCreateBuilderTransactionBuilder(
     runtimeLoopEventOutputs: any[];
     runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[];
     runtimeLoopTrailingSegments: any[];
-    kernelJournalSettlementOutputPlan: any;
-    kernelJournalEagerOutputPlan: any;
     tokenContainers: TokenContainerInfo[];
     tokenContainerLockingBytecodes: Map<string, Uint8Array>;
     satoshiContainerUtxo: UnlockableUtxo | undefined;
@@ -133,13 +129,12 @@ export function constructCreateBuilderTransactionBuilder(
   },
 ): ConstructCreateBuilderTransactionBuilderResult {
   let {
-    finalArgs, abiFunction, entryAbiFunction, physicalAbiFunction, functionName,
+    finalArgs, abiFunction, entryAbiFunction, functionName,
     effectiveBlockLayout, entryAccesses, entryNfts, batchTargetPlaceholders,
     resolvedMsgSenderCategory, externalReadUtxos, overrides, valueChunkWriteStagingSession,
     unlockableMaster, unlockableDataNfts, stateLayout, requiredNftIndices, entryNftLockingBytecodes,
     dynamicChunkVars, dynamicChunkInputs, trailingDisposalInputs, loopEntryVars,
-    runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments,
-    kernelJournalSettlementOutputPlan, kernelJournalEagerOutputPlan, tokenContainers,
+    runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments, tokenContainers,
     tokenContainerLockingBytecodes, satoshiContainerUtxo, satoshiContainerLockingBytecode,
     blockhashCoSpendUtxos, blockInfoCoSpendUtxos, delegateBlockInfoOracle, unslottedPoolCoSpends,
     blockhashCoSpendSlotOrdinals,
@@ -189,7 +184,6 @@ export function constructCreateBuilderTransactionBuilder(
       ]).filter(([name]) => String(name).startsWith('__internal__')),
       build: {
         returnProbeOnly: overrides?.returnProbeOnly === true,
-        directCall: overrides?.directCallSelector !== undefined,
         calls: overrides?.calls?.length ?? 0,
       },
     }));
@@ -238,8 +232,6 @@ export function constructCreateBuilderTransactionBuilder(
     ...(runtimeLoopEventOutputs.length > 0 && { runtimeLoopEventOutputs }),
     ...(runtimeLoopTransferOutputs.length > 0 && { runtimeLoopTransferOutputs }),
     ...(runtimeLoopTrailingSegments.length > 0 && { runtimeLoopTrailingSegments }),
-    ...(kernelJournalSettlementOutputPlan && { kernelJournalSettlementOutputPlan }),
-    ...(kernelJournalEagerOutputPlan && { kernelJournalEagerOutputPlan }),
     tokenContainers,
     tokenContainerLockingBytecodes,
     ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
@@ -307,7 +299,6 @@ export function constructCreateBuilderTransactionBuilder(
   const selfIdentityArgumentIndex = abiFunction?.inputs.findIndex((input) =>
     input.name === '__internal__graphSelfIdentityInput') ?? -1;
   const refreshTopLevelSelfIdentityInput = selfIdentityArgumentIndex < 0 || !usesOrdinarySelfIdentity(abiFunction)
-    || directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (logicalIdentity === undefined) {
@@ -326,7 +317,6 @@ export function constructCreateBuilderTransactionBuilder(
     input.name === '__internal__dynamicChunkOutputBase') ?? -1;
   const refreshTopLevelDynamicChunkOutputBase = dynamicOutputArgumentIndex < 0
     || overrides?.omitLocalFeeTail === true
-    || directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (materialized === undefined || abiFunction === undefined) return;
@@ -341,9 +331,6 @@ export function constructCreateBuilderTransactionBuilder(
     };
   const dynamicWriteActive = dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0;
   const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
-    || directCallUsesPhysicalWrapper(
-      overrides?.directCallSelector, physicalAbiFunction, abiFunction,
-    )
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       const target = firstRootDynamicChunk;
@@ -432,7 +419,6 @@ export function constructCreateBuilderTransactionBuilder(
     utxo?: Pick<Utxo, 'txid' | 'vout'>;
   } | undefined)[];
   const refreshTopLevelLowLevelCallInputIndices = abiFunction === undefined
-    || directCallUsesPhysicalWrapper(overrides?.directCallSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (!abiFunction) return;

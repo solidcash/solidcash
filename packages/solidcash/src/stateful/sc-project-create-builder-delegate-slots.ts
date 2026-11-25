@@ -56,7 +56,6 @@ export function projectCreateBuilderDelegateSlots(params: {
   for (const [groupIndex, g] of lowLevelCallUtxoGroups.entries()) {
     if (g.callMode !== 'delegatecall') continue;
     if (nestedDelegateProxyGroupByLowLevel.has(groupIndex)) continue;
-    if (g.directCall?.abiFunction.blockLayout) continue;
     const gFn = (g.externalContract.inner.artifact.abi as readonly {
       name: string; blockLayout?: FunctionBlockLayout;
     }[]).find((f) => f.name === g.functionName);

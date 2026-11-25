@@ -235,8 +235,7 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
       ? undefined : lowLevelCallUtxoGroups[physicalGroup.delegateCallGroupIndex];
     const logicalFunction = ownerFunction.externalCalls?.[slot]?.functionName;
     const selectedFunction = physicalDelegate?.functionName ?? physicalGroup?.functionName;
-    return physicalGroup?.directCall || physicalDelegate?.directCall
-    || (logicalFunction !== undefined && selectedFunction !== logicalFunction) ? -2n : -1n;
+    return logicalFunction !== undefined && selectedFunction !== logicalFunction ? -2n : -1n;
   };
   const nestedFullState = (contract: any): Promise<OnChainState> => {
     let pending = nestedFullStateCache.get(contract.categoryId);
@@ -308,10 +307,6 @@ type PreparedAtomicNode = RuntimeCallMetadata & {
   resolveArgsFromResults?: (
     results: ReadonlyMap<number, FunctionArgument>,
   ) => FunctionArgument[] | undefined;
-  /** Apply authenticated sibling returns to this physical legacy call group. */
-  refreshArgsFromResults?: (
-    results: ReadonlyMap<number, FunctionArgument>,
-  ) => boolean;
   /**
    * Re-derive this row's terminal chunkable-value productions against a complete route row list.
    *

@@ -86,7 +86,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
       if ((sibling.sharedGroupIndex ?? index) !== tokenGroupIndex) continue;
       if ((sibling.batchPredecessorOutputs?.length ?? 0) === 0
         && (sibling.plannedEntryInserts?.length ?? 0) === 0
-        && !Object.entries({ ...sibling.directCall?.internalArgs, ...sibling.internalArgs })
+        && !Object.entries(sibling.internalArgs ?? {})
           .some(([name]) => isWriterBatchWitnessName(name))) continue;
       if (!writerBatchPlanMatchesPhysicalCarrier(tokenGroup, sibling)) continue;
       inheritWriterBatchPlan(tokenGroup, sibling);

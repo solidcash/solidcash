@@ -76,8 +76,7 @@ export function applyDeriveFullNestedEntryPins(
   if ((stb.hasStagedValueChunkOutputs() || stb.getValueChunkRedeemLock()) && chunkCategory) {
     const entryPin = extractFailingP2sh32OutputPin(nestedTrace);
     const stagedValueLock = stb.getValueChunkRedeemLock();
-    const nestedEntryAbi = llc.directCall?.abiFunction
-    ?? llc.externalContract?.inner.artifact.abi.find(
+    const nestedEntryAbi = llc.externalContract?.inner.artifact.abi.find(
       (candidate: AbiFunction) => candidate.name === llc.functionName,
     );
     const entryContract = llc.externalContract?.inner
@@ -100,10 +99,7 @@ export function applyDeriveFullNestedEntryPins(
     ?? 5;
     const physicalEntrySlot = (
       nestedEntryAbi as { physicalEntrySlots?: number[] } | undefined
-    )?.physicalEntrySlots?.[0]
-    ?? (llc.directCall as { physicalEntrySlots?: number[] } | undefined)
-      ?.physicalEntrySlots?.[0]
-    ;
+    )?.physicalEntrySlots?.[0];
     // The covenant addresses its entry output as INPUTINDEX + the published block-slot offset of that
     // entry (see emitEntryOutputIndex). `blockSize` is the coordinate just PAST the block, so using it
     // as an offset names a trailing slice instead of the entry slot whenever the block carries any slot

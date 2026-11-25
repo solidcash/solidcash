@@ -1,8 +1,6 @@
 /**
- * phase-boundary extract: STB public-surface extract — getLoopEntryOutputIndex settlement/trailing resolve.
+ * phase-boundary extract: STB public-surface extract: getLoopEntryOutputIndex trailing resolve.
  */
-
-import type { KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
 
 export type LoopEntryVar = {
   collection: string;
@@ -16,12 +14,8 @@ export type RuntimeLoopTrailingSegment = {
 };
 
 export interface GetLoopEntryOutputIndexHost {
-  readonly kernelJournalSettlementOutputPlan: readonly unknown[];
-  readonly kernelJournalEagerOutputPlan: readonly unknown[];
   readonly runtimeLoopTrailingSegments: readonly RuntimeLoopTrailingSegment[];
   readonly loopEntryCommitments: ReadonlyMap<string, readonly string[]>;
-  validateJournalJournalSettlementOutputPlan(): void;
-  kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan;
   getLoopEntryOutputBase(): number;
   trailingLoopEntryVars(): readonly LoopEntryVar[];
 }
@@ -36,15 +30,6 @@ export function getLoopEntryOutputIndex(
 ): number {
   if (!Number.isSafeInteger(commitmentIndex) || commitmentIndex < 0) {
     throw new Error(`Invalid loop entry commitment index ${commitmentIndex} for '${collection}'`);
-  }
-  if (host.kernelJournalSettlementOutputPlan.length > 0 || host.kernelJournalEagerOutputPlan.length > 0) {
-    host.validateJournalJournalSettlementOutputPlan();
-    const entry = host.kernelJournalOutputLayout().outputs.find((candidate) =>
-      candidate.collection === collection && candidate.offset === commitmentIndex);
-    if (!entry) {
-      throw new Error(`Loop entry commitment ${collection}[${commitmentIndex}] is missing from settlement output plan`);
-    }
-    return host.getLoopEntryOutputBase() + entry.outputOrdinal;
   }
   if (host.runtimeLoopTrailingSegments.length === 0) {
     let physical = host.getLoopEntryOutputBase();

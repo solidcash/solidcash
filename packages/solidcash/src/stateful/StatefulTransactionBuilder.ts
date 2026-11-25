@@ -69,7 +69,6 @@ export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBa
   return outputBase < 0 ? outputBase : outputBase + blockBase;
 }
 import { decodeEntryCommitment, encodeEntryCommitment } from './SortedList.js';
-import { planJournalEntryJournalOutputLayout, type KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
@@ -828,7 +827,6 @@ export class StatefulTransactionBuilder {
   private _minRelayFeePerKb: bigint;
   private _maximumFeeSatoshis?: bigint;
   private strictVmPreflight = false;
-  private resultDependentArgumentRefresher?: (builder: TransactionBuilder) => boolean;
   private masterUnlockerRefresher?: (builder?: TransactionBuilder) => Unlocker;
   private allInputs: UnlockableUtxo[];
   // External-library side-car UTXO, co-spent as the LAST input so the covenant's library loader can read
@@ -1047,8 +1045,6 @@ export class StatefulTransactionBuilder {
 
   private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
-  private kernelJournalSettlementOutputPlan: NonNullable<StatefulTransactionOptions['kernelJournalSettlementOutputPlan']> = [];
-  private kernelJournalEagerOutputPlan: NonNullable<StatefulTransactionOptions['kernelJournalEagerOutputPlan']> = [];
 
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
   // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
@@ -1204,10 +1200,6 @@ export class StatefulTransactionBuilder {
       ...(output.commitment && { commitment: Uint8Array.from(output.commitment) }),
     }));
     this.runtimeLoopTrailingSegments = options.runtimeLoopTrailingSegments?.map((segment) => ({ ...segment })) ?? [];
-    this.kernelJournalSettlementOutputPlan = options.kernelJournalSettlementOutputPlan
-      ?.map((entry) => ({ ...entry })) ?? [];
-    this.kernelJournalEagerOutputPlan = options.kernelJournalEagerOutputPlan
-      ?.map((entry) => ({ ...entry })) ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
     this.eventNftLockingBytecodes = options.eventNftLockingBytecodes ?? new Map();
     this.tokenContainers = options.tokenContainers ?? [];
@@ -1238,13 +1230,6 @@ export class StatefulTransactionBuilder {
     if (this.probeMasterVout === undefined) return;
     this.masterUtxo.vout = this.probeMasterVout;
     this.probeMasterVout = undefined;
-  }
-
-  /** @internal Rebind later callee arguments after an authenticated return channel converges. */
-  _setResultDependentArgumentRefresher(
-    refresher: (builder: TransactionBuilder) => boolean,
-  ): void {
-    this.resultDependentArgumentRefresher = refresher;
   }
 
   /** @internal Rebuild a root unlocker whose hidden witnesses depend on the final materialized input order. */
@@ -2031,8 +2016,6 @@ export class StatefulTransactionBuilder {
 
   private _finalizeBuildStampHost(): FinalizeBuildStampHost {
     return {
-      categoryId: this.categoryId,
-      rootStateContract: isContractUnlocker(this.masterUtxo.unlocker) ? this.masterUtxo.unlocker.contract : undefined,
       composedParticipant: this.composedParticipant,
       allInputs: this.allInputs,
       entryNfts: this.entryNfts,
@@ -2071,18 +2054,11 @@ export class StatefulTransactionBuilder {
       loopEntryCommitments: this.loopEntryCommitments,
       pendingKeccakLoopRecreates: (b) => this._pendingKeccakLoopRecreates(b),
       keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
-      kernelJournalSettlementOutputPlan: this.kernelJournalSettlementOutputPlan,
-      kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
       loopEntriesBeforeDynamicChunks: this.loopEntriesBeforeDynamicChunks,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       directCallDelegateBlock: this.directCallDelegateBlock,
       trailingLoopEntryVars: () => this._trailingLoopEntryVars(),
       delegateLoopEntryVars: () => this._delegateLoopEntryVars(),
-      validateJournalJournalSettlementOutputPlan: () => {
-        this.validateJournalJournalSettlementOutputPlan();
-      },
-      kernelJournalOutputLayout: () => this.kernelJournalOutputLayout(),
-      trailingLoopEntryOutputCount: () => this._trailingLoopEntryOutputCount(),
       loopEntryTransitionSatoshis: (variable, commitment) => (
         this._loopEntryTransitionSatoshis(variable, commitment)
       ),
@@ -2585,8 +2561,8 @@ export class StatefulTransactionBuilder {
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       computeMinFee: (size) => this.computeMinFee(size),
-      assertConvergedFinalTransaction: (builder, reassertFinalLayout, finalizeFeeBeforeValidation) => (
-        this._assertConvergedFinalTransaction(builder, reassertFinalLayout, finalizeFeeBeforeValidation)
+      assertConvergedFinalTransaction: (builder, finalizeFeeBeforeValidation) => (
+        this._assertConvergedFinalTransaction(builder, finalizeFeeBeforeValidation)
       ),
     };
   }
@@ -2893,31 +2869,10 @@ export class StatefulTransactionBuilder {
 
   private _convergedFinalTransactionHost(): ConvergedFinalTransactionHost {
     return {
-      masterUtxo: this.masterUtxo,
-      categoryId: this.categoryId,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
-      lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       allInputs: this.allInputs,
       externalCallEntryInserts: this.externalCallEntryInserts,
-      resultDependentArgumentRefresher: this.resultDependentArgumentRefresher,
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
-      repairComputedChunkOutput: (builder, inputIndex) => this._repairComputedChunkOutput(builder, inputIndex),
-      compilerOwnedTrailingEntryOutputIndices: () => this._compilerOwnedTrailingEntryOutputIndices(),
-      restoreDeclaredMutableEntrySlots: (builder) => {
-        this._restoreDeclaredMutableEntrySlots(builder);
-      },
-      clearSupersededDelegateDynamicCollectionOutputs: (builder) => {
-        this._clearSupersededDelegateDynamicCollectionOutputs(builder);
-      },
-      clearUnclaimedConditionalEventSlots: (builder) => {
-        this._clearUnclaimedConditionalEventSlots(builder);
-      },
-      syncRefreshedCarrierMasters: (builder, carriers) => {
-        this._syncRefreshedCarrierMasters(builder, carriers);
-      },
-      logCovenantFailureTrace: (builder, message) => {
-        this._logCovenantFailureTrace(builder, message);
-      },
     };
   }
 
@@ -3331,7 +3286,7 @@ export class StatefulTransactionBuilder {
   } | undefined {
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined) continue;
-      const layout = group.blockLayout ?? group.directCall?.abiFunction?.blockLayout;
+      const layout = group.blockLayout;
       if (!layout) continue;
       const base = this.getExternalCallOutputBase(groupIndex);
       const slot = layout.slots.find((candidate) => base + candidate.offset === outputIndex);
@@ -3345,7 +3300,7 @@ export class StatefulTransactionBuilder {
     const allowedByCategory = new Map<string, Set<number>>();
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined || !group.categoryId) continue;
-      const layout = group.blockLayout ?? group.directCall?.abiFunction?.blockLayout;
+      const layout = group.blockLayout;
       if (!layout) continue;
       let master = this.findMintingInputIndex(group.categoryId);
       if (master < 0) master = this.getExternalCallMasterInputIndex(groupIndex);
@@ -3356,7 +3311,6 @@ export class StatefulTransactionBuilder {
           allowed.add(master + slot.offset);
         }
       }
-      for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) allowed.add(master + offset);
       allowedByCategory.set(group.categoryId, allowed);
     }
     for (const claim of lowLevelCallImmutableEventDestinations(
@@ -5705,7 +5659,7 @@ export class StatefulTransactionBuilder {
       // A group's own logical call: a group sharing another's callee input names a call of its own, and an
       // identical readonly alias names the same call as the group it shares.
       const group = this.externalCallUtxoGroups[Number(external[1])];
-      if (!group || group.directCall) return undefined;
+      if (!group) return undefined;
       return this.groupCallRecordDigest(group, Number(external[2] ?? 0));
     }
     if (identity !== this.categoryId) return undefined;
@@ -5719,7 +5673,7 @@ export class StatefulTransactionBuilder {
     // A proxy entry forwards its call: the implementation it delegates to runs that call on this state, and its
     // record answers it.
     for (const group of this.lowLevelCallUtxoGroups) {
-      if (group.callMode !== 'delegatecall' || group.directCall) continue;
+      if (group.callMode !== 'delegatecall') continue;
       const digest = this.groupCallRecordDigest(group);
       if (digest !== undefined) return digest;
     }
@@ -5807,7 +5761,7 @@ export class StatefulTransactionBuilder {
   private voidEntryRecord(identity: string): Uint8Array | undefined {
     const external = /^external-call:(\d+)(?::(\d+))?$/.exec(identity);
     const group = external === null ? undefined : this.externalCallUtxoGroups[Number(external[1])];
-    if (!group || group.directCall || group.callBatchUnit !== undefined) return undefined;
+    if (!group || group.callBatchUnit !== undefined) return undefined;
     const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
     const functionName = group.logicalFunctionName ?? group.functionName;
     const entry = artifact?.abi.find((candidate) => candidate.name === functionName);
@@ -6146,9 +6100,6 @@ export class StatefulTransactionBuilder {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length
         - this.runtimeLoopEventOutputs.length + eventIndex;
     }
-    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
-      return this.getJournalJournalTrailingEffectOutputIndex('events', eventIndex);
-    }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
       - this.runtimeLoopTransferOutputs.length + this._runtimeLoopUnsegmentedEntryPrefixCount();
@@ -6174,9 +6125,6 @@ export class StatefulTransactionBuilder {
     }
     if (this.runtimeLoopTrailingSegments.length === 0) {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length + transferIndex;
-    }
-    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
-      return this.getJournalJournalTrailingEffectOutputIndex('transfers', transferIndex);
     }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
@@ -6329,14 +6277,8 @@ export class StatefulTransactionBuilder {
   /** Resolve a collection-local commitment offset through the authenticated trailing segment plan. */
   private _getLoopEntryOutputIndexHost(): GetLoopEntryOutputIndexHost {
     return {
-      kernelJournalSettlementOutputPlan: this.kernelJournalSettlementOutputPlan,
-      kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
       runtimeLoopTrailingSegments: this.runtimeLoopTrailingSegments,
       loopEntryCommitments: this.loopEntryCommitments,
-      validateJournalJournalSettlementOutputPlan: () => {
-        this.validateJournalJournalSettlementOutputPlan();
-      },
-      kernelJournalOutputLayout: () => this.kernelJournalOutputLayout(),
       getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
       trailingLoopEntryVars: () => this._trailingLoopEntryVars(),
     };
@@ -6442,46 +6384,6 @@ export class StatefulTransactionBuilder {
     return end;
   }
 
-  /**
-   * The SDK derives this plan, but its coordinates must still be canonical before they decide output placement.
-   * The route final flush independently authenticates each selected record against the resulting output.
-   */
-  private validateJournalJournalSettlementOutputPlan(): void {
-    this.kernelJournalOutputLayout();
-  }
-
-  /** Compose the explicit eager prefix and deferred dense band without deriving either from commitment order. */
-  private kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan {
-    return planJournalEntryJournalOutputLayout(
-      this.kernelJournalEagerOutputPlan,
-      this.kernelJournalSettlementOutputPlan,
-    );
-  }
-
-  /** Runtime effects retain source order, but always follow the complete `E + D` journal entry band. */
-  private getJournalJournalTrailingEffectOutputIndex(
-    kind: 'events' | 'transfers', effectIndex: number,
-  ): number {
-    const layout = this.kernelJournalOutputLayout();
-    let physical = this.getLoopEntryOutputBase() + layout.finalOutputCursorDelta;
-    let resolved: number | undefined;
-    for (const segment of this.runtimeLoopTrailingSegments) {
-      if (segment.kind === 'entries') continue;
-      if (segment.kind === kind
-        && effectIndex >= segment.offset && effectIndex < segment.offset + segment.count) {
-        if (resolved !== undefined) {
-          throw new Error(`Runtime loop ${kind} output ${effectIndex} has multiple output locations`);
-        }
-        resolved = physical + effectIndex - segment.offset;
-      }
-      physical += segment.count;
-    }
-    if (resolved === undefined) {
-      throw new Error(`Runtime loop ${kind} output ${effectIndex} is missing from the trailing segment plan`);
-    }
-    return resolved;
-  }
-
   /** Entry outputs preceding the source-ordered segment stream, including same-collection fixed prefixes. */
   private _runtimeLoopUnsegmentedEntryPrefixCount(): number {
     const firstSegmentOffsets = new Map<string, number>();
@@ -6517,12 +6419,11 @@ export class StatefulTransactionBuilder {
    * entries from emitTrailingWriteOutputBase, which steps down past the slot while the call's own
    * `__internal__returnOutputIdx` is negative, while emitRuntimeLoopEffectVerification reads the loop's events and
    * payments from past the complete fixed block. The slot then sits between the entries and the effects. A segment
-   * plan that also places entries (a route's rows), a journal journal's band and a delegate's frame keep their
-   * published coordinates, so they take nothing out.
+   * plan that also places entries and a delegate's frame keep their published coordinates, so they take nothing
+   * out.
    */
   private _runtimeLoopEntryBandCompaction(): number {
     if (this.runtimeLoopTrailingSegments.some((segment) => segment.kind === 'entries')
-      || this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0
       || this.delegateEntriesAfterLowLevel || this.directCallDelegateBlock || this.keccakSideCarsFollowBlock) {
       return 0;
     }
@@ -7408,7 +7309,7 @@ export class StatefulTransactionBuilder {
   private returnRecordGroupIndex(groupIdx: number): number {
     const group = this.externalCallUtxoGroups[groupIdx];
     const shared = group?.sharedGroupIndex === undefined ? undefined : this.externalCallUtxoGroups[group.sharedGroupIndex];
-    if (group?.readonlyReturnSelector !== undefined && !group.directCall && group.sharedGroupIndex !== groupIdx
+    if (group?.readonlyReturnSelector !== undefined && group.sharedGroupIndex !== groupIdx
       && shared?.readonlyReturnSelector === group.readonlyReturnSelector) return group.sharedGroupIndex!;
     return logicalReturnGroupIndex(this.externalCallUtxoGroups, groupIdx);
   }
@@ -7652,17 +7553,14 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /** Converge authenticated computed outputs against the exact transaction shape submitted to the provider. */
+  /** Validate the exact transaction shape submitted to the provider. */
   private _assertConvergedFinalTransaction(
     builder: TransactionBuilder,
-    afterRepairs?: () => void,
     beforeValidation?: (
       transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>,
     ) => boolean,
   ): ReturnType<TransactionBuilder['buildLibauthTransaction']> {
-    return assertConvergedFinalTransaction(
-      this._convergedFinalTransactionHost(), builder, afterRepairs, beforeValidation,
-    );
+    return assertConvergedFinalTransaction(this._convergedFinalTransactionHost(), builder, beforeValidation);
   }
 
   async send(): Promise<TransactionDetails> {
@@ -7701,7 +7599,6 @@ export class StatefulTransactionBuilder {
     const {
       finalBuilder,
       serializedAccountingFunders,
-      reassertFinalLayout,
     } = runSendPhase3FinalRebuildImpl(
       this._runSendPhase3FinalRebuildHost(),
       neededFee,
@@ -7727,7 +7624,6 @@ export class StatefulTransactionBuilder {
       this._runSendPhase4ThroughSubmitHost(),
       finalBuilder,
       serializedAccountingFunders,
-      reassertFinalLayout,
       provider,
       neededFee,
       sendTiming,

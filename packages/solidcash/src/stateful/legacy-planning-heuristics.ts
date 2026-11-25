@@ -34,11 +34,9 @@ export function legacyIsPublishJobEventName(name: string | undefined): boolean {
 export function legacyGroupLooksLikePublishJobEvent(group: {
   functionName?: string;
   logicalFunctionName?: string;
-  directCall?: { abiFunction?: { name?: string } };
 }): boolean {
   return legacyIsPublishJobEventName(group.functionName)
-    || legacyIsPublishJobEventName(group.logicalFunctionName)
-    || legacyIsPublishJobEventName(group.directCall?.abiFunction?.name);
+    || legacyIsPublishJobEventName(group.logicalFunctionName);
 }
 
 /** Pre-descriptor plans did not publish a write operation. Use planned INSERTs when available. */

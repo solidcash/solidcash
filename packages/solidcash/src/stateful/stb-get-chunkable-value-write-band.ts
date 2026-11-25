@@ -66,12 +66,9 @@ export function getChunkableValueWriteBand(
   const publishExternal = selected.external;
   if (publishLlcIndex < 0 && !publishExternal) return undefined;
   const publishFn = structural?.abiFunction ?? (publishLlcIndex >= 0
-    ? (host.lowLevelCallUtxoGroups[publishLlcIndex].directCall?.abiFunction
-      ?? host.lowLevelCallUtxoGroups[publishLlcIndex].externalContract?.inner.artifact.abi
-        .find((fn: { name: string }) => legacyIsPublishJobEventName(fn.name)))
-    : publishExternal?.directCall?.abiFunction
-      ?? publishExternal?.blockLayout
-      ?? undefined);
+    ? host.lowLevelCallUtxoGroups[publishLlcIndex].externalContract?.inner.artifact.abi
+      .find((fn: { name: string }) => legacyIsPublishJobEventName(fn.name))
+    : publishExternal?.blockLayout);
   const publishBlockSize = (publishFn as AbiFunction | undefined)?.blockLayout?.blockSize
     ?? publishExternal?.blockLayout?.blockSize
     ?? 5;
@@ -93,9 +90,7 @@ export function getChunkableValueWriteBand(
     if (group.callMode !== 'delegatecall') continue;
     const impl = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (impl < 0) continue;
-    const blockSize = group.directCall?.abiFunction?.blockLayout?.blockSize
-      ?? group.blockLayout?.blockSize
-      ?? publishBlockSize;
+    const blockSize = group.blockLayout?.blockSize ?? publishBlockSize;
     bases.push(impl + blockSize);
   }
   const plannedWidth = Math.max(

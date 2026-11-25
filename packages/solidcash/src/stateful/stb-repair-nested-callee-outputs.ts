@@ -230,9 +230,8 @@ export function repairNestedCalleeOutputs(
     const proxyGroup = host.externalCallUtxoGroups.find(
       (group) => group.delegateCallGroupIndex === llcIndex,
     );
-    const fn = llc.directCall?.abiFunction
-      ?? proxyGroup?.directCall?.abiFunction
-      ?? llc.externalContract?.inner.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName)
+    const fn = llc.externalContract?.inner.artifact.abi
+      .find((candidate: AbiFunction) => candidate.name === llc.functionName)
       ?? proxyGroup?.externalContract?.inner.artifact.abi.find(
         (candidate: AbiFunction) => candidate.name === (llc.functionName ?? proxyGroup.functionName),
       );
@@ -428,8 +427,8 @@ export function repairNestedCalleeOutputs(
     const masterIndex = proxyGroupIndex >= 0
       ? host.getExternalCallMasterInputIndex(proxyGroupIndex)
       : implIndex;
-    const fn = llc.directCall?.abiFunction
-      ?? llc.externalContract?.inner.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName);
+    const fn = llc.externalContract?.inner.artifact.abi
+      .find((candidate: AbiFunction) => candidate.name === llc.functionName);
     const blockSize = fn?.blockLayout?.blockSize ?? 1;
     // Executing impl verifies chunks at INPUTINDEX+trailingBase (15+5=20).
     // min(impl, proxy)+blockSize is 17 and overwrites meceTags.

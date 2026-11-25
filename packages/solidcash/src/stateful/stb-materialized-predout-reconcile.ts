@@ -107,11 +107,9 @@ export function reconcileMaterializedPredOutWitnesses(
   const changedCarriers = new Set<ExternalCallUtxoGroup>();
   for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
     if (!carrier.refreshInternalArgs) continue;
-    const predOutArgs = Object.entries({
-      ...carrier.directCall?.internalArgs,
-      ...carrier.internalArgs,
-    }).filter(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
-      && typeof value === 'bigint' && value >= 0n);
+    const predOutArgs = Object.entries(carrier.internalArgs ?? {})
+      .filter(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
+        && typeof value === 'bigint' && value >= 0n);
     if ((carrier.batchPredecessorOutputs?.length ?? 0) === 0 && predOutArgs.length === 0) continue;
     const master = carrier.masterUtxo as UnlockableUtxo | undefined;
     if (!master) continue;
@@ -119,7 +117,7 @@ export function reconcileMaterializedPredOutWitnesses(
       input.txid.toLowerCase() === master.txid.toLowerCase() && input.vout === master.vout
     ));
     if (masterIndex < 0) continue;
-    const mergedArgs = { ...carrier.directCall?.internalArgs, ...carrier.internalArgs };
+    const mergedArgs = { ...carrier.internalArgs };
     const contentUpdates = resolveMaterializedPredOutUpdates(mergedArgs, builder, masterIndex);
     if (Object.keys(contentUpdates).length > 0) {
       carrier.refreshInternalArgs(contentUpdates, { shiftPredOut: false });
@@ -175,8 +173,7 @@ export function reassertMaterializedBatchPredecessorOutputs(
         // Cold keys sharing one proof input back the later entry slot with a funder. P' recreates the proof
         // input's entry, as the materializer places it, and never sits at a lock no entry of this category holds.
         const proofOffset = planned.slotIndex === undefined ? undefined
-          : (carrier.internalArgs?.[`__internal__vmapBatchProof_${planned.slotIndex}`]
-            ?? carrier.directCall?.internalArgs?.[`__internal__vmapBatchProof_${planned.slotIndex}`]);
+          : carrier.internalArgs?.[`__internal__vmapBatchProof_${planned.slotIndex}`];
         const input = typeof proofOffset === 'bigint' && proofOffset >= 0n
           ? carrier.blockInputs?.[Number(proofOffset)] : carrier.blockInputs?.[planned.blockSlot];
         if (!input?.unlocker || planned.outputBlockSlot < 0 || planned.commitment === undefined) return [];

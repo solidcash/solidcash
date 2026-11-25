@@ -134,23 +134,18 @@ export function placePublishJobEventOutput(
  */
 export function groupLayoutBlockSize(group: {
   blockLayout?: { blockSize?: number };
-  directCall?: { abiFunction?: { blockLayout?: { blockSize?: number } } };
 }): number {
-  return group.blockLayout?.blockSize
-    ?? group.directCall?.abiFunction?.blockLayout?.blockSize
-    ?? 8;
+  return group.blockLayout?.blockSize ?? 8;
 }
 
 export type DelegateExecutionLayoutGroup = {
   callMode?: string;
   blockLayout?: FunctionBlockLayout;
-  directCall?: { abiFunction?: { blockLayout?: FunctionBlockLayout } };
 };
 
 /**
- * Physical block of a proxy-forwarded implementation. Journal-eligible handlers publish this on
- * `directCall`; ineligible handlers still compile a native body with ABI `blockLayout`, and the
- * proxy must materialize that geometry even without a route descriptor.
+ * Physical block of a proxy-forwarded implementation: the native body's ABI `blockLayout`, which the proxy
+ * must materialize.
  */
 export function selectDelegateExecutionLayout(
   groups: ReadonlyArray<DelegateExecutionLayoutGroup>,
@@ -158,8 +153,8 @@ export function selectDelegateExecutionLayout(
 ): FunctionBlockLayout | undefined {
   const group = groups.find((candidate, index) => candidate.callMode === 'delegatecall'
     && !nestedDelegateProxyGroupIndexes?.has(index)
-    && (candidate.directCall?.abiFunction?.blockLayout ?? candidate.blockLayout));
-  return group?.directCall?.abiFunction?.blockLayout ?? group?.blockLayout;
+    && candidate.blockLayout);
+  return group?.blockLayout;
 }
 
 /**
@@ -221,9 +216,8 @@ export function assignBalancedOutputAtOffset<T>(outputs: T[], offset: number, ou
 /** First physical slot available to bounded runtime resources in a participant block. */
 export function groupLayoutTrailingBase(group: {
   blockLayout?: { blockSize?: number; trailingBase?: number };
-  directCall?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
 }): number {
-  const layout = group.blockLayout ?? group.directCall?.abiFunction?.blockLayout;
+  const layout = group.blockLayout;
   return layout?.trailingBase ?? layout?.blockSize ?? 8;
 }
 
@@ -291,7 +285,6 @@ export function fixedDataNftOwnerInParticipantBlocks(
 export function materializedPredOutBase(group: {
   batchPredecessorOutputs?: Array<{ outputBlockSlot: number }>;
   blockLayout?: { blockSize?: number; trailingBase?: number };
-  directCall?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
 }, masterIndex: number): number {
   const trailingBase = groupLayoutTrailingBase(group);
   const firstTrailingSlot = Math.min(
@@ -311,7 +304,6 @@ export function syncDeclaredBatchPredOutWitnesses(parts: {
   masterIndex: number;
   batchPredecessorOutputs?: Array<{ outputBlockSlot: number }>;
   internalArgs?: Record<string, unknown>;
-  compilerInternalArgs?: Record<string, unknown>;
   refreshInternalArgs?: (
     updates: Record<string, unknown>,
     options?: { shiftPredOut?: boolean },
@@ -322,10 +314,7 @@ export function syncDeclaredBatchPredOutWitnesses(parts: {
     .filter((pred) => Number.isInteger(pred.outputBlockSlot) && pred.outputBlockSlot >= 0)
     .sort((left, right) => left.outputBlockSlot - right.outputBlockSlot);
   if (preds.length === 0) return {};
-  const merged = {
-    ...(parts.compilerInternalArgs ?? {}),
-    ...(parts.internalArgs ?? {}),
-  };
+  const merged = { ...(parts.internalArgs ?? {}) };
   const insertNames = Object.keys(merged)
     .filter((name) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
       && typeof merged[name] === 'bigint'
@@ -403,7 +392,7 @@ export function isWriterBatchWitnessName(name: string): boolean {
 }
 
 /**
- * A view fused onto the same physical token group keeps its directCall. The
+ * A view fused onto the same physical token group keeps its carrier. The
  * later writer owns the INSERT/UPDATE batch plan; copy those witnesses over the
  * view's leftovers so PredOut remapping does not mint a second P'.
  */
@@ -426,10 +415,6 @@ export function inheritWriterBatchWitnesses<T>(
 export type PromotableWriterBatchPlan<T, P, I> = {
   blockLayout?: { blockSize?: number; trailingBase?: number };
   internalArgs?: Record<string, T>;
-  directCall?: {
-    internalArgs?: Record<string, T>;
-    abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } };
-  };
   plannedEntryInserts?: I[];
   plannedEntryInsertHandles?: number[];
   relativeOutputInternalArgs?: string[];
@@ -577,7 +562,7 @@ export function inheritWriterBatchPlan<T, P, I = never>(
   target.batchEntryCommitments = mergeMap(
     target.batchEntryCommitments, writer.batchEntryCommitments, 'batchEntryCommitments',
   );
-  const writerArgs = { ...writer.directCall?.internalArgs, ...writer.internalArgs };
+  const writerArgs = { ...writer.internalArgs };
   if (targetTrailingBase !== writerTrailingBase) {
     for (const [name, value] of Object.entries(writerArgs)) {
       if (/^__internal__vmapBatchPredOut_\d+$/.test(name)
@@ -588,27 +573,18 @@ export function inheritWriterBatchPlan<T, P, I = never>(
   }
   if (!Object.keys(writerArgs).some(isWriterBatchWitnessName)) return changed;
   target.internalArgs = inheritWriterBatchWitnesses(target.internalArgs, writerArgs);
-  if (target.directCall) {
-    target.directCall.internalArgs = inheritWriterBatchWitnesses(
-      target.directCall.internalArgs,
-      writerArgs,
-    );
-  }
   return true;
 }
 
 /**
- * A shared logical call without a compiler-owned route is an alternative handler on the
- * physical input, not an additional handler. Only the selected physical function can
- * contribute its sorted-batch write plan. Routed calls may aggregate multiple handlers.
+ * A shared logical call is an alternative handler on the physical input, not an additional handler. Only the
+ * selected physical function can contribute its sorted-batch write plan.
  */
 export function writerBatchPlanMatchesPhysicalCarrier(
-  physical: { functionName?: string; directCall?: unknown },
-  writer: { functionName?: string; sharedGroupIndex?: number; directCall?: unknown },
+  physical: { functionName?: string },
+  writer: { functionName?: string; sharedGroupIndex?: number },
 ): boolean {
   return writer.sharedGroupIndex === undefined
-    || physical.directCall !== undefined
-    || writer.directCall !== undefined
     || writer.functionName === physical.functionName;
 }
 

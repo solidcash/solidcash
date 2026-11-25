@@ -168,16 +168,15 @@ export function reassertDelegateImplEvents(
   );
   for (const [groupIndex, group] of host.lowLevelCallUtxoGroups.entries()) {
     if (group.callMode !== 'delegatecall') continue;
-    const fn = group.directCall?.abiFunction
-      ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-        .find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
+    const fn = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+      .find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
     const implIndex = host.getLowLevelCallMasterInputIndex(groupIndex);
     if (implIndex < 0) continue;
     const proxyGroup = host.externalCallUtxoGroups.find((candidate) => (
       candidate.delegateCallGroupIndex === groupIndex
     ));
     const eventSlots = fn?.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
-    const eventSignatures = groupEventSignatures(group, fn);
+    const eventSignatures = groupEventSignatures(fn);
     for (const [eventOrdinal, eventSlot] of eventSlots.entries()) {
       const eventSignature = eventSignatures[eventOrdinal];
       if (!eventSignature) continue;

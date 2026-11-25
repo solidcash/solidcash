@@ -5,9 +5,6 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-
-export type CreateBuilderEntryDirectCall = NonNullable<ExternalCallUtxoGroup['directCall']>;
 
 export type CreateBuilderEntryResolvedCall = {
   type?: string;
@@ -16,7 +13,6 @@ export type CreateBuilderEntryResolvedCall = {
   };
   functionName?: string;
   args?: FunctionArgument[];
-  directCall?: CreateBuilderEntryDirectCall;
 };
 
 export interface ResolveCreateBuilderEntryAbiResult {
@@ -25,7 +21,6 @@ export interface ResolveCreateBuilderEntryAbiResult {
   entryArtifact: Artifact;
   /** Matches `_createBuilder` `args: any[]` so later loop/journal planning can rewrite frames. */
   entryArgs: any[];
-  entryDirectCall: CreateBuilderEntryDirectCall | undefined;
 }
 
 /**
@@ -43,7 +38,6 @@ export function resolveCreateBuilderEntryAbi(
   let entryAbiFunction = abiFunction;
   let entryArtifact: Artifact = ownerArtifact;
   let entryArgs: any[] = args;
-  let entryDirectCall: CreateBuilderEntryDirectCall | undefined;
 
   // A delegatecall'd impl that writes a mapping does so against the PROXY's grafted collections (this.categoryId).
   // __forward itself has no entryAccesses, so route the impl fn's - the entry machinery below then mints/updates
@@ -53,11 +47,8 @@ export function resolveCreateBuilderEntryAbi(
       if (abiFunction.lowLevelCalls[i].callMode !== 'delegatecall') continue;
       const ci = resolvedCalls[i];
       if (ci?.type !== 'stateful' || !ci.contract) continue;
-      // Compiler-owned route routes are intentionally removed from the public artifact ABI. The exact
-      // route survives on the delegate call descriptor, so prefer it here; looking only in `artifact.abi`
-      // silently reduced every route entry slot to a generic funding placeholder.
-      const implFn = ci.directCall?.abiFunction
-        ?? (ci.contract.inner.artifact.abi as readonly AbiFunction[]).find((f) => f.name === ci.functionName);
+      const implFn = (ci.contract.inner.artifact.abi as readonly AbiFunction[])
+        .find((f) => f.name === ci.functionName);
       // Dynamic mapping writes (including mapping(K => V[]).push()) may have no fixed entryAccesses at all.
       // They still own the trailing entry-NFT region, so promote their ABI metadata just like a fixed access.
       // Compute sidecars (keccak/ecrecover) are also published only on the implementation ABI: without
@@ -73,25 +64,7 @@ export function resolveCreateBuilderEntryAbi(
         entryAccesses = implFn.entryAccesses;
         entryAbiFunction = implFn;
         entryArtifact = ci.contract.inner.artifact;
-        entryDirectCall = ci.directCall;
-        if (entryDirectCall) {
-          const directCall = entryDirectCall;
-          // Routes retain a compact visible-only argument frame. Entry planning indexes arguments by
-          // the complete route ABI, so expand that frame by name before resolving collection keys/values.
-          // Treating the compact vector as ABI-positioned makes every witness after the first hidden input
-          // undefined (or, with a longer frame, assigns an unrelated graph value to the collection key).
-          let visibleIndex = 0;
-          entryArgs = implFn.inputs.map((input) => {
-            if (input.name.startsWith('__internal__')) {
-              return directCall.internalArgs?.[input.name];
-            }
-            const value = directCall.args[visibleIndex];
-            visibleIndex += 1;
-            return value;
-          }) as FunctionArgument[];
-        } else {
-          entryArgs = ci.args ?? [];
-        }
+        entryArgs = ci.args ?? [];
         break;
       }
     }
@@ -120,6 +93,5 @@ export function resolveCreateBuilderEntryAbi(
     entryAbiFunction,
     entryArtifact,
     entryArgs,
-    entryDirectCall,
   };
 }

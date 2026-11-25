@@ -39,11 +39,10 @@ import {
 /** Resolve compiler-published fold witnesses while completing an ordinary nested callee unlocker. */
 export function resolveNestedRoutePushValueWitness(
   name: string,
-  directCallArgs: Readonly<Record<string, FunctionArgument>> | undefined,
   groupArgs: Readonly<Record<string, FunctionArgument>> | undefined,
 ): FunctionArgument | undefined {
   if (!isRoutePushValueWitnessName(name)) return undefined;
-  return resolveDelegatePushValueWitness(name, directCallArgs, groupArgs, undefined);
+  return resolveDelegatePushValueWitness(name, groupArgs, undefined);
 }
 
 export type CompleteCreateBuilderNestedUnlockersHost = {
@@ -113,19 +112,16 @@ export async function completeCreateBuilderNestedUnlockers(
     child.returnOutputIndex = physicalReturnIndexForGroup.get(
       logicalReturnGroupIndex(externalCallUtxoGroups, groupIdx),
     );
-    const childFn = (child.delegateCallGroupIndex === undefined
-      ? child.directCall?.abiFunction : undefined)
-      ?? (child.externalContract.inner.artifact.abi as readonly AbiFunction[])
-        .find((f) => f.name === child.functionName);
+    const childFn = (child.externalContract.inner.artifact.abi as readonly AbiFunction[])
+      .find((f) => f.name === child.functionName);
     if (!childFn) continue;
-    const childSelfIdentity = !child.directCall
-      ? await resolveOrdinarySelfIdentity(child.externalContract, childFn) : undefined;
+    const childSelfIdentity = await resolveOrdinarySelfIdentity(child.externalContract, childFn);
     const childSelfIdentityBand = childSelfIdentity === undefined ? undefined
       : await host.ensureNestedIdentityAnchorBand(childSelfIdentity.logicalAddress);
     let visible = 0;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
       console.error('nested-route-internal-args', child.functionName,
-        child.directCall?.internalArgs ?? child.internalArgs, child.plannedEntryInserts);
+        child.internalArgs, child.plannedEntryInserts);
     }
     const childExternalCallInputPositions: { name: string; categoryId: string }[] = [];
     const childNestedGroups = child.delegateCallGroupIndex === undefined
@@ -205,10 +201,7 @@ export async function completeCreateBuilderNestedUnlockers(
       ) : undefined;
     const encoded = childFn.inputs.map((input, inputIndex) => {
       if (!input.name.startsWith('__internal__')) {
-        // A route has its own visible ABI (`batchBlob` plus route witnesses), distinct from the
-        // logical handler arguments retained on the group for graph metadata. Use the route's exact vector;
-        // selecting by coincidental arity can shift a handler amount into an address witness.
-        const visibleArgs = child.directCall?.args ?? selectVisibleCallArguments(
+        const visibleArgs = selectVisibleCallArguments(
           childFn.inputs, child.logicalFunctionArgs, child.functionArgs,
         );
         const value = visibleArgs[visible++];
@@ -216,11 +209,7 @@ export async function completeCreateBuilderNestedUnlockers(
           const logicalSelector = ((child.logicalArtifact ?? child.externalContract.inner.artifact)
             .abi as readonly AbiFunction[])
             .find((fn) => fn.name === child.logicalFunctionName)?.selector;
-          return selectProxyForwardInput(
-            logicalSelector, child.functionArgs,
-            child.delegateCallGroupIndex !== undefined
-              && lowLevelCallUtxoGroups[child.delegateCallGroupIndex]?.directCall !== undefined,
-          );
+          return selectProxyForwardInput(logicalSelector, child.functionArgs);
         }
         return value;
       }
@@ -230,29 +219,19 @@ export async function completeCreateBuilderNestedUnlockers(
         ) ?? -1);
       }
       if (input.name === '__internal__valueChunkOutputBase') {
-        return child.directCall?.internalArgs?.[input.name]
-          ?? child.internalArgs?.[input.name]
-          ?? -1n;
+        return child.internalArgs?.[input.name] ?? -1n;
       }
       if (input.name === '__internal__dynamicChunkInputBase') {
         // The exact input coordinate is patched after the builder places selected continuation UTXOs.
         // A negative sentinel is the canonical provisional value for an empty/non-chunked state value.
-        return child.directCall?.internalArgs?.[input.name]
-          ?? child.internalArgs?.[input.name]
-          ?? -1n;
+        return child.internalArgs?.[input.name] ?? -1n;
       }
       if (input.name === '__internal__dynamicChunkOutputBase') {
-        return child.directCall?.internalArgs?.[input.name]
-          ?? child.internalArgs?.[input.name]
-          ?? -1n;
+        return child.internalArgs?.[input.name] ?? -1n;
       }
-      const routePushValue = resolveNestedRoutePushValueWitness(
-        input.name,
-        child.directCall?.internalArgs,
-        child.internalArgs,
-      );
+      const routePushValue = resolveNestedRoutePushValueWitness(input.name, child.internalArgs);
       if (routePushValue !== undefined) return routePushValue;
-      if (!child.directCall && usesOrdinarySelfIdentity(childFn)
+      if (usesOrdinarySelfIdentity(childFn)
         && input.name === '__internal__graphSelfIdentityInput') {
         if (childSelfIdentityBand !== undefined) childAnchorFillPositions.push({
           argIndex: inputIndex, name: input.name, band: childSelfIdentityBand, proxyRoute: false, required: true,
@@ -265,12 +244,6 @@ export async function completeCreateBuilderNestedUnlockers(
         '__internal__blockhashInputIndex', '__internal__graphEmissions',
         '__internal__graphCallers', '__internal__graphCompletionPositions',
         '__internal__graphSettlementTable'].includes(input.name)) {
-        // This unlocker exists only for ordinary graph discovery. If the completed graph requires atomic
-        // execution, send() rebuilds it from RuntimeCallMetadata and the composer supplies the
-        // finalized verifier/manifest values. Preserve the route's typed provisional values here
-        // so discovery cannot silently fall back to a direct handler outside OP_INVOKE.
-        const provisional = child.directCall?.internalArgs?.[input.name];
-        if (provisional !== undefined) return provisional;
         if (['__internal__graphEmissions', '__internal__graphCallers',
           '__internal__graphCompletionPositions', '__internal__graphSettlementTable']
           .includes(input.name)) return new Uint8Array();
@@ -338,7 +311,7 @@ export async function completeCreateBuilderNestedUnlockers(
         // an ordinary frame state theirs: the epilogue passes over a negative master, and the call site, reached only
         // when the call runs, requires a non-negative one. The block's end named an input that is not the callee.
         const calls = childFn.externalCalls ?? [];
-        if (!child.directCall && calls.length === 1 && calls[0].occurrence === 'conditional'
+        if (calls.length === 1 && calls[0].occurrence === 'conditional'
           && !calls[0].loopArrayVar
           && !childFn.inputs.some((candidate) => /^__internal__extcallMasterIdx\d*$/.test(candidate.name))) return -1n;
         const physicalGroupIndex = child.sharedGroupIndex ?? groupIdx;
@@ -366,7 +339,7 @@ export async function completeCreateBuilderNestedUnlockers(
         const call = childFn.externalCalls?.[slot];
         const nestedGroupIndex = childNestedGroupIndexForSlot(slot);
         // Pin the selector on the physical co-spend. Shared logical calls inherit the first group's proxy
-        // delegate, and a batched delegate unlocks with the call-batch selector (`SCB1`), not a row selector.
+        // delegate.
         const selected = physicalExternalCallSelectorHex(
           externalCallUtxoGroups, lowLevelCallUtxoGroups, nestedGroupIndex,
         );
@@ -421,7 +394,7 @@ export async function completeCreateBuilderNestedUnlockers(
         const targetSlot = targetName === undefined ? -1 : (childFn.externalCalls ?? [])
           .findIndex((call) => call.addressParam === targetName
             || call.addressParam?.endsWith(`_${targetName}`));
-        const visibleArgs = child.directCall?.args ?? selectVisibleCallArguments(
+        const visibleArgs = selectVisibleCallArguments(
           childFn.inputs, child.logicalFunctionArgs, child.functionArgs,
         );
         const targetLock = lowLevelCall?.targetSource?.kind === 'forward'
@@ -450,7 +423,7 @@ export async function completeCreateBuilderNestedUnlockers(
       }
       if (input.name.startsWith('__internal__vmapBatch')
         || input.name.startsWith('__internal__valueWitness_')) {
-        const value = child.directCall?.internalArgs?.[input.name] ?? child.internalArgs?.[input.name];
+        const value = child.internalArgs?.[input.name];
         if (value !== undefined) {
           // Proof positions remain callee-master-relative: the covenant adds OP_INPUTINDEX. Predecessor
           // outputs are read directly with OP_OUTPUT*, so nested composition must publish their absolute
@@ -543,13 +516,7 @@ export async function completeCreateBuilderNestedUnlockers(
         })),
       });
     }
-    // For a proxied callee, directCall describes the co-spent implementation and the proxy master still
-    // executes its ordinary __forward entry. The implementation group below owns the route unlocker.
-    const childUnlocker = child.directCall && child.delegateCallGroupIndex === undefined
-      ? child.externalContract.inner.createUnlocker(
-        child.directCall.abiFunction, child.directCall.selector,
-      )(...encoded)
-      : child.externalContract.inner.unlock[child.functionName]!(...encoded);
+    const childUnlocker = child.externalContract.inner.unlock[child.functionName]!(...encoded);
     child.masterUtxo = { ...child.masterUtxo, unlocker: childUnlocker } as UnlockableUtxo;
     if (child.blockInputs) {
       let childDataIndex = 0;
@@ -599,11 +566,7 @@ export async function completeCreateBuilderNestedUnlockers(
           trailing += 1n;
         }
       }
-      const unlocker = child.directCall && child.delegateCallGroupIndex === undefined
-        ? child.externalContract.inner.createUnlocker(
-          child.directCall.abiFunction, child.directCall.selector,
-        )(...capturedChildArgs)
-        : child.externalContract.inner.unlock[child.functionName]!(...capturedChildArgs);
+      const unlocker = child.externalContract.inner.unlock[child.functionName]!(...capturedChildArgs);
       child.masterUtxo = { ...child.masterUtxo, unlocker } as UnlockableUtxo;
       if (child.blockInputs && child.blockLayout) {
         const masterOffset = child.blockLayout.slots.find((slot) => slot.kind === 'master')?.offset ?? 0;

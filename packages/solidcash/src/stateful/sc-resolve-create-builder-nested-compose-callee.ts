@@ -10,7 +10,6 @@ import type {
   ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { projectHandlerArguments } from './handler-arguments.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   connectedContractMatchesExactAddress,
@@ -52,7 +51,6 @@ export type ResolveCreateBuilderNestedComposeCalleeResult =
     nestedFunctionName: string;
     nestedArgs: FunctionArgument[];
     graphNestedArgs: FunctionArgument[];
-    needsExpressionReturns: boolean;
     nestedExpressionReturns: Map<string, FunctionArgument> | undefined;
     graphExpressionReturns: Map<string, FunctionArgument> | undefined;
   };
@@ -345,10 +343,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
   const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
       returnSources,
-      projectHandlerArguments(
-        callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
-        delegateVisibleArgs,
-      ),
+      [...delegateVisibleArgs],
       callInfoContract, onChainState.state,
       delegateVisibleInputs, delegateSelfAddress,
       publishedNestedExternalCalls,
@@ -358,10 +353,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
     : nestedExpressionReturns;
   const graphNestedArgs = preparedAtomicNodes
     ? host.resolveExternalArgs(
-      nestedSources, projectHandlerArguments(
-        callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
-        delegateVisibleArgs,
-      ), callInfoContract.inner.artifact, onChainState.state,
+      nestedSources, [...delegateVisibleArgs], callInfoContract.inner.artifact, onChainState.state,
       delegateVisibleInputs, graphExpressionReturns, 0, false, delegateSelfAddress,
     ) ?? nestedArgs
     : nestedArgs;
@@ -377,7 +369,6 @@ export async function resolveCreateBuilderNestedComposeCallee(
     nestedFunctionName,
     nestedArgs,
     graphNestedArgs,
-    needsExpressionReturns,
     nestedExpressionReturns,
     graphExpressionReturns,
   };

@@ -40,7 +40,6 @@ export type ResolveCreateBuilderUpsertLoopDomainKeysResult =
     skipped: false;
     collection: any;
     list: any;
-    entryAddr: string;
     entries: any[];
     argOf: (name: string | undefined) => unknown;
     visibleInputs: any[];
@@ -336,7 +335,6 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
     skipped: false as const,
     collection,
     list,
-    entryAddr,
     entries,
     argOf,
     visibleInputs,

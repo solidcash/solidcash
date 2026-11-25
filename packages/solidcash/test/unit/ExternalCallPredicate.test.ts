@@ -18,7 +18,6 @@ import {
 } from '../../src/stateful/StatefulContract.js';
 import {
   anchorRoutedDynamicResourcesAtOwner,
-  directCallUsesPhysicalWrapper,
   rebaseRoutedBatchProofOffsets,
 } from '../../src/stateful/route-resource-selection.js';
 import { createTestProvider } from '../test-util.js';
@@ -121,17 +120,6 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(anchored[3]).toBe(chunk);
     expect(anchored[5]).toEqual({ id: 3 });
     expect(inputs[5]).toBe(chunk);
-  });
-
-  it('distinguishes synthetic compiler routes from physical wrapper routes', () => {
-    const selector = Uint8Array.of(1, 2, 3, 4);
-    const route = { name: '__message_bus1', inputs: [] } as never;
-    const wrapper = { name: '__forward', inputs: [] } as never;
-
-    expect(directCallUsesPhysicalWrapper(selector, undefined, route)).toBe(false);
-    expect(directCallUsesPhysicalWrapper(selector, wrapper, route)).toBe(true);
-    expect(directCallUsesPhysicalWrapper(selector, route, route)).toBe(false);
-    expect(directCallUsesPhysicalWrapper(undefined, wrapper, route)).toBe(false);
   });
 
   it('resolves loop-index sources relative to the reached occurrence', () => {
@@ -1113,7 +1101,7 @@ describe('conditional external-call topology', () => {
     expect(externalReturnParamSlot('__internal__externalReturnOutputIdx2', externalCalls)).toBe(3);
   });
 
-  it('follows a shared proxy master to its compiler-route selector', () => {
+  it('follows a shared proxy master to its delegate selector', () => {
     const proxy = {
       functionName: '__forward', delegateCallGroupIndex: 0,
       externalContract: { inner: { artifact: { abi: [{ name: '__forward', selector: 'aaaaaaaa' }] } } },
@@ -1122,7 +1110,7 @@ describe('conditional external-call topology', () => {
       ...proxy, sharedGroupIndex: 0, delegateCallGroupIndex: undefined, functionName: 'userRegistered',
     };
     const delegate = {
-      functionName: '_batchRaw', directCall: { selector: hexToBin('53434231') },
+      functionName: '_batchRaw',
       externalContract: { inner: { artifact: { abi: [{ name: '_batchRaw', selector: '53434231' }] } } },
     };
 

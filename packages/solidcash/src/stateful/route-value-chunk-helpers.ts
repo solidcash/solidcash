@@ -560,7 +560,7 @@ export function deriveRouteValueChunks(
   }
   if (allChunks.length > 0) {
     const observedCarrier = witness?.carrier ?? group;
-    const observedAbi = witness?.abiFunction ?? group.directCall?.abiFunction
+    const observedAbi = witness?.abiFunction
       ?? (group.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
         ?.find((candidate) => candidate.name === group.functionName);
     for (const collection of observedAbi
@@ -742,20 +742,14 @@ export function valueChunkOutputWitnessCarrier(
     ? group
     : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
   if (!carrier) return undefined;
-  const carrierFunctionName = carrier.logicalFunctionName
-    ?? carrier.directCall?.abiFunction.name
-    ?? carrier.functionName;
+  const carrierFunctionName = carrier.logicalFunctionName ?? carrier.functionName;
   const abiCandidates = [
-    carrier.directCall?.abiFunction,
     ...((carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined) ?? []),
-    group.directCall?.abiFunction,
     ...((group.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined) ?? []),
   ];
   const abiFunction = abiCandidates.find((candidate) => (
-    candidate?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')
-      && (candidate === carrier.directCall?.abiFunction
-        || candidate === group.directCall?.abiFunction
-        || candidate.name === carrierFunctionName)
+    candidate.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')
+      && candidate.name === carrierFunctionName
   ));
   // Several logical calls can share one delegated implementation input. The physical carrier's unlock bytecode,
   // rather than whichever logical call happens to represent the fused group, consumes this absolute witness.

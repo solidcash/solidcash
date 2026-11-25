@@ -598,44 +598,6 @@ describe('generic persisted value-chunk write identity', () => {
     expect(legacyPlannedChunkableValueWriteCollection(driftedLayout)).toBeUndefined();
   });
 
-  it('uses the routed writer layout and collection even when its artifact contains a legacy-named decoy', () => {
-    const renamed = makeGroup('appendNotice');
-    const routeHandler = {
-      ...renamed.externalContract.inner.artifact.abi[0],
-      name: 'routeAppendNotice',
-      blockLayout: {
-        blockSize: 7,
-        slots: [
-          { kind: 'master' as const, offset: 0 },
-          { kind: 'entry' as const, offset: 1, slotIndex: 0 },
-          { kind: 'event' as const, offset: 6, slotIndex: 0 },
-        ],
-      },
-    };
-    const namedDecoy = {
-      ...renamed.externalContract.inner.artifact.abi[0],
-      name: 'publishJobEvent',
-      entryAccesses: [],
-      blockLayout: { blockSize: 2, slots: [{ kind: 'master' as const, offset: 0 }] },
-    };
-    const routed = {
-      ...renamed,
-      directCall: { abiFunction: routeHandler },
-      externalContract: { inner: { artifact: {
-        ...renamed.externalContract.inner.artifact,
-        abi: [namedDecoy, renamed.externalContract.inner.artifact.abi[0]],
-      } } },
-    };
-
-    expect(selectChunkableValueWriteExecution([
-      { group: routed, inputIndex: 17 },
-    ])).toMatchObject({
-      inputIndex: 17,
-      collection: 'notices',
-      abiFunction: { name: 'routeAppendNotice', blockLayout: { blockSize: 7 } },
-    });
-  });
-
   it('selects publish ownership by renamed resource identity and collapses duplicate route views', () => {
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(selectValueChunkWriteCategory([renamed])).toEqual({
@@ -797,7 +759,7 @@ describe('generic persisted value-chunk write identity', () => {
     )).toEqual({ status: 'ambiguous' });
   });
 
-  it('selects a renamed writer event from compiler route metadata and collapses duplicate views', () => {
+  it('selects a renamed writer event from its block layout and collapses duplicate views', () => {
     const eventOutput = {
       eventSignature: 'NoticeAppended(int,bytes)',
       commitment: '01aa',
@@ -808,17 +770,6 @@ describe('generic persisted value-chunk write identity', () => {
       blockLayout: {
         blockSize: 3,
         slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
-      },
-      directCall: {
-        abiFunction: {
-          name: 'appendNotice', inputs: [], emits: [{
-            eventName: 'NoticeAppended', eventSignature: eventOutput.eventSignature, emitIndex: 0,
-          }],
-          blockLayout: {
-            blockSize: 3,
-            slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
-          },
-        },
       },
       eventOutputs: [eventOutput],
     } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
@@ -2194,14 +2145,11 @@ describe('assignPhysicalReturnIndices', () => {
     expect(resolveAbsolutePredOut(17n, 3, 14, 14)).toBe(17n);
     expect(resolveAbsolutePredOut(15n, 3, 14)).toBe(18n);
     expect(groupLayoutBlockSize({
-      directCall: { abiFunction: { blockLayout: { blockSize: 14 } } },
-    })).toBe(14);
-    expect(groupLayoutBlockSize({
       blockLayout: { blockSize: 14 },
     })).toBe(14);
     expect(groupLayoutBlockSize({})).toBe(8);
     expect(groupLayoutTrailingBase({
-      directCall: { abiFunction: { blockLayout: { blockSize: 163, trailingBase: 99 } } },
+      blockLayout: { blockSize: 163, trailingBase: 99 },
     })).toBe(99);
     expect(resolveAbsolutePredOut(99n, 244, 99)).toBe(343n);
   });
@@ -2224,9 +2172,6 @@ describe('assignPhysicalReturnIndices', () => {
       { callMode: 'call', blockLayout: initializeLayout },
       { callMode: 'delegatecall' },
     ])).toBeUndefined();
-    expect(selectDelegateExecutionLayout([
-      { callMode: 'delegatecall', directCall: { abiFunction: { blockLayout: initializeLayout } } },
-    ])).toEqual(initializeLayout);
     expect(selectDelegateExecutionLayout(
       [{ callMode: 'delegatecall', blockLayout: initializeLayout }],
       new Set([0]),
@@ -2316,9 +2261,6 @@ describe('assignPhysicalReturnIndices', () => {
         __internal__vmapBatchPredOut_0: -1n,
         __internal__returnOutputIdx: 33n,
       },
-      directCall: {
-        internalArgs: { __internal__vmapBatchSlot_0: new Uint8Array(32) as bigint | Uint8Array },
-      },
       plannedEntryInserts: [] as Array<{ blockSlot: number; outputBlockSlot: number }>,
       plannedEntryInsertHandles: [] as number[],
       relativeOutputInternalArgs: [] as string[],
@@ -2330,9 +2272,7 @@ describe('assignPhysicalReturnIndices', () => {
       internalArgs: {
         __internal__vmapBatchPredOut_0: 8n,
         __internal__vmapBatchTrailingCount: 1n,
-      },
-      directCall: {
-        internalArgs: { __internal__vmapBatchNext_0: new Uint8Array([1]) as bigint | Uint8Array },
+        __internal__vmapBatchNext_0: new Uint8Array([1]) as bigint | Uint8Array,
       },
       plannedEntryInserts: [plannedInsert],
       plannedEntryInsertHandles: [17],
@@ -2359,11 +2299,6 @@ describe('assignPhysicalReturnIndices', () => {
       __internal__returnOutputIdx: 33n,
       __internal__vmapBatchNext_0: new Uint8Array([1]),
     });
-    expect(carrier.directCall.internalArgs).toMatchObject({
-      __internal__vmapBatchPredOut_0: 8n,
-      __internal__vmapBatchTrailingCount: 1n,
-      __internal__vmapBatchNext_0: new Uint8Array([1]),
-    });
   });
 
   it('rejects mixing distinct writer batch plans on one physical carrier', () => {
@@ -2387,13 +2322,6 @@ describe('assignPhysicalReturnIndices', () => {
     })).toBe(false);
     expect(writerBatchPlanMatchesPhysicalCarrier(physical, {
       functionName: 'transferFrom',
-      sharedGroupIndex: 1,
-    })).toBe(true);
-    expect(writerBatchPlanMatchesPhysicalCarrier({
-      ...physical,
-      directCall: {},
-    }, {
-      functionName: 'approve',
       sharedGroupIndex: 1,
     })).toBe(true);
   });
@@ -3987,7 +3915,7 @@ describe('assignPhysicalReturnIndices', () => {
       categoryId: ownerCategory,
       functionName: 'appendNotice',
       blockLayout: layout,
-      directCall: { abiFunction },
+      logicalArtifact: { abi: [abiFunction] },
       eventOutputs: [{ eventSignature, commitment: '01aa', lockingBytecode: eventLock }],
       valueChunkWrites: [{
         categoryId: ownerCategory, collection: 'notices', collectionSignature: signature,
@@ -4243,13 +4171,13 @@ describe('assignPhysicalReturnIndices', () => {
       name: string, writes: number,
     ): import('../../src/stateful/value-chunk-geometry.js').CompilerTokenWriterGroup => ({
       functionName: name,
-      directCall: { abiFunction: {
+      logicalArtifact: { abi: [{
         name,
         inputs: [],
         outputs: [{ type: 'bool' }],
         writesState: true,
         entryAccesses: Array.from({ length: writes }, (_unused, index) => write(`ledger${index}`)),
-      } },
+      }] } as unknown as Artifact,
     });
 
     expect(isCompilerDescribedMintingBandWriter(described('moveUnits', 2))).toBe(true);
@@ -4830,35 +4758,36 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('derives insert-lock repair offsets from renamed compiler descriptors', () => {
+    const routedAbi = {
+      name: 'moveUnitsFrom',
+      inputs: [],
+      writesState: true,
+      entryAccesses: [{
+        collection: 'ledger:mapping(bytes20 => int)',
+        keyParams: ['owner'],
+        operations: ['read', 'write'] as Array<'read' | 'write'>,
+      }, {
+        collection: 'ledger:mapping(bytes20 => int)',
+        keyParams: ['recipient'],
+        operations: ['write'] as Array<'write'>,
+      }, {
+        collection: 'permits:mapping(bytes20 => int)',
+        keyParams: ['spender'],
+        operations: ['write'] as Array<'write'>,
+      }],
+      blockLayout: {
+        blockSize: 8,
+        slots: [
+          { kind: 'master' as const, offset: 0 },
+          { kind: 'entry' as const, offset: 3, slotIndex: 0 },
+          { kind: 'entry' as const, offset: 5, slotIndex: 1 },
+          { kind: 'entry' as const, offset: 7, slotIndex: 2 },
+        ],
+      },
+    };
     const routed = {
       functionName: 'moveUnitsFrom',
-      directCall: { abiFunction: {
-        name: 'routeMoveUnitsFrom',
-        inputs: [],
-        writesState: true,
-        entryAccesses: [{
-          collection: 'ledger:mapping(bytes20 => int)',
-          keyParams: ['owner'],
-          operations: ['read', 'write'] as Array<'read' | 'write'>,
-        }, {
-          collection: 'ledger:mapping(bytes20 => int)',
-          keyParams: ['recipient'],
-          operations: ['write'] as Array<'write'>,
-        }, {
-          collection: 'permits:mapping(bytes20 => int)',
-          keyParams: ['spender'],
-          operations: ['write'] as Array<'write'>,
-        }],
-        blockLayout: {
-          blockSize: 8,
-          slots: [
-            { kind: 'master' as const, offset: 0 },
-            { kind: 'entry' as const, offset: 3, slotIndex: 0 },
-            { kind: 'entry' as const, offset: 5, slotIndex: 1 },
-            { kind: 'entry' as const, offset: 7, slotIndex: 2 },
-          ],
-        },
-      } },
+      logicalArtifact: { abi: [routedAbi] } as unknown as Artifact,
       plannedEntryInserts: [{
         blockSlot: 3, outputBlockSlot: 8, newCommitment: 'ab'.repeat(32) + '00'.repeat(32),
       }],
@@ -4894,16 +4823,13 @@ describe('assignPhysicalReturnIndices', () => {
     expect(entryInsertLockRepairs({
       ...routed,
       functionName: 'transferFrom',
-      directCall: { abiFunction: {
-        ...routed.directCall.abiFunction,
-        name: 'transferFrom',
-        entryAccesses: [],
-      } },
+      logicalArtifact: { abi: [{ ...routedAbi, name: 'transferFrom', entryAccesses: [] }] } as unknown as Artifact,
       plannedEntryInserts: [],
     })).toEqual([]);
     expect(entryInsertLockRepairs({
       ...routed,
       functionName: 'transferFrom',
+      logicalArtifact: { abi: [{ ...routedAbi, name: 'transferFrom' }] } as unknown as Artifact,
       plannedEntryInserts: [{
         blockSlot: 2, outputBlockSlot: 8, newCommitment: 'ab'.repeat(64),
       }],
@@ -4913,40 +4839,41 @@ describe('assignPhysicalReturnIndices', () => {
 
     // A renamed linear batch publishes the two entry accesses which share one sorted collection. No source
     // spelling or positional value argument participates in selecting its repair geometry.
+    const linearAbi = {
+      name: 'moveUnitsFrom',
+      inputs: [
+        { name: 'quantity', type: 'uint256' },
+        { name: 'source', type: 'address' },
+        { name: 'destination', type: 'address' },
+      ],
+      writesState: true,
+      entryAccesses: [
+        {
+          collection: 'ledger', keyParams: ['destination'], operations: ['read', 'write'],
+          valueSource: 'binop:+(entry,id:quantity)',
+        },
+        { collection: 'permits', keyParams: ['source'], operations: ['read', 'write'] },
+        {
+          collection: 'ledger', keyParams: ['source'], operations: ['read', 'write'],
+          valueSource: 'binop:-(entry,id:quantity)',
+        },
+      ],
+      sortedBatchInfo: [{ collection: 'ledger', slotIndices: [0, 2], linear: true }],
+      blockLayout: {
+        blockSize: 8,
+        slots: [
+          { kind: 'master' as const, offset: 0 },
+          { kind: 'dataNft' as const, offset: 1, nftIndex: 0 },
+          { kind: 'entry' as const, offset: 2, slotIndex: 0 },
+          { kind: 'entry' as const, offset: 3, slotIndex: 1 },
+          { kind: 'entry' as const, offset: 4, slotIndex: 2 },
+        ],
+      },
+    };
     const linear = {
       functionName: 'moveUnitsFrom',
       logicalFunctionArgs: [9n, 'alice', 'bob'],
-      directCall: { abiFunction: {
-        name: 'moveUnitsFrom',
-        inputs: [
-          { name: 'quantity', type: 'uint256' },
-          { name: 'source', type: 'address' },
-          { name: 'destination', type: 'address' },
-        ],
-        writesState: true,
-        entryAccesses: [
-          {
-            collection: 'ledger', keyParams: ['destination'], operations: ['read', 'write'],
-            valueSource: 'binop:+(entry,id:quantity)',
-          },
-          { collection: 'permits', keyParams: ['source'], operations: ['read', 'write'] },
-          {
-            collection: 'ledger', keyParams: ['source'], operations: ['read', 'write'],
-            valueSource: 'binop:-(entry,id:quantity)',
-          },
-        ],
-        sortedBatchInfo: [{ collection: 'ledger', slotIndices: [0, 2], linear: true }],
-        blockLayout: {
-          blockSize: 8,
-          slots: [
-            { kind: 'master' as const, offset: 0 },
-            { kind: 'dataNft' as const, offset: 1, nftIndex: 0 },
-            { kind: 'entry' as const, offset: 2, slotIndex: 0 },
-            { kind: 'entry' as const, offset: 3, slotIndex: 1 },
-            { kind: 'entry' as const, offset: 4, slotIndex: 2 },
-          ],
-        },
-      } },
+      logicalArtifact: { abi: [linearAbi] } as unknown as Artifact,
       plannedEntryInserts: [],
     };
     expect(linearSortedBatchEntryBands(linear)).toEqual([{
@@ -4972,9 +4899,9 @@ describe('assignPhysicalReturnIndices', () => {
     const decoy = {
       ...linear,
       functionName: 'transferFrom',
-      directCall: { abiFunction: {
-        ...linear.directCall.abiFunction, name: 'transferFrom', sortedBatchInfo: undefined,
-      } },
+      logicalArtifact: { abi: [{
+        ...linearAbi, name: 'transferFrom', sortedBatchInfo: undefined,
+      }] } as unknown as Artifact,
     };
     expect(linearSortedBatchEntryBands(decoy)).toEqual([]);
     expect(linearSortedBatchPlannedLockCounts(batchOutputs, 0, 'token', decoy).size).toBe(0);
@@ -4984,13 +4911,13 @@ describe('assignPhysicalReturnIndices', () => {
     const unrelatedNumericDecoy = {
       ...linear,
       functionName: 'transferFrom',
-      directCall: { abiFunction: {
-        ...linear.directCall.abiFunction,
+      logicalArtifact: { abi: [{
+        ...linearAbi,
         name: 'transferFrom',
-        entryAccesses: linear.directCall.abiFunction.entryAccesses.map((access) => ({
+        entryAccesses: linearAbi.entryAccesses.map((access) => ({
           ...access, valueSource: undefined,
         })),
-      } },
+      }] } as unknown as Artifact,
     };
     expect(linearSortedBatchEntryBands(unrelatedNumericDecoy)).toHaveLength(1);
     expect(linearSortedBatchValueArgument(unrelatedNumericDecoy, 'ledger')).toBeUndefined();

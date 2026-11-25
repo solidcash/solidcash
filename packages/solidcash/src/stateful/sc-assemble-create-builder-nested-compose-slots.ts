@@ -29,7 +29,6 @@ import { addressToLockScript } from '../utils.js';
 import { artifactOraclePool, poolInfoCoSpend, readPoolTimestamp } from '../oracle/pool/reader.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import {
-  createDynamicChunkUnlocker,
   createEntryNftUnlocker,
   createReadOnlyDynamicChunkUnlocker,
   getDynamicChunkAddress,
@@ -41,7 +40,6 @@ import {
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
 import {
-  selectedRouteResourceMetadata,
   anchorRoutedDynamicResourcesAtOwner,
   rebaseRoutedBatchProofOffsets,
 } from './route-resource-selection.js';
@@ -340,7 +338,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               if (selectedFn.modifiers?.includes('delegate')) {
                 const sender = host.signer ?? host.logicalNonceSigner;
                 if (!sender) throw new Error(
-                  'A delegated route route requires a connected signer to resolve msg.sender',
+                  'A delegated call requires a connected signer to resolve msg.sender',
                 );
                 return addressToLockScript(sender.getAddress());
               }
@@ -598,12 +596,8 @@ export async function assembleCreateBuilderNestedComposeSlots(
       }
     }
     const insertBase = selectedLayout.trailingBase ?? selectedLayout.blockSize;
-    // A route publishes the union of every handler's dynamic-storage footprint. Its read
-    // loops therefore always address the physical union run at trailingBase, even when this envelope
-    // selects a handler which does not touch those variables. Materialize the old chunks in the same
-    // order as a direct call: read-only variables in ABI order, followed by written variables in state
-    // declaration order. Inactive union writes are preservation spends, not write-authorized spends.
-    const selectedResources = selectedRouteResourceMetadata(undefined);
+    // Materialize the old chunks in the same order as a direct call: read-only variables in ABI order, followed
+    // by written variables in state declaration order. Each is a preservation spend, not a write-authorized one.
     const routeDynamicWrites = selectedFn?.dynamicWrites ?? [];
     const routeDynamicNames = [
       ...(selectedFn?.dynamicReads ?? []).filter((name) => !routeDynamicWrites.includes(name)),
@@ -631,7 +625,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
           chunkIndex: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex,
         }))
         .sort((left, right) => left.chunkIndex - right.chunkIndex);
-      const activeWrite = selectedResources.dynamicWrites.includes(variable.name);
       for (const { utxo } of chunks) {
         // A balanced route publishes a finite trailing window shared by every participant.
         // Ordinary direct functions have no `trailingCapacity`: their runtime chunk run simply extends
@@ -643,26 +636,21 @@ export async function assembleCreateBuilderNestedComposeSlots(
             `Nested dynamic state exceeds balanced trailing capacity for '${selectedFn?.name}'`,
           );
         }
-        const unlocker = activeWrite
-          ? createDynamicChunkUnlocker(
-            recordContract, 0, callee.categoryId, variable.name, variable.type,
-          )
-          : createReadOnlyDynamicChunkUnlocker(
-            recordContract, 0, callee.categoryId, variable.name, variable.type,
-          );
+        const unlocker = createReadOnlyDynamicChunkUnlocker(
+          recordContract, 0, callee.categoryId, variable.name, variable.type,
+        );
         childBlockInputs[dynamicChunkOffset] = { ...utxo, unlocker };
         childDynamicChunkResources.push({
           blockSlot: dynamicChunkOffset,
           name: variable.name,
           type: variable.type,
-          write: activeWrite,
+          write: false,
         });
         dynamicChunkOffset += 1;
       }
     }
-    // A fixed route route executes each compiled batch journal even when the selected rows do
-    // not mutate that collection. Those inactive journals preserve their canonical zero-key entry;
-    // they still require the real key hash and an authenticated proof rather than all-zero vmap fields.
+    // An inactive batch journal preserves its canonical zero-key entry; it still requires the real key hash and
+    // an authenticated proof rather than all-zero vmap fields.
     const activeSortedBatches = selectedFn?.sortedBatchInfo ?? [];
     const allBatchSlots = new Set((selectedFn?.sortedBatchInfo ?? [])
       .flatMap((batch) => batch.slotIndices));
@@ -696,8 +684,8 @@ export async function assembleCreateBuilderNestedComposeSlots(
       const sharedDelegate = delegateCallGroupIndex !== undefined
         ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : undefined;
       const inheritedRouteInternalArgs = {
-        ...(sharedPrimary?.directCall?.internalArgs ?? sharedPrimary?.internalArgs),
-        ...(sharedDelegate?.directCall?.internalArgs ?? sharedDelegate?.internalArgs),
+        ...sharedPrimary?.internalArgs,
+        ...sharedDelegate?.internalArgs,
       };
       const priorFunctionName = sharedPriorAtomicNode?.functionName
         ?? sharedPriorDelegateFunctionName ?? sharedPriorFunctionName;

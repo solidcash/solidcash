@@ -215,8 +215,7 @@ export async function prepareCreateBuilderDerivePrelude(
     for (const i of derivationDelegateIndexes) {
       if (lowLevelCallUtxoGroups[i].callMode === 'delegatecall') {
         const delegateGroup = lowLevelCallUtxoGroups[i];
-        delegatecallAbiFunction = delegateGroup.directCall?.abiFunction
-        ?? (delegateGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        delegatecallAbiFunction = (delegateGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === delegateGroup.functionName);
         // `allInputs` is a pre-build ordering and can become stale when an active return slot adds a funder
         // inside the root block. Resolve the implementation by outpoint in the materialized probe, just as

@@ -179,11 +179,10 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
       let value: FunctionArgument = defaultInternalFunctionArg(input);
       if (groupIndex !== undefined && group) {
         if (selector) {
-          const selected = group.directCall?.selector
-            ?? (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
-              .find((candidate) => candidate.name === group.functionName)?.selector;
+          const selected = (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
+            .find((candidate) => candidate.name === group.functionName)?.selector;
           if (selected === undefined) throw new Error(`No selector for direct callee '${group.functionName}'`);
-          value = typeof selected === 'string' ? hexToBin(selected) : selected;
+          value = hexToBin(selected);
         } else if (master) value = BigInt(groupMasterIndices[groupIndex]);
         else if (anchor) {
           const band = await resolveAnchorBand(groupIndex, slot);
@@ -228,10 +227,8 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
       // the compiler marked needsSelectorVerification get a filled selector. Absent (older artifacts) = fill.
       if ((groupMetas[i].ecSlot as { needsSelectorVerification?: boolean })
         .needsSelectorVerification === false) continue;
-      const targetSelector = group.directCall
-        ? binToHex(group.directCall.selector)
-        : (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
-          .find((f) => f.name === group.functionName)?.selector;
+      const targetSelector = (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
+        .find((f) => f.name === group.functionName)?.selector;
       if (!targetSelector) {
         throw new Error(
           `Function '${group.functionName}' not found in external contract ABI`,
@@ -301,13 +298,8 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     const group = externalCallUtxoGroups[i];
     const band = await resolveAnchorBand(i, i);
     if (band === undefined) {
-      // -2 selects the authenticated route selector witness while
-      // retaining ordinary direct locking-bytecode identity. -1 is the
-      // ordinary source-selector/direct-identity path.
-      const physicalGroup = group === undefined ? undefined
-        : externalCallUtxoGroups[group.sharedGroupIndex ?? i];
-      finalArgs = [...finalArgs, externalCallAnchorIndices.get(i)
-        ?? (physicalGroup?.directCall ? -2n : -1n)];
+      // -1 is the ordinary source-selector/direct-identity path.
+      finalArgs = [...finalArgs, externalCallAnchorIndices.get(i) ?? -1n];
     } else {
       topLevelAnchorFillPositions.push({
         argIndex: finalArgs.length,

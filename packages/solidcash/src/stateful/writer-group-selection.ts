@@ -23,11 +23,6 @@ import {
 import { legacyIsPublishJobEventName } from './legacy-job-event-helpers.js';
 
 /** Minimal runtime ABI narrowing used by writer/chunkable selection. */
-type RuntimeCallAbiFunction = AbiFunction & {
-  routeActiveEntryRecipes?: ReadonlyMap<number, readonly { access: any; args: any; inputs: any }[]>;
-  routeActiveWriteCollections?: readonly string[];
-};
-
 export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
   const artifact = group.logicalArtifact
     ?? group.logicalContract?.inner?.artifact
@@ -36,12 +31,11 @@ export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFu
   return (artifact?.abi as readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === name);
 }
 
-/** The exact ABI body carried by a physical participant. Routes outrank source-level names because
- * overloads and shared participants can execute a different body than the logical call which introduced them. */
+/** The exact ABI body carried by a physical participant: its own function, not the logical call which
+ * introduced it, because shared participants can execute a different body than that call. */
 export function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
-  return group.directCall?.abiFunction
-    ?? (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
-      ?.find((candidate) => candidate.name === group.functionName);
+  return (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
+    ?.find((candidate) => candidate.name === group.functionName);
 }
 
 export function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean {
@@ -68,7 +62,7 @@ export function computedStateWriterGroupIndex(
   }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
-    const name = groups[index]?.directCall?.abiFunction.name ?? groups[index]?.functionName;
+    const name = groups[index]?.functionName;
     return name === 'transferFrom' || name === 'transfer' || name === 'approve';
   });
 }
@@ -156,8 +150,7 @@ export function describeValueChunkWrites(
   stateOwnerCategoryId?: string,
 ): ValueChunkWriteDescriptor[] {
   const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-  const abiFunction = group.directCall?.abiFunction
-    ?? artifact?.abi.find((candidate) => candidate.name === group.functionName);
+  const abiFunction = artifact?.abi.find((candidate) => candidate.name === group.functionName);
   if (!abiFunction) return [];
   const layout = abiFunction.blockLayout ?? group.blockLayout;
   if (!layout) return [];
@@ -187,8 +180,7 @@ export function describeValueChunkWrites(
           && /^[0-9a-f]{64}$/.test(claimKeySlot ?? '')
         ? [claimKeySlot!] : [];
     }))];
-    const publishedSlot = group.directCall?.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`]
-        ?? group.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`];
+    const publishedSlot = group.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`];
     const keySlot = bytes !== undefined && bytes.length >= 32
       ? decodeEntryCommitment(bytes).slot
       : claimedKeySlots.length === 1 ? hexToBin(claimedKeySlots[0]!)
@@ -213,18 +205,9 @@ export function describeValueChunkWrites(
       writes.push(write);
     }
   };
-  const activeRecipes = (abiFunction as RuntimeCallAbiFunction).routeActiveEntryRecipes;
-  if (activeRecipes !== undefined && activeRecipes.size > 0) {
-    for (const [routeSlot, recipes] of activeRecipes) {
-      for (const recipe of recipes) {
-        appendWrite(recipe.access, recipe.access.slotIndex ?? 0, routeSlot);
-      }
-    }
-  } else {
-    for (const activeFunction of activeFunctions) {
-      for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
-        appendWrite(access, entryAccessSlot, access.slotIndex ?? entryAccessSlot);
-      }
+  for (const activeFunction of activeFunctions) {
+    for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
+      appendWrite(access, entryAccessSlot, access.slotIndex ?? entryAccessSlot);
     }
   }
   return writes;

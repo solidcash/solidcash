@@ -106,7 +106,6 @@ export function sameOutpoint(
 /** Resolve the compiler-owned physical block layout for a low-level call group. */
 export function lowLevelCallBlockLayout(group: ExternalCallUtxoGroup): AbiFunction['blockLayout'] {
   return group.blockLayout
-    ?? group.directCall?.abiFunction.blockLayout
     ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName)?.blockLayout;
 }
@@ -310,14 +309,6 @@ export interface ExternalCallUtxoGroup {
    * master input, and this group's element in it. Planned from band widths; rebound from the assembled frame.
    */
   broadcastIdxList?: { witness: string; element: number };
-  /** Compiler-owned hidden route used for a grouped logical invocation. */
-  /** A direct co-spend of one callee entry: its ABI, selector and positional arguments. */
-  directCall?: {
-    abiFunction: AbiFunction;
-    selector: Uint8Array;
-    args: any[];
-    internalArgs?: Record<string, any>;
-  };
   /** ABI-named hidden witnesses resolved while assembling this callee's physical block. */
   internalArgs?: Record<string, any>;
   /** Immutable ABI names captured by the concrete physical unlocker owned by this group. */
@@ -353,12 +344,6 @@ export interface ExternalCallUtxoGroup {
     }[] | undefined,
     finalVisibleArgs: readonly any[],
   ) => { internalArgs: Record<string, any>; payloadBytes: number };
-  /** The carrier master unlocker changed during the current dependency-convergence pass. */
-  argumentsRefreshedDuringConvergence?: boolean;
-  /** Active route batch blockhash reads, retained until the group's absolute input base is known. */
-  graphBlockhashSelections?: Array<{
-    readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;
-  }>;
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
   /** Old dynamic-state chunks consumed by an ordinary direct callee after its master/data block. */
@@ -373,8 +358,6 @@ export interface ExternalCallUtxoGroup {
    * chunks off-chain the way `valueChunkMints` does for a caller-known value - the commitments are extracted
    * from the callee's derivation probe and placed here, keyed by block slot. */
   derivedTrailingOutputs?: Map<number, { commitment: string; lockingBytecode: Uint8Array }>;
-  /** Lifted runtime event records in this physical callee's trailing band. */
-  streamedEventPlan?: import('./nested-streamed-events.js').NestedStreamedEventPlan;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
   eventOutputs?: Array<{
     eventSignature: string; commitment: string; lockingBytecode: Uint8Array;
@@ -448,7 +431,7 @@ export interface ExternalCallUtxoGroup {
  * witness, so the run need not follow the callee's block.
  */
 export function calleeWitnessesDynamicRun(group: ExternalCallUtxoGroup): boolean {
-  return group.directCall === undefined && group.callBatch === undefined
+  return group.callBatch === undefined
     && group.delegateCallGroupIndex === undefined
     && group.internalArgNames?.includes('__internal__dynamicChunkOutputBase') === true;
 }

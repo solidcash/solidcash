@@ -142,7 +142,8 @@ describe('non-composed dynamic-output witness of a delegate', () => {
     callMode: 'delegatecall',
     stateLayout,
     externalContract: { inner: implementation },
-    directCall: { abiFunction: routeWithBase },
+    masterUtxo: { unlocker: { contract: implementation, abiFunction: routeWithBase } },
+    internalArgNames: ['__internal__dynamicChunkOutputBase'],
     internalArgs: {},
     refreshInternalArgs: (args: Record<string, unknown>) => { published.push(args); },
   }) as unknown as ExternalCallUtxoGroup;
@@ -152,15 +153,7 @@ describe('non-composed dynamic-output witness of a delegate', () => {
     const proxyGroup = {
       categoryId, externalContract: { inner: contract }, delegateCallGroupIndex: 0,
     } as unknown as ExternalCallUtxoGroup;
-    reconcileDynamicChunkOutputWitnesses([proxyGroup], [delegate(published)], categoryId, builder, undefined);
+    reconcileDynamicChunkOutputWitnesses([proxyGroup], [delegate(published)], builder);
     expect(published).toEqual([{ __internal__dynamicChunkOutputBase: 1n }]);
-  });
-
-  it('locates a root proxy\'s chunks at the root lock', () => {
-    const published: Array<Record<string, unknown>> = [];
-    reconcileDynamicChunkOutputWitnesses([], [delegate(published)], categoryId, builder, contract);
-    expect(published).toEqual([{ __internal__dynamicChunkOutputBase: 1n }]);
-    expect(() => reconcileDynamicChunkOutputWitnesses([], [delegate([])], categoryId, builder, undefined))
-      .toThrow(/no root state contract/);
   });
 });

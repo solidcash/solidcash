@@ -15,7 +15,6 @@ import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { RuntimeCallAbiFunction } from './runtime-call-metadata.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   collidingParticipantGroupIndex,
@@ -190,7 +189,7 @@ export async function allocateCreateBuilderFunders(
       // A void entry's slot is its call record: the covenant steps its chunk coordinates down when no record runs.
       || (dynamicChunkInputs.length > 0 && (entryAbiFunction?.outputs?.length ?? 0) > 0)
       || trailingDisposalInputs.length > 0
-      || ((entryAbiFunction as RuntimeCallAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
+      || (entryAbiFunction?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
       || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true
       // A recovery loop reads iteration k's triple at blockSize + 3k.
@@ -300,9 +299,8 @@ export async function allocateCreateBuilderFunders(
       // a native signer input. Inspect every such delegate, not only the subset promoted to entryAbiFunction
       // because it happens to access a mapping.
       if (nestedDelegateProxyGroupByLowLevel.has(groupIndex)) return false;
-      const gFn = group.directCall?.abiFunction
-        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-          .find((candidate) => candidate.name === group.functionName);
+      const gFn = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === group.functionName);
       return gFn !== undefined && lowLevelRunNeedsSignerInput(gFn, group.callMode);
     });
     timing?.('sender-delegate-scan');
@@ -408,22 +406,17 @@ export async function allocateCreateBuilderFunders(
             (claim) => claim.resourceIdentity,
           ),
           valueChunkStateOwner: group.valueChunkStateOwner?.categoryId,
-          entryWrites: group.directCall?.abiFunction.entryAccesses?.filter((access) =>
-            access.operations.includes('write')).map((access) => access.collection),
         })),
         lowLevelGroups: lowLevelCallUtxoGroups.map((group) => ({
           functionName: group.functionName,
           logicalFunctionName: group.logicalFunctionName,
-          blockSize: group.blockLayout?.blockSize
-            ?? group.directCall?.abiFunction.blockLayout?.blockSize,
+          blockSize: group.blockLayout?.blockSize,
           valueChunkOutputCount: group.valueChunkOutputCount,
           valueChunkWrites: group.valueChunkWrites?.map(valueChunkWriteResourceIdentity),
           valueChunkProducerClaims: group.valueChunkProducerClaims?.map(
             (claim) => claim.resourceIdentity,
           ),
           valueChunkStateOwner: group.valueChunkStateOwner?.categoryId,
-          entryWrites: group.directCall?.abiFunction.entryAccesses?.filter((access) =>
-            access.operations.includes('write')).map((access) => access.collection),
         })),
       });
     }

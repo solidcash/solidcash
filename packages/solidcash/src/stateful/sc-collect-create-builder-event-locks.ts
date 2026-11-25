@@ -89,10 +89,6 @@ export function collectCreateBuilderEventLocks(
   const runtimeEventMetadataSources = [
     abiFunction,
     entryAbiFunction,
-    ...lowLevelCallUtxoGroups.flatMap((group) => [
-      group.directCall?.abiFunction,
-      ...([] as any[]).map((row) => row.handler),
-    ]),
   ].filter((candidate: AbiFunction | undefined): candidate is AbiFunction => candidate !== undefined);
   const runtimeEventSignatures = new Set(runtimeEventMetadataSources.flatMap((source) =>
     (source.runtimeLoopEvents ?? []).flatMap((loop) => loop.eventSignatures)));

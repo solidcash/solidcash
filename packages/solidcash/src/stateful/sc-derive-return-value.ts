@@ -247,14 +247,6 @@ export async function deriveReturnValue(
     .filter((call): call is StatefulCall => call.type === 'stateful')
     .flatMap((call): ReturnAbiCandidate<LogicalReturnContext>[] => {
       const artifact = call.contract.inner.artifact;
-      if (call.directCall) {
-        return ([] as any[])
-          .map((row) => ({
-            logicalFunction: row.handler,
-            physicalFunction: call.directCall!.abiFunction,
-            context: { artifact, call, args: row.args },
-          }));
-      }
       const fn = call.contract._resolveCallAbi(call.functionName, call.args);
       return fn ? [{
         logicalFunction: fn,
@@ -486,10 +478,8 @@ export async function deriveReturnValue(
       },
     );
     blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined;
-    // A route's physical result coordinate and delegate input belong to the route carrier. Falling back
-    // to the logical handler's slot can decode an unrelated output as an authenticated result. Direct and legacy
-    // calls retain the established same-function slot fallback.
-    if (!blob && !delegatedReturn?.call.directCall) {
+    // Direct and legacy calls retain the established same-function slot fallback.
+    if (!blob) {
       blob = host.deriveReturnBlob(builder, physicalReturnSlot.offset);
     }
     if (!blob) {
@@ -571,10 +561,9 @@ export async function deriveReturnValue(
     if (commitments.length > 0) group.loopReturnCommitments = commitments;
     if (commitments.length === reached) {
       const producerArtifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
-      const producerFunction = group.directCall?.abiFunction
-        ?? producerArtifact?.abi.find((candidate: AbiFunction) => (
-          candidate.name === (group.logicalFunctionName ?? group.functionName)
-        ));
+      const producerFunction = producerArtifact?.abi.find((candidate: AbiFunction) => (
+        candidate.name === (group.logicalFunctionName ?? group.functionName)
+      ));
       const producerOutputs = producerFunction?.outputs ?? [];
       if (!producerArtifact || producerOutputs.length !== 1) continue;
       const producerStructs = producerArtifact.structs ?? producerArtifact.stateLayout?.structs;

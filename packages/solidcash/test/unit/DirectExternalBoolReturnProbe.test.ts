@@ -39,7 +39,6 @@ describe('direct external bool return probe', () => {
       bDataNfts: [],
       bRequiredNftIndices: [],
       bReturnEventInBlock: true,
-      bGraphBlockhashSelections: [],
       bKeccak: { recreates: [] },
       bDynamicChunkInputs: [],
       bDynamicChunkResources: [],

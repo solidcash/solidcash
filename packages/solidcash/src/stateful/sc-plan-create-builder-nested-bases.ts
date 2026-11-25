@@ -156,7 +156,6 @@ export function planCreateBuilderNestedBases(params: {
       const delegate = lowLevelCallUtxoGroups[child.delegateCallGroupIndex];
       if (delegate?.callMode === 'delegatecall') {
         nestedOutputBase += 1 + delegate.dataNftUtxos.length;
-        if (child.directCall) nestedOutputBase += 1 + child.requiredDataNftIndices.length;
         if (!directCallDelegateLayout) nestedInputBase += 1 + delegate.dataNftUtxos.length;
       }
     }

@@ -121,9 +121,7 @@ function ordinaryCalleeFrame(group: ExternalCallUtxoGroup): AbiFunction | undefi
 export function reconcileDynamicChunkOutputWitnesses(
   groups: readonly ExternalCallUtxoGroup[],
   lowLevelGroups: readonly ExternalCallUtxoGroup[],
-  rootStateCategoryId: string,
   builder: TransactionBuilder,
-  rootStateContract: Contract | undefined,
 ): readonly ExternalCallUtxoGroup[] {
   const changed: ExternalCallUtxoGroup[] = [];
   for (const outputOwner of groups) {
@@ -132,7 +130,7 @@ export function reconcileDynamicChunkOutputWitnesses(
     const carrier = outputOwner.delegateCallGroupIndex === undefined
       ? outputOwner : lowLevelGroups[outputOwner.delegateCallGroupIndex];
     if (!carrier?.refreshInternalArgs) continue;
-    const route = carrier.directCall?.abiFunction ?? ordinaryCalleeFrame(carrier);
+    const route = ordinaryCalleeFrame(carrier);
     if (!route?.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase')) continue;
     const next = BigInt(resolveMaterializedDynamicWriteOutputBase({
       route,
@@ -140,29 +138,6 @@ export function reconcileDynamicChunkOutputWitnesses(
       // The chunks bind the record master's lock: the proxy's, not its delegate's.
       contract: outputOwner.externalContract.inner,
       categoryId: outputOwner.categoryId,
-      outputs: builder.outputs,
-    }));
-    if (carrier.internalArgs?.__internal__dynamicChunkOutputBase === next) continue;
-    carrier.refreshInternalArgs({ __internal__dynamicChunkOutputBase: next });
-    changed.push(carrier);
-  }
-  const associatedDelegates = new Set(groups.flatMap((group) =>
-    group.delegateCallGroupIndex === undefined ? [] : [group.delegateCallGroupIndex]));
-  for (const [index, carrier] of lowLevelGroups.entries()) {
-    if (associatedDelegates.has(index) || !carrier.refreshInternalArgs) continue;
-    const route = carrier.directCall?.abiFunction;
-    if (!route?.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase')) continue;
-    // A root proxy implementation has no external-call output owner. Its direct-dynamic lock/category
-    // identifies the run within this local transaction; duplicate runs fail the canonical-index proof.
-    // A delegate writes the root's records, which bind the root master's lock.
-    const delegated = carrier.callMode === 'delegatecall';
-    const recordOwner = delegated ? rootStateContract : carrier.externalContract.inner;
-    if (!recordOwner) throw new Error(`Delegate route ${route.name} has no root state contract for its chunks`);
-    const next = BigInt(resolveMaterializedDynamicWriteOutputBase({
-      route,
-      stateLayout: carrier.stateLayout,
-      contract: recordOwner,
-      categoryId: delegated ? rootStateCategoryId : carrier.categoryId,
       outputs: builder.outputs,
     }));
     if (carrier.internalArgs?.__internal__dynamicChunkOutputBase === next) continue;

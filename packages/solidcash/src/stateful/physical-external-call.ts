@@ -88,26 +88,6 @@ export function externalReturnParamSlot(
     .filter(({ call }) => call.hasReturnValues)[returnOrdinal]?.slot;
 }
 
-/**
- * These witnesses describe the assembled transaction, not the route which requested it. Route builders
- * may carry provisional values from an isolated probe, but composition can omit conditional calls, fuse groups,
- * or move participant blocks. The SDK must therefore resolve these names after the physical layout is known.
- */
-export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boolean {
-  return paramName === '__internal__externalCallInputBase'
-    || paramName === '__internal__dynamicChunkInputBase'
-    || paramName === '__internal__dynamicChunkOutputBase'
-    || /^__internal__extcallMasterIdx\d*$/.test(paramName)
-    || /^__internal__extcallAnchorIdx\d*$/.test(paramName);
-}
-
-/** Participant storage proofs depend on the materialized state UTXOs, so an atomic graph's provisional/default
- * argument vector cannot own them. They are resolved while assembling the participant block. */
-export function isSdkResolvedParticipantStorageWitness(paramName: string): boolean {
-  return paramName.startsWith('__internal__vmapBatch')
-    || paramName.startsWith('__internal__valueWitness_');
-}
-
 /** Sentinels for a vmap-batch ABI slot when this handler has no planned sorted batch. */
 export function vmapBatchWitnessFallback(paramName: string): Uint8Array | bigint | undefined {
   if (!paramName.startsWith('__internal__vmapBatch')) return undefined;
@@ -163,7 +143,6 @@ type PhysicalSelectorGroup = {
   sharedGroupIndex?: number;
   delegateCallGroupIndex?: number;
   functionName: string;
-  directCall?: { selector: Uint8Array };
   externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
 };
 
@@ -214,7 +193,6 @@ export function physicalExternalCallSelectorHex(
   const delegate = physical.delegateCallGroupIndex === undefined
     ? undefined : delegateGroups[physical.delegateCallGroupIndex];
   const selected = delegate ?? physical;
-  if (selected.directCall?.selector) return binToHex(selected.directCall.selector);
   return selected.externalContract.inner.artifact.abi
     .find((candidate) => candidate.name === selected.functionName)?.selector;
 }

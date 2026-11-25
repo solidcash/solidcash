@@ -81,8 +81,7 @@ export function createAppendDelegateOutputHelpers(
     const group = host.lowLevelCallUtxoGroups[groupIndex];
     if (!group || group.callMode !== 'delegatecall') return;
     const bMaster = group.masterUtxo as UnlockableUtxo;
-    const delegateFn = group.directCall?.abiFunction
-    ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+    const delegateFn = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName);
     const layout = lowLevelCallBlockLayout(group) ?? delegateFn?.blockLayout;
     const expectedMasterAbs = host.getLowLevelCallMasterInputIndex(groupIndex);
@@ -243,9 +242,8 @@ export function createAppendDelegateOutputHelpers(
     const delegateLoopVars = host.delegateLoopEntryVars();
     if (delegateLoopVars.length === 0) return;
     const delegateFunction = (group: ExternalCallUtxoGroup): AbiFunction | undefined => (
-      group.directCall?.abiFunction
-    ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-      .find((candidate) => candidate.name === group.functionName)
+      (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === group.functionName)
     );
     const activeDelegate = host.activeDelegateGroupIndex === undefined
       ? undefined : host.lowLevelCallUtxoGroups[host.activeDelegateGroupIndex];

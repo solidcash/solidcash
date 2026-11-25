@@ -154,9 +154,7 @@ export function applyDeriveFullNestedCommitsEventPins(params: {
       commitmentProgressDelta += 1;
     }
   }
-  const nestedFn = llc.directCall?.abiFunction
-  ?? proxyGroup?.directCall?.abiFunction
-  ?? llc.externalContract?.inner.artifact.abi.find(
+  const nestedFn = llc.externalContract?.inner.artifact.abi.find(
     (candidate: { name: string }) => candidate.name === llc.functionName,
   )
   ?? proxyGroup?.externalContract?.inner.artifact.abi.find(

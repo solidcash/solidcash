@@ -165,16 +165,6 @@ function zeroTripSharedArrayLoop(
   return Array.isArray(value) && value.length === 0;
 }
 
-/**
- * The bus-compile predicate: `selector` names an eligible route route handler of `artifact`. A direct
- * compile publishes none, so its calls never reach the composer, the bus-row planner or the send-time promotion.
- */
-export function isBusCompiledEntry(
-  _artifact: Artifact, _selector: string | undefined,
-): boolean {
-  return false;
-}
-
 /** A direct compile: `route: false` stated, and not framed. Its repeated calls stay in the direct convention. */
 export function isDirectConventionArtifact(artifact: Pick<Artifact, 'compiler' | 'composition'>): boolean {
   return artifact.composition?.convention !== 'framed';
@@ -284,8 +274,7 @@ type ListedLowLevelCall = {
  * so no frame can say whether the loop turns, and at none the listed callee would run uncalled. A call whose edge the
  * function counts is left to its covenant: the builder lays a low-level call's edge only for a callee that reads its
  * contract caller (stb-materialize-caller-edge-outputs.ts), and the function counts the edges it pins, so the edge of a
- * call it skips fails that count. A delegatecall is a proxy's, a raw coin runs no function, and a route route
- * binds each row it runs.
+ * call it skips fails that count. A delegatecall is a proxy's, and a raw coin runs no function.
  */
 export async function refuseListedLowLevelCallsTheGuardSkips(
   host: ListedGuardHost,
@@ -296,8 +285,7 @@ export async function refuseListedLowLevelCallsTheGuardSkips(
   listedCalls: readonly ListedLowLevelCall[] | undefined,
 ): Promise<void> {
   const rows = abiFunction?.lowLevelCalls ?? [];
-  if (abiFunction === undefined || rows.length === 0 || (listedCalls?.length ?? 0) === 0
-    || isBusCompiledEntry(artifact, abiFunction.selector)) return;
+  if (abiFunction === undefined || rows.length === 0 || (listedCalls?.length ?? 0) === 0) return;
   // A per-turn row's covenant spends its list of callees to the end, one per turn the run makes, so a listed callee
   // of a turn the run skips fails that list: such a row is left to its covenant.
   const byRow = listedSingleLowLevelCalls(rows, listedCalls, `${artifact.contractName}.${abiFunction.name}`);
@@ -600,10 +588,10 @@ export async function expandResolveCreateBuilderExternalCalls(
   // proofs above did not run for it. A listed call the function makes only under a guard is decided here as a resolved
   // call's is. One whose guard reads false, or that no frame decides, is refused by name unless the function's own
   // covenant refuses a skipped call (it counts the caller edges it pins): its listed callee, co-spent, would run
-  // without being called. A route route binds each row it runs instead. The published guard of a counted frame
+  // without being called. The published guard of a counted frame
   // of a multi-call spend is left to planDirectCallBatches, which drops a frame its guard skips and refuses one it
   // cannot decide; it plans a fixed frame, or one under an unpublished guard, as made, so those are decided here.
-  if (overrideExternalCalls && externalCalls && !isBusCompiledEntry(artifact, abiFunction?.selector)) {
+  if (overrideExternalCalls && externalCalls) {
     const guarded = externalCalls.flatMap((ec, index) => {
       const callee = overrideExternalCalls[index]?.externalContract;
       if (callee === undefined || overrideExternalCalls[index]?.absentCallee === true) return [];
@@ -754,8 +742,9 @@ export async function expandResolveCreateBuilderExternalCalls(
         canAutoResolve = false;
         break;
       }
-      if (undecidedGuards.has(ec) && !isBusCompiledEntry(artifact, abiFunction?.selector)
-        && !callCountsCallerEdge(ec, abiFunction, registered)) refuseUndecided(ec, registered);
+      if (undecidedGuards.has(ec) && !callCountsCallerEdge(ec, abiFunction, registered)) {
+        refuseUndecided(ec, registered);
+      }
       let functionName = ec.functionName;
       if (ec.interfaceName === '__raw__') {
         const selected = (registered as { implementation?: unknown }).implementation ?? registered;

@@ -8,7 +8,6 @@ import type { FunctionArgument } from '../Argument.js';
 import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
-import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { autoWireLowLevelCalls, type AutoWireLowLevelCallsHost } from './sc-auto-wire-low-level-calls.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
 import type {
@@ -62,12 +61,8 @@ export interface ApplyOverridesHost {
   callInfos: CallInfo[];
   registryExternalStateOverrides: Map<string, Record<string, StateValueType>>;
   emitReturnFlag: boolean;
-  directCall?: {
-    abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
-    emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
-    logicalIdentity?: ResolvedLogicalIdentity;
-    valueChunkProductions?: NonNullable<RuntimeCallMetadata['valueChunkProductions']>;
-  };
+  /** The call a creation's callee runs: its ABI function is fixed and its return emitted (deployer). */
+  directCall?: { abiFunction: AbiFunction; emitReturn?: boolean };
   selectedAbiFunction(): AbiFunction | undefined;
   resolveLibrariesFromRegistry(): Promise<void>;
   autoWireLibraryDelegatecalls(): void;
@@ -145,21 +140,17 @@ export async function applyOverrides(
   const validatePreparedFrames = (): void => {
     if (host.parentContract && host.functionArgs) {
       const selected = host.directCall?.abiFunction ?? host.selectedAbiFunction();
-      if (selected) host.functionArgs = host.parentContract._validateAbiFrame(selected, host.functionArgs, {
-        implicitMsgSenderCategory: false,
-      });
+      if (selected) host.functionArgs = host.parentContract._validateAbiFrame(selected, host.functionArgs);
     }
     for (const call of host.callInfos) {
       if (call.type !== 'stateful') continue;
-      const callArgs = (call.directCall?.args ?? call.args) as FunctionArgument[];
-      const selected = call.directCall?.abiFunction
-        ?? call.contract._resolveCallAbi(call.functionName, callArgs);
+      const callArgs = call.args as FunctionArgument[];
+      const selected = call.contract._resolveCallAbi(call.functionName, callArgs);
       if (selected) {
         const normalized = call.contract._validateAbiFrame(selected, callArgs);
         // Keep the validated frame for materialization too; a delegate's semantic arguments do not pass
         // through its proxy forwarder's _createBuilder argument normalization.
-        if (call.directCall) call.directCall.args = normalized;
-        else call.args = normalized;
+        call.args = normalized;
       }
     }
   };
@@ -209,13 +200,7 @@ export async function applyOverrides(
         ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
         ...(host.directCall && {
           abiFunction: host.directCall.abiFunction,
-          directCallSelector: host.directCall.selector,
-          blockBase: host.directCall.blockBase,
           emitReturn: host.directCall.emitReturn,
-          returnBlob: host.directCall.returnBlob,
-          omitLocalFeeTail: host.directCall.omitLocalFeeTail,
-          logicalIdentity: host.directCall.logicalIdentity,
-          valueChunkProductions: host.directCall.valueChunkProductions,
         }),
       },
     );
@@ -318,13 +303,7 @@ export async function applyOverrides(
         ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
         ...(host.directCall && {
           abiFunction: host.directCall.abiFunction,
-          directCallSelector: host.directCall.selector,
-          blockBase: host.directCall.blockBase,
           emitReturn: host.directCall.emitReturn,
-          returnBlob: host.directCall.returnBlob,
-          omitLocalFeeTail: host.directCall.omitLocalFeeTail,
-          logicalIdentity: host.directCall.logicalIdentity,
-          valueChunkProductions: host.directCall.valueChunkProductions,
         }),
       },
     );
@@ -362,13 +341,7 @@ export async function applyOverrides(
           drainTokenContainers: drainedTokenContainers,
           ...(host.directCall && {
             abiFunction: host.directCall.abiFunction,
-            directCallSelector: host.directCall.selector,
-            blockBase: host.directCall.blockBase,
             emitReturn: host.directCall.emitReturn,
-            returnBlob: host.directCall.returnBlob,
-            omitLocalFeeTail: host.directCall.omitLocalFeeTail,
-            logicalIdentity: host.directCall.logicalIdentity,
-            valueChunkProductions: host.directCall.valueChunkProductions,
           }),
         },
       );
@@ -489,7 +462,7 @@ export async function applyOverrides(
       // update depends on a callee result cannot derive its chunks in the first owner-local probe. The composer
       // builds those probes without a local fee tail, evaluates the complete graph, and independently refuses
       // a stable/final assembly containing any unresolved chunk. Standalone sends retain this fail-closed gate.
-      if (transparentAtomicPromotion || host.directCall?.omitLocalFeeTail) continue;
+      if (transparentAtomicPromotion) continue;
       const derivationError = (builder as any).__derivationError;
       // A covenant OP_VERIFY is the function rejecting (e.g. registerUser pubkey length).
       // Do not wrap that as a chunk-layout construction failure — revertedWith cannot match.

@@ -311,65 +311,65 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
       candidateIndexes,
     });
   };
-let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
-// Reused physical groups point at the latest reached callsite, so a later sequential row is copied wholly from
-// one stable node rather than mixing mutable physical arguments with the selector/path of the first call that
-// happened to allocate the group.
-const latestPreparedAtomicNodeByPhysicalGroup = new Map<number, number>();
-const preparedChildProducerPath: PrepareCreateBuilderLowLevelNestedCachesResult['preparedChildProducerPath'] = (
-  parent,
-  source,
-) => {
-  if (!parent?.producerPath) return Object.freeze({ status: 'unavailable' });
-  return deriveValueChunkProducerChildPath({
-    parent: parent.producerPath,
-    parentExecutionLockingBytecode: parent.executor?.inner.lockingBytecode
-      ?? parent.contract.inner.lockingBytecode,
-    parentSelector: parent.selector,
-    sourceCallsiteId: source.sourceCallsiteId,
-    ...(source.sourceLogicalIndex !== undefined && {
-      sourceLogicalIndex: source.sourceLogicalIndex,
-    }),
-    occurrenceIndex: source.occurrenceIndex,
-    sourceEffectOrdinal: source.sourceEffectOrdinal,
-  });
-};
-let nestedFunderIndex = 0;
+  let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
+  // Reused physical groups point at the latest reached callsite, so a later sequential row is copied wholly from
+  // one stable node rather than mixing mutable physical arguments with the selector/path of the first call that
+  // happened to allocate the group.
+  const latestPreparedAtomicNodeByPhysicalGroup = new Map<number, number>();
+  const preparedChildProducerPath: PrepareCreateBuilderLowLevelNestedCachesResult['preparedChildProducerPath'] = (
+    parent,
+    source,
+  ) => {
+    if (!parent?.producerPath) return Object.freeze({ status: 'unavailable' });
+    return deriveValueChunkProducerChildPath({
+      parent: parent.producerPath,
+      parentExecutionLockingBytecode: parent.executor?.inner.lockingBytecode
+        ?? parent.contract.inner.lockingBytecode,
+      parentSelector: parent.selector,
+      sourceCallsiteId: source.sourceCallsiteId,
+      ...(source.sourceLogicalIndex !== undefined && {
+        sourceLogicalIndex: source.sourceLogicalIndex,
+      }),
+      occurrenceIndex: source.occurrenceIndex,
+      sourceEffectOrdinal: source.sourceEffectOrdinal,
+    });
+  };
+  let nestedFunderIndex = 0;
 
-return {
-  lowLevelCalls,
-  lowLevelCallUtxoGroups,
-  sharedFunderPool,
-  sharedFunderSnapshot,
-  nestedProxyReadCache,
-  nestedFullStateCache,
-  nestedMasterStateCache,
-  nestedIdentityCache,
-  resolvedNestedIdentityCache,
-  nestedAddressUtxoCache,
-  nestedSortedListCache,
-  nestedAddressUtxos,
-  nestedIdentity,
-  ensureNestedIdentityAnchorBand,
-  resolveNestedIdentityAnchorBands,
-  directNestedIdentityWitness,
-  nestedFullState,
-  nestedMasterState,
-  lowLevelCallRawInputs,
-  lowLevelCallInputBase,
-  activeDelegateGroupIndex,
-  hasDelegatedDynamicReadChunks,
-  delegateEventSlots,
-  delegateReturnEventOffset,
-  groupProxyMasterIndices,
-  delegateExternalGroupIndices,
-  delegateExternalGroupByCallsite,
-  routeValueChunkProducerEpochByPhysicalGroup,
-  nestedDelegateProxyGroupByLowLevel,
-  selectActiveRootDelegateGroup,
-  preparedAtomicNodes,
-  latestPreparedAtomicNodeByPhysicalGroup,
-  preparedChildProducerPath,
-  nestedFunderIndex,
-};
+  return {
+    lowLevelCalls,
+    lowLevelCallUtxoGroups,
+    sharedFunderPool,
+    sharedFunderSnapshot,
+    nestedProxyReadCache,
+    nestedFullStateCache,
+    nestedMasterStateCache,
+    nestedIdentityCache,
+    resolvedNestedIdentityCache,
+    nestedAddressUtxoCache,
+    nestedSortedListCache,
+    nestedAddressUtxos,
+    nestedIdentity,
+    ensureNestedIdentityAnchorBand,
+    resolveNestedIdentityAnchorBands,
+    directNestedIdentityWitness,
+    nestedFullState,
+    nestedMasterState,
+    lowLevelCallRawInputs,
+    lowLevelCallInputBase,
+    activeDelegateGroupIndex,
+    hasDelegatedDynamicReadChunks,
+    delegateEventSlots,
+    delegateReturnEventOffset,
+    groupProxyMasterIndices,
+    delegateExternalGroupIndices,
+    delegateExternalGroupByCallsite,
+    routeValueChunkProducerEpochByPhysicalGroup,
+    nestedDelegateProxyGroupByLowLevel,
+    selectActiveRootDelegateGroup,
+    preparedAtomicNodes,
+    latestPreparedAtomicNodeByPhysicalGroup,
+    preparedChildProducerPath,
+    nestedFunderIndex,
+  };
 }

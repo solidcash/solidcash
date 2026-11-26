@@ -5108,6 +5108,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
       this.bindDirectCallValues(node);
+      this.bindFramedCallValues(node);
     }
 
     // Token container access pre-scan: collect all token container accesses and assign slot indices
@@ -19957,6 +19958,44 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // The branches were summarized while the body was resolved, counting such a call as a transfer.
     if (rides && node.body) this.refreshConditionalEntryOps(node.body);
+  }
+
+  /**
+   * A framed typed call's `{value:}` rides its own record (recordCarriesCallValue), so it takes no transfer. The
+   * branches were summarized while the body was resolved, counting such a call as a send the master never lists:
+   * mark the call as bindDirectCallValues marks a direct one and summarize again each branch whose arm holds it.
+   */
+  private bindFramedCallValues(node: FunctionDefinitionNode): void {
+    if (this.compilerOptions.composition !== 'framed' || !node.body) return;
+    const riding = new Set<Node>();
+    for (const slot of node.externalCalls ?? []) {
+      const call = slot.sourceCallNode;
+      if (call === undefined || !this.recordCarriesCallValue(call)) continue;
+      call.callValueInRecord = true;
+      riding.add(call);
+    }
+    if (riding.size === 0) return;
+    // Bottom up, so a branch is summarized after the branches inside its arms.
+    const holds = new Map<Node, boolean>();
+    const walk = (candidate: Node): boolean => {
+      const known = holds.get(candidate);
+      if (known !== undefined) return known;
+      holds.set(candidate, false);
+      let found = riding.has(candidate);
+      for (const [key, value] of Object.entries(candidate)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || key === 'sourceCallNode') continue;
+        for (const child of Array.isArray(value) ? value : [value]) {
+          if (child instanceof Node && walk(child)) found = true;
+        }
+      }
+      holds.set(candidate, found);
+      if (candidate instanceof BranchNode && (holds.get(candidate.ifBlock) === true
+        || (candidate.elseBlock !== undefined && holds.get(candidate.elseBlock) === true))) {
+        candidate.branchOps = computeBranchOps(candidate.ifBlock, candidate.elseBlock);
+      }
+      return found;
+    };
+    walk(node.body);
   }
 
   /** The call reads its callee's record by the digest of a fixed method and every argument it declares. */

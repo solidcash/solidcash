@@ -11,6 +11,10 @@
   its caller, as a call naming the callee by its lock does. 0.52.1 skipped the reader pin there, so one run of the
   callee could answer two callers (one withdrawal credited twice) and a proxy-backed callee could run another method.
   Direct contracts with such a call compile to new bytes; a raw call into a proxy-backed CREATE identity fails closed.
+- A direct `to.call{value: v}("")` with a literal empty payload is a plain send again: it pays `to` and answers
+  `(true, "")`, as 0.52.1's default build did through the bus. Under `messageBus: false` 0.52.1 co-spent an unbound
+  input and answered `abi.encode(true)`, so a send to a wallet could not settle. Contracts with such a call compile to new
+  bytes.
 - A framed function whose `{value:}` call runs on only some paths compiles and pays the callee exactly when the call
   runs; 0.52.1 failed with `Expected variable '__internal__frameSendOutput_0' does not exist on the stack`.
 
@@ -25,14 +29,14 @@
   `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry points, and refuses an artifact a 0.52
   message-bus build produced (`MessageBusArtifactError`): recompile it.
 - A contract whose default compile took a message-bus route (an external-call graph) now compiles to the direct build,
-  the bytes 0.52.1 emitted for it under `messageBus: false`: recompile and redeploy it. A function that repeats calls
-  to one state owner outside the callee's multi-call entry is refused (`REPEATED_CALL_UNSUPPORTED`, formerly
-  `MESSAGE_BUS_REQUIRED`).
+  the bytes 0.52.1 emitted for it under `messageBus: false`, apart from the fixes above: recompile and redeploy it. A
+  function that repeats calls to one state owner outside the callee's multi-call entry is refused
+  (`REPEATED_CALL_UNSUPPORTED`, formerly `MESSAGE_BUS_REQUIRED`).
 - A split contract's facets carried a message-bus route; they no longer do, so split facets and their roots compile to
   new bytes.
 - The default proxy drops its message-bus distance `__proxyRouteBlockSize`, so every default proxy's bytes and address
   change and proxies must be redeployed.
-- Every other contract, direct or framed, compiles to the bytes 0.52.1 emitted.
+- Every other contract, direct or framed, compiles to the bytes 0.52.1 emitted, apart from the fixes above.
 - An SDK preflight refusal no longer starts with `messageBus: `: it reads `BCH-2026 preflight failed at input N: ...`,
   and `finalized transaction refused by its covenant and ...`.
 - Refusal codes named after the bus are renamed: `KERNEL_LAYOUT`, `KERNEL_UNBOUNDED_KEY` and `KERNEL_INTERNAL_DEFECT`

@@ -238,7 +238,7 @@ export async function completeCreateBuilderNestedUnlockers(
         });
         return -1n;
       }
-      if (['__internal__activeVerifierIndex', '__internal__participantBlockSize', '__internal__graphFixedSize',
+      if (['__internal__graphFixedSize',
         '__internal__graphSelfIdentityInput',
         '__internal__graphBlockSize', '__internal__graphSettlementBoundary',
         '__internal__blockhashInputIndex', '__internal__graphEmissions',

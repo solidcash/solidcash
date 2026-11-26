@@ -91,13 +91,10 @@ export async function prepareCreateBuilderDerivePrelude(
   const tokenContainerTransferOps: Array<{
     type: 'transfer' | 'transferNft'; categoryId: string; outputSlot?: number;
   }> = [];
-  const runtimeTokenPlan = undefined;
-  const directTokenPlan = runtimeTokenPlan === undefined
-    ? tokenContainerAbiFunction?.tokenContainerTransferSites?.map((site) => ({
-      args: tokenContainerArgs as readonly FunctionArgument[], handler: tokenContainerAbiFunction, site,
-      outputSlot: site.transferIndex,
-    })) : undefined;
-  const fixedTokenPlan = runtimeTokenPlan ?? directTokenPlan;
+  const fixedTokenPlan = tokenContainerAbiFunction?.tokenContainerTransferSites?.map((site) => ({
+    args: tokenContainerArgs as readonly FunctionArgument[], handler: tokenContainerAbiFunction, site,
+    outputSlot: site.transferIndex,
+  }));
   if (fixedTokenPlan !== undefined) {
     const occupiedSlots = new Set<number>();
     for (const planned of fixedTokenPlan) {

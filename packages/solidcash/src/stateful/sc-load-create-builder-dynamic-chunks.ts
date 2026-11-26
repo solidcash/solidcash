@@ -304,7 +304,6 @@ export async function loadCreateBuilderDynamicChunks(
   const executionSelfAddress = params.executionSelfAddress as Uint8Array;
   const functionName = params.functionName as string;
   const tokenContainers = params.tokenContainers as any[];
-  const runtimeLoopEntrySegments = params.runtimeLoopEntrySegments as any[];
   const entryAccesses = params.entryAccesses as any;
   const dynamicWrites = params.dynamicWrites as string[];
   const activeDynamicWrites = params.activeDynamicWrites as Set<string>;
@@ -716,22 +715,13 @@ export async function loadCreateBuilderDynamicChunks(
   | { kind: 'events'; offset: number; count: number }
   | { kind: 'transfers'; offset: number; count: number }
   > = [];
-  if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
-    || runtimeLoopTransferSegments.length > 0) {
+  if (runtimeLoopEventSegments.length > 0 || runtimeLoopTransferSegments.length > 0) {
     const rowIndices = new Set([
-      ...runtimeLoopEntrySegments.map((segment) => segment.rowIndex),
       ...runtimeLoopEventSegments.map((segment) => segment.rowIndex),
       ...runtimeLoopTransferSegments.map((segment) => segment.rowIndex),
       ...runtimeLoopEffectOccurrences.map((occurrence) => occurrence.rowIndex),
     ]);
     for (const rowIndex of [...rowIndices].sort((left, right) => left - right)) {
-      for (const segment of runtimeLoopEntrySegments
-        .filter((candidate: any) => candidate.rowIndex === rowIndex)) {
-        runtimeLoopTrailingSegments.push({
-          kind: 'entries', collection: segment.collection,
-          offset: segment.offset, count: segment.count,
-        });
-      }
       const orderedEffects = runtimeLoopEffectOccurrences
         .filter((occurrence) => occurrence.rowIndex === rowIndex)
         .sort((left, right) => left.sequence - right.sequence
@@ -766,7 +756,6 @@ export async function loadCreateBuilderDynamicChunks(
       effectiveEntryLoopWrites: entryAbiFunction?.entryLoopWrites,
       entryAccesses: entryAccesses?.length ?? 0,
       orderedLoopCollections,
-      runtimeLoopEntrySegments,
       sortedLoopCommitmentCounts: [...sortedLoopCommitments].map(([collection, commitments]) => ({
         collection, count: commitments.length,
       })),

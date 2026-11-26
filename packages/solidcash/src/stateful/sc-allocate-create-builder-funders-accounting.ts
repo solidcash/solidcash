@@ -213,11 +213,10 @@ export async function allocateCreateBuilderFunders(
     ).length;
     // Dense placement puts a loaded container UTXO at its published offset. A funder
     // reserved for that same slot stays unconsumed and is appended past the balanced
-    // block. An empty slot still needs the pad: an inactive route, and trailing
-    // geometry whose container was not loaded into the slot.
-    const inactiveSatoshiContainer = false;
+    // block. An empty slot still needs the pad: trailing geometry whose container was
+    // not loaded into the slot.
     const containerOccupiesPublishedSlot = builder.hasLoadedSatoshiContainer();
-    if ((trailingGeometryNeedsReturnSlot || inactiveSatoshiContainer)
+    if (trailingGeometryNeedsReturnSlot
       && !containerOccupiesPublishedSlot
       && effectiveBlockLayout.slots.some((slot) => slot.kind === 'satoshiContainer')) {
       neededFunders += 1;

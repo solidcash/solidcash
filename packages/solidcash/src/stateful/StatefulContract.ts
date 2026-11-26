@@ -35,7 +35,7 @@ import { SortedList, keyToSlotMulti, bytesToSlotValue, encodeEntryCommitment, de
 import { integerKey, type MappingKey } from './mapping-key-lookup.js';
 import { fillLeftCallArgumentWitnesses } from './call-record.js';
 import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './entry-journal-planning.js';
-import type { GraphEcrecoverCall } from './runtime-call-metadata.js';
+
 import { completeInternalFunctionArguments } from './internal-function-args.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
@@ -639,7 +639,7 @@ export async function memoizeGraphPlanningProducerResult(
 
 /** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
 export { materializeInternalFunctionArgument } from './entry-journal-planning.js';
-export type { GraphEcrecoverCall } from './runtime-call-metadata.js';
+
 
 /**
  * Compute the minimum relay fee for a built TransactionBuilder at 1 sat/byte.
@@ -4899,8 +4899,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * args come straight from the direct parameters; the split (chunkA) is VM-probed. Returns a flat A0,B0,A1,B1,.. list.
    */
   private async _resolveEcrecoverComputeCoSpends(
-    abiFunction: AbiFunction, args: any[], selectedCalls?: readonly GraphEcrecoverCall[],
-    options: { deferUnresolved?: boolean; graphExecution?: boolean } = {},
+    abiFunction: AbiFunction, args: any[],
+    options: { deferUnresolved?: boolean } = {},
     sharedSidecarPool?: NetworkProvider,
     takeMiddleCoin?: ResolveEcrecoverCoSpendsHost['takeMiddleCoin'],
   ): Promise<{
@@ -4918,7 +4918,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : { sidecarSalt: new Uint8Array(32), inner: { provider: sharedSidecarPool } as any }),
         ...(takeMiddleCoin === undefined ? {} : { takeMiddleCoin }),
       },
-      abiFunction, args, selectedCalls, options,
+      abiFunction, args, options,
     );
   }
 
@@ -6720,13 +6720,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...onChainState.state, __block_timestamp: oracleClock.timestamp, __block_number: oracleClock.number,
     };
 
-    // Direct stateful calls publish no route rows: every entry settles its own physical inputs.
-    const selectedRouteRows: readonly RouteExpressionKeyRow[] = [];
-    const selectedUpsertRows: never[] = [];
-    const upsertPlanningFrames: Array<{
-      abiFunction: AbiFunction; args: FunctionArgument[]; routed: boolean; row?: RouteExpressionKeyRow;
-    }> = (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
-      ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false }]
+    const upsertPlanningFrames: Array<{ abiFunction: AbiFunction; args: FunctionArgument[] }> = (
+      entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
+      ? [{ abiFunction: entryAbiFunction!, args: entryArgs }]
       : [];
     let entryNfts: EntryNftInfo[] = [];
     // Value witnesses are keyed by the entry-slot ordinal their own ABI name spells, never by their position in
@@ -7148,9 +7144,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const routed = resolveRouteRowExpressionKey({
                   expressionLabel: source.expressionLabel,
                   collection: access.collection,
-                  rowArguments: selectedRouteRows.length > 0
-                    ? selectedRouteRows
-                    : [{ args: entryArgs, occurrenceIndex: 0, handler: entryAbiFunction }],
+                  rowArguments: [{ args: entryArgs, occurrenceIndex: 0, handler: entryAbiFunction }],
                   routePlanningArgs: entryArgs,
                   routeVisibleInputs: entryAbiFunction.inputs,
                   structs: stateLayout.structs,
@@ -8555,28 +8549,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (predOutputs.length > 0) {
           batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
         }
-        // A standalone route with one physical slot keeps the scalar insertion layout even when several
-        // source rows update that same cached key: P' occupies the fixed entry coordinate and NEW trails.
-        // Graph-owned rows retain their complete batch topology; their predecessor trails unless the source
-        // itself has one row. Multi-slot batches always reserve fixed TARGET coordinates.
-        const batchSourceRows: readonly { handler: { entryAccesses?: readonly { collection: string }[] } }[] = [];
-        const uniqueBatchTargets = new Set(
-          batch.slotIndices
-            .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
-            .map((slotIndex) => binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array())),
-        );
-        // The one-slot compiler layout can place its predecessor at the fixed entry coordinate. A journal
-        // union with inactive reserve lanes still has a multi-slot batch covenant: it requires the target
-        // in the fixed slot and the rewritten predecessor in a separate trailing slot, even when one row ran.
-        // The runtime route reports only the lanes its own selected rows use, so a union whose compiled batch
-        // carries inactive reserve lanes projects to a single lane here. Read the compiled width from the
-        // published route: the covenant's topology, not the runtime projection, decides the predecessor slot.
-        const compiledBatchSlots = batch.slotIndices.length;
-        const singleTargetRowBatch = compiledBatchSlots === 1 && batch.slotIndices.length === 1
-          && predOutputs.length > 0
-          && (batchSourceRows.length === 1
-            || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
-          && uniqueBatchTargets.size === 1;
         // The ascending chain of the nodes the active lanes settle at. Linear batches publish it as an explicit row
         // vector, which the covenant binds to each lane's (Slot, Next) witness; it also decides which of several
         // inserts sharing one predecessor rewrites that predecessor. A write settles at its target. A read-only
@@ -8684,35 +8656,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // old key/value commitment format and cannot encode a 32-byte hashed slot as an int/address key.
           const batchAccess = entryAccessForSlot(slotIndex);
           if (!batchAccess) throw new Error(`vmap batch slot has no entry access ${slotIndex}`);
-          // An aggregate compiler-generated route owns physical entry slots, but its union access intentionally omits the
-          // source handler's value expression. A promoted writer batch still uses the writer's source-local lane
-          // ordinals, so recover that exact access (and its row arguments) before declaring the value unknown.
-          // This keeps literal/argument-computable values exact while preserving trace completion for genuinely
-          // runtime-built values.
-          const routedSourceValueCandidates = selectedRouteRows.flatMap((row) => {
-            const access = entryAccessAt(row.handler, slotIndex);
+          // The batch access can omit the source handler's value expression. Recover it from the public handler ABI
+          // before declaring the value unknown: this keeps literal/argument-computable values exact while preserving
+          // trace completion for genuinely runtime-built values.
+          const sourceValueCandidates = (entryArtifact.abi as readonly AbiFunction[]).flatMap((handler) => {
+            if (handler.name !== entryAbiFunction?.name
+              || (handler.selector && entryAbiFunction?.selector
+                && handler.selector.toLowerCase() !== entryAbiFunction.selector.toLowerCase())) return [];
+            const access = entryAccessAt(handler, slotIndex);
             return access?.collection === batch.collection
               && access.operations.includes('write')
               && access.valueSource !== undefined
-              ? [{ access, args: row.args, inputs: row.handler.inputs }]
+              ? [{ access, args: entryArgs, inputs: handler.inputs }]
               : [];
           });
-          // Direct delegate frames do not carry rowArguments. Their runtime ABI may still be a route-shaped
-          // clone with union accesses, so recover source expressions from the immutable public handler ABI.
-          const artifactSourceValueCandidates = routedSourceValueCandidates.length > 0 ? []
-            : (entryArtifact.abi as readonly AbiFunction[]).flatMap((handler) => {
-              if (handler.name !== entryAbiFunction?.name
-                || (handler.selector && entryAbiFunction?.selector
-                  && handler.selector.toLowerCase() !== entryAbiFunction.selector.toLowerCase())) return [];
-              const access = entryAccessAt(handler, slotIndex);
-              return access?.collection === batch.collection
-                && access.operations.includes('write')
-                && access.valueSource !== undefined
-                ? [{ access, args: entryArgs, inputs: handler.inputs }]
-                : [];
-            });
-          const sourceValueCandidates = routedSourceValueCandidates.length > 0
-            ? routedSourceValueCandidates : artifactSourceValueCandidates;
           const sourceValue = sourceValueCandidates.length === 1 ? sourceValueCandidates[0] : undefined;
           const valueAccess = batchAccess.valueSource !== undefined ? batchAccess : sourceValue?.access ?? batchAccess;
           const valueArgs = [...(sourceValue?.args ?? entryArgs)];
@@ -8926,7 +8883,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 collection: batch.collection, slotIndex, slot: binToHex(slot).slice(0, 16),
                 chunkable: collection.chunkableValue === true,
                 valueSource: valueAccess.valueSource,
-                seedBytes: out.commitment.length, singleTargetRowBatch,
+                seedBytes: out.commitment.length,
               }));
             }
           }
@@ -8949,16 +8906,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const proofSlot = bytesToSlotValue(proof.slot).toString();
           const predOrdinal = predOutputs.findIndex((o) => bytesToSlotValue(o.slot).toString() === proofSlot);
           const firstLinearPred = firstPredSlot.get(proofSlot) === slotIndex;
-          // The witness names the coordinate where THIS predecessor's rewritten node is published. A single-row
-          // batch has no trailing predecessor lane: the predecessor is republished at the entry coordinate its
-          // own co-spent NFT occupies, so the sentinel (-1) is not a readable output there - the route reads the
-          // witness coordinate directly and an unset index aborts the VM with "invalid transaction output index".
-          const proofOwner = entryNfts.find((candidate) => candidate.utxo !== undefined
-            && proof.utxo !== undefined
-            && candidate.utxo.txid === proof.utxo.txid && candidate.utxo.vout === proof.utxo.vout);
-          const proofOwnerOffset = proofOwner === undefined ? undefined
-            : entryAbiFunction!.blockLayout?.slots.find((candidate) =>
-              candidate.kind === 'entry' && candidate.slotIndex === proofOwner.slotIndex)?.offset;
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_PRED === '1') {
             console.error('pred-debug', JSON.stringify({
               functionName, slotIndex, target: binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array()).slice(0, 12),
@@ -8971,11 +8918,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // tx.outputs[-1]. A linear batch keeps -1 for the row another lane republishes: its two-lane and
           // rows-table verifiers test that sentinel explicitly.
           const sharedProofOutput = batch.linear !== true;
+          // The witness names the coordinate where THIS predecessor's rewritten node is published.
           const predOut = predOrdinal < 0 || (!firstLinearPred && !sharedProofOutput)
             ? -1n
-            : singleTargetRowBatch
-              ? proofOwnerOffset === undefined ? -1n : BigInt((overrides?.blockBase ?? 0) + proofOwnerOffset)
-              : BigInt(batchPredOutputBase + predOrdinal);
+            : BigInt(batchPredOutputBase + predOrdinal);
           const raw = this._rawVMapBatchWitness?.get(slotIndex);
           if (raw?.proof === undefined && proof.utxo !== undefined) {
             topLevelVmapProofUtxos.set(slotIndex, { txid: proof.utxo.txid, vout: proof.utxo.vout });
@@ -8991,11 +8937,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
         batchPredOutputBase += predOutputs.length;
         batchTrailingCount += predOutputs.length;
-        if (singleTargetRowBatch) {
-          // The one shared trailing lane carries the target node this statement inserts.
-          const target = batchTargetPlaceholders.get(batch.slotIndices[0]!);
-          if (target !== undefined) batchPredCommitments.set(batch.collection, [target]);
-        }
       }
       if ((entryAbiFunction?.sortedBatchInfo?.length ?? 0) > 0) batchWitnesses.push(BigInt(batchTrailingCount));
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -9155,9 +9096,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Unsupported removal, aggregate, and dynamic-value shapes remain fail-closed below.
     let sortedLoopCommitments = new Map<string, string[]>();
     let insertLoopPredecessors: UnlockableUtxo[] = [];
-    const runtimeLoopEntrySegments: Array<{
-      rowIndex: number; collection: string; offset: number; count: number;
-    }> = [];
     const runtimeJournalInputIds = new Set<string>();
     /**
      * A handler describes its physical journal effects while it is traversed; the materializer below drains those
@@ -9225,52 +9163,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // at output[master+blockSize+i]. Both known EXACTLY off-chain (SortedList.find + arithmetic) - the covenant pins
     // them. A recipient with NO existing entry throws (insert-in-loop is a separate covenant); the shared v[] param
     // ties the credit total to the debit so supply is conserved.
-    const routeRowIndex = (row: RouteExpressionKeyRow): number => {
-      // A delegated root can carry both a proxy route and one or more implementation routes. The selected row
-      // belongs to exactly one of those frames; preferring a defined-but-unrelated proxy array returns -1 and
-      // makes runtime effects in the implementation appear unpositioned. Resolve identity within each owner.
-      const routeFrames: ReadonlyArray<readonly RouteExpressionKeyRow[] | undefined> = [];
-      for (const rows of routeFrames) {
-        const index = rows?.findIndex((candidate) => candidate === row) ?? -1;
-        if (index >= 0) return index;
-      }
-      return -1;
-    };
-    const selectedRowArgument = (row: RouteExpressionKeyRow, name: string): unknown => {
-      if (name.startsWith('__internal__')) return row.internalArgs?.[name];
-      const inputs = visibleHandlerInputs(row.handler.inputs);
-      const index = inputs.findIndex((input) => input.name === name);
-      return index < 0 ? undefined : row.args[index];
-    };
-    const runtimeLoopsByCollection = new Map<string, Array<(typeof upsertPlanningFrames)[number]>>();
-    for (const frame of upsertPlanningFrames) {
-      for (const info of frame.abiFunction.sortedUpsertLoopInfo ?? []) {
-        const frames = runtimeLoopsByCollection.get(info.collection) ?? [];
-        // One handler may declare multiple upsert loops on the same collection
-        // (updateJobWhitelist add+remove). Deduplicate by frame identity so that
-        // pattern is not treated as cross-transaction concurrent journals.
-        if (!frames.includes(frame)) frames.push(frame);
-        runtimeLoopsByCollection.set(info.collection, frames);
-      }
-    }
-    for (const [collection, frames] of runtimeLoopsByCollection) {
-      if (frames.length < 2) continue;
-      const inputName = vmapRuntimeInputCountName(collection);
-      const outputName = vmapRuntimeOutputCountName(collection);
-      const unthreaded = frames.some((frame) => (
-        !frame.abiFunction.inputs.some((input) => input.name === inputName)
-        || !frame.abiFunction.inputs.some((input) => input.name === outputName)
-      ));
-      if (!unthreaded) continue;
-      const rows = [...new Set(frames.flatMap((frame) => (
-        frame.row === undefined ? [] : [routeRowIndex(frame.row)]
-      )))];
-      const rowDescription = rows.length > 0 ? `Batch rows ${rows.join(', ')}` : 'Runtime loops';
-      throw new Error(
-        `${rowDescription} both mutate the '${collection}' runtime journal, but at least one loop form `
-        + 'does not support threaded collection cardinality; split the loops into separate transactions.',
-      );
-    }
     const runtimeLoopCardinality = new Map<string, { inputs: number; outputs: number }>();
     const addRuntimeLoopCardinality = (collection: string, inputs: number, outputs: number): void => {
       const prior = runtimeLoopCardinality.get(collection) ?? { inputs: 0, outputs: 0 };
@@ -9302,7 +9194,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           {
             info,
             loopAbiFunction,
-            upsertFrame,
             loopArgs,
             entryArtifact,
             stateLayout,
@@ -9311,7 +9202,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             executionSelfAddress,
             insertLoopPredecessorsLength: insertLoopPredecessors.length,
             runtimeJournalMaterializationIntentsLength: runtimeJournalMaterializationIntents.length,
-            selectedRowArgument,
             replaceLoopArgument,
           },
         );
@@ -9453,15 +9343,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
           if (witnessIndex < 0) {
             throw new Error(`vmap runtime expression loop ${info.collection}: missing old-value witness ABI input`);
-          }
-          // A routed nested-key RMW authenticates an existing entry value, but its current fixed-prefix settlement
-          // cannot materialize a missing selected entry as an insertion. Fail before transaction construction rather
-          // than publishing a route which verifies yet omits the requested post-state. Direct execution and the
-          // proven single-key/default-value route retain their existing insertion semantics.
-          if (upsertFrame.routed && info.op !== 'read' && info.fixedKeyParams.length > 0
-          && keysArr.some((key) => !list.find(slotForKey(key)))) {
-            throw new Error(`vmap runtime expression loop ${info.collection}: `
-            + 'selected absent old-value witness cannot be materialized as an insertion');
           }
           const oldValues = await Promise.all(keysArr.map(async (key) => {
             const slot = slotForKey(key);
@@ -9934,13 +9815,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           replaceLoopArgument(witnessIndex, oldWitnesses);
           const priorOutputCount = runtimeLoopDerivedCounts.get(info.collection) ?? 0;
           runtimeLoopDerivedCounts.set(info.collection, priorOutputCount + outputCount);
-          if (upsertFrame.routed && selectedUpsertRows.length > 1 && outputCount > 0) {
-            const rowIndex = routeRowIndex(upsertFrame.row!);
-            if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
-            runtimeLoopEntrySegments.push({
-              rowIndex, collection: info.collection, offset: priorOutputCount, count: outputCount,
-            });
-          }
           materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
           addRuntimeLoopCardinality(
             info.collection, insertLoopPredecessors.length - runtimeInputStart, outputCount,
@@ -10276,16 +10150,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
       if (commitments.length > 0) {
-        const prior = sortedLoopCommitments.get(info.collection) ?? [];
         captureRuntimeJournalOutputIntent(info.collection, commitments);
         materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
-        if (upsertFrame.routed) {
-          const rowIndex = routeRowIndex(upsertFrame.row!);
-          if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
-          runtimeLoopEntrySegments.push({
-            rowIndex, collection: info.collection, offset: prior.length, count: commitments.length,
-          });
-        }
       } else {
         materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
       }
@@ -10320,9 +10186,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // Every row which can touch a collection receives the same transaction-wide runtime cardinality. The route
-    // verifies that witness against the authenticated physical collection, then each selected handler subtracts
-    // its locally proven width. Empty rows receive the same initial total and subtract zero.
+    // A threaded runtime loop receives its collection's transaction-wide runtime cardinality, which the covenant
+    // verifies against the authenticated physical collection.
     for (const upsertFrame of upsertPlanningFrames) {
       for (const collection of new Set(
         (upsertFrame.abiFunction.sortedUpsertLoopInfo ?? []).map((info) => info.collection),
@@ -10334,11 +10199,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const outputIndex = upsertFrame.abiFunction.inputs.findIndex(
           (input) => input.name === vmapRuntimeOutputCountName(collection),
         );
-        if (inputIndex < 0 || outputIndex < 0) {
-          // Legacy loop forms retain their local cardinality covenant. The preflight above ensures such a
-          // loop never shares its physical collection with another runtime loop in the same transaction.
-          continue;
-        }
+        // Legacy loop forms retain their local cardinality covenant.
+        if (inputIndex < 0 || outputIndex < 0) continue;
         const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
           upsertFrame.args[index] = value;
           // A promoted delegate entry encodes its own frame from entryArgs by name; the outer forwarder's
@@ -11308,16 +11170,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const delegatedEcrecover = ecrecoverExecutingGroup !== undefined;
       delegateComputeResources ||= delegatedEcrecover;
       const ecrecoverArgs = ecrecoverAbiFunction === entryAbiFunction ? entryArgs : args;
-      const graphCalls = undefined;
-      const graphExecution = false;
       const resolution = await this._resolveEcrecoverComputeCoSpends(
-        ecrecoverAbiFunction, ecrecoverArgs, graphCalls, {
-          deferUnresolved: true,
-          graphExecution,
-        },
-        ownSidecarPool,
-        // A composed graph funds the slots no covenant reads with its own neutral coin.
-        graphCalls === undefined && !graphExecution ? takeMiddleCoin : undefined,
+        ecrecoverAbiFunction, ecrecoverArgs, { deferUnresolved: true }, ownSidecarPool, takeMiddleCoin,
       );
       ecrecoverComputeCoSpendUtxos = resolution.coSpends.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       ecrecoverComputeRecreates = resolution.coSpends.map((cs) => cs.recreate);
@@ -11467,10 +11321,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const delegatedKeccak = executingGroup !== undefined;
       delegateComputeResources ||= delegatedKeccak;
       const keccakArgs = keccakAbiFunction === entryAbiFunction ? entryArgs : args;
-      // Graph-owned routes force keccak preimages to null so learning comes from the full authenticated
-      // transcript. Mirror ecrecover: defer the isolated probe — mapping entry gates abort before
-      // OP_INPUTBYTECODE on the sidecar, so a minimal master+dataNft probe never sees a side-car read.
-      const graphOwnedKeccak = false;
       const resolution = await this._resolveKeccakComputeCoSpends(keccakAbiFunction, keccakArgs, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
@@ -11478,8 +11328,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         locktime: maxBhLocktime,
         trailingReadInputs: iterationEntryInputs, firstDynamicReadInput: dynamicReadChunkInputs[0],
         ecrecoverPreimages: ecrecoverEvmPreimages,
-        ...((delegatedKeccak || graphOwnedKeccak
-          || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
+        ...((delegatedKeccak || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
           deferUnresolved: true,
         }),
         ...(delegatedKeccak && {
@@ -11581,15 +11430,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const eventNftLockingBytecodes = eventLocks.eventNftLockingBytecodes;
     const runtimeEventNftLockingBytecodes = eventLocks.runtimeEventNftLockingBytecodes;
     // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
-    const selectedDynamicRows: RouteExpressionKeyRow[] = [];
-    // A route's dynamic layout is the union of every dispatchable handler and determines the ordering
-    // of all trailing read/write runs. Preserve that geometry, but separately authenticate which variables this
-    // concrete envelope can mutate; only those may receive speculative output placeholders.
     const dynamicWrites = [...(abiFunction?.dynamicWrites ?? [])];
-    const hasSelectedDynamicRows = selectedDynamicRows.length > 0;
-    const activeDynamicWrites = new Set(hasSelectedDynamicRows
-      ? selectedDynamicRows.flatMap((row) => row.handler.dynamicWrites ?? [])
-      : dynamicWrites);
+    const activeDynamicWrites = new Set(dynamicWrites);
     const delegateDynamicWrites = new Set<string>();
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
@@ -11671,7 +11513,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         executionSelfAddress,
         functionName,
         tokenContainers,
-        runtimeLoopEntrySegments,
         entryAccesses: abiFunction?.entryAccesses,
         dynamicWrites,
         activeDynamicWrites,
@@ -11845,7 +11686,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         activeDynamicWrites,
         usesComposedDelegateDynamicTail,
         computedValueChunkRuns,
-        onChainState,
         entryArgs,
         pendingEntryValueTails,
         transportedProductions,
@@ -11855,7 +11695,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         functionName,
         timing,
         dynamicChunkVars,
-        selectedDynamicRows,
         sortedLoopCommitments,
         runtimeExpressionLoopCollections,
         batchPredCommitments,

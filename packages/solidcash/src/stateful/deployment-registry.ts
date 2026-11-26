@@ -215,10 +215,6 @@ export function registeredValueAddressLockingBytecode(
 ): Uint8Array | undefined {
   const deployment = findDeploymentByExactAddress(provider, address);
   if (!deployment) return undefined;
-  const authenticatesPublicSelf = false;
-  // New compiler-generated routes prove their public SCID on-chain. Persisting the physical execution address instead
-  // would make an otherwise identical CREATE reference depend on whether its deployment was already known.
-  if (authenticatesPublicSelf) return addressToLockScript(deployment.address);
   return deployment.lockingBytecode ? hexToBin(deployment.lockingBytecode) : undefined;
 }
 

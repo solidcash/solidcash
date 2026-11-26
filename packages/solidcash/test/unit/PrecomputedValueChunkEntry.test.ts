@@ -57,7 +57,7 @@ function fixture(overrides: Record<string, unknown> = {}): {
       batchTargetPlaceholders: new Map(), exactBatchTargetSlots: new Set(), sortedInserts: [],
       directCallDelegateLayout: undefined, activeDynamicWrites: new Set(),
       usesComposedDelegateDynamicTail: false, computedValueChunkRuns: [],
-      onChainState: {} as never, entryArgs: [], pendingEntryValueTails: [],
+      entryArgs: [], pendingEntryValueTails: [],
       transportedProductions: placement.transportedProductions ?? [],
       batchPredCommitments: placement.batchPredCommitments,
       valueChunkMints: placement.valueChunkMints ?? [{

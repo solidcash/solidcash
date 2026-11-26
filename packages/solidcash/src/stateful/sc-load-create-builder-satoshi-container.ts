@@ -39,9 +39,8 @@ export async function loadCreateBuilderSatoshiContainer(
 ): Promise<LoadCreateBuilderSatoshiContainerResult> {
   const { abiFunction, overrides } = params;
   const transferCount = abiFunction?.transferCount ?? 0;
-  const selectedContainer = undefined;
-  const needsSatoshiContainer = selectedContainer ?? (transferCount > 0
-    || abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer') === true);
+  const needsSatoshiContainer = transferCount > 0
+    || abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer') === true;
   let satoshiContainerUtxo: UnlockableUtxo | undefined;
   let satoshiContainerLockingBytecode: Uint8Array | undefined;
 

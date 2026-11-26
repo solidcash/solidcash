@@ -6,20 +6,14 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  buildChunkCommitment,
   buildValueChunkCommitment,
   computeCollectionHash,
-  isFixedWidthType,
-  packFixedWidthArray,
-  parseArrayTypeString,
   sha256 as sha256Sync,
-  splitValueIntoChunks,
   splitValueIntoValueChunks,
   type AbiFunction,
 } from '@solidcash/utils';
 import { addressToLockScript } from '../utils.js';
 import { getValueChunkAddress, getValueChunkLockingBytecode } from './covenant-helpers.js';
-import type { OnChainState } from './StateReader.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { pinExactSortedBatchEntry } from './writer-event-delegate-layout.js';
@@ -61,7 +55,6 @@ export function registerCreateBuilderBuilderState(
     activeDynamicWrites: Set<string>;
     usesComposedDelegateDynamicTail: boolean;
     computedValueChunkRuns: readonly any[];
-    onChainState: OnChainState;
     entryArgs: readonly any[];
     pendingEntryValueTails: readonly any[];
     transportedProductions: readonly any[];
@@ -81,11 +74,10 @@ export function registerCreateBuilderBuilderState(
     entryDeleteSlots, condSoftDeleteSlots, entryNfts,
     entryAbiFunction, batchTargetPlaceholders, exactBatchTargetSlots, sortedInserts,
     directCallDelegateLayout, activeDynamicWrites, usesComposedDelegateDynamicTail,
-    computedValueChunkRuns, onChainState, pendingEntryValueTails,
+    computedValueChunkRuns, pendingEntryValueTails,
     transportedProductions, valueChunkMints, maxBhLocktime, functionName, timing,
   } = params;
   const dynamicChunkVars = (params.dynamicChunkVars as any[]) ?? [];
-  const selectedDynamicRows = (params.selectedDynamicRows as any[] | undefined) ?? [];
   const sortedLoopCommitments = (params.sortedLoopCommitments as Map<string, any> | undefined)
     ?? new Map<string, any>();
   const runtimeExpressionLoopCollections = (params.runtimeExpressionLoopCollections as Set<string> | undefined)
@@ -177,11 +169,8 @@ export function registerCreateBuilderBuilderState(
     && dynamicChunkVars.some((variable: any) => variable.delegate === true
       && activeDynamicWrites.has(variable.name)
       && (oldDynamicChunkCounts.get(variable.name) ?? 0) === 0);
-  const selectedBatchEmptyDynamicMint = selectedDynamicRows.length > 0
-    && dynamicChunkVars.some((variable: any) => activeDynamicWrites.has(variable.name)
-      && (oldDynamicChunkCounts.get(variable.name) ?? 0) === 0);
   if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail || computedValueChunkRuns.length > 0
-    || directCallEmptyDynamicMint || selectedBatchEmptyDynamicMint) {
+    || directCallEmptyDynamicMint) {
     for (const dv of builder.getDynamicChunkVars()) {
       // The route-wide layout can contain an inactive sibling's dynamic write. Its empty pre-state is already
       // the exact zero-width run; a speculative chunk could never be pinned because no authenticated row
@@ -192,55 +181,9 @@ export function registerCreateBuilderBuilderState(
         // '00' placeholder makes TXOUTPUTCOUNT-1-nNew miss the covenant's nNew=2 pin
         // (fat JobPost push is ~200 bytes → 2 chunks). Reverse-suffix delegates must
         // seed that floor up front — speculative growth cannot fix it.
-        const seedFloor = dv.delegateSuffix === true || usesComposedDelegateDynamicTail
-          || selectedBatchEmptyDynamicMint ? 2 : 1;
+        const seedFloor = dv.delegateSuffix === true || usesComposedDelegateDynamicTail ? 2 : 1;
         const seedCount = Math.max(oldDynamicChunkCounts.get(dv.name) ?? 0, seedFloor);
-        // Empty first-writes of fixed-width T[] under a route proxy callee often never expose an
-        // OTC pin for graph convergence (unlike bytes/string). When the pre-state is empty and the selected
-        // row's visible args are exactly one element, seed the packed one-element array commitment directly.
-        const currentValue = (onChainState as unknown as Record<string, unknown>)[dv.name];
-        const emptyPrestate = currentValue === undefined || currentValue === ''
-          || (currentValue instanceof Uint8Array && currentValue.length === 0)
-          || (Array.isArray(currentValue) && currentValue.length === 0);
-        const array = emptyPrestate ? parseArrayTypeString(dv.type) : undefined;
-        const exactFromPush = emptyPrestate && array && isFixedWidthType(array.elementType)
-          ? selectedDynamicRows.flatMap((row: any) => {
-            const visible = row.handler.inputs.filter((input: any) => !input.name.startsWith('__internal__'));
-            if (visible.length < 1 || row.args.length < 1) return [];
-            // Prefer the last visible arg whose type matches the element (push(amount)).
-            const elementIndex = [...visible.entries()].reverse()
-              .find(([, input]) => input.type === array.elementType
-                || ((input.type === 'int' || input.type === 'uint' || input.type === 'bigint')
-                  && (array.elementType.startsWith('int') || array.elementType.startsWith('uint')
-                    || array.elementType === 'bigint')))?.[0];
-            if (elementIndex === undefined) return [];
-            try {
-              const element = row.args[elementIndex];
-              if (typeof element !== 'bigint' && typeof element !== 'boolean'
-                && !(element instanceof Uint8Array)) return [];
-              const blob = packFixedWidthArray([element], array.elementType);
-              if (blob.length === 0) return [];
-              return [{
-                element,
-                commitments: splitValueIntoChunks(blob).map((chunk, index) => buildChunkCommitment(
-                  index, chunk, host.inner.provider.consensusLimits?.maximumNftCommitmentBytes,
-                )),
-              }];
-            } catch {
-              return [];
-            }
-          })[0]
-          : undefined;
-        if (exactFromPush && exactFromPush.commitments.length > 0) {
-          builder.setChunkRawCommitments(dv.name, exactFromPush.commitments);
-          // Keep the data-NFT A$len header aligned with the packed blob the chunks commit to.
-          builder.setState(dv.name, [exactFromPush.element]);
-        } else {
-          builder.setChunkRawCommitments(
-            dv.name,
-            Array.from({ length: seedCount }, () => '00'),
-          );
-        }
+        builder.setChunkRawCommitments(dv.name, Array.from({ length: seedCount }, () => '00'));
       }
     }
   }

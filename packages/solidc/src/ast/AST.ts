@@ -327,9 +327,6 @@ export interface EntryAccessInfo {
   // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
   // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
   aliasCondDeleteSlot?: number;
-  // Batch alias canonicalization: this conditional slot is inactive when its complete key equals
-  // any earlier slot listed here; the call uses that earlier slot's journal cache instead.
-  runtimeAliasPriorSlots?: number[];
   // Direct-convention compose-on-alias: earlier fixed batch writes of this collection whose key this write may share
   // at runtime. It is the alias row (predOut -2) iff its slot hash equals one of theirs; it still runs, reading the
   // entry's pending value, and the key's last write in source order pins the earliest such slot's output.
@@ -684,9 +681,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   scalarJournalRecursive?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
-  /** Journal this helper through the wrapper's shared entry pool even when it touches a single entry, so sibling
-   * helpers over the same entry resolve to one pending value and one vmap slot. Set by lowering tests only. */
-  forceCollectionJournalPool?: boolean;
 
   /** BoringBatchable's canonical `batch(bytes[],bool)` self-delegate loop: its selector fails closed on BCH. */
   nativeSelfBatchDispatcher?: boolean;

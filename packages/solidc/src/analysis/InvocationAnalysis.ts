@@ -1,11 +1,11 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { SplitStateFootprint } from '@solidcash/utils';
 import {
-  AssignNode, BlockNode, BoolLiteralNode, BranchNode, CollectionIterationNode, ContractNode,
+  AssignNode, BlockNode, CollectionIterationNode, ContractNode,
   DeleteLocalNode, EmitStatementNode, FunctionCallNode,
   FunctionCallStatementNode,
   FunctionDefinitionNode, IdentifierNode, IndirectCallNode, Node, TupleAssignmentNode,
-  TryCatchNode, VariableDefinitionNode, WhileNode,
+  TryCatchNode, VariableDefinitionNode,
 } from '../ast/AST.js';
 
 export interface InvocationFunctionSummary {
@@ -62,7 +62,6 @@ export function walkInvocationAst(
   value: unknown,
   visit: (node: Node) => void,
   seen = new Set<object>(),
-  options: { pruneLiteralDeadControlFlow?: boolean } = {},
 ): void {
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
@@ -70,21 +69,8 @@ export function walkInvocationAst(
   if (value instanceof TryCatchNode) {
     // BCH script failure aborts evaluation, so catches are not executable paths. Keep every footprint and
     // effect survey aligned with code generation by walking only the operation and successful try body.
-    walkInvocationAst(value.expression, visit, seen, options);
-    walkInvocationAst(value.tryBlock, visit, seen, options);
-    return;
-  }
-  if (options.pruneLiteralDeadControlFlow && value instanceof BranchNode
-    && value.condition instanceof BoolLiteralNode) {
-    // Normal analysis stays conservative; only this explicit opt-in ignores the arm that a literal condition
-    // makes unreachable.
-    const active = value.condition.value ? value.ifBlock : value.elseBlock;
-    if (active) walkInvocationAst(active, visit, seen, options);
-    return;
-  }
-  if (options.pruneLiteralDeadControlFlow && value instanceof WhileNode
-    && value.condition instanceof BoolLiteralNode && value.condition.value === false) {
-    // Unlike do-while, a while loop with a literal-false condition executes zero body iterations.
+    walkInvocationAst(value.expression, visit, seen);
+    walkInvocationAst(value.tryBlock, visit, seen);
     return;
   }
   // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating
@@ -94,9 +80,9 @@ export function walkInvocationAst(
       || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
       || key === 'collection' || key === 'type' || key === 'location' || key === 'name' || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex' || key === 'abiType') continue;
     const child = value[key as keyof Node];
-    if (child instanceof Node) walkInvocationAst(child, visit, seen, options);
+    if (child instanceof Node) walkInvocationAst(child, visit, seen);
     else if (Array.isArray(child)) {
-      for (const item of child) walkInvocationAst(item, visit, seen, options);
+      for (const item of child) walkInvocationAst(item, visit, seen);
     }
   }
 }

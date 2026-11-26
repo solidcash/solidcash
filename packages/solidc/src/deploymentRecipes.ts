@@ -41,37 +41,6 @@ import { GlobalFunction } from './ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import { containsStatefulOperation } from './semantic/EnsureFinalRequireTraversal.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
-/** Whether undeclared intrinsic result types may be inferred while building a deployment recipe. */
-export interface FinalizedTypedEffectIrOptions {
-  requireFinalizedTypes?: boolean;
-}
-
-const allowsPreFinalIntrinsicTypes = (options: FinalizedTypedEffectIrOptions): boolean =>
-  options.requireFinalizedTypes !== true;
-
-/**
- * finalized typed effect IR: analysis-scoped typed-effect policy. `requireFinalizedTypes` forbids inventing pre-final
- * intrinsic types; every caller leaves it off. Nested recipe walks read this rather than threading options
- * through every recursive helper.
- */
-let activeTypedEffectOptions: FinalizedTypedEffectIrOptions = { requireFinalizedTypes: false };
-
-const withTypedEffectOptions = <T>(
-  options: FinalizedTypedEffectIrOptions | undefined,
-  run: () => T,
-): T => {
-  const previous = activeTypedEffectOptions;
-  // Default remains allow-pre-final.
-  activeTypedEffectOptions = {
-    requireFinalizedTypes: false,
-    ...options,
-  };
-  try {
-    return run();
-  } finally {
-    activeTypedEffectOptions = previous;
-  }
-};
 
 const binaryOperators = new Set<BinaryOperator>([
   BinaryOperator.MUL, BinaryOperator.DIV, BinaryOperator.MOD,
@@ -186,9 +155,8 @@ const exactHelperSignature = (
     const argumentType = aliasedType
       ?? (argument instanceof IdentifierNode ? handlerInputTypes?.get(argument.name) : undefined)
       ?? (typedArgument ? abiTypeString(typedArgument) : undefined)
-      // finalized typed effect IR: pre-final hash intrinsic invention only when finalized types are not required.
-      ?? (allowsPreFinalIntrinsicTypes(activeTypedEffectOptions)
-        && argument instanceof FunctionCallNode && !argument.resolvedFunction
+      // An unresolved pure hash intrinsic takes its result type from the algorithm.
+      ?? (argument instanceof FunctionCallNode && !argument.resolvedFunction
         && pureHashFunctions.has(argument.identifier.name) && argument.parameters.length === 1
         ? pureHashResultType(argument.identifier.name) : undefined);
     return argumentType !== undefined && argumentType === abiTypeString(candidate.parameters[index].type);
@@ -438,12 +406,8 @@ export function childDeploymentValueRecipe(
     // on an implicit bytes/string interpretation at the child ABI boundary. The AST's own result type is
     // authoritative: bytes.concat is always dynamic bytes, while string.concat is always string; operand bytesN
     // widths remain attached to their nested recipes.
-    // finalized typed effect IR: prefer stamped AST type. Pre-final intrinsic surface defaults only when allowed.
-    const resultType = declaredType
-      ?? (allowsPreFinalIntrinsicTypes(activeTypedEffectOptions)
-        ? (expression instanceof BytesConcatNode ? 'bytes' : 'string')
-        : undefined);
-    if (resultType === undefined) return undefined;
+    // Prefer the stamped AST type, else the intrinsic's surface default.
+    const resultType = declaredType ?? (expression instanceof BytesConcatNode ? 'bytes' : 'string');
     if (expression.parameters.length === 0) return undefined;
     const operands = expression.parameters.map((parameter) => childDeploymentValueRecipe(
       parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
@@ -474,10 +438,8 @@ export function childDeploymentValueRecipe(
       expression.parameters[0], handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     );
-    // finalized typed effect IR: finalized typed IR — do not invent hash result types when requireFinalizedTypes is on.
     const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : undefined)
-      ?? (allowsPreFinalIntrinsicTypes(activeTypedEffectOptions)
-        ? pureHashResultType(expression.identifier.name) : undefined);
+      ?? pureHashResultType(expression.identifier.name);
     return operand && resultType && hashableRecipeType.test(operand.resultType ?? '') ? {
       kind: 'hash',
       algorithm: expression.identifier.name as Extract<ChildDeploymentValueRecipe, { kind: 'hash' }>['algorithm'],
@@ -1562,292 +1524,289 @@ export function analyzeFixedBchEffectRecipes(
 export function analyzeChildDeploymentRecipes(
   fn: FunctionDefinitionNode,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
-  typedEffectOptions?: FinalizedTypedEffectIrOptions,
 ): WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis> {
-  return withTypedEffectOptions(typedEffectOptions, () => {
-    const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-    const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
-    const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
-    let aliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
-      parameter,
-      { kind: 'handlerInput', inputIndex, resultType: abiTypeString(parameter.type) } as ChildDeploymentValueRecipe,
-    ]));
-    let aliasDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
-    const result = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
-    const containsReturn = (value: unknown, seen = new WeakSet<object>()): boolean => {
-      if (Array.isArray(value)) return value.some((item) => containsReturn(item, seen));
+  const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
+  const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+  let aliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
+    parameter,
+    { kind: 'handlerInput', inputIndex, resultType: abiTypeString(parameter.type) } as ChildDeploymentValueRecipe,
+  ]));
+  let aliasDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
+  const result = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
+  const containsReturn = (value: unknown, seen = new WeakSet<object>()): boolean => {
+    if (Array.isArray(value)) return value.some((item) => containsReturn(item, seen));
+    if (!(value instanceof Node) || seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof ReturnNode) return true;
+    for (const [key, child] of Object.entries(value)) {
+      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+      if (containsReturn(child, seen)) return true;
+    }
+    return false;
+  };
+  const childControlArmJoinSafe = (block: BlockNode): boolean => {
+    const statements = block.statements ?? [];
+    const permittedBreak = statements.at(-1) instanceof BreakNode ? statements.at(-1) : undefined;
+    const containsAbruptExit = (value: unknown, seen = new WeakSet<object>()): boolean => {
+      if (Array.isArray(value)) return value.some((item) => containsAbruptExit(item, seen));
       if (!(value instanceof Node) || seen.has(value)) return false;
       seen.add(value);
-      if (value instanceof ReturnNode) return true;
-      for (const [key, child] of Object.entries(value)) {
-        if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
-        if (containsReturn(child, seen)) return true;
-      }
-      return false;
+      if (value === permittedBreak) return false;
+      if (value instanceof BreakNode || value instanceof ContinueNode
+      || value instanceof ReturnNode || value instanceof RevertNode) return true;
+      return Object.entries(value).some(([key, child]) => ![
+        'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
+      ].includes(key) && containsAbruptExit(child, seen));
     };
-    const childControlArmJoinSafe = (block: BlockNode): boolean => {
-      const statements = block.statements ?? [];
-      const permittedBreak = statements.at(-1) instanceof BreakNode ? statements.at(-1) : undefined;
-      const containsAbruptExit = (value: unknown, seen = new WeakSet<object>()): boolean => {
-        if (Array.isArray(value)) return value.some((item) => containsAbruptExit(item, seen));
-        if (!(value instanceof Node) || seen.has(value)) return false;
-        seen.add(value);
-        if (value === permittedBreak) return false;
-        if (value instanceof BreakNode || value instanceof ContinueNode
-        || value instanceof ReturnNode || value instanceof RevertNode) return true;
-        return Object.entries(value).some(([key, child]) => ![
-          'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
-        ].includes(key) && containsAbruptExit(child, seen));
-      };
-      return !containsAbruptExit(block);
+    return !containsAbruptExit(block);
+  };
+  const joinedRecipe = (
+    condition: ChildDeploymentValueRecipe,
+    whenTrue: ChildDeploymentValueRecipe | undefined,
+    whenFalse: ChildDeploymentValueRecipe | undefined,
+  ): ChildDeploymentValueRecipe | undefined => {
+    if (!whenTrue || !whenFalse) return undefined;
+    if (JSON.stringify(whenTrue) === JSON.stringify(whenFalse)) return whenTrue;
+    if (condition.resultType !== 'bool' || !whenTrue.resultType
+    || whenTrue.resultType !== whenFalse.resultType) return undefined;
+    return {
+      kind: 'conditional', resultType: whenTrue.resultType,
+      condition, ifTrue: whenTrue, ifFalse: whenFalse,
     };
-    const joinedRecipe = (
-      condition: ChildDeploymentValueRecipe,
-      whenTrue: ChildDeploymentValueRecipe | undefined,
-      whenFalse: ChildDeploymentValueRecipe | undefined,
-    ): ChildDeploymentValueRecipe | undefined => {
-      if (!whenTrue || !whenFalse) return undefined;
-      if (JSON.stringify(whenTrue) === JSON.stringify(whenFalse)) return whenTrue;
-      if (condition.resultType !== 'bool' || !whenTrue.resultType
-      || whenTrue.resultType !== whenFalse.resultType) return undefined;
-      return {
-        kind: 'conditional', resultType: whenTrue.resultType,
-        condition, ifTrue: whenTrue, ifFalse: whenFalse,
-      };
-    };
+  };
 
-    const snapshotExpression = (value: unknown, unsafe: boolean, seen = new WeakSet<object>()): void => {
-      if (Array.isArray(value)) { value.forEach((item) => snapshotExpression(item, unsafe, seen)); return; }
-      if (!(value instanceof Node) || seen.has(value)) return;
-      seen.add(value);
-      if (value instanceof InstantiationNode) {
-        const siteAliases = new Map(aliases);
-        const siteAliasDefinitions = new Map(aliasDefinitions);
-        // The pool binding is no site argument: the creator passes its own.
-        const declaredParameters = value.referencedContract?.parameters
-          .filter((parameter) => parameter.name !== ORACLE_POOL_PARAMETER) ?? [];
-        const constructorParameters = declaredParameters.length
-          ? declaredParameters : value.referencedContract?.constructorDef?.parameters ?? [];
-        const constructorArgs = value.parameters.map((parameter, index) => (unsafe ? undefined
-          : childDeploymentValueRecipe(
-            parameter, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
-            constructorParameters[index]?.type, new Set(), helperFunctions,
-          )));
-        const salt = value.callOptions?.salt && !unsafe
-          ? childDeploymentValueRecipe(
-            value.callOptions.salt, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
-            undefined, new Set(), helperFunctions,
-          )
-          : undefined;
-        const callValue = value.callOptions?.value && !unsafe
-          ? childDeploymentValueRecipe(
-            value.callOptions.value, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
-            undefined, new Set(), helperFunctions,
-          )
-          : undefined;
-        result.set(value, {
-          aliases: siteAliases,
-          aliasDefinitions: siteAliasDefinitions,
-          constructorArgs,
-          ...(salt && { salt }),
-          ...(callValue && { value: callValue }),
-          supported: !unsafe && constructorArgs.every((recipe) => recipe !== undefined)
-          && (!value.callOptions?.salt || salt !== undefined)
-          && (!value.callOptions?.value || callValue !== undefined),
-        });
-      }
-      for (const [key, child] of Object.entries(value)) {
-        if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
-        snapshotExpression(child, unsafe, seen);
-      }
-    };
+  const snapshotExpression = (value: unknown, unsafe: boolean, seen = new WeakSet<object>()): void => {
+    if (Array.isArray(value)) { value.forEach((item) => snapshotExpression(item, unsafe, seen)); return; }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof InstantiationNode) {
+      const siteAliases = new Map(aliases);
+      const siteAliasDefinitions = new Map(aliasDefinitions);
+      // The pool binding is no site argument: the creator passes its own.
+      const declaredParameters = value.referencedContract?.parameters
+        .filter((parameter) => parameter.name !== ORACLE_POOL_PARAMETER) ?? [];
+      const constructorParameters = declaredParameters.length
+        ? declaredParameters : value.referencedContract?.constructorDef?.parameters ?? [];
+      const constructorArgs = value.parameters.map((parameter, index) => (unsafe ? undefined
+        : childDeploymentValueRecipe(
+          parameter, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          constructorParameters[index]?.type, new Set(), helperFunctions,
+        )));
+      const salt = value.callOptions?.salt && !unsafe
+        ? childDeploymentValueRecipe(
+          value.callOptions.salt, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          undefined, new Set(), helperFunctions,
+        )
+        : undefined;
+      const callValue = value.callOptions?.value && !unsafe
+        ? childDeploymentValueRecipe(
+          value.callOptions.value, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          undefined, new Set(), helperFunctions,
+        )
+        : undefined;
+      result.set(value, {
+        aliases: siteAliases,
+        aliasDefinitions: siteAliasDefinitions,
+        constructorArgs,
+        ...(salt && { salt }),
+        ...(callValue && { value: callValue }),
+        supported: !unsafe && constructorArgs.every((recipe) => recipe !== undefined)
+        && (!value.callOptions?.salt || salt !== undefined)
+        && (!value.callOptions?.value || callValue !== undefined),
+      });
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+      snapshotExpression(child, unsafe, seen);
+    }
+  };
 
-    const invalidateAssignments = (value: unknown, seen = new WeakSet<object>()): void => {
-      if (Array.isArray(value)) { value.forEach((item) => invalidateAssignments(item, seen)); return; }
-      if (!(value instanceof Node) || seen.has(value)) return;
-      seen.add(value);
-      if (value instanceof AssignNode) {
-        const linked = definitionOf(value.identifier);
-        const named = aliasDefinitions.get(value.identifier.name);
-        const definition = linked && aliases.has(linked) ? linked
-          : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
+  const invalidateAssignments = (value: unknown, seen = new WeakSet<object>()): void => {
+    if (Array.isArray(value)) { value.forEach((item) => invalidateAssignments(item, seen)); return; }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof AssignNode) {
+      const linked = definitionOf(value.identifier);
+      const named = aliasDefinitions.get(value.identifier.name);
+      const definition = linked && aliases.has(linked) ? linked
+        : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
+      if (definition) aliases.delete(definition);
+    } else if (value instanceof DeleteLocalNode) {
+      const linked = definitionOf(value.identifier);
+      const named = aliasDefinitions.get(value.identifier.name);
+      const definition = linked && aliases.has(linked) ? linked
+        : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
+      if (definition) aliases.delete(definition);
+    } else if (value instanceof TupleAssignmentNode) {
+      for (const element of value.elements) {
+        if (element.skip || !element.name) continue;
+        const definition = aliasDefinitions.get(element.name);
         if (definition) aliases.delete(definition);
-      } else if (value instanceof DeleteLocalNode) {
-        const linked = definitionOf(value.identifier);
-        const named = aliasDefinitions.get(value.identifier.name);
-        const definition = linked && aliases.has(linked) ? linked
-          : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
-        if (definition) aliases.delete(definition);
-      } else if (value instanceof TupleAssignmentNode) {
-        for (const element of value.elements) {
-          if (element.skip || !element.name) continue;
-          const definition = aliasDefinitions.get(element.name);
-          if (definition) aliases.delete(definition);
-          if (!element.existing) aliasDefinitions.set(element.name, element);
-        }
+        if (!element.existing) aliasDefinitions.set(element.name, element);
       }
-      for (const [key, child] of Object.entries(value)) {
-        if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
-        invalidateAssignments(child, seen);
-      }
-    };
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+      invalidateAssignments(child, seen);
+    }
+  };
 
-    const processBlock = (block: BlockNode, unsafe = false): void => {
-      let priorReturn = false;
-      for (const statement of block.statements ?? []) {
-        const statementUnsafe = unsafe || priorReturn;
-        if (statement instanceof VariableDefinitionNode) {
-          if (statement.expression) {
-            snapshotExpression(statement.expression, statementUnsafe);
-            invalidateAssignments(statement.expression);
-          }
-          const key = statement as object;
-          if (!statementUnsafe && statement.expression) {
-            const recipe = bindRecipe(
-              statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes, aliases,
-              aliasDefinitions, helperFunctions, statement.type,
-            );
-            if (recipe) aliases.set(key, recipe); else aliases.delete(key);
-          } else aliases.delete(key);
-          aliasDefinitions.set(statement.name, key);
-          continue;
-        }
-        if (statement instanceof AssignNode) {
+  const processBlock = (block: BlockNode, unsafe = false): void => {
+    let priorReturn = false;
+    for (const statement of block.statements ?? []) {
+      const statementUnsafe = unsafe || priorReturn;
+      if (statement instanceof VariableDefinitionNode) {
+        if (statement.expression) {
           snapshotExpression(statement.expression, statementUnsafe);
           invalidateAssignments(statement.expression);
-          const linked = definitionOf(statement.identifier);
-          const named = aliasDefinitions.get(statement.identifier.name);
-          const key = linked && aliases.has(linked) ? linked
-            : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
-          if (key && !statementUnsafe) {
-            const targetType = abiTypeString((key as { type?: unknown }).type as never);
-            const recipe = bindRecipe(
-              statement.expression, targetType, handlerInputs, handlerInputTypes, aliases, aliasDefinitions,
-              helperFunctions, (key as { type?: Type }).type,
-            );
-            if (recipe) aliases.set(key, recipe); else aliases.delete(key);
-          } else if (key) aliases.delete(key);
-          continue;
         }
-        if (statement instanceof BlockNode && statement.scoped) {
-          const outerDefinitions = aliasDefinitions;
-          aliasDefinitions = new Map(aliasDefinitions);
-          processBlock(statement, statementUnsafe);
-          aliasDefinitions = outerDefinitions;
-          priorReturn ||= containsReturn(statement);
-          continue;
-        }
-        if (statement instanceof BranchNode) {
-          snapshotExpression(statement.condition, statementUnsafe);
-          const incomingAliases = new Map(aliases);
-          const incomingDefinitions = new Map(aliasDefinitions);
-          const condition = !statementUnsafe ? childDeploymentValueRecipe(
-            statement.condition, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
-            undefined, new Set(), helperFunctions,
-          ) : undefined;
-          const branchSupported = condition?.resultType === 'bool'
-          && childControlArmJoinSafe(statement.ifBlock)
-          && (!statement.elseBlock || childControlArmJoinSafe(statement.elseBlock));
-          // These callbacks execute synchronously and cannot escape this analysis iteration.
-          // eslint-disable-next-line @typescript-eslint/no-loop-func
-          const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
-            aliases = new Map(incomingAliases);
-            aliasDefinitions = new Map(incomingDefinitions);
-            processBlock(armBlock, statementUnsafe || !branchSupported);
-            return new Map(aliases);
-          };
-          const trueAliases = processArm(statement.ifBlock);
-          const falseAliases = statement.elseBlock ? processArm(statement.elseBlock) : incomingAliases;
-          aliases = new Map(incomingAliases);
-          aliasDefinitions = incomingDefinitions;
-          if (!branchSupported) {
-            invalidateAssignments(statement);
-            priorReturn ||= containsReturn(statement);
-            continue;
-          }
-          const joined = new Map<object, ChildDeploymentValueRecipe>();
-          for (const definition of incomingDefinitions.values()) {
-            const recipe = joinedRecipe(condition, trueAliases.get(definition), falseAliases.get(definition));
-            if (recipe) joined.set(definition, recipe);
-          }
-          aliases = joined;
-          priorReturn ||= containsReturn(statement);
-          continue;
-        }
-        if (statement instanceof SwitchNode) {
-          snapshotExpression(statement.expression, statementUnsafe);
-          const incomingAliases = new Map(aliases);
-          const incomingDefinitions = new Map(aliasDefinitions);
-          const discriminant = !statementUnsafe ? childDeploymentValueRecipe(
-            statement.expression, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
-            undefined, new Set(), helperFunctions,
-          ) : undefined;
-          const matches = statement.cases.map((arm) => {
-            const armValue = !statementUnsafe ? childDeploymentValueRecipe(
-              arm.value, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
-              undefined, new Set(), helperFunctions,
-            ) : undefined;
-            return discriminant && armValue ? {
-              kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
-            } as ChildDeploymentValueRecipe : undefined;
-          });
-          const switchSupported = discriminant !== undefined
-          && matches.every((match) => match !== undefined)
-          && statement.cases.every((arm) => childControlArmJoinSafe(arm.body))
-          && (!statement.defaultCase || childControlArmJoinSafe(statement.defaultCase));
-          // Invoked synchronously for each arm; no callback escapes this switch-analysis iteration.
-          // eslint-disable-next-line @typescript-eslint/no-loop-func
-          const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
-            aliases = new Map(incomingAliases);
-            aliasDefinitions = new Map(incomingDefinitions);
-            processBlock(armBlock, statementUnsafe || !switchSupported);
-            return new Map(aliases);
-          };
-          const armAliases = statement.cases.map((arm) => processArm(arm.body));
-          const defaultAliases = statement.defaultCase ? processArm(statement.defaultCase) : incomingAliases;
-          aliases = new Map(incomingAliases);
-          aliasDefinitions = incomingDefinitions;
-          if (!switchSupported) {
-            invalidateAssignments(statement);
-            priorReturn ||= containsReturn(statement);
-            continue;
-          }
-          let joined = new Map(defaultAliases);
-          for (let index = armAliases.length - 1; index >= 0; index -= 1) {
-            const next = new Map<object, ChildDeploymentValueRecipe>();
-            for (const definition of incomingDefinitions.values()) {
-              const recipe = joinedRecipe(matches[index]!, armAliases[index].get(definition), joined.get(definition));
-              if (recipe) next.set(definition, recipe);
-            }
-            joined = next;
-          }
-          aliases = joined;
-          priorReturn ||= containsReturn(statement);
-          continue;
-        }
-        if (statement instanceof TryCatchNode) {
-        // Script failure is fatal on BCH. A successful transaction executes the operation and try body; catch
-        // clauses are dead and must neither publish sites nor invalidate aliases.
-          snapshotExpression(statement.expression, statementUnsafe);
-          snapshotExpression(statement.tryBlock, statementUnsafe);
-          invalidateAssignments(statement.expression);
-          invalidateAssignments(statement.tryBlock);
-          priorReturn ||= containsReturn(statement.tryBlock);
-          continue;
-        }
-        const controlFlow = statement instanceof BranchNode || statement instanceof WhileNode
-        || statement instanceof DoWhileNode || statement instanceof SwitchNode || statement instanceof TryCatchNode
-        || statement instanceof UncheckedNode || statement instanceof CollectionIterationNode;
-        snapshotExpression(statement, statementUnsafe || controlFlow);
-        invalidateAssignments(statement);
+        const key = statement as object;
+        if (!statementUnsafe && statement.expression) {
+          const recipe = bindRecipe(
+            statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes, aliases,
+            aliasDefinitions, helperFunctions, statement.type,
+          );
+          if (recipe) aliases.set(key, recipe); else aliases.delete(key);
+        } else aliases.delete(key);
+        aliasDefinitions.set(statement.name, key);
+        continue;
+      }
+      if (statement instanceof AssignNode) {
+        snapshotExpression(statement.expression, statementUnsafe);
+        invalidateAssignments(statement.expression);
+        const linked = definitionOf(statement.identifier);
+        const named = aliasDefinitions.get(statement.identifier.name);
+        const key = linked && aliases.has(linked) ? linked
+          : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
+        if (key && !statementUnsafe) {
+          const targetType = abiTypeString((key as { type?: unknown }).type as never);
+          const recipe = bindRecipe(
+            statement.expression, targetType, handlerInputs, handlerInputTypes, aliases, aliasDefinitions,
+            helperFunctions, (key as { type?: Type }).type,
+          );
+          if (recipe) aliases.set(key, recipe); else aliases.delete(key);
+        } else if (key) aliases.delete(key);
+        continue;
+      }
+      if (statement instanceof BlockNode && statement.scoped) {
+        const outerDefinitions = aliasDefinitions;
+        aliasDefinitions = new Map(aliasDefinitions);
+        processBlock(statement, statementUnsafe);
+        aliasDefinitions = outerDefinitions;
         priorReturn ||= containsReturn(statement);
+        continue;
       }
-    };
-    // Early-return lowering can wrap later statements in synthetic control flow. Only a return-capable construct
-    // preceding a deployment makes that site unsafe; a terminal return after the site does not change its execution.
-    processBlock(fn.body);
-    return result;
-  });
+      if (statement instanceof BranchNode) {
+        snapshotExpression(statement.condition, statementUnsafe);
+        const incomingAliases = new Map(aliases);
+        const incomingDefinitions = new Map(aliasDefinitions);
+        const condition = !statementUnsafe ? childDeploymentValueRecipe(
+          statement.condition, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+          undefined, new Set(), helperFunctions,
+        ) : undefined;
+        const branchSupported = condition?.resultType === 'bool'
+        && childControlArmJoinSafe(statement.ifBlock)
+        && (!statement.elseBlock || childControlArmJoinSafe(statement.elseBlock));
+        // These callbacks execute synchronously and cannot escape this analysis iteration.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
+          aliases = new Map(incomingAliases);
+          aliasDefinitions = new Map(incomingDefinitions);
+          processBlock(armBlock, statementUnsafe || !branchSupported);
+          return new Map(aliases);
+        };
+        const trueAliases = processArm(statement.ifBlock);
+        const falseAliases = statement.elseBlock ? processArm(statement.elseBlock) : incomingAliases;
+        aliases = new Map(incomingAliases);
+        aliasDefinitions = incomingDefinitions;
+        if (!branchSupported) {
+          invalidateAssignments(statement);
+          priorReturn ||= containsReturn(statement);
+          continue;
+        }
+        const joined = new Map<object, ChildDeploymentValueRecipe>();
+        for (const definition of incomingDefinitions.values()) {
+          const recipe = joinedRecipe(condition, trueAliases.get(definition), falseAliases.get(definition));
+          if (recipe) joined.set(definition, recipe);
+        }
+        aliases = joined;
+        priorReturn ||= containsReturn(statement);
+        continue;
+      }
+      if (statement instanceof SwitchNode) {
+        snapshotExpression(statement.expression, statementUnsafe);
+        const incomingAliases = new Map(aliases);
+        const incomingDefinitions = new Map(aliasDefinitions);
+        const discriminant = !statementUnsafe ? childDeploymentValueRecipe(
+          statement.expression, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+          undefined, new Set(), helperFunctions,
+        ) : undefined;
+        const matches = statement.cases.map((arm) => {
+          const armValue = !statementUnsafe ? childDeploymentValueRecipe(
+            arm.value, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+            undefined, new Set(), helperFunctions,
+          ) : undefined;
+          return discriminant && armValue ? {
+            kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
+          } as ChildDeploymentValueRecipe : undefined;
+        });
+        const switchSupported = discriminant !== undefined
+        && matches.every((match) => match !== undefined)
+        && statement.cases.every((arm) => childControlArmJoinSafe(arm.body))
+        && (!statement.defaultCase || childControlArmJoinSafe(statement.defaultCase));
+        // Invoked synchronously for each arm; no callback escapes this switch-analysis iteration.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
+          aliases = new Map(incomingAliases);
+          aliasDefinitions = new Map(incomingDefinitions);
+          processBlock(armBlock, statementUnsafe || !switchSupported);
+          return new Map(aliases);
+        };
+        const armAliases = statement.cases.map((arm) => processArm(arm.body));
+        const defaultAliases = statement.defaultCase ? processArm(statement.defaultCase) : incomingAliases;
+        aliases = new Map(incomingAliases);
+        aliasDefinitions = incomingDefinitions;
+        if (!switchSupported) {
+          invalidateAssignments(statement);
+          priorReturn ||= containsReturn(statement);
+          continue;
+        }
+        let joined = new Map(defaultAliases);
+        for (let index = armAliases.length - 1; index >= 0; index -= 1) {
+          const next = new Map<object, ChildDeploymentValueRecipe>();
+          for (const definition of incomingDefinitions.values()) {
+            const recipe = joinedRecipe(matches[index]!, armAliases[index].get(definition), joined.get(definition));
+            if (recipe) next.set(definition, recipe);
+          }
+          joined = next;
+        }
+        aliases = joined;
+        priorReturn ||= containsReturn(statement);
+        continue;
+      }
+      if (statement instanceof TryCatchNode) {
+      // Script failure is fatal on BCH. A successful transaction executes the operation and try body; catch
+      // clauses are dead and must neither publish sites nor invalidate aliases.
+        snapshotExpression(statement.expression, statementUnsafe);
+        snapshotExpression(statement.tryBlock, statementUnsafe);
+        invalidateAssignments(statement.expression);
+        invalidateAssignments(statement.tryBlock);
+        priorReturn ||= containsReturn(statement.tryBlock);
+        continue;
+      }
+      const controlFlow = statement instanceof BranchNode || statement instanceof WhileNode
+      || statement instanceof DoWhileNode || statement instanceof SwitchNode || statement instanceof TryCatchNode
+      || statement instanceof UncheckedNode || statement instanceof CollectionIterationNode;
+      snapshotExpression(statement, statementUnsafe || controlFlow);
+      invalidateAssignments(statement);
+      priorReturn ||= containsReturn(statement);
+    }
+  };
+  // Early-return lowering can wrap later statements in synthetic control flow. Only a return-capable construct
+  // preceding a deployment makes that site unsafe; a terminal return after the site does not change its execution.
+  processBlock(fn.body);
+  return result;
 }
 
 /** Serialize a complete constructor-only folded state transition. */

@@ -502,7 +502,7 @@ function prepareDeployerContract(ast: Ast, options: InternalCompilerOptions): vo
       if (node instanceof FunctionCallNode) {
         for (const callee of functionsByName.get(node.identifier.name) ?? []) queue.push(callee);
       }
-    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    });
   }
   contract.functions = contract.functions.filter((fn) => reached.has(fn));
   for (const fn of reached) fn.genesisMode = true;
@@ -690,7 +690,7 @@ function baseConstructorArgumentReadsState(sourceAst: Ast): boolean {
         if (visited instanceof UnaryOpNode && (visited.operator === UnaryOperator.PREFIX_INCREMENT
           || visited.operator === UnaryOperator.PREFIX_DECREMENT || visited.operator === UnaryOperator.POSTFIX_INCREMENT
           || visited.operator === UnaryOperator.POSTFIX_DECREMENT)) found = true;
-      }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+      });
       if (found) return true;
     }
   }
@@ -766,7 +766,7 @@ function constructionOrderDependence(sourceAst: Ast): string | undefined {
             for (const key of resolve(scope, name.slice(name.lastIndexOf('.') + 1))) facts.touches.add(key);
           }
         }
-      }, seen, { pruneLiteralDeadControlFlow: false });
+      }, seen);
     }
     return facts;
   };
@@ -1155,7 +1155,7 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
     walkInvocationAst(fn.body, (visited) => {
       if (visited instanceof MappingAccessNode || visited instanceof MappingAssignNode
         || visited instanceof MappingFieldAssignNode || visited instanceof MappingDeleteNode) touches = true;
-    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    });
     if (touches) collectionAccessFns.add(fn.name);
   }
   // A4.1's balance rule judges calls by the bodies they name, which are all source: a function of C's inheritance, a
@@ -1195,7 +1195,7 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
         if (yul !== undefined) walkYul(yul);
         else if (/\b(selfbalance|balance)\b/.test(visited.assemblyBody)) facts.reads = true;
       }
-    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    });
     return facts;
   };
   const factsByName = new Map<string, BalanceFacts[]>();
@@ -1349,7 +1349,7 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
       if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode || node instanceof MappingAccessNode) {
         writtenCollections.add(node.name);
       }
-    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    });
     // A4.4: the rewrite turned every collection write of the constructor into a journal append. A write that is still
     // a collection write would be minted from builder-supplied witnesses with no check of the rows, so it is refused.
     if (writtenCollections.size > 0) {
@@ -4473,7 +4473,7 @@ function compileResolvedAst(
         if (visited instanceof FunctionCallNode) {
           for (const callee of byName.get(visited.identifier.name) ?? []) queue.push(callee);
         }
-      }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+      });
       if (writesCollections) constructorWritesCollections = true;
     }
     if (constructorWritesCollections) artifact.constructorWritesCollections = true;
@@ -6955,7 +6955,7 @@ function freeFunctionsReachedFrom(
         reached.add(callee);
         queue.push(callee);
       }
-    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    });
   };
   for (const fn of [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]) {
     if (fn !== undefined) visit(fn);

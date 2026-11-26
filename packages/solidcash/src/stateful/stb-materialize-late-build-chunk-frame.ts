@@ -48,9 +48,8 @@ export function materializeLateBuildChunkFrame(
     appendDynamicChunksImpl(host.valueDynamicHost, builder);
   };
   const master = host.valueDynamicHost.masterUnlocker();
-  const independentlyWitnessedRoot = !host.trailingFrameHost.composedParticipant
-    && !host.trailingFrameHost.directCallDelegateBlock
-    && !host.valueDynamicHost.runtimeLoopOrComposed
+  const independentlyWitnessedRoot = !host.trailingFrameHost.directCallDelegateBlock
+    && !host.valueDynamicHost.hasRuntimeLoopOutputs
     && isContractUnlocker(master)
     && master.abiFunction.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase');
   // Ordinary witnessed runs may follow every callee and identity recreation. Appending earlier lets a

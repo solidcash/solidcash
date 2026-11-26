@@ -27,20 +27,6 @@ import {
 } from './legacy-planning-heuristics.js';
 import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 
-/** Keep participant builders local until their continuation descriptors are exported. */
-export function selectBuilderValueChunkOutputBase(
-  localOutputBase: number,
-  publishedOutputBase: number | undefined,
-  composedBlockBase: number,
-): number {
-  if (composedBlockBase > 0) {
-    if (publishedOutputBase === undefined) return localOutputBase;
-    return publishedOutputBase < composedBlockBase
-      ? publishedOutputBase : publishedOutputBase - composedBlockBase;
-  }
-  return publishedOutputBase ?? localOutputBase;
-}
-
 /** A transported claim is usable only for one resource at the observed physical width. */
 export function transportedContinuationLocalBase(
   claims: readonly {
@@ -353,13 +339,6 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   checkMinRelayFee?: boolean; // enforce fee >= feePerByte * txSize
   minRelayFeePerKb?: bigint;  // satoshis per 1000 bytes; default 1000n (1 sat/byte)
   blockLayout?: FunctionBlockLayout;
-  /** Convention of the ABI body currently driving this builder. Historical application-name fallbacks must
-   * never run for a journal-owned route, even if every nested group is legacy or descriptor-free. */
-  /** Building one balanced participant of an atomic composition: its block is concatenated after others, so
-   * absolute coordinates in route witnesses are not local output indices. */
-  composedParticipant?: boolean;
-  /** Absolute output index this composed participant's local block starts at (0 when standalone). */
-  composedBlockBase?: number;
   /** Per-build mutable chunk candidates. Omitted by directly constructed legacy builders. */
   valueChunkWriteStagingSession?: ValueChunkWriteStagingSession;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots

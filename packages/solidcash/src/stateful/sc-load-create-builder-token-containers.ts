@@ -82,13 +82,12 @@ export async function loadCreateBuilderTokenContainers(
   params: {
     abiFunction: AbiFunction | undefined;
     args: readonly FunctionArgument[];
-    overrides: { blockBase?: number } | undefined;
     /** The state the call loaded, for a container keyed by an immutable state variable. */
     stateValues?: Readonly<Record<string, unknown>>;
     timing?: (label: string) => void;
   },
 ): Promise<LoadCreateBuilderTokenContainersResult> {
-  const { abiFunction, args, overrides, timing } = params;
+  const { abiFunction, args, timing } = params;
   timing?.('token-containers-start');
   const tokenContainerAccesses = abiFunction?.tokenContainerAccesses;
   const tokenContainers: TokenContainerInfo[] = [];
@@ -145,7 +144,7 @@ export async function loadCreateBuilderTokenContainers(
         );
       }
       const tokenContainerUnlocker = createTokenContainerUnlocker(
-        host.inner as any, overrides?.blockBase ?? 0, host.categoryId, tokenContainerCategoryId,
+        host.inner as any, 0, host.categoryId, tokenContainerCategoryId,
       );
 
       tokenContainers.push({

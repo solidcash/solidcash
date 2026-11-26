@@ -167,7 +167,6 @@ export async function fixCreateBuilderDelegateUnlockers(
   const directCallDelegateLayout = params.directCallDelegateLayout;
   const returnEmitOutputIndex = params.returnEmitOutputIndex as number;
   const groupProxyMasterIndices = params.groupProxyMasterIndices as any;
-  const overrides = params.overrides as { blockBase?: number } | undefined;
   const entryBatchWitnesses = params.entryBatchWitnesses as any;
   const entryValueWitnesses = params.entryValueWitnesses as any;
   const pendingDynamicChunkInputFills = params.pendingDynamicChunkInputFills as any[];
@@ -534,7 +533,6 @@ export async function fixCreateBuilderDelegateUnlockers(
           if (debugEnv()?.SOLIDC_DEBUG_VMAP_PROOF === '1') {
             debugLog('proxy-master-output-context', {
               groupLocalIdx, directCall: !!directCallDelegateLayout,
-              blockBase: overrides?.blockBase,
               proxyExternalGroup,
               nestedOutputBases,
             });
@@ -548,12 +546,7 @@ export async function fixCreateBuilderDelegateUnlockers(
             // authoritative coordinate for every fixed proxy-state output.
             return BigInt(nestedOutputBases[physicalProxyGroup]);
           }
-          // A route delegate is the implementation of THIS builder's proxy block. Its balanced
-          // state outputs are rooted at the caller-supplied physical block base, not at any nested external
-          // group which happens to carry one of the route's logical calls.
-          if (directCallDelegateLayout) {
-            return BigInt(overrides?.blockBase ?? nestedOutputBases[0] ?? 0);
-          }
+          if (directCallDelegateLayout) return BigInt(nestedOutputBases[0] ?? 0);
           return BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0);
         }
         if (inp.name === '__internal__externalCallInputBase') {
@@ -648,10 +641,10 @@ export async function fixCreateBuilderDelegateUnlockers(
             }
             if (/^__internal__vmapBatchPredOut_\d+$/.test(inp.name)
               && typeof value === 'bigint' && value >= 0n) {
-              // This contract's own batch plan counts its outputs from the block base it was given, so the value
-              // less that base is the trailing ordinal past this block, never an output already absolute.
+              // This contract's own batch plan counts its outputs from its own block, so the value is the trailing
+              // ordinal past this block, never an output already absolute.
               return resolveAbsolutePredOut(
-                value - BigInt(overrides?.blockBase ?? 0),
+                value,
                 masterInputIndex,
                 groupLayoutTrailingBase(group),
                 group.relocatedPredOutBase,

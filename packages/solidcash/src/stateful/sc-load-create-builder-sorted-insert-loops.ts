@@ -45,7 +45,6 @@ export async function loadCreateBuilderSortedInsertLoops(
   params: {
     entryAbiFunction: AbiFunction | undefined;
     stateLayout: any;
-    overrides: any;
     entryArgs: any[];
     finalArgs: any[];
     iterationEntryInputs: UnlockableUtxo[];
@@ -57,7 +56,7 @@ export async function loadCreateBuilderSortedInsertLoops(
   let {
     iterationEntryInputs, finalArgs, sortedLoopCommitments, insertLoopPredecessors,
   } = params;
-  const { entryAbiFunction, stateLayout, overrides, entryArgs } = params;
+  const { entryAbiFunction, stateLayout, entryArgs } = params;
 
   for (const info of entryAbiFunction?.sortedInsertLoopInfo ?? []) {
     const collection = (stateLayout.collections ?? []).find((c: any) => c.name === info.collection);
@@ -122,7 +121,7 @@ export async function loadCreateBuilderSortedInsertLoops(
       }
     }
     const wUnlocker = createEntryNftUnlocker(
-      host.inner, overrides?.blockBase ?? 0, host.categoryId, info.collection,
+      host.inner, 0, host.categoryId, info.collection,
     );
     const commitments: string[] = [binToHex(encodeEntryCommitment(P.slot, sorted[0], P.value))]; // P'
     for (let j = 0; j < sorted.length; j++) {

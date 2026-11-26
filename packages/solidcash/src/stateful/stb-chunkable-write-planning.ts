@@ -33,7 +33,6 @@ import {
 export interface ChunkableWritePlanningHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly composedParticipant: boolean;
   getLowLevelCallMasterInputIndex(index: number): number;
   getExternalCallMasterInputIndex(index: number): number;
 }
@@ -68,7 +67,7 @@ export function chunkableValueWriteExecution(
         group, inputIndex: host.getExternalCallMasterInputIndex(index),
       }] : []
     )),
-  ], { allowCompilerDescribed: host.composedParticipant === true });
+  ]);
 }
 
 export function chunkableValueWriteGroups(host: ChunkableWritePlanningHost): ChunkableValueWriteGroups {

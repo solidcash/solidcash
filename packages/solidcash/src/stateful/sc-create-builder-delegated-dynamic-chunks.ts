@@ -40,7 +40,6 @@ export async function createBuilderLoadDelegatedDynamicChunks(
     iterationEntryInputs: UnlockableUtxo[];
     hasDelegatedDynamicReadChunks: boolean;
     onChainState: OnChainState;
-    blockBase: number;
     phaseCheckpoint?: (stage: string) => void;
   },
 ): Promise<CreateBuilderDelegatedDynamicChunksResult> {
@@ -53,7 +52,6 @@ export async function createBuilderLoadDelegatedDynamicChunks(
     lowLevelCallUtxoGroups,
     stateLayout,
     dynamicReads,
-    blockBase,
     phaseCheckpoint,
   } = params;
 
@@ -89,7 +87,7 @@ export async function createBuilderLoadDelegatedDynamicChunks(
       iterationEntryInputs.push({
         ...utxo,
         unlocker: createReadOnlyDynamicChunkUnlocker(
-          host.inner, blockBase, host.categoryId, dynVar.name, dynVar.type,
+          host.inner, 0, host.categoryId, dynVar.name, dynVar.type,
         ),
       });
     }

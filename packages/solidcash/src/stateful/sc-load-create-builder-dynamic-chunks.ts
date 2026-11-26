@@ -278,7 +278,6 @@ export async function loadCreateBuilderDynamicChunks(
     valueChunkGc: readonly any[];
     onChainState: OnChainState;
     stateLayout: StateLayout;
-    overrides: { blockBase?: number } | undefined;
     abiFunction: AbiFunction | undefined;
     entryAbiFunction: AbiFunction | undefined;
     lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -296,7 +295,7 @@ export async function loadCreateBuilderDynamicChunks(
   },
 ): Promise<LoadCreateBuilderDynamicChunksResult> {
   const {
-    dynamicVarInfos, valueChunkGc, onChainState, stateLayout, overrides,
+    dynamicVarInfos, valueChunkGc, onChainState, stateLayout,
     abiFunction, entryAbiFunction, lowLevelCallUtxoGroups,
     batchPredCommitments, sortedLoopCommitments, runtimeLoopDerivedCounts, sortedInserts,
     args, entryArgs, eventDefs, runtimeEventNftLockingBytecodes, timing,
@@ -333,7 +332,7 @@ export async function loadCreateBuilderDynamicChunks(
     for (const chunk of chunks) {
       const utxo = chunk.utxo as any;
       const unlocker = createDynamicChunkUnlocker(
-        host.inner, overrides?.blockBase ?? 0, host.categoryId, v.name, v.type,
+        host.inner, 0, host.categoryId, v.name, v.type,
       );
       dynamicChunkInputs.push({ ...utxo, unlocker });
     }
@@ -372,7 +371,7 @@ export async function loadCreateBuilderDynamicChunks(
     for (const utxo of oldChunks) {
       trailingDisposalInputs.push({ ...utxo, unlocker:
         createValueChunkUnlocker(
-          host.inner, overrides?.blockBase ?? 0, host.categoryId, gc.collection, gcSlot, gcRoot,
+          host.inner, 0, host.categoryId, gc.collection, gcSlot, gcRoot,
         ) });
     }
   }

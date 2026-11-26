@@ -59,13 +59,8 @@ export async function prepareCreateBuilderDerivePrelude(
     tokenContainerAccesses: readonly any[] | undefined;
     onChainState: any;
     executionSelfAddress: any;
-    overrides: any;
     functionName: string;
-    returnAbiFunction: AbiFunction | undefined;
     returnEmitOutputIndex: number;
-    returnMaterializationOutputIndex: number;
-    returnEmitBlockOffset: any;
-    delegateReturnEventOffset: any;
     lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
     externalCallUtxoGroups: ExternalCallUtxoGroup[];
     externalOutStateUtxoGroups: ExternalCallUtxoGroup[];
@@ -78,9 +73,8 @@ export async function prepareCreateBuilderDerivePrelude(
   const {
     builder, abiFunction, entryAbiFunction, tokenContainerAbiFunction, tokenContainerArgs,
     tokenContainerAccesses,
-    onChainState, executionSelfAddress, overrides, functionName,
-    returnAbiFunction, returnEmitOutputIndex, returnMaterializationOutputIndex,
-    returnEmitBlockOffset, delegateReturnEventOffset, lowLevelCallUtxoGroups,
+    onChainState, executionSelfAddress, functionName,
+    returnEmitOutputIndex, lowLevelCallUtxoGroups,
     externalCallUtxoGroups, externalOutStateUtxoGroups, activeDelegateGroupIndex,
     effectiveBlockLayout, timing,
   } = params;
@@ -181,22 +175,8 @@ export async function prepareCreateBuilderDerivePrelude(
 
   // Reserve the return placeholder before computing any input indices: an active returnEvent contributes a
   // funder inside the root block and therefore shifts the delegated facet by one input.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_RETURN_LAYOUT === '1' && overrides?.omitLocalFeeTail) {
-    console.error('atomic-return-plan', JSON.stringify({
-      functionName,
-      abiFunction: abiFunction?.name,
-      returnAbiFunction: returnAbiFunction?.name,
-      returnOutputs: returnAbiFunction?.outputs,
-      returnEmitOutputIndex,
-      returnMaterializationOutputIndex,
-      returnEmitBlockOffset,
-      delegateReturnEventOffset,
-      suppliedReturnBlob: overrides.returnBlob && binToHex(overrides.returnBlob),
-    }));
-  }
   if (returnEmitOutputIndex >= 0) {
-    builder.setPlannedReturnOutputIndex(returnMaterializationOutputIndex);
+    builder.setPlannedReturnOutputIndex(returnEmitOutputIndex);
     builder.setReturnEventOutput(host.categoryId, new Uint8Array([0]));
   }
 

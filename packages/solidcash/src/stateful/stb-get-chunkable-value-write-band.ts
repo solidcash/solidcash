@@ -36,7 +36,6 @@ export interface GetChunkableValueWriteBandHost {
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly allInputs: readonly UnlockableUtxo[];
-  readonly composedParticipant: boolean;
   readonly forcedChunkableValueWriteBandStart?: number;
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
   chunkableValueWriteExecution(): ChunkableValueWriteExecution | undefined;
@@ -160,30 +159,7 @@ export function getChunkableValueWriteBand(
   if (layoutStart !== undefined) {
     while (host.derivedChunkOutputs.has(layoutStart + derivedWidth)) derivedWidth += 1;
   }
-  // Live covenant nNew (extracted/persisted v) wins over a short compose plan
-  // so the missing continuation (first post slot 25) is reserved. Persist is
-  // cleared on deploy, so a prior test's Created extract cannot inflate this.
-  // A composed participant's continuation outputs are its compiler-declared trailing slots: the composer
-  // publishes the ABSOLUTE coordinate for the covenant argument, while this isolated participant builder must
-  // materialize them at the block-local offset. The legacy `impl + blockSize` base names a coordinate outside
-  // the local block as soon as a delegate executes inside the participant, because `impl` is already an index
-  // inside this block - adding a whole block overruns it and pads the block up to the aggregate coordinate.
-  const composedTrailing = host.composedParticipant
-    ? ((publishFn as AbiFunction | undefined)?.blockLayout?.slots ?? [])
-      .filter((slot) => slot.kind === 'trailing')
-      .map((slot) => slot.offset)
-    : [];
-  const composedContinuationWidth = Math.max(
-    1,
-    publishLlcIndex >= 0
-      ? host.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0 : 0,
-    publishExternal?.valueChunkOutputCount ?? 0,
-    plannedWidth,
-  );
-  const composedBase = composedTrailing.length > 0
-    ? composedTrailing[Math.max(0, composedTrailing.length - composedContinuationWidth)]
-    : undefined;
-  let start = composedBase ?? forcedLayoutStart ?? layoutStart;
+  let start = forcedLayoutStart ?? layoutStart;
   // Never park the selected writer's continuation band on another participant's minting master.
   // View-tail packing and surplus strips key off band.end and would rewrite that block.
   const publishCategoryLower = publishCategory?.toLowerCase();
@@ -216,7 +192,6 @@ export function getChunkableValueWriteBand(
     ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
     console.error('chunk-band-probe', JSON.stringify({
       buildId: peekBuildId(), shift: probeShift, start, band,
-      composedTrailing: composedTrailing.slice(0, 4), composedContinuationWidth,
     }));
   }
   return band;

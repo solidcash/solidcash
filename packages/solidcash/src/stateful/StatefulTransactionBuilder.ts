@@ -63,11 +63,6 @@ export function findScidAnchorInputIndex(inputs: readonly Pick<Utxo, 'token'>[],
   }
   return found;
 }
-
-/** Convert a participant-local continuation coordinate into its aggregate transaction coordinate. */
-export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBase: number): number {
-  return outputBase < 0 ? outputBase : outputBase + blockBase;
-}
 import { decodeEntryCommitment, encodeEntryCommitment } from './SortedList.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
@@ -782,7 +777,6 @@ export {
   lowLevelCallImmutableEventDestinations,
   groupEventSignatures,
   lowLevelCallStateOwnerCategory,
-  selectBuilderValueChunkOutputBase,
   transportedContinuationLocalBase,
   rebaseValueChunkWriteDescriptors,
   type ProtectedLoopEntryCollectionSelection,
@@ -793,7 +787,6 @@ export {
 } from './value-chunk-base-writer-select.js';
 import {
   lowLevelCallImmutableEventDestinations,
-  selectBuilderValueChunkOutputBase,
   type StatefulTransactionOptions,
 } from './value-chunk-base-writer-select.js';
 
@@ -830,7 +823,6 @@ export class StatefulTransactionBuilder {
   private sidecarUtxo?: UnlockableUtxo;
   private stateLayout: StateLayout;
   private masterUtxo: UnlockableUtxo;
-  private probeMasterVout?: number;
   private dataNftUtxos: UnlockableUtxo[];
   private categoryId: string;
   private requiredNftIndices: readonly number[];
@@ -1073,9 +1065,6 @@ export class StatefulTransactionBuilder {
   private valueChunkRedeemLock?: Uint8Array;
   /** A selected writer's persisted continuation band starts after its emitted event output. */
   private forcedChunkableValueWriteBandStart?: number;
-  /** True while building one balanced participant of an atomic composition (its blocks are concatenated). */
-  private composedParticipant = false;
-  private composedBlockBase?: number;
   /** Monotonic signal for structural growth discovered while probing dynamic output regions. */
   private dynamicLayoutRevision = 0;
 
@@ -1208,25 +1197,12 @@ export class StatefulTransactionBuilder {
     this.keccakLoopRecreates = options.keccakLoopRecreates ?? [];
     this._maximumFeeSatoshis = options.maximumFeeSatoshis;
     this.blockLayout = options.blockLayout;
-    this.composedParticipant = options.composedParticipant === true;
-    this.composedBlockBase = options.composedBlockBase;
     this.funderUtxos = options.funderUtxos ?? [];
     this.embeddedFunderUtxos = options.embeddedFunderUtxos ?? [];
     this.logicalIdentityUtxo = options.logicalIdentityUtxo;
     this.externalIdentityAnchorUtxos = options.externalIdentityAnchorUtxos ?? [];
   }
 
-  /** @internal Mark an impossible-output-index master used only by atomic VM derivation probes. */
-  _setProbeMasterVout(realVout: number): void {
-    this.probeMasterVout = realVout;
-  }
-
-  /** @internal Restore the real spend before a atomic participant block leaves SDK construction. */
-  _restoreProbeMasterOutpoint(): void {
-    if (this.probeMasterVout === undefined) return;
-    this.masterUtxo.vout = this.probeMasterVout;
-    this.probeMasterVout = undefined;
-  }
 
   /** @internal Rebuild a root unlocker whose hidden witnesses depend on the final materialized input order. */
   _setMasterUnlockerRefresher(refresher: (builder?: TransactionBuilder) => Unlocker): void {
@@ -1496,7 +1472,6 @@ export class StatefulTransactionBuilder {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
-      composedParticipant: this.composedParticipant,
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       getExternalCallMasterInputIndex: (index) => this.getExternalCallMasterInputIndex(index),
       allInputs: this.allInputs,
@@ -1576,7 +1551,6 @@ export class StatefulTransactionBuilder {
       categoryId: this.categoryId,
       detachedEventReceipts: this.detachedEventReceipts,
       builderOptions: this.builderOptions,
-      composedParticipant: this.composedParticipant,
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       getExternalCallMasterInputIndex: (index) => this.getExternalCallMasterInputIndex(index),
       registerDetachedEvent: (eventDef, lockingBytecode) => {
@@ -1750,7 +1724,6 @@ export class StatefulTransactionBuilder {
   private _refreshedUnlockerSyncHost(): RefreshedUnlockerSyncHost {
     const self = this;
     return {
-      coordinateBase: this.getComposedBlockBase(),
       allInputs: this.allInputs,
       get masterUtxo() { return self.masterUtxo; },
       set masterUtxo(next) { self.masterUtxo = next; },
@@ -1994,7 +1967,6 @@ export class StatefulTransactionBuilder {
       derivedChunkOutputs: this.derivedChunkOutputs,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       categoryId: this.categoryId,
-      composedParticipant: this.composedParticipant,
       builderOptions: this.builderOptions,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
@@ -2012,7 +1984,6 @@ export class StatefulTransactionBuilder {
 
   private _finalizeBuildStampHost(): FinalizeBuildStampHost {
     return {
-      composedParticipant: this.composedParticipant,
       allInputs: this.allInputs,
       entryNfts: this.entryNfts,
       entryDeletes: this.entryDeletes,
@@ -2083,7 +2054,7 @@ export class StatefulTransactionBuilder {
       externalIdentityAnchorUtxos: this.externalIdentityAnchorUtxos,
       logicalIdentityUtxo: this.logicalIdentityUtxo,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
-      runtimeLoopOrComposed: this.getComposedBlockBase() > 0 || this.runtimeLoopTrailingSegments.length > 0
+      hasRuntimeLoopOutputs: this.runtimeLoopTrailingSegments.length > 0
         || this.runtimeLoopEventOutputs.length > 0 || this.runtimeLoopTransferOutputs.length > 0,
       masterUnlocker: () => this.masterUtxo.unlocker,
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
@@ -2112,7 +2083,6 @@ export class StatefulTransactionBuilder {
       valueChunkRawCommitments: this.valueChunkRawCommitments,
       loopEntryVars: this.loopEntryVars,
       directCallDelegateBlock: this.directCallDelegateBlock,
-      composedParticipant: this.composedParticipant,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       pendingOutputs: this.pendingOutputs,
       trailingLoopEntryVars: () => this._trailingLoopEntryVars(),
@@ -3112,7 +3082,6 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       derivedChunkOutputs: this.derivedChunkOutputs,
       allInputs: this.allInputs,
-      composedParticipant: this.composedParticipant,
       forcedChunkableValueWriteBandStart: this.forcedChunkableValueWriteBandStart,
       mintingOutputSwap: this.mintingOutputSwap,
       chunkableValueWriteExecution: () => this._chunkableValueWriteExecution(),
@@ -5463,24 +5432,11 @@ export class StatefulTransactionBuilder {
 
   /** Compiler-authored value-chunk resources carried by this concrete call graph. */
   getValueChunkWriteDescriptors(): readonly ValueChunkWriteDescriptor[] {
-    const blockBase = this.getComposedBlockBase();
-    const writes = [
-      ...[...this.directValueChunkWriteDescriptors.values()]
-        .map((write) => ({ write, blockSize: this.blockLayout?.blockSize })),
+    return [
+      ...this.directValueChunkWriteDescriptors.values(),
       ...[...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
-        .flatMap((group) => (group.valueChunkWrites ?? [])
-          .map((write) => ({ write, blockSize: group.blockLayout?.blockSize }))),
-    ];
-    return writes.map(({ write, blockSize }) => {
-      const localOutputBase = blockBase > 0 && blockSize !== undefined
-        && write.outputBase >= blockBase && write.outputBase < blockBase + blockSize
-        ? selectBuilderValueChunkOutputBase(write.outputBase, write.outputBase, blockBase)
-        : write.outputBase;
-      return {
-        ...write,
-        outputBase: absoluteComposedValueChunkOutputBase(localOutputBase, blockBase),
-      };
-    });
+        .flatMap((group) => group.valueChunkWrites ?? []),
+    ].map((write) => ({ ...write }));
   }
 
   setValueChunkRawCommitments(id: string, commitments: string[]): this {
@@ -5492,14 +5448,6 @@ export class StatefulTransactionBuilder {
     return this.valueChunkRawCommitments.get(id) ?? [];
   }
 
-  /**
-   * Absolute base of this participant's balanced block. Composed participants materialize continuation chunks at
-   * block-local coordinates, while the composed value-chunk claims and the covenant argument name the absolute
-   * coordinate in the concatenated transaction.
-   */
-  getComposedBlockBase(): number {
-    return this.composedParticipant ? this.composedBlockBase ?? 0 : 0;
-  }
 
   /** Output index where value chunks begin: after the block, dynamic chunks, and loop-entry (NEW) outputs. */
   getValueChunkOutputBase(): number {

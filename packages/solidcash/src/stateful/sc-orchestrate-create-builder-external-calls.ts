@@ -1259,14 +1259,12 @@ export async function orchestrateCreateBuilderExternalCalls(
         rootLogicalAddress: params.rootLogicalAddress,
         rootReader: {
           categoryId: host.categoryId,
-          inputIndex: (overrides?.blockBase ?? 0)
-            + (abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'master')?.offset ?? 0),
+          inputIndex: abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'master')?.offset ?? 0,
         },
         blockOracle: host.inner.oraclePool !== undefined
           && abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')
           ? { pool: host.inner.oraclePool,
-            inputIndex: (overrides?.blockBase ?? 0)
-              + abiFunction.blockLayout.slots.find((slot) => slot.kind === 'blockInfoOracle')!.offset }
+            inputIndex: abiFunction.blockLayout.slots.find((slot) => slot.kind === 'blockInfoOracle')!.offset }
           : undefined,
         pendingAnchorFills,
         ensureOrdinarySelfIdentityBand: (contract, selected) => ensureOrdinarySelfIdentityBand(

@@ -3869,7 +3869,6 @@ describe('assignPhysicalReturnIndices', () => {
     const detachedEventReceipts: Array<{ eventSignature: string; commitment: string }> = [];
     const host = {
       externalCallUtxoGroups: [writer], lowLevelCallUtxoGroups: [],
-      composedParticipant: true,
       allInputs: [], detachedEventReceipts, builderOptions: { provider: {} },
       getExternalCallMasterInputIndex: () => 0, getLowLevelCallMasterInputIndex: () => -1,
       findMintingInputIndex: () => -1, ensureDistinctJobEventNfts: () => {},

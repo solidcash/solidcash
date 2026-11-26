@@ -57,7 +57,6 @@ export interface MaterializeExternalCallOutputsHost {
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly pendingReturnEventOutputs: readonly PendingReturnEventLike[];
   readonly categoryId: string;
-  readonly composedParticipant: boolean;
   readonly builderOptions: TransactionBuilderOptions;
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly delegateEntriesAfterLowLevel: boolean;
@@ -216,7 +215,7 @@ export function materializeExternalCallOutputs(
       }
     }
     // A witnessed run goes past every input-bound output, so a following block keeps its master's coordinate.
-    if (!host.composedParticipant && calleeWitnessesDynamicRun(group)) {
+    if (calleeWitnessesDynamicRun(group)) {
       deferredCalleeDynamicChunks.push(...externalDynamicChunks.splice(0));
     }
 

@@ -311,9 +311,6 @@ import {
   resolveCreateBuilderEffectiveLayout as resolveCreateBuilderEffectiveLayoutImpl,
 } from './sc-resolve-create-builder-effective-layout.js';
 import {
-  applyCreateBuilderTransportedProductions as applyCreateBuilderTransportedProductionsImpl,
-} from './sc-apply-create-builder-transported-productions.js';
-import {
   constructCreateBuilderTransactionBuilder as constructCreateBuilderTransactionBuilderImpl,
 } from './sc-construct-create-builder-transaction-builder.js';
 import {
@@ -6508,17 +6505,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
-      /** Atomic composition's provisional/final batch return-event commitment. */
-      returnBlob?: Uint8Array;
       /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
       returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
       signerUtxos?: Utxo[];
-      logicalIdentity?: Awaited<ReturnType<typeof resolveLogicalIdentity>>;
-      /** Absolute base when this local balanced block is concatenated after another participant. */
-      blockBase?: number;
-      /** A atomic composition supplies one global fee tail after all participant blocks. */
-      omitLocalFeeTail?: boolean;
       /** DS-6: the sorted batch targets that spend, or chain on, a node they share with other targets (else the first). */
       sortedNodeOwners?: readonly number[];
       /** DS-6: lent present deletes that run on their node's owner write: the node is relinked at its default value. */
@@ -6691,8 +6681,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     finalArgs = earlyArgs.finalArgs;
     let returnEmitOutputIndex = earlyArgs.returnEmitOutputIndex;
-    let returnMaterializationOutputIndex = earlyArgs.returnMaterializationOutputIndex;
-    const returnAbiFunction = earlyArgs.returnAbiFunction;
     let returnEmitBlockOffset = earlyArgs.returnEmitBlockOffset;
     const resolvedMsgSenderCategory = earlyArgs.resolvedMsgSenderCategory;
 
@@ -7687,7 +7675,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // value derived from the trace.
             const present = list.has(slot);
             const wUnlocker = createEntryNftUnlocker(
-              this.inner, overrides?.blockBase ?? 0, this.categoryId, access.collection,
+              this.inner, 0, this.categoryId, access.collection,
             );
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ENTRY_PIN === '1') {
@@ -7743,7 +7731,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 signer: String(this._signer?.getAddress?.() ?? ''),
                 nonceSigner: String(this._logicalNonceSigner?.getAddress?.() ?? ''),
                 probe: overrides?.returnProbeOnly === true,
-                blockBase: overrides?.blockBase,
               }));
             }
             if (present) {
@@ -8257,7 +8244,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         const exists = !!matchingUtxo;
         const entryUnlocker = createEntryNftUnlocker(
-          this.inner, overrides?.blockBase ?? 0, this.categoryId, access.collection,
+          this.inner, 0, this.categoryId, access.collection,
         );
 
         entryNfts.push({
@@ -8385,10 +8372,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0).length;
       }
       const entryLayout = entryAbiFunction?.blockLayout;
-      // PredOut is an absolute OP_OUTPUT index. Direct calls use block base 0;
-      // composed participants must start at their final aggregate output base.
-      let batchPredOutputBase = (overrides?.blockBase ?? 0)
-        + (entryLayout?.trailingBase ?? entryLayout?.blockSize ?? 1)
+      // PredOut is an absolute OP_OUTPUT index past the block.
+      let batchPredOutputBase = (entryLayout?.trailingBase ?? entryLayout?.blockSize ?? 1)
         + preservedTrailingCount;
       if (entryLayout?.trailingBase === undefined && returnEmitOutputIndex < 0
         && entryAbiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {
@@ -9079,7 +9064,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction,
         entryAbiFunction,
         stateLayout,
-        overrides,
         finalArgs,
       },
     );
@@ -9143,7 +9127,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         {
           entryAbiFunction,
           stateLayout,
-          overrides,
           entryArgs,
           finalArgs,
           iterationEntryInputs,
@@ -9739,7 +9722,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // contributes one additional entry output. Consecutive new keys in one gap chain in the same way.
           let deferred: { slot: Uint8Array; nextKey: Uint8Array } | undefined;
           const runtimeUnlocker = createEntryNftUnlocker(
-            this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
+            this.inner, 0, this.categoryId, info.collection,
           );
           for (let i = 0; i < keysArr.length; i++) {
             const slot = slotForKey(keysArr[i]);
@@ -9944,7 +9927,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           perKeyRawbytes = true;
         }
         const wUnlocker = createEntryNftUnlocker(
-          this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
+          this.inner, 0, this.categoryId, info.collection,
         );
         // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
         // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
@@ -10652,7 +10635,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           iterationEntryInputs,
           hasDelegatedDynamicReadChunks,
           onChainState,
-          blockBase: overrides?.blockBase ?? 0,
           phaseCheckpoint: timing,
         },
       );
@@ -10763,7 +10745,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         externalOutStateUtxoGroups,
         legacyRouteDelegateFn,
         returnEmitOutputIndex,
-        overrides,
         functionName,
         allGroupEcSlots,
         timing,
@@ -10869,8 +10850,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           delegateReturnEventOffset,
           returnEmitOutputIndex,
           returnEmitBlockOffset,
-          returnMaterializationOutputIndex,
-          overrides,
           timing,
         });
         delegateEventSlots.length = 0;
@@ -10878,8 +10857,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         delegateReturnEventOffset = projected.delegateReturnEventOffset;
         returnEmitBlockOffset = projected.returnEmitBlockOffset as typeof returnEmitBlockOffset;
         returnEmitOutputIndex = projected.returnEmitOutputIndex;
-        returnMaterializationOutputIndex =
-          projected.returnMaterializationOutputIndex as typeof returnMaterializationOutputIndex;
       }
       await fixCreateBuilderDelegateUnlockersImpl(
         {
@@ -10914,7 +10891,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           directCallDelegateLayout,
           returnEmitOutputIndex,
           groupProxyMasterIndices,
-          overrides,
           entryBatchWitnesses,
           entryValueWitnesses,
           pendingDynamicChunkInputFills,
@@ -10943,7 +10919,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       {
         abiFunction: tokenContainerAbiFunction,
         args: tokenContainerArgs,
-        overrides,
         stateValues: onChainState?.state,
         timing,
       },
@@ -10964,7 +10939,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       {
         abiFunction: satoshiContainerAbiFunction,
-        overrides,
       },
     );
     const satoshiContainerUtxo = satoshiContainerLoad.satoshiContainerUtxo;
@@ -11496,7 +11470,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         valueChunkGc,
         onChainState,
         stateLayout,
-        overrides,
         abiFunction,
         entryAbiFunction,
         lowLevelCallUtxoGroups,
@@ -11546,7 +11519,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         dynamicChunkVars,
         delegateReturnEventOffset,
         delegateEventSlots,
-        overrides,
         functionName,
         timingEnabled,
         timing,
@@ -11566,14 +11538,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       dynamicInputs: dynamicChunkInputs.length,
       disposalInputs: trailingDisposalInputs.length,
       heapMb: Math.round((((globalThis as any).process?.memoryUsage?.().heapUsed ?? 0) / 1048576)),
-    });
-    const transportedProductions: any[] = [];
-    const ordinaryTransportedRoute = false;
-    applyCreateBuilderTransportedProductionsImpl({
-      transportedProductions,
-      activeDelegateGroupIndex,
-      lowLevelCallUtxoGroups,
-      overrides,
     });
     const constructed = constructCreateBuilderTransactionBuilderImpl(
       {
@@ -11674,7 +11638,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         oldDynamicChunkCommitments,
         oldDynamicChunkCounts,
         overrides,
-        masterUtxo,
         entryDeleteSlots,
         condSoftDeleteSlots,
         entryNfts,
@@ -11688,8 +11651,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         computedValueChunkRuns,
         entryArgs,
         pendingEntryValueTails,
-        transportedProductions,
-        ordinaryTransportedRoute,
         valueChunkMints,
         maxBhLocktime,
         functionName,
@@ -11701,17 +11662,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         batchTargetSlots,
         runtimeLoopDerivedCounts,
         computedValueUpdateCollections,
-        effectiveBlockLayout,
         loopValueChunkMints,
       },
     );
     // Registration above has materialized these owner-local continuations into the builder. Nested call chunks
-    // can occupy the same builder's staged/derived tables, but are not evidence for this route's ABI witness.
+    // can occupy the same builder's staged/derived tables, but are not evidence for this function's ABI witness.
     const ownedMaterializedValueChunkCounts = [
       ...valueChunkMints.map((mint) => mint.chunks.length),
       ...loopValueChunkMints.map((mint) => mint.chunks.length),
-      ...(ordinaryTransportedRoute
-        ? transportedProductions.map((production) => production.write.outputCount) : []),
     ];
 
     await allocateCreateBuilderFundersImpl(
@@ -11760,7 +11718,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       refreshNestedIdentityAnchorWitnesses,
     } = applyCreateBuilderPendingInputFillsImpl({
       builder,
-      overrides,
       functionName,
       entryAbiFunction,
       externalCallUtxoGroups,
@@ -11821,13 +11778,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         tokenContainerAccesses,
         onChainState,
         executionSelfAddress,
-        overrides,
         functionName,
-        returnAbiFunction,
         returnEmitOutputIndex,
-        returnMaterializationOutputIndex,
-        returnEmitBlockOffset,
-        delegateReturnEventOffset,
         lowLevelCallUtxoGroups,
         externalCallUtxoGroups,
         externalOutStateUtxoGroups,
@@ -11896,10 +11848,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       {
         builder,
-        overrides,
         functionName,
         returnEmitOutputIndex,
-        returnMaterializationOutputIndex,
         delegatecallInputIndex,
         entryAbiFunction,
         abiFunction,

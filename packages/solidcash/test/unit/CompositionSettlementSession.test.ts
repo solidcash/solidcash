@@ -220,7 +220,6 @@ describe('composition settlement session CompositionSettlementSession', () => {
     const host = {
       externalCallUtxoGroups: [{ functionName: 'publishJobEvent', categoryId: selected }],
       lowLevelCallUtxoGroups: [],
-      composedParticipant: false,
       getExternalCallMasterInputIndex: () => 0,
       getLowLevelCallMasterInputIndex: () => -1,
       getChunkableValueWriteBand: () => ({ start: 0, end: 0, nNew: 1 }),

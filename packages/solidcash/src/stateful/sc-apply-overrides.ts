@@ -535,6 +535,5 @@ export async function applyOverrides(
     builder.emitDetachedEvent(event.name, ...event.args);
   }
 
-  builder._restoreProbeMasterOutpoint();
   return builder;
 }

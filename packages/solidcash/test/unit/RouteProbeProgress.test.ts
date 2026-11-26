@@ -7,7 +7,7 @@ import {
   routeProbeEntrySlotOffsetForOutput,
   routeProbeRepairableEntryCoordinateCount,
   routeValueRunFingerprint,
-} from '../../src/stateful/StatefulContract.js';
+} from '../../src/stateful/route-probe-progress.js';
 import {
   valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
@@ -122,13 +122,13 @@ describe('progressive route probe progress', () => {
     const observations = new Map<string, string>();
     const coordinate = { identity: 'value-coordinate:category:12', fingerprint: 'first' };
 
-    expect(recordRouteProbeObservation(observations, coordinate, 'legacy-unroll')).toBe('new');
+    expect(recordRouteProbeObservation(observations, coordinate)).toBe('new');
     expect(recordRouteProbeObservation(observations, {
       ...coordinate, fingerprint: 'second',
-    }, 'legacy-unroll')).toBe('changed');
+    })).toBe('changed');
     expect(recordRouteProbeObservation(observations, {
       ...coordinate, fingerprint: 'second',
-    }, 'legacy-unroll')).toBe('same');
+    })).toBe('same');
     expect(progressiveRouteProbePassLimit(0, [])).toBe(3);
   });
 });

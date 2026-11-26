@@ -65,7 +65,6 @@ import {
   legacyPlannedChunkableValueWriteCollection,
   type ValueChunkWriteDescriptor,
   ValueChunkWriteStagingSession,
-  valueChunkWriteResourceIdentity,
   assertMasterSequence,
 } from './StatefulTransactionBuilder.js';
 import type { StandInCaller } from './stb-materialize-caller-edge-outputs.js';
@@ -536,7 +535,6 @@ export {
   decodeEvmReturnValue,
   decodeAuthenticatedProducerResultVector,
 } from './external-return-encoding.js';
-import { type RouteProbeObservation } from './route-probe-progress.js';
 
 import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-loader.js';
 import { calleeBlockExceedsLowLevelBand } from './sc-select-compat-callee-block-calls.js';
@@ -1258,89 +1256,6 @@ function isP2sh32LockingBytecode(bytes: Uint8Array | undefined): boolean {
   return !!bytes && bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87;
 }
 
-/** emitSortedValueChunkPin: `DUP / PICK addr / SWAP / OUTPUTBYTECODE` leaves [addr35, idx] on top. */
-
-export type RouteProbeObservationHistory = Map<string, string>;
-
-/** A resource fingerprint excludes relocatable physical geometry. */
-export function routeValueRunFingerprint(chunks: readonly {
-  outputIndex: number; commitment: string; lockingBytecode: Uint8Array;
-}[]): string {
-  const ordered = [...chunks].sort((left, right) => left.outputIndex - right.outputIndex);
-  const base = ordered[0]?.outputIndex ?? 0;
-  if (ordered.some((chunk, index) => chunk.outputIndex !== base + index)) {
-    throw new Error('Route value-run materialization must occupy one contiguous output band.');
-  }
-  return ordered.map((chunk) => [
-    chunk.outputIndex - base, chunk.commitment, binToHex(chunk.lockingBytecode),
-  ].join(':')).join('|');
-}
-
-/**
- * Record probe facts by their compiler-authenticated resource, independently of physical builder mutations.
- * Physical output indices can move while earlier participant slots hydrate, so callers fingerprint value runs
- * relative to their base. Different semantic bytes for one journal resource remain an SDK/compiler disagreement.
- */
-export function recordRouteProbeObservation(
-  observations: RouteProbeObservationHistory,
-  observation: RouteProbeObservation,
-): 'new' | 'same' | 'changed' {
-  const previous = observations.get(observation.identity);
-  if (previous === undefined) {
-    observations.set(observation.identity, observation.fingerprint);
-    return 'new';
-  }
-  if (previous === observation.fingerprint) return 'same';
-  observations.set(observation.identity, observation.fingerprint);
-  return 'changed';
-}
-
-/** Static convergence budget: each entry may reveal its address and commitment; each value resource its pin/run. */
-export function progressiveRouteProbePassLimit(
-  entrySlotCount: number,
-  writes: readonly ValueChunkWriteDescriptor[],
-): number {
-  const resources = new Set(writes.map(valueChunkWriteResourceIdentity));
-  return Math.max(1, 2 * entrySlotCount + 2 * Math.max(1, resources.size) + 1);
-}
-
-/**
- * Count only entry coordinates reachable from the participant currently being probed. An unrelated participant
- * cannot reveal a fact in this trace and therefore must not enlarge this participant's convergence budget.
- */
-export function routeProbeRepairableEntryCoordinateCount(
-  group: {
-    categoryId: string;
-    masterUtxo: { txid: string; vout: number };
-    blockLayout?: { slots: readonly { kind: string; offset: number }[] };
-  },
-  embeddedDelegate?: {
-    categoryId: string;
-    masterUtxo: { txid: string; vout: number };
-    blockLayout?: { slots: readonly { kind: string; offset: number }[] };
-  },
-): number {
-  const coordinates = new Set<string>();
-  for (const carrier of [group, embeddedDelegate]) {
-    if (!carrier?.blockLayout) continue;
-    const owner = [
-      carrier.categoryId.toLowerCase(),
-      carrier.masterUtxo.txid.toLowerCase(),
-      carrier.masterUtxo.vout,
-    ].join(':');
-    for (const slot of carrier.blockLayout.slots) {
-      if (slot.kind === 'entry') coordinates.add(`${owner}:${slot.offset}`);
-    }
-  }
-  return coordinates.size;
-}
-
-export function permitsRouteValueChunkDerivation(
-  _writes: readonly ValueChunkWriteDescriptor[],
-): boolean {
-  return true;
-}
-
 /** The ABI body carried by a physical participant. */
 function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
   return (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
@@ -1472,22 +1387,6 @@ export {
   resolveChunkableEntryCollection,
   resolvePublishedEntryBlockOffset,
 } from './value-chunk-lanes.js';
-
-/** Map a physical output index to a vmap entry slot offset using proxy and/or implementation layouts. */
-export function routeProbeEntrySlotOffsetForOutput(
-  outputIndex: number,
-  layouts: Array<{ base: number; slots?: Array<{ kind: string; offset?: number }> }>,
-): number | undefined {
-  for (const { base, slots } of layouts) {
-    if (!slots || base < 0) continue;
-    const relative = outputIndex - base;
-    const atIndex = slots[relative];
-    if (atIndex?.kind === 'entry') return atIndex.offset ?? relative;
-    const byOffset = slots.find((slot) => slot.kind === 'entry' && slot.offset === relative);
-    if (byOffset) return byOffset.offset ?? relative;
-  }
-  return undefined;
-}
 
 function extractExpectedOutputCommitmentFromTrace(
   trace: AuthenticationProgramStateCommon[], outputIndex: number, actualCommitment: string,

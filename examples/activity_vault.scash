@@ -1,0 +1,61 @@
+pragma solidcash ^0.52.0;
+
+contract ActivityVault(pubkey owner, bytes20 recoveryPkh, int inactivitySeconds, int reviewBlocks) {
+    int public deadline;
+    int public balanceSats;
+    bool public recoveryPending;
+
+    constructor(int startedAt) {
+        require(inactivitySeconds > 0, "Inactivity period must be positive");
+        require(reviewBlocks > 0 && reviewBlocks <= 65535, "Review must fit a block-based sequence lock");
+        require(startedAt >= 500000000, "Start must be a timestamp");
+        require(startedAt + inactivitySeconds <= 4294967295, "Deadline exceeds the locktime range");
+        this.deadline = startedAt + inactivitySeconds;
+    }
+
+    function deposit() public payable {
+        // Spending the master during review would restart its relative lock.
+        require(!this.recoveryPending, "Deposits pause during review");
+        require(msg.value > 0, "Deposit must be positive");
+        this.balanceSats += msg.value;
+    }
+
+    function pay(sig signature, bytes20 recipientPkh, int amount) public {
+        require(checkSig(signature, owner), "Owner signature required");
+        require(amount > 0 && amount <= this.balanceSats, "Invalid payment amount");
+        this.balanceSats -= amount;
+        renew();
+        this.transfer(new LockingBytecodeP2PKH(recipientPkh), amount);
+    }
+
+    function checkIn(sig signature) public {
+        require(checkSig(signature, owner), "Owner signature required");
+        renew();
+    }
+
+    function startRecovery() public {
+        require(!this.recoveryPending, "Recovery already pending");
+        require(this.balanceSats > 0, "Vault is empty");
+        require(tx.time >= this.deadline, "Inactivity period has not elapsed");
+        this.recoveryPending = true;
+    }
+
+    function recover() public {
+        require(this.recoveryPending, "No recovery pending");
+        require(this.age >= reviewBlocks, "Review period has not elapsed");
+        int amount = this.balanceSats;
+        this.balanceSats = 0;
+        this.recoveryPending = false;
+        this.transfer(new LockingBytecodeP2PKH(recoveryPkh), amount);
+    }
+
+    function renew() internal {
+        require(tx.time >= 500000000, "Payment or check-in requires a timestamp locktime");
+        int nextDeadline = tx.locktime + inactivitySeconds;
+        require(nextDeadline <= 4294967295, "Deadline exceeds the locktime range");
+        if (nextDeadline > this.deadline) {
+            this.deadline = nextDeadline;
+        }
+        this.recoveryPending = false;
+    }
+}

@@ -7,6 +7,8 @@
 - Framed compiles refuse an `upgrade`, `deploy`, `split` or `merge` entry with no trusted-key signature check, and a
   `selfdestruct` entry with no `require`, as direct compiles do. 0.52.1 compiled them framed, so anyone could spend
   them.
+- A framed function whose `{value:}` call runs on only some paths compiles and pays the callee exactly when the call
+  runs; 0.52.1 failed with `Expected variable '__internal__frameSendOutput_0' does not exist on the stack`.
 
 ### Removed
 

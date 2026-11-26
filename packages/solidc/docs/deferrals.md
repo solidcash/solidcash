@@ -3539,16 +3539,30 @@ them; a default 0.52.1 compile reached them through a message-bus route or its k
 - a storage-pointer helper that calls one target twice and receives a mapping (Uniswap Router02's `_addLiquidity`):
   `AssignTypeError: Type 'function(address)returns(uint256)' can not be assigned to variable of type 'mapping(...)'`,
   a direct-path type-check fault the bus's early helper inlining used to hide;
-- a runtime loop that writes a mapping under keys from a locally built array (`new int[](count)`), and the
-  counter-keyed push `for (i < n) m[i].push(v)`: `SortedMappingCodegenPendingError` in a direct build (a framed body
-  keeps an explicit dead arm for its entry).
+- a runtime loop that writes a mapping under keys from a locally built array (`new int[](count)`), the counter-keyed
+  push `for (i < n) m[i].push(v)`, and a runtime loop that rewrites one fixed-key entry (`while (c) m[k] = v`):
+  `SortedMappingCodegenPendingError` in a direct build (a framed body keeps an explicit dead arm for its entry);
+- a call on a child in the transaction that deploys it (`(new C()).getter()`, `C c = new C(); c.m()`,
+  `I(address(new C())).m()`): `DeployedChildCallError`, where the bus folded the call into the child's genesis (the
+  deploy-then-call fold);
+- a deployer `new` with `salt` (`new C{salt: s}(..)`): `DeploySaltError`, as the child's redeem starts with its
+  category pin;
+- MarketplaceV1's `publishJobPost` compiled direct: `REPEATED_CALL_UNSUPPORTED` for its repeated low-level `SafeERC20`
+  calls, the shape of the first item. The marketplace itself compiles framed, as its project configures.
 
 **Why deferred:** each is a direct-convention capability of its own, not part of the removal, which keeps every other
 contract's bytes.
 
-**What it'd take:** a repeated-call check that groups calls by branch exclusivity; the Router02 type-check fault fixed
-on the direct path; direct lowerings for constructed-key and counter-keyed loop writes (the kernel's
-`captureConstructedKeyVectorProvenance` and `LowerVMapCounterLoops(true)` are the prior art).
+**What it'd take:** a repeated-call check that groups calls by branch exclusivity, and low-level calls run as frames of
+the callee's multi-call entry (the `SafeERC20` shapes); the Router02 type-check fault fixed on the direct path; direct
+lowerings for constructed-key and counter-keyed loop writes (the kernel's `captureConstructedKeyVectorProvenance` and
+`LowerVMapCounterLoops(true)` are the prior art), and one that keeps a loop-invariant entry in a local and writes it
+once; a deployer `new` that binds a call on its child at its creation, folding it into the genesis as the internal
+`__legacyDeployFold` path still does; a salted child identity on the deployer path, so `new C{salt: s}` takes its
+address from the salt.
 
 **Revisit if:** a port hits one of these refusals. The restored tests pin the first and the loop shapes; the Router02
-case is skipped in `solidity-compat/calls-abi.test.ts`.
+case is skipped in `solidity-compat/calls-abi.test.ts`. The deploy-then-call, salt, `publishJobPost` and fixed-key
+loop refusals are pinned in `DeployFoldFreshChildGetter`, `DeployFoldInterfaceCast`,
+`framed/master/deploy-then-call-refusal`, `DeployFoldGenesisBalance`, `MarketplacePublishJobPostKeys` and
+`StoredValueSource`.

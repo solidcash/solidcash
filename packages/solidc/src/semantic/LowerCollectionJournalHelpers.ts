@@ -112,7 +112,7 @@ interface ActiveDynamicCache {
   mutates: boolean;
 }
 
-/** Strip the compiler's synthetic batch-clone prefix so a diagnostic names the handler the user wrote. */
+/** The helper name a diagnostic shows: the name without a `_self_alias` suffix. */
 const sourceHandlerName = (name: string): string => name.replace(/_self_alias$/, '');
 
 interface ActiveMultiCacheLocal {
@@ -184,7 +184,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private current?: Candidate;
   private currentMulti?: MultiCandidate;
   private activeMultiCaches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
-  /** One whole-array value per route, shared by every selected row touching that state array. */
+  /** One whole-array value per wrapper, shared by every pooled helper call touching that state array. */
   private activeDynamicCaches = new Map<string, ActiveDynamicCache>();
   /** Dynamic chunk-backed state arrays of the contract under rewrite (name set, for writer footprints). */
   private dynamicStateNames = new Set<string>();
@@ -200,10 +200,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   /** Candidates a rewritten call site actually supplies the journal value to. A candidate no call site threads
    * must keep its direct signature: `resolveMulti` deliberately refuses to rewrite a call inside a body whose
    * array has an unthreaded writer, and unshifting the callee's parameter anyway leaves the two sides disagreeing
-   * on the arity (`handler-route-generation-unsupported` with a parameter-list error in generated source). */
+   * on the arity (a parameter-list error in generated source). */
   private threadedSingles = new Set<Candidate>();
   private threadedMultis = new Set<MultiCandidate>();
-  /** Route dispatchers load only selected-row caches; selected compiler handlers already own their resources. */
+  /** Load each pooled cache at the call that uses it; a `forceCollectionJournalPool` function reads them at entry. */
   private lazyMultiCaches = true;
 
   constructor(private readonly enablePooledDynamicArrays = false) { super(); }
@@ -353,7 +353,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       let returnCount = 0;
       this.walk(fn.body, (candidate) => { if (candidate instanceof ReturnNode) returnCount += 1; });
       // A pooled function (`forceCollectionJournalPool`) may need two independent channels at its one physical
-      // exit: pending collection values for the journal, followed by the source ABI result. Keep the admission
+      // exit: pending collection values for the journal, followed by the source ABI result. Keep the check
       // deliberately structural: one top-level terminal return, no early branch.
       const pooledTerminalResult = fn.forceCollectionJournalPool === true
         && fn.returnTypes.length > 0
@@ -423,11 +423,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           accesses.push({ name: candidate.name, keys: [candidate.index], node: candidate });
         } else if (candidate.constructor.name === 'MappingFieldAssignNode') unsupported = true;
       });
-      // A compiler-owned row clone can combine an independently indexed chunk-backed state array with its
-      // fixed entry journal. A raw StateArrayAssign inside the OP_INVOKE body would re-open the persisted array
-      // for every row, so row two observes the transaction pre-state and the final pending write no longer
-      // matches the source-order execution. Thread the whole array value through the clone beside the entry
-      // tuple instead. The wrapper installs one shared cache and flushes it once after the row loop.
+      // A pooled helper can combine an independently indexed chunk-backed state array with its fixed entry
+      // journal. A raw StateArrayAssign inside the OP_INVOKE body would re-open the persisted array for every
+      // call, so a second call observes the transaction pre-state and the final pending write no longer matches
+      // the source-order execution. Thread the whole array value through the helper beside the entry tuple
+      // instead. The wrapper installs one shared cache and flushes it once.
       const dynamicNames = new Set<string>();
       if (this.enablePooledDynamicArrays && fn.forceCollectionJournalPool) {
         this.walk(fn.body, (candidate) => {
@@ -442,18 +442,17 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         });
       }
       // The dynamic journal threads the whole array value, so it does not depend on the array's element key being
-      // a parameter. A row clone whose only threadable state is such an array must still be admitted when its
-      // FIXED entry accesses are not journalable (an unsupported shape, or no entry access at all): leaving it out
-      // strands the array write inside the OP_INVOKE body, where every row re-opens the transaction pre-state and
-      // the caller's pooled write-back republishes the value it seeded. The entry accesses then keep their existing
-      // physical handling, exactly as they do when the function is not pooled.
+      // a parameter. A pooled helper whose only threadable state is such an array must still be journalled when
+      // its FIXED entry accesses are not journalable (an unsupported shape, or no entry access at all): leaving it
+      // out strands the array write inside the OP_INVOKE body, where every call re-opens the transaction pre-state
+      // and the caller's pooled write-back republishes the value it seeded. The entry accesses then keep their
+      // existing physical handling, exactly as they do when the function is not pooled.
       //
-      // A non-parameter (expression) key is deliberately NOT covered: a loop-varying key is what the runtime
-      // journal transport exists for, and claiming such a handler for this pooled journal would remove it from
-      // that mechanism while leaving the entry write physical. Only a handler whose entry keys are all parameters
-      // (so the entry leg is either journalable or unsupported as a whole) is admitted for the array alone.
-      const dynamicOnlyAdmission = dynamicNames.size > 0 && fn.forceCollectionJournalPool === true;
-      if ((unsupported || accesses.length === 0) && !dynamicOnlyAdmission) continue;
+      // A non-parameter (expression) key is deliberately NOT covered: claiming such a helper for this pooled
+      // journal would leave its entry write physical. Only a helper whose entry keys are all parameters (so the
+      // entry leg is either journalable or unsupported as a whole) is journalled for the array alone.
+      const journalsArrayAlone = dynamicNames.size > 0 && fn.forceCollectionJournalPool === true;
+      if ((unsupported || accesses.length === 0) && !journalsArrayAlone) continue;
       const parameterNames = new Set(fn.parameters.map((parameter) => parameter.name));
       const normalized = accesses.map((access) => ({
         ...access,
@@ -530,10 +529,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             : { kind: 'binary', operator: '||', left: entry.activation, right: guard };
         }
       }
-      // A rejected entry journal must not leave a partially built one behind: the dynamic-only admission threads
-      // the array alone and keeps those accesses physical.
+      // A rejected entry journal must not leave a partially built one behind: a helper journalled for its array
+      // alone keeps those accesses physical.
       if (unsupported || !stableKeys) distinct.clear();
-      if ((unsupported || distinct.size === 0) && !dynamicOnlyAdmission) continue;
+      if ((unsupported || distinct.size === 0) && !journalsArrayAlone) continue;
       const dynamicWrites = this.dynamicWriteFootprint(fn);
       const dynamicEntries: DynamicJournalEntry[] = [...dynamicNames].map((state, index) => ({
         state,
@@ -605,8 +604,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
       // A pooled dynamic array may only be cached here when EVERY writer of that array in this body is threaded
       // through the journal tuple. A writer that is not (a call emitted directly, or a direct state write) keeps
-      // its own frame authoritative, and the pooled flush after the row loop would write this body's PRE-call
-      // value back over it - the row's committed write silently disappears while its own verification passes.
+      // its own frame authoritative, and the pooled flush at the end of this body would write its PRE-call
+      // value back over it - the writer's committed write silently disappears while its own verification passes.
       this.rewriteBlockedStates = this.currentMulti ? undefined : this.unthreadedDynamicWriters(fn);
       this.activeDynamicCaches = this.currentMulti
         ? new Map()
@@ -739,8 +738,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private resolveMultiCandidate(name: string, argumentCount: number): MultiCandidate | undefined {
     const exact = this.multiCandidates.get(`${name}/${argumentCount}`);
     if (exact) return exact;
-    // Only when the call carries MORE arguments than the registered arity: that is the "route wrote a synthetic
-    // itself" case. A call with FEWER arguments is under-supplied for some other reason and must keep failing.
+    // Only when the call carries MORE arguments than the registered arity: a synthetic operand was appended to it.
+    // A call with FEWER arguments is under-supplied for some other reason and must keep failing.
     const byName = [...this.multiCandidates.entries()]
       .filter(([key]) => key.slice(0, key.lastIndexOf('/')) === name
         && argumentCount >= Number(key.slice(key.lastIndexOf('/') + 1)))
@@ -1253,12 +1252,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   ): Map<FunctionDefinitionNode, ActiveMultiCache> {
     const caches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
     // One physical entry gets one pending journal value per wrapper, however many different handlers touch it.
-    // Keeping a pool per callee was enough while a route admitted a single handler; with several handlers over
-    // one collection it allocated a separate cache local - and therefore a separate vmap slot - per handler for
-    // the same entry, which the SDK reports as a duplicate upsert slot.
+    // A pool per callee would allocate a separate cache local - and therefore a separate vmap slot - per handler
+    // for the same entry, which the SDK reports as a duplicate upsert slot.
     const sharedLocals: ActiveMultiCache['locals'] = [];
     const calls: FunctionCallNode[] = [];
-    const debugRoute = (globalThis as { process?: { env?: Record<string, string> } })
+    const debugTrace = (globalThis as { process?: { env?: Record<string, string> } })
       .process?.env?.SOLIDC_DEBUG_TRACE === '1';
     const debugCalls: Array<{
       target: string;
@@ -1327,7 +1325,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         return { entry, local, mutates: entry.mutates };
       });
       cache.calls.set(call, callLocals);
-      if (debugRoute) {
+      if (debugTrace) {
         debugCalls.push({
           target: target.fn.name,
           bindings: callLocals.map((binding) => ({
@@ -1337,7 +1335,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         });
       }
     }
-    if (debugRoute && caches.size > 0) {
+    if (debugTrace && caches.size > 0) {
       console.error('collection-journal-pool', JSON.stringify({
         calls: debugCalls,
         pools: [...caches.entries()].map(([key, cache]) => ({
@@ -1457,10 +1455,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       ), body)]), body),
     ), body));
     const statements = body.statements ?? [];
-    // A compiler-owned caller ends with a terminal `return` (a route hands its results blob back). Appending the
-    // write-back after it makes the whole flush unreachable: the value the callee threaded back is discarded and
-    // the caller republishes the value the cache was seeded with - for a chunk-backed resource a contradictory
-    // pin on the same chunk run, since the callee's own write is what the program ends up committing. Mirror the
+    // A caller can end with a terminal `return`. Appending the write-back after it makes the whole flush
+    // unreachable: the value the callee threaded back is discarded and the caller republishes the value the cache
+    // was seeded with - for a chunk-backed resource a contradictory pin on the same chunk run, since the callee's
+    // own write is what the program ends up committing. Mirror the
     // entry-journal flush: lift the terminal return out, flush before it and before any nested exit, and
     // re-append it last so the later all-paths-return analysis still sees one top-level exit.
     const tailReturn = statements.length > 0 && statements[statements.length - 1] instanceof ReturnNode
@@ -1498,9 +1496,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   private installMultiCaches(body: BlockNode): void {
     // Every cache shares one locals pool, so collapse to the distinct locals before emitting declarations and
-    // write-backs. Values are loaded lazily at the rewritten call site: a compiler-authored route contains every
-    // possible handler, but only the selected row has a physical entry resource. Loading every cache at function
-    // entry made an untaken handler validate a dummy slot (and writing every cache created phantom upserts).
+    // write-backs. Values are loaded lazily at the rewritten call site: only a handler call that runs has a physical
+    // entry resource. Loading every cache at function entry made an untaken handler validate a dummy slot (and
+    // writing every cache created phantom upserts).
     const pooled = [...new Set([...this.activeMultiCaches.values()].flatMap((cache) => cache.locals))];
     const caches = [{ locals: pooled }];
     const declarations = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) => {
@@ -1544,7 +1542,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           this.at(new IdentifierNode(name), body),
         ), body);
         write.fromModifier = entry.sourceScope;
-        write.journalDirtyBit = { word: `${COLLECTION_CACHE_DIRTY_MASK}_${Math.floor(index / 256)}`, bit: index % 256 };
         const flush = this.at(new BranchNode(
           this.cacheMaskIsSet(COLLECTION_CACHE_DIRTY_MASK, index, body),
           this.at(new BlockNode([write]), body),

@@ -328,7 +328,7 @@ export interface EntryAccessInfo {
   // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
   aliasCondDeleteSlot?: number;
   // Batch alias canonicalization: this conditional slot is inactive when its complete key equals
-  // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
+  // any earlier slot listed here; the call uses that earlier slot's journal cache instead.
   runtimeAliasPriorSlots?: number[];
   // Direct-convention compose-on-alias: earlier fixed batch writes of this collection whose key this write may share
   // at runtime. It is the alias row (predOut -2) iff its slot hash equals one of theirs; it still runs, reading the
@@ -366,7 +366,7 @@ export interface EntryAccessInfo {
   arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
   /**
    * Optional fixed entry-mutation activation recipe. Absent means the write is unconditional. When present, the
-   * SDK evaluates it against authenticated row arguments and omits inactive write planning (including bands).
+   * SDK evaluates it against the call's authenticated arguments and omits inactive write planning (including bands).
    * A framed write a branch guards publishes the condition it runs under (`framed/master/write-activation.ts`).
    */
   activation?: ExternalCallExpression;
@@ -400,7 +400,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
   // this is false; undefined remains the conservative value for compiler-synthesized functions created later.
   declare hasContractInstantiation?: boolean;
-  // F1 (caller-attested call edges): a direct, non-framed, non-route stateful entry that reads a contract-caller
+  // F1 (caller-attested call edges): a direct, non-framed stateful entry that reads a contract-caller
   // msg.sender. Its codegen computes the entry's own call digest and the msg.sender minting path requires a
   // co-spent caller-category edge record matching it, so a caller is bound by its call, not merely co-spent.
   declare requiresCallerEdge?: boolean;
@@ -431,9 +431,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeLoopEvents?: RuntimeLoopEventInfo[];
   /** Repeated BCH-transfer segments lowered into the runtime trailing stream by a counter loop. */
   runtimeLoopTransfers?: RuntimeLoopTransferInfo[];
-  /** Worst-case trailing outputs across all lowered counter loops and their source-ordered fixed event peers.
-   * Internal layout metadata; each loop independently admits at most 64 iterations. */
-  runtimeCounterLoopOutputCapacity?: number;
   transferInfos?: TransferInfo[];
   deployTargets?: {
     contractName: string; dataNftCount: number; entryNftCount?: number;
@@ -620,9 +617,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Physical stream widths keyed by the compiler-owned permutation parameter. */
   runtimeCounterLoopCardinalityParams?: Map<string, { input: string; output: string }>;
 
-  /** Names-free affine recursive mapping-frame proof; metadata only, never an admission capability. */
+  /** Names-free affine recursive mapping-frame proof; published metadata only (ABI `affineRecursiveFrames`). */
   runtimeLoopAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
-  /** Idempotence marker for the pre-admission constructed-array replay normalization. */
+  /** Idempotence marker for the constructed-array replay normalization (`normalizeImmutableDefaultArrayKeys`). */
   runtimeLoopConstructedArrayKeysNormalized?: boolean;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
@@ -685,31 +682,13 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-owned: this entry's reachable scalar-handler call graph contains
   // a direct or mutual recursion cycle and requires SDK VM preflight.
   scalarJournalRecursive?: boolean;
-  /** A recursive varying-key mapping read or write which no authenticated affine stream claimed. Compiler
-   * admission must retain this marker across speculative clones and refuse the generic tail-loop representation.
-   * The name still says read; a write-only shape sets it too, because that loop also has no per-frame key witness. */
-  unloweredVaryingRecursiveMappingRead?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
-  /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
-   * single entry, so sibling handlers over the same entry resolve to one pending value and one vmap slot. */
+  /** Journal this helper through the wrapper's shared entry pool even when it touches a single entry, so sibling
+   * helpers over the same entry resolve to one pending value and one vmap slot. Set by lowering tests only. */
   forceCollectionJournalPool?: boolean;
-  /** Completed collection-journal lowering proved every access to these resources shares the route cache. */
-  runtimeLoopPooledChunkableWrite?: true;
-  /** This handler owns one direct push into a chunkable sorted mapping-array entry (unconditional and/or
-   * bool-param activated with empty else). Compiler-generated route lowering threads the typed pending array through every
-   * selected OP_INVOKE row and flushes it exactly once, so repeated same-key rows compose without intermediate
-   * continuation outputs. */
-  runtimeLoopPooledChunkableArrayPush?: true;
-  /** Optional bool-param activation for the pooled chunkable array push (path-effect activation fold schedule publish). */
-  runtimeLoopPooledChunkableArrayPushActivation?: ExternalCallExpression;
-  /** Mutation effect ordinal for the pooled chunkable array push when activation is published. */
-  runtimeLoopPooledChunkableArrayPushEffectOrdinal?: number;
-  // Release 4 collection rows bind source argument positions to hidden
-  // physical-route key witnesses. The SDK derives these from canonical rows;
-  // the route compares decoded row arguments before any handler executes.
 
-  /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local route journal. */
+  /** BoringBatchable's canonical `batch(bytes[],bool)` self-delegate loop: its selector fails closed on BCH. */
   nativeSelfBatchDispatcher?: boolean;
 
   /** Codegen: this entry's return carrier is the record of the direct call it answers. */
@@ -1093,7 +1072,7 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // Original literal bytes when LowerMemoryModel rewrites a `bytes memory` declaration into a numeric pointer.
   // Yul create-address lowering still needs the compile-time blob after that representation change.
   memoryLiteralValue?: Uint8Array;
-  // Return temporary produced by InlineReturningStateHelpers. Counter-loop admission uses the callee's declared
+  // Return temporary produced by InlineReturningStateHelpers. The counter-loop lowering uses the callee's declared
   // purity after the surface FunctionCallNode has been normalized into statements plus this SSA result, or the
   // separate proof below when the complete non-pure effect closure contains only source-ordered events.
   inlinedReturningHelperPure?: boolean;
@@ -1226,7 +1205,7 @@ export class BranchNode extends StatementNode {
   /**
    * Compiler-owned entry flush whose absent arm must remain physically inactive. Ordinary source branches may be
    * if-converted to an unconditional preserve/write, but doing that to a lazy journal flush creates trailing
-   * resources (notably chunk NFTs) for handlers which were never selected.
+   * resources (notably chunk NFTs) for helper calls that never ran.
    */
   preserveConditionalEntryWrites?: boolean;
 
@@ -1463,8 +1442,7 @@ export abstract class ExpressionNode extends Node {
   // from an internal call after getter/helper inlining.
   fromExternalSelfCall?: boolean;
   // The counter-loop lowering has proved this is the same-key old-value read of a compact `+`/`-` mapping
-  // transition. Its value comes from the authenticated runtime journal entry; route admission must not reserve
-  // an additional fixed-key witness for the loop-local identity.
+  // transition. Code generation reads it as the old value of the entry the loop co-spends (`readsOwnEntry`).
   runtimeLoopTransitionRead?: boolean;
   // A runtime-sized local-array key reconstructed from dominating writes. LowerVMapCounterLoops may treat this
   // expression as counter-derived without broadening that rule to arbitrary source array reads.
@@ -1598,10 +1576,6 @@ export class MappingAssignNode extends StatementNode implements Named {
   runtimeLoopMutationValueExpression?: ExpressionNode;
   /** Source-order replay recipe for a counter-loop mapping-array element index. */
   runtimeLoopMutationIndexExpression?: ExpressionNode;
-  /** Set only after LowerVMapCounterLoops successfully publishes this write's authenticated journal stream. */
-  runtimeLoopJournalTransport?: { collection: string; varyingArrayParam: string };
-  /** A collection journal's flush: it runs exactly where bit `bit` of the route-local dirty word `word` is set. */
-  journalDirtyBit?: { word: string; bit: number };
   /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
   runtimeLoopReadOnly?: boolean;
   /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */
@@ -1725,7 +1699,7 @@ export class CastNode extends ExpressionNode implements Typed {
 }
 
 export class FunctionCallNode extends ExpressionNode {
-  /** Pre-semantic source program point copied if this call lowers to an external graph edge. */
+  /** Pre-semantic source program point copied if this call lowers to an external call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates captured before helper/control-flow lowering. */
   sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
@@ -1809,9 +1783,9 @@ export class InstantiationNode extends ExpressionNode {
   // Replayable constructor preconditions, rewritten into the deploying function's expression context.
   foldedConstructorPredicates?: ExpressionNode[];
 
-  // Finite collection entries created by a child constructor. The first admitted form is a top-level,
-  // fixed-size scalar array addressed by a literal index; both key and value are rewritten into the parent
-  // handler's expression context so the deploy covenant and SDK can independently reproduce the entry NFT.
+  // Finite collection entries created by a child constructor. The supported form is a top-level, fixed-size
+  // scalar array addressed by a literal index; both key and value are rewritten into the deploying function's
+  // expression context so the deploy covenant and SDK can independently reproduce the entry NFT.
   foldedCollectionEntries?: Array<{
     collection: CollectionNode;
     key: ExpressionNode;
@@ -2750,12 +2724,12 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // are unknown at compile time, the return is read as a single opaque bytes blob, identity-bound to addr.
   opaqueReturn?: boolean;
   // Statement-form `addr.call(payload);` authenticates the same opaque result frame so it can target either a
-  // returning or void handler, but deliberately does not reconstruct `(success, data)` on the source stack.
+  // returning or void callee, but deliberately does not reconstruct `(success, data)` on the source stack.
   discardedOpaqueReturn?: boolean;
   // Expression form whose `data` the body never reads: a direct entry reads no record, so a void callee can answer
   // it, and `data` is empty.
   unreadOpaqueReturn?: boolean;
-  // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing graph invocation. The
+  // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing call. The
   // compiler still reconstructs its Solidity `(success, data)` result, but excludes it from callsite metadata.
   rawValueTransferOnly?: boolean;
   // An option-free empty-calldata call to a constant target that cannot be a P2SH lock: solc's call to an account
@@ -3059,9 +3033,9 @@ export interface ExternalOutStateSlot {
 }
 
 export class MethodCallNode extends ExpressionNode {
-  /** Source-level returned-array link copied if this resolves to an external graph call. */
+  /** Source-level returned-array link copied if this resolves to an external call. */
   resultArrayOutput?: number;
-  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  /** Pre-semantic source program point copied if this lowers to an external call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates captured before helper/control-flow lowering. */
   sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
@@ -3074,7 +3048,7 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
-  // Set by the table lowerings for a broadcast call outside a route graph: the called element's selector,
+  // Set by the table lowerings for a broadcast call: the called element's selector,
   // `bytes4(sel[i])`, which its record's digest names; threaded to the external call slot in semantic analysis.
   loopRecordSelector?: ExpressionNode;
   // Set by LowerStaticLowLevelCalls for a framed low-level call it lowered to this typed call; threaded to the
@@ -3210,8 +3184,8 @@ export interface RuntimeLoopTransferInfo {
   permutationParam: string;
   /** Function-local execution segment shared with runtime events in the same source loop. */
   effectSequence?: number;
-  /** Effect kind per source site. Stored on the segment because synthetic route bodies need not retain the
-   * concrete source statement nodes from which this information was first derived. */
+  /** Effect kind per source site. Stored on the segment because a lowered body need not retain the concrete
+   * source statement nodes from which this information was first derived. */
   siteKinds?: RuntimeLoopTransferKind[];
 }
 
@@ -3573,7 +3547,7 @@ export class PlaceholderStatementNode extends StatementNode {
 }
 
 export class LowLevelCallNode extends ExpressionNode {
-  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  /** Pre-semantic source program point copied if this lowers to an external call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
   sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
@@ -3602,7 +3576,7 @@ export class LowLevelCallNode extends ExpressionNode {
 }
 
 export class LowLevelCallStatementNode extends StatementNode {
-  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  /** Pre-semantic source program point copied if this lowers to an external call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
   sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];

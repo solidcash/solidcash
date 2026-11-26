@@ -50,8 +50,8 @@ const allowsPreFinalIntrinsicTypes = (options: FinalizedTypedEffectIrOptions): b
   options.requireFinalizedTypes !== true;
 
 /**
- * finalized typed effect IR: analysis-scoped typed-effect policy. Compiler admission defaults to requiring finalized types
- * (no pre-final intrinsic invention). Nested recipe walks read this rather than threading options
+ * finalized typed effect IR: analysis-scoped typed-effect policy. `requireFinalizedTypes` forbids inventing pre-final
+ * intrinsic types; every caller leaves it off. Nested recipe walks read this rather than threading options
  * through every recursive helper.
  */
 let activeTypedEffectOptions: FinalizedTypedEffectIrOptions = { requireFinalizedTypes: false };
@@ -61,7 +61,7 @@ const withTypedEffectOptions = <T>(
   run: () => T,
 ): T => {
   const previous = activeTypedEffectOptions;
-  // Default remains allow-pre-final for analysis bridges; journal publication asserts finalized IR separately.
+  // Default remains allow-pre-final.
   activeTypedEffectOptions = {
     requireFinalizedTypes: false,
     ...options,
@@ -275,7 +275,7 @@ export const childDeploymentCollectionDefinitions = (
     ...(collection.type.bound !== undefined && { bound: collection.type.bound }),
   }),
   ...(collection.immutable && { immutable: true }),
-  // Every collection, array or mapping, uses the verified sorted-entry backend. Compiler admission digests a child
+  // Every collection, array or mapping, uses the verified sorted-entry backend. The compiler digests a child
   // before the normalization pass stamps `.sorted`, so the mandatory property is canonical, not read.
   sorted: true,
   ...(collection.enumerable && { enumerable: true }),
@@ -395,7 +395,7 @@ export function childDeploymentValueRecipe(
     if (aliases) {
       const linked = linkedDefinition && aliases.get(linkedDefinition);
       if (linked) return linked;
-      // Early route preparation can clone a pure subexpression without cloning the lexical environment which
+      // An earlier lowering can clone a pure subexpression without cloning the lexical environment which
       // owns it. Use the currently scoped name binding only when the linked declaration is not tracked in this
       // environment; this preserves shadowing while repairing clone-stale declaration identities.
       if (namedDefinition && (!linkedDefinition
@@ -1209,7 +1209,7 @@ export function analyzeFixedBchEffectRecipes(
     if (value instanceof FunctionCallNode && value.resolvedFunction
       && containsStatefulOperation(value.resolvedFunction.body?.statements)) {
       // Scalar-journal helpers deliberately remain behind OP_INVOKE. Their post-call state is authenticated by
-      // the VM, but it is not a pure function of this handler row which the SDK can independently replay. Drop
+      // the VM, but it is not a pure function of this function's inputs which the SDK can replay. Drop
       // every tracked scalar alias rather than publishing a stale pre-call transfer recipe.
       for (const definition of stateKeys) environment.aliases.delete(definition);
     }

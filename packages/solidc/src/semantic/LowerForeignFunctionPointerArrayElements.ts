@@ -392,8 +392,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
           }
           // Broadcast: the receiver keeps the live element, so the call is the array-element co-spend whose
           // epilogue binds every element; a loop-invariant receiver such as fns[0] would be hoisted out of the
-          // loop as one fixed callee. A graph handler, which reconstructs one authoritative row per reached
-          // iteration, also takes the live selector.
+          // loop as one fixed callee.
           const arrId = new IdentifierNode(name); arrId.location = node.location;
           const liveIndex = this.visit(target.index) as ExpressionNode;
           const elem = new ArrayAccessNode(

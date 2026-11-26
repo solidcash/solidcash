@@ -39,8 +39,8 @@ const LOCAL_OPCODES = new Set<number>([
 ]);
 
 // These opcodes observe the enclosing execution frame, so their results cannot participate in a journal handler:
-// direct calls and routed rows intentionally have different stack depths and active bytecode. An immediately
-// adjacent OP_DROP erases the observation before it can influence control flow, validation, or output state.
+// its stack depth and active bytecode depend on where it runs. An immediately adjacent OP_DROP erases the
+// observation before it can influence control flow, validation, or output state.
 const DISCARDED_AMBIENT_READ_OPCODES = new Set<number>([
   Op.OP_DEPTH,
   Op.OP_ACTIVEBYTECODE,
@@ -119,7 +119,7 @@ export function isNativeAssemblySafe(node: AssemblyStatementNode): boolean {
       main.push(pushedScriptNumber(element));
       continue;
     }
-    // An adjacent discard makes these otherwise route-dependent observations exact semantic no-ops on every
+    // An adjacent discard makes these otherwise frame-dependent observations exact semantic no-ops on every
     // enclosing stack: neither opcode can fail and no observed value escapes. Keep the spelling deliberately
     // atomic; even one intervening opcode could branch, verify, hash, or select data using the observed value.
     if (DISCARDED_AMBIENT_READ_OPCODES.has(element) && script[index + 1] === Op.OP_DROP) {

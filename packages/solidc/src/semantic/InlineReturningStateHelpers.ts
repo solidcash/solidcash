@@ -1152,7 +1152,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private transformNodes(node: Node, xform: (n: Node) => Node): void {
     for (const key of Object.keys(node)) {
       // Semantic links point outside the syntactic subtree (often back to another whole function or state
-      // declaration). Following one here makes a local shape query observe a sibling handler's statements and,
+      // declaration). Following one here makes a local shape query observe a sibling function's statements and,
       // worse, lets rename/inlining mutate that sibling through the back-reference.
       if (key === 'type' || key === 'symbolTable' || key === 'location'
         || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'

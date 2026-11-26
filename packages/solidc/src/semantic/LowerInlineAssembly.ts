@@ -288,8 +288,8 @@ function bodyHasAssembly(node: Node | undefined): boolean {
   return false;
 }
 
-// Unsafe native BCH opcodes intentionally remain opaque to Yul lowering. Compiler admission can run this pass early,
-// but must leave a mixed Yul/unsafe-native function untouched so the ordinary late pass sees it exactly once.
+// Unsafe native BCH opcodes intentionally remain opaque to Yul lowering. With `skipFunctionsWithNativeAssembly`,
+// the pass leaves a mixed Yul/unsafe-native function untouched.
 function bodyHasUnsafeNativeAssembly(node: Node | undefined): boolean {
   if (!node) return false;
   if (node instanceof AssemblyStatementNode) {

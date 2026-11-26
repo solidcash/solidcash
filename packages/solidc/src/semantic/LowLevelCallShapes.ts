@@ -262,7 +262,7 @@ function collectLowLevelCalls(
 /**
  * Describe every low-level callsite in the same deterministic source order used by semantic slot allocation.
  *
- * This is metadata, not admission: consumers must still reject conditional and unbounded delegate frames until
+ * This is metadata only: consumers must still reject conditional and unbounded delegate frames until
  * the manifest has an explicit activation/cardinality encoding. Publishing the distinction prevents those
  * shapes from being mistaken for a singular frame merely because all three previously serialized identically.
  */

@@ -380,8 +380,7 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
           }
           const arrId = new IdentifierNode(name); arrId.location = node.location;
           // The broadcast covenant runs the whole table once after the loop, so each call here claims the element it
-          // indexes, the one after its loop's last claim (the receiver is not hoisted). A graph handler also
-          // reconstructs that row's exact target and selector from state.
+          // indexes, the one after its loop's last claim (the receiver is not hoisted).
           const liveIndex = this.visit(target.index) as ExpressionNode;
           const elem = new ArrayAccessNode(arrId, cloneNode(liveIndex) as ExpressionNode);
           elem.location = node.location;

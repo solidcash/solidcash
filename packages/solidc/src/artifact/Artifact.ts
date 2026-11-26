@@ -1014,7 +1014,7 @@ const externalCallIterationDomainLists = (
       if (statement === target) return true;
       if (!contains(statement, target)) {
         // A completed earlier loop need not be symbolically replayed if it cannot change any input to
-        // this recurrence. Its own calls/effects remain separate compiler graph edges.
+        // this recurrence. Its own calls/effects are published separately.
         if (statement instanceof WhileNode && canSkipPriorLoop(statement)) continue;
         if (!processBlock(new BlockNode([statement]), state)) return false;
         if (!state.reachable) return false;
@@ -2550,7 +2550,7 @@ const transferEffects = (
         };
       })() : undefined;
     // Inlined low-level helpers can retain their source branch in this artifact walk after flow analysis has
-    // flattened that branch around the cloned effect node. Recover a condition expressed directly in handler
+    // flattened that branch around the cloned effect node. Recover a condition expressed directly in function
     // inputs/literals through the same executable recipe language; aliases still require the flow snapshot.
     const conditionRecipe = effect?.activation
       ?? (transfer.condition ? operandRecipe(transfer.condition) : undefined);
@@ -2608,8 +2608,8 @@ const transferEffects = (
 };
 
 /**
- * X135. True when every dynamic (chunk-backed) write this function publishes was RESERVED by the route's
- * journal rather than performed by the function.
+ * X135. True when every dynamic (chunk-backed) write this function publishes was RESERVED by the scalar journal
+ * rather than performed by the function.
  *
  * `GenerateTargetTraversal` pre-allocates one chunk slot per dynamic journal slot a handler HOLDS, and a
  * handler holds a slot it only READS: the epilogue then writes the pre-state value back unchanged, which is a
@@ -2617,14 +2617,10 @@ const transferEffects = (
  * build shape needs it - the SDK consumes and recreates those chunks - but a write-back is not a mutation,
  * and `writesState` is the flag that answers "output state == input state".
  *
- * Measured: ERC-20 `name()` / `symbol()` are `writesState: false` compiled DIRECT and were `true` compiled in
- * bus mode, from the same unchanged body. `decimals()` / `totalSupply()` never moved, because their journal
- * slots are scalar and X105 already gated the scalar sibling of this leak.
- *
  * SOUNDNESS. `scalarJournal` is set at GTT:2711 exactly when journal context is live AND the writer closure
  * reached this function, and that closure is transitive over internal calls (GTT:1745-1755) and over function
  * pointers (L2-F3), so a false answer cannot hide a write behind a helper. `journalContextArity` is set only
- * for a handler carrying live journal context, so DIRECT-mode dynamic writes - which carry none - are never
+ * for a handler carrying live journal context, so an entry's own dynamic writes - which carry none - are never
  * gated. The caller has already returned true for `scalarJournal`, so reaching here means "not a writer".
  */
 const journalReservedDynamicWritesOnly = (func: FunctionDefinitionNode): boolean =>
@@ -3456,7 +3452,7 @@ function buildFunctionAbiMetadata(
       }
       if (slot.preCallRequires) {
         // Compute recipes may reuse one of these source-point predicates. Give its producer leaves the same
-        // physical callsite, tuple-component, and repeated-owner source identity as every other graph use.
+        // physical callsite, tuple-component, and repeated-owner source identity as every other use.
         slot.preCallRequires = slot.preCallRequires.map((predicate) =>
           canonicalize(predicate, slot.slotIndex, 'condition'));
       }
@@ -3561,13 +3557,13 @@ function buildFunctionAbiMetadata(
     };
   })();
   const signatureGuard = signatureGuardOf(func, contract, provenance);
-  const routeEntryLoopWrites = func.entryLoopWrites;
+  const loopWriteCollections = func.entryLoopWrites;
   const loopSignatureFunctions = [func];
-  const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
+  const loopWriteSignatures = Object.fromEntries(loopSignatureFunctions
     .flatMap((candidate) => candidate.entryAccesses ?? [])
     // Codegen may mark its private entry-slot copy as inLoop after semantic traversal; the authoritative
     // collection name is entryLoopWrites, so match that name rather than requiring the AST flag to survive.
-    .filter((access) => routeEntryLoopWrites?.includes(access.collection))
+    .filter((access) => loopWriteCollections?.includes(access.collection))
     .map((access) => [access.collection, access.collectionSignature]));
   const visibleParameters = func.parameters.filter((parameter) =>
     !parameter.name.startsWith('__internal__'));
@@ -4008,7 +4004,7 @@ function buildFunctionAbiMetadata(
       || matchingCalls[0].callValueEffect || matchingCalls[0].opaqueReturn) return undefined;
     return { callsiteId: matchingCalls[0].slotIndex };
   })();
-  // Late semantic rewrites may introduce graph calls or entry mutations after the source program-point pass.
+  // Late semantic rewrites may introduce external calls or entry mutations after the source program-point pass.
   // Never advertise a linear authority domain unless every emitted effect retained its compiler-owned identity.
   const publishedSourceEffectOrder = sourceEffectOrderForArtifact(
     func.sourceEffectOrder, func.externalCalls ?? [], func.entryAccesses ?? [],
@@ -4108,20 +4104,7 @@ function buildFunctionAbiMetadata(
           },
         }),
         ...(ea.arrayMutation !== undefined && { arrayMutation: ea.arrayMutation }),
-        ...((() => {
-          const pooledActivation = func.runtimeLoopPooledChunkableArrayPush === true
-            && ea.arrayMutation === 'push'
-            && func.runtimeLoopPooledChunkableArrayPushActivation !== undefined
-            && (func.runtimeLoopPooledChunkableArrayPushEffectOrdinal === undefined
-              || (ea.mutationEffectOrdinals?.includes(func.runtimeLoopPooledChunkableArrayPushEffectOrdinal)
-                ?? false))
-            ? func.runtimeLoopPooledChunkableArrayPushActivation
-            : undefined;
-          const stamped = ea.activation ?? pooledActivation;
-          return stamped !== undefined
-            ? { activation: cloneExternalCallExpression(stamped) }
-            : {};
-        })()),
+        ...(ea.activation !== undefined && { activation: cloneExternalCallExpression(ea.activation) }),
       })),
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),
@@ -4184,12 +4167,12 @@ function buildFunctionAbiMetadata(
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => {
         const rawCall = ec.interfaceName === '__raw__' && ec.functionName === '__raw__';
-        // A grouped call owns one physical route even when its logical rows are conditional or repeated.
-        // Publish row cardinality below; the outer callsite itself is the singular co-spend.
+        // A grouped call owns one co-spend even when its logical occurrences are conditional or repeated.
+        // Publish their cardinality below; the outer callsite itself is the singular co-spend.
         const structuralOccurrence = occurrenceInfoOf(func, ec.sourceCallNode);
         // The source call can be hoisted out of its branch during lowering while its compiler-published
         // condition still records the branch that reaches it. In that case it is not a mandatory `once`
-        // edge: the graph may have zero rows until the guard's authenticated producer result is known.
+        // call: it may run zero times until the guard's authenticated producer result is known.
         const occurrenceInfo = ec.condition && structuralOccurrence.occurrence === 'once'
           ? { occurrence: 'conditional' as const, maximumOccurrences: 1 }
           : structuralOccurrence;
@@ -4375,17 +4358,17 @@ function buildFunctionAbiMetadata(
     ...(Object.keys(dynamicWriteGrowth).length > 0 && { dynamicWriteGrowth }),
     ...(dynamicWriteOrder.length > 0 && { dynamicWriteOrder }),
     ...(Object.keys(dynamicWriteRecipes).length > 0 && { dynamicWriteRecipes }),
-    ...(routeEntryLoopWrites && routeEntryLoopWrites.some(
+    ...(loopWriteCollections && loopWriteCollections.some(
       (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
     ) && {
       // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
       // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
       // it here makes the SDK attempt to decode vmap slot/link commitments as legacy key/value loop commitments.
-      entryLoopWrites: routeEntryLoopWrites.filter(
+      entryLoopWrites: loopWriteCollections.filter(
         (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
       ),
-      ...(Object.keys(routeEntryLoopWriteSignatures).length > 0 && {
-        entryLoopWriteSignatures: routeEntryLoopWriteSignatures,
+      ...(Object.keys(loopWriteSignatures).length > 0 && {
+        entryLoopWriteSignatures: loopWriteSignatures,
       }),
     }),
     ...(func.sortedInsertLoops && func.sortedInsertLoops.length > 0 && { sortedInsertLoops: [...func.sortedInsertLoops] }),
@@ -4999,8 +4982,8 @@ export function generateArtifact(
     debug,
     ...(directCompile && isStateful && { callRecords: compilerOptions.callRecords ?? 'returning' as const }),
     // A direct compile's call digests name their reader (CALL_RECORD_READER_INPUT): it digests its own input as a
-    // caller, a journal direct participant too, whose entries take no reader witness. Said where the contract digests
-    // a call: an entry takes the reader witness, reads a record or pins an edge.
+    // caller. Said where the contract digests a call: an entry takes the reader witness, reads a record or pins an
+    // edge.
     ...(directCompile && abi.some((fn) => fn.inputs.some((input) => input.name === CALL_RECORD_READER_INPUT
       || DIGESTING_WITNESS.test(input.name))) && { callRecordReader: true }),
     ...(directCompile && isStateful && { genesisCalls: compilerOptions.genesisCalls !== false }),

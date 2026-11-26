@@ -238,13 +238,13 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
 /** Selector identity of a source ABI entry point; compiler-internal physical operands never affect it. */
 function sourceFunctionSelectorHex(fn: FunctionDefinitionNode, evmCompat = false): string {
   // Fallback/receive parameters describe their compatibility execution context, not selector-dispatched ABI
-  // arguments. SymbolTableTraversal assigns both special entries their reserved zero-argument selector, so exact
-  // handler selection must derive the same identity even when `fallback(bytes input)` exposes calldata in its
-  // body. Ordinary functions continue to exclude only compiler-owned physical operands.
+  // arguments. SymbolTableTraversal assigns both special entries their reserved zero-argument selector, so the
+  // selector derived here is that one even when `fallback(bytes input)` exposes calldata in its body. Ordinary
+  // functions continue to exclude only compiler-owned physical operands.
   const visibleParams = fn.isFallback || fn.isReceive
     ? []
     : fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  // The dispatch scheme follows the compile's mode; the journal's selector identities must match it, including
+  // The dispatch scheme follows the compile's mode; a per-entry split's selectors must match it, including
   // Solidity's canonical parameter spelling under evmCompat.
   const signature = evmCompat
     ? canonicalSelectorSignature(fn.name, visibleParams.map((parameter) => parameter.type))
@@ -407,12 +407,6 @@ function validateExpandedSelfdestructs(contract: ContractNode): void {
     }
   }
 }
-type CaughtCompilerAttempt = {
-  stage: 'admission' | 'full-recompile' | 'verifier-bind';
-  errorName: string;
-  message: string;
-  internalCodegen: boolean;
-};
 type InternalAttemptFailureState = { firstError?: unknown };
 /** Facts the B7.3 deployer program publishes for the artifact B7.14 writes. */
 interface DeployerProgramBox {
@@ -915,11 +909,8 @@ function compileDeployerProgram(
       constants, box, thirdArm: options.__deployerTestBox?.thirdArm === true,
       genesisLayout: options.__deployerTestBox?.genesisLayout,
     },
-    __pristineAstBox: undefined,
     __parsedAst: undefined,
     __deployerConstantsBox: undefined,
-    __admissionWinnerBox: undefined,
-    __attemptFailureBox: undefined,
     __internalAttemptFailureState: undefined,
   } as InternalCompilerOptions;
   delete (inner as { delegateVariant?: unknown }).delegateVariant;
@@ -1461,11 +1452,7 @@ type InternalCompilerOptions = CompilerOptions & {
    * ones among them though another shard holds the body that emits them.
    */
   __logicalContractEvents?: readonly string[];
-  /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
-  __pristineAstBox?: { ast?: Ast };
-  /** Test-only observation of failures consumed by an admission/rebinding recovery path. */
-  __attemptFailureBox?: { failures: CaughtCompilerAttempt[] };
-  /** Test-only explicit audit flag; journal compiles enforce this invariant regardless of the flag's value. */
+  /** Test-only audit flag: the compile skips the artifact cache and refuses a recorded internal attempt failure. */
   __strictNoInternalRecovery?: boolean;
   /** Test-only observation of the constants B7.2 derives for a deployer. */
   __deployerConstantsBox?: { constants?: import('./generation/deployerConstants.js').DeployerConstants };
@@ -1497,7 +1484,7 @@ type InternalCompilerOptions = CompilerOptions & {
     /** Test hook: drop `create`'s genesis layout, or give it a trailing region, so their checks can be shown to throw. */
     readonly genesisLayout?: 'drop' | 'trailing';
   };
-  /** Compiler-owned shared state propagated through binder/recovery recursion. */
+  /** Compiler-owned attempt state a `__strictNoInternalRecovery` compile checks after codegen. */
   __internalAttemptFailureState?: InternalAttemptFailureState;
   /** Set once the parsed contract is admitted as a shape this compiler can emit a framed master for. */
   __framedMaster?: boolean;
@@ -1561,7 +1548,7 @@ function emitContractScript(
 }
 
 function assertNoInternalAttemptRecovery(options: InternalCompilerOptions): void {
-  // Internal frame/layout failures are compiler defects, not handler-shape refusals.
+  // Internal frame/layout failures are compiler defects, not shape refusals.
   if (!options.__strictNoInternalRecovery) return;
   const error = options.__internalAttemptFailureState?.firstError;
   if (error !== undefined) throw error instanceof Error ? error : new Error(String(error));
@@ -1724,7 +1711,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
         needsSpecialMethodPruning = true;
       }
       // This pass also supplies Solidity's fall-through defaults and a safe body for empty void
-      // functions. Named returns alone are not a complete admission test for it.
+      // functions. Named returns alone do not decide whether it runs.
       if (node.returnNames.length > 0 || (node.body && (
         node.returnTypes.length > 0 || (node.body.statements?.length ?? 0) === 0
       ))) needsReturnDesugaring = true;
@@ -1892,7 +1879,7 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     composition: compositionConvention,
     optimise,
     // Compiler-owned locals are generated source and never user-actionable warning locations.
-    __suppressGeneratedRouteWarnings: true,
+    __suppressGeneratedSourceWarnings: true,
     // Recorded once, from the options as the caller gave them so a normalized copy keeps the original.
     __referencedChildOptions: (options as InternalCompilerOptions).__referencedChildOptions
       ?? publicCompilerOptions(options),
@@ -1940,7 +1927,7 @@ function cloneAst(ast: Ast, reason: string): Ast {
   const started = Date.now();
   // A whole-program AST is a graph: a diamond import can share one parsed subtree through several paths.
   // Expanding each alias independently is exponential on dependency-heavy libraries and can exhaust the heap
-  // before admission starts. Preserve aliases inside this isolated snapshot; local inlining still uses cloneNode.
+  // before lowering starts. Preserve aliases inside this isolated snapshot; local inlining still uses cloneNode.
   const cloned = cloneNodeGraph(ast);
   profileLog('clone', started, { reason, contract: ast.contract?.name });
   return cloned;
@@ -2090,7 +2077,7 @@ function artifactCacheEnabled(
   const internal = options as InternalCompilerOptions;
   // Attempt auditing is meaningful only for a fresh pipeline. A cached artifact has no attempts to observe and
   // would let strict mode report a vacuous success after a prior non-strict compilation populated the cache.
-  if (internal.__attemptFailureBox || internal.__strictNoInternalRecovery) return false;
+  if (internal.__strictNoInternalRecovery) return false;
   // TODO(remove SOLIDC_COMPILE_CACHE): the compile task now passes `__artifactCache` by default, so this
   // variable is only a legacy switch plus the test harness's way in (`packages/solidcash/vitest.setup.ts` sets
   // it, and `DelegateInference` and `CompileCacheDisk` toggle it). Migrate those to `__artifactCache` and a
@@ -2112,12 +2099,7 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.importResolver;
   delete keyOptions.__artifactCache;
   delete keyOptions.__referencedChildOptions;
-  delete keyOptions.__cheapAdmissionCodegen;
   delete keyOptions.__parsedAst;
-  delete keyOptions.__pristineAstBox;
-  delete keyOptions.__synthesizeBoundRoutePlaceholder;
-  delete keyOptions.__admissionWinnerBox;
-  delete keyOptions.__attemptFailureBox;
   delete keyOptions.__strictNoInternalRecovery;
   delete keyOptions.__internalAttemptFailureState;
   // Derived from the source and the public options by the compile that sets it.
@@ -2395,8 +2377,8 @@ function cloneArtifact(artifact: Artifact, suppressWarnings = false): Artifact {
   return cloned;
 }
 
-/** Identity of one source handler: name plus declaration position, so two overloads stay distinct. */
-function externalHandlerKey(fn: FunctionDefinitionNode): string {
+/** Identity of one source function: name plus declaration position, so two overloads stay distinct. */
+function sourceFunctionKey(fn: FunctionDefinitionNode): string {
   const start = fn.location?.start;
   return `${fn.name}@${start ? `${start.line}:${start.column}` : '?'}`;
 }
@@ -2404,9 +2386,8 @@ function externalHandlerKey(fn: FunctionDefinitionNode): string {
 /**
  * Preserve the requirement for an absolute dynamic-state input coordinate across journal lowering. Later
  * transformations can replace state reads/writes with value-threaded locals, at which point a fresh footprint
- * scan can no longer rediscover the physical chunk dependency. Source declaration identity and the explicit
- * clone-source key remain stable across those transformations, so they, not generated names, carry the fact to
- * logical entries and OP_INVOKE handlers.
+ * scan can no longer rediscover the physical chunk dependency. Source declaration identity remains stable across
+ * those transformations, so it, not generated names, carries the fact to logical entries and OP_INVOKE handlers.
  */
 function markDynamicChunkInputBaseFunctions(
   ast: Ast,
@@ -2428,7 +2409,7 @@ function markDynamicChunkInputBaseFunctions(
   }
   const footprintCache = createFootprintAnalysisCache(dynamicStateNames);
   for (const fn of functions) {
-    const sourceKey = externalHandlerKey(fn);
+    const sourceKey = sourceFunctionKey(fn);
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
     const writesDynamicState = footprint.writes.some((resource) => {
       // Element/field mutations are collection resources before semantic lowering; whole-value writes use
@@ -2452,8 +2433,8 @@ function markDynamicChunkInputBaseFunctions(
 
 /**
  * Compiles one contract, refusing each function whose loop upsert writes under a guard its published recipe cannot
- * carry: every admission rung records such a function in one record per attempt, and the compile reruns with the
- * recorded functions refused until none is new. Retries are silent; one warning per refused function is printed.
+ * carry: each attempt records such a function, and the compile reruns with the recorded functions refused until none
+ * is new. Retries are silent; one warning per refused function is printed.
  */
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
   // A failed attempt lowered the tree its caller parsed, so a retry parses its own.
@@ -3104,8 +3085,8 @@ function compileResolvedAst(
   const deployerSourceAst = mergedCompilerOptions.deployer === true && !isDeployerProgram
     ? cloneAst(ast, 'deployer-source') : undefined;
   // The inline-assembly blocks each body reaches are read from the program as it arrived. A later pass rewrites
-  // the blocks the lowering supports, and the admission rungs prune entry bodies, so the reachability a framed
-  // body is refused by is taken here and matched against what the lowering left in place further down.
+  // the blocks the lowering supports, so the reachability a framed body is refused by is taken here and matched
+  // against what the lowering left in place further down.
   const framedBodyAssembly = mergedCompilerOptions.composition === 'framed'
     ? captureBodyAssemblyBlocks(ast.contract, ast.freeFunctions)
     : undefined;
@@ -3736,7 +3717,7 @@ function compileResolvedAst(
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.INTERNAL)
       || fn.modifiers.includes(FunctionModifier.PRIVATE));
   // Public entry points can also be called internally. A state/collection- or call-touching public callee owns
-  // direct-route witnesses that do not exist as source-level arguments at its call site; inline that body into
+  // compiler-owned witnesses that do not exist as source-level arguments at its call site; inline that body into
   // the caller's physical frame before SymbolTableTraversal adds those parameters. In the direct convention,
   // a void `this.f()` has the same inherited execution context and needs that frame too. Returning self-calls
   // retain their existing invoked-read fence after pending mapping writes. Keep the dispatched definition.
@@ -3837,7 +3818,7 @@ function compileResolvedAst(
   ast = ast.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once. The copy-cast pass immediately
-  // above can synthesize such a loop from loop-free source, so its admission predicate must carry through here.
+  // above can synthesize such a loop from loop-free source, so the pass also runs when that one made a loop.
   if (needsLoop || dynamicArrayCopyDesugar.didSynthesizeLoop) {
     ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
   }
@@ -3972,7 +3953,7 @@ function compileResolvedAst(
 
   // An entry's msg.data reads the unlocking frame, which can include compiler-hidden witnesses in addition
   // to source-visible arguments. The internal-context lowering above replaces helper reads with a synthetic
-  // parameter, so survey both remaining reads and that parameter before publishing ABI admission metadata.
+  // parameter, so survey both remaining reads and that parameter before publishing the ABI's `usesMsgData`.
   // Propagate through named calls conservatively, as for msg.sender; an SDK must not mistake an indirect
   // reader for a direct method whose calldata is fully described by its visible ABI.
   if (needsMsgDataContext) {
@@ -3998,8 +3979,8 @@ function compileResolvedAst(
     }
   }
 
-  // Reapply the pre-lowering requirement to the final logical functions and compiler-owned handler clones, while
-  // also discovering any dynamic-state dependency synthesized after the first survey.
+  // Reapply the pre-lowering requirement to the final logical functions and compiler-owned OP_INVOKE handlers,
+  // while also discovering any dynamic-state dependency synthesized after the first survey.
   markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys, dynamicChunkWriteFunctionKeys);
 
   // Recovery compute is funded by the physical entrypoint even when the builtin sits behind imported/library
@@ -4167,7 +4148,7 @@ function compileResolvedAst(
     for (const fn of ast.contract.functions) {
       if (!fn.isEntryPoint
         || fn.modifiers.includes(FunctionModifier.DELEGATE)
-        || !dynamicChunkWriteFunctionKeys.has(externalHandlerKey(fn))
+        || !dynamicChunkWriteFunctionKeys.has(sourceFunctionKey(fn))
         || ((fn.externalCalls?.length ?? 0) === 0 && (fn.lowLevelCalls?.length ?? 0) === 0)
         || fn.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkOutputBase')) continue;
       const dynamicOutputBase = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkOutputBase');
@@ -4221,8 +4202,8 @@ function compileResolvedAst(
     ? new Map<string, Uint8Array>()
     : compileReferencedContracts(ast, code, mergedCompilerOptions);
   foldPublishedCreationCodeHashes(ast.contract, compiledBytecodes);
-  // Code generation lowers selected handlers in place. Snapshot deployment provenance at the last semantic
-  // boundary so publication does not depend on which representation the backend chose for a handler body.
+  // Code generation rewrites bodies in place. Snapshot deployment provenance at the last semantic boundary so
+  // publication does not depend on which representation the backend chose for a body.
   const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => `${fn.name}(${fn.parameters
     .filter((parameter) => !parameter.name.startsWith('__internal__'))
     .map((parameter) => parameter.type.toString()).join(',')})`;
@@ -4341,12 +4322,6 @@ function compileResolvedAst(
     );
     setFramedMaster(mergedCompilerOptions as InternalCompilerOptions);
   }
-  // Entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary
-  // per-entry peephole freezes each optimized body into a separate OP_DEFINE push before the cross-body
-  // outliner sees it; on a large neutral corpus that retained 263KB of clone bodies, while the bounded
-  // structural-helper probe plus exact-span outliner retained 50KB. Both paths emit the same unoptimized
-  // semantics and the whole-program optimiser below still runs. Canonicalize journal codegen onto the compact
-  // path so bytecode size does not depend on the front-end compilation-speed preference.
   // The children are compiled, so a creator knows which of them take the pool binding it passes on.
   bindOraclePool(ast.contract, ast.freeFunctions, isFramedMaster(mergedCompilerOptions as InternalCompilerOptions));
   // B8.7 rule 2: after every transformation that moves statements, declare the created-children local in the arms
@@ -4860,7 +4835,7 @@ function compileResolvedAst(
     }
   }
   // O8 (B6.0) on the code this artifact gives, after every pass: each arm of a direct stateful master begins with its
-  // exact-stack check. A throwaway admission pass omits bodies and the dispatcher, so it has nothing to walk.
+  // exact-stack check.
   const exactStack = traversal.exactStackArms;
   if (exactStack.arms.length > 0) {
     try {
@@ -7057,19 +7032,16 @@ function compileReferencedDeployerStandalone(
  * The bytes of `contractName`'s standalone compile, nested inside the compile that embeds it, or the error when the
  * source does not compile with that contract selected (neither for a creation cycle). It goes through the same
  * entry a primary does, so the embedded bytes cannot drift from the artifact. The artifact cache is keyed exactly as
- * that standalone compile, so a child the caller compiled already is reused and the admission passes of one
+ * that standalone compile, so a child the caller compiled already is reused and the retried attempts of one
  * enclosing compile build it once.
  *
- * The bytes are the artifact's published `bytecode`, the program the SDK deploys and derives the address from. A
- * journal artifact publishes its plan digest there (`<SCKP digest> OP_DROP` after the program), which the debug copy
- * of the same program leaves out.
+ * The bytes are the artifact's published `bytecode`, the program the SDK deploys and derives the address from.
  */
 function compileReferencedContractStandalone(
   code: string, contractName: string, options: CompilerOptions,
 ): { bytecode?: Uint8Array; oraclePool?: boolean; poolReads?: OraclePoolReads; error?: Error } {
   // A contract that creates itself, directly or through another, has no standalone compile to embed.
   if (referencedContractCompileStack.includes(contractName)) return {};
-  // The enclosing compile may have recorded its own admission analysis; the nested one starts by clearing it.
   referencedContractCompileStack.push(contractName);
   try {
     const artifact = withCompilerWarnings(true, () => compileStringUnchecked(code, {
@@ -7440,7 +7412,6 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   });
   for (const fn of candidates) {
     if (!invoked.has(fn.functionId!)) continue;
-    // Name the handler the user wrote, not the compiler's synthetic clone spelling of it.
     throw new EmittingStateHelperEventError(fn, fn.name, fn.collectionJournal === true);
   }
 }

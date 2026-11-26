@@ -63,11 +63,6 @@ export function findScidAnchorInputIndex(inputs: readonly Pick<Utxo, 'token'>[],
   }
   return found;
 }
-
-/** Convert a participant-local continuation coordinate into its aggregate transaction coordinate. */
-export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBase: number): number {
-  return outputBase < 0 ? outputBase : outputBase + blockBase;
-}
 import { decodeEntryCommitment, encodeEntryCommitment } from './SortedList.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
@@ -338,9 +333,6 @@ export {
 } from './sorted-entry-commitment.js';
 
 export {
-  permitsLegacyNamedValueChunkFallback,
-  permitsLegacyValueChunkEventReconstruction,
-  permitsLegacyDelegateEventRepair,
   groupChunkableValueWriteCollections,
   groupChunkableValueWriteCollection,
   claimedChunkableValueWriteCollection,
@@ -370,7 +362,6 @@ import {
   isPersistedChunkableValueWriteReady,
   chunkableValueWriteCategory,
   selectedPersistedValueChunkCategory,
-  permitsLegacyNamedValueChunkFallbackForGroups,
   persistDigestCategories,
   persistedValueChunkCategory,
   persistedChunkableValueWriteState,
@@ -786,7 +777,6 @@ export {
   lowLevelCallImmutableEventDestinations,
   groupEventSignatures,
   lowLevelCallStateOwnerCategory,
-  selectBuilderValueChunkOutputBase,
   transportedContinuationLocalBase,
   rebaseValueChunkWriteDescriptors,
   type ProtectedLoopEntryCollectionSelection,
@@ -797,7 +787,6 @@ export {
 } from './value-chunk-base-writer-select.js';
 import {
   lowLevelCallImmutableEventDestinations,
-  selectBuilderValueChunkOutputBase,
   type StatefulTransactionOptions,
 } from './value-chunk-base-writer-select.js';
 
@@ -834,7 +823,6 @@ export class StatefulTransactionBuilder {
   private sidecarUtxo?: UnlockableUtxo;
   private stateLayout: StateLayout;
   private masterUtxo: UnlockableUtxo;
-  private probeMasterVout?: number;
   private dataNftUtxos: UnlockableUtxo[];
   private categoryId: string;
   private requiredNftIndices: readonly number[];
@@ -1077,9 +1065,6 @@ export class StatefulTransactionBuilder {
   private valueChunkRedeemLock?: Uint8Array;
   /** A selected writer's persisted continuation band starts after its emitted event output. */
   private forcedChunkableValueWriteBandStart?: number;
-  /** True while building one balanced participant of an atomic composition (its blocks are concatenated). */
-  private composedParticipant = false;
-  private composedBlockBase?: number;
   /** Monotonic signal for structural growth discovered while probing dynamic output regions. */
   private dynamicLayoutRevision = 0;
 
@@ -1212,25 +1197,12 @@ export class StatefulTransactionBuilder {
     this.keccakLoopRecreates = options.keccakLoopRecreates ?? [];
     this._maximumFeeSatoshis = options.maximumFeeSatoshis;
     this.blockLayout = options.blockLayout;
-    this.composedParticipant = options.composedParticipant === true;
-    this.composedBlockBase = options.composedBlockBase;
     this.funderUtxos = options.funderUtxos ?? [];
     this.embeddedFunderUtxos = options.embeddedFunderUtxos ?? [];
     this.logicalIdentityUtxo = options.logicalIdentityUtxo;
     this.externalIdentityAnchorUtxos = options.externalIdentityAnchorUtxos ?? [];
   }
 
-  /** @internal Mark an impossible-output-index master used only by atomic VM derivation probes. */
-  _setProbeMasterVout(realVout: number): void {
-    this.probeMasterVout = realVout;
-  }
-
-  /** @internal Restore the real spend before a atomic participant block leaves SDK construction. */
-  _restoreProbeMasterOutpoint(): void {
-    if (this.probeMasterVout === undefined) return;
-    this.masterUtxo.vout = this.probeMasterVout;
-    this.probeMasterVout = undefined;
-  }
 
   /** @internal Rebuild a root unlocker whose hidden witnesses depend on the final materialized input order. */
   _setMasterUnlockerRefresher(refresher: (builder?: TransactionBuilder) => Unlocker): void {
@@ -1500,7 +1472,6 @@ export class StatefulTransactionBuilder {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
-      composedParticipant: this.composedParticipant,
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       getExternalCallMasterInputIndex: (index) => this.getExternalCallMasterInputIndex(index),
       allInputs: this.allInputs,
@@ -1580,7 +1551,6 @@ export class StatefulTransactionBuilder {
       categoryId: this.categoryId,
       detachedEventReceipts: this.detachedEventReceipts,
       builderOptions: this.builderOptions,
-      composedParticipant: this.composedParticipant,
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       getExternalCallMasterInputIndex: (index) => this.getExternalCallMasterInputIndex(index),
       registerDetachedEvent: (eventDef, lockingBytecode) => {
@@ -1754,7 +1724,6 @@ export class StatefulTransactionBuilder {
   private _refreshedUnlockerSyncHost(): RefreshedUnlockerSyncHost {
     const self = this;
     return {
-      coordinateBase: this.getComposedBlockBase(),
       allInputs: this.allInputs,
       get masterUtxo() { return self.masterUtxo; },
       set masterUtxo(next) { self.masterUtxo = next; },
@@ -1998,7 +1967,6 @@ export class StatefulTransactionBuilder {
       derivedChunkOutputs: this.derivedChunkOutputs,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       categoryId: this.categoryId,
-      composedParticipant: this.composedParticipant,
       builderOptions: this.builderOptions,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
@@ -2016,7 +1984,6 @@ export class StatefulTransactionBuilder {
 
   private _finalizeBuildStampHost(): FinalizeBuildStampHost {
     return {
-      composedParticipant: this.composedParticipant,
       allInputs: this.allInputs,
       entryNfts: this.entryNfts,
       entryDeletes: this.entryDeletes,
@@ -2087,7 +2054,7 @@ export class StatefulTransactionBuilder {
       externalIdentityAnchorUtxos: this.externalIdentityAnchorUtxos,
       logicalIdentityUtxo: this.logicalIdentityUtxo,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
-      runtimeLoopOrComposed: this.getComposedBlockBase() > 0 || this.runtimeLoopTrailingSegments.length > 0
+      hasRuntimeLoopOutputs: this.runtimeLoopTrailingSegments.length > 0
         || this.runtimeLoopEventOutputs.length > 0 || this.runtimeLoopTransferOutputs.length > 0,
       masterUnlocker: () => this.masterUtxo.unlocker,
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
@@ -2116,7 +2083,6 @@ export class StatefulTransactionBuilder {
       valueChunkRawCommitments: this.valueChunkRawCommitments,
       loopEntryVars: this.loopEntryVars,
       directCallDelegateBlock: this.directCallDelegateBlock,
-      composedParticipant: this.composedParticipant,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       pendingOutputs: this.pendingOutputs,
       trailingLoopEntryVars: () => this._trailingLoopEntryVars(),
@@ -2664,7 +2630,6 @@ export class StatefulTransactionBuilder {
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       chunkableValueWriteCategory: () => this._chunkableValueWriteCategory(),
       hasStagedValueChunkOutputs: () => this.hasStagedValueChunkOutputs(),
-      permitsLegacyNamedValueChunkFallback: () => this._permitsLegacyNamedValueChunkFallback(),
       stripSurplusDerivedValueChunkLocks: (b) => { this._stripSurplusDerivedValueChunkLocks(b); },
       repackViewTailsAfterMaterialization: (b) => this._repackViewTailsAfterMaterialization(b),
       refreshInputs: () => { this._refreshInputs(); },
@@ -2714,7 +2679,6 @@ export class StatefulTransactionBuilder {
       valueChunkWriteStagingSession: this.valueChunkWriteStagingSession,
       applyDerivedValueChunks: (builder) => this._applyDerivedValueChunks(builder),
       applyDerivedEntryOutputs: (builder) => { this._applyDerivedEntryOutputs(builder); },
-      hasStagedValueChunkOutputs: () => this.hasStagedValueChunkOutputs(),
       rememberJobEventsChunks: (categoryId, chunks) => {
         this.rememberJobEventsChunks(categoryId, chunks);
       },
@@ -3031,9 +2995,6 @@ export class StatefulTransactionBuilder {
     return hasChunkableValueWriteMetadata(this._chunkableWritePlanningHost());
   }
 
-  private _permitsLegacyNamedValueChunkFallback(): boolean {
-    return permitsLegacyNamedValueChunkFallbackForGroups(this._chunkableWritePlanningHost());
-  }
 
   /** Physical/logical group views of the one compiler-described chunkable-value writer. */
   private _chunkableValueWriteGroups(): ChunkableValueWriteGroups {
@@ -3121,7 +3082,6 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       derivedChunkOutputs: this.derivedChunkOutputs,
       allInputs: this.allInputs,
-      composedParticipant: this.composedParticipant,
       forcedChunkableValueWriteBandStart: this.forcedChunkableValueWriteBandStart,
       mintingOutputSwap: this.mintingOutputSwap,
       chunkableValueWriteExecution: () => this._chunkableValueWriteExecution(),
@@ -3161,14 +3121,12 @@ export class StatefulTransactionBuilder {
       ? structuralGroups
       : this._hasChunkableValueWriteMetadata()
         ? []
-        : !this._permitsLegacyNamedValueChunkFallback()
-          ? []
-          : [
-            ...this.externalCallUtxoGroups.filter((group) =>
-              legacyGroupLooksLikePublishJobEvent(group)),
-            ...this.lowLevelCallUtxoGroups.filter((group) =>
-              legacyGroupLooksLikePublishJobEvent(group)),
-          ];
+        : [
+          ...this.externalCallUtxoGroups.filter((group) =>
+            legacyGroupLooksLikePublishJobEvent(group)),
+          ...this.lowLevelCallUtxoGroups.filter((group) =>
+            legacyGroupLooksLikePublishJobEvent(group)),
+        ];
     for (const group of groups) {
       const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
       if (next !== group.valueChunkOutputCount) {
@@ -3237,7 +3195,6 @@ export class StatefulTransactionBuilder {
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
       persistedValueChunkWrite: (categoryId) => this._persistedValueChunkWrite(categoryId),
       hasChunkableValueWriteMetadata: () => this._hasChunkableValueWriteMetadata(),
-      permitsLegacyNamedValueChunkFallback: () => this._permitsLegacyNamedValueChunkFallback(),
       chunkableValueWriteGroups: () => this._chunkableValueWriteGroups(),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
       placeValueChunkPredecessorInputs: (extras) => {
@@ -4784,7 +4741,7 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Place persist/compose jobEvents chunks before the first VM probe so
+   * Place persisted jobEvents chunks before the first VM probe so
    * updateJobPost does not spend the 64-iteration budget rediscovering v.
    */
   seedPersistedJobEventsBand(): number {
@@ -4796,7 +4753,7 @@ export class StatefulTransactionBuilder {
     const persistedWrite = this._persistedValueChunkWrite(categoryId);
     const lock = persistUpdateRedeemLock(
       categoryId, this.valueChunkRedeemLock, persistedWrite,
-      !this._hasChunkableValueWriteMetadata() && this._permitsLegacyNamedValueChunkFallback(),
+      !this._hasChunkableValueWriteMetadata(),
     );
     if (!value || !lock) return 0;
     if (this.bumpChunkableValueWriteWidth(valueChunkCountFor(value))) this._refreshInputs();
@@ -4974,7 +4931,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * Rebase absolute output coordinates when a final, non-covenant output is inserted before the
-   * authenticated suffix. Reverse-indexed suffix checks remain valid after the insertion, but composed
+   * authenticated suffix. Reverse-indexed suffix checks remain valid after the insertion, but
    * continuation writers can also receive an absolute `__internal__valueChunkOutputBase` witness. Keep the
    * recovered-output cache and every carrier of that witness aligned with the shifted physical outputs.
    *
@@ -5360,7 +5317,7 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Register a routed batch TARGET node whose VALUE the planner cannot reproduce: the route row builds it inside
+   * Register a routed batch TARGET node whose VALUE the planner cannot reproduce: the handler builds it inside
    * its handler, so the node is published with its key and successor link only. Registration is keyed by the entry
    * that owns the node, so completion never depends on the lane's physical coordinate.
    */
@@ -5475,24 +5432,11 @@ export class StatefulTransactionBuilder {
 
   /** Compiler-authored value-chunk resources carried by this concrete call graph. */
   getValueChunkWriteDescriptors(): readonly ValueChunkWriteDescriptor[] {
-    const blockBase = this.getComposedBlockBase();
-    const writes = [
-      ...[...this.directValueChunkWriteDescriptors.values()]
-        .map((write) => ({ write, blockSize: this.blockLayout?.blockSize })),
+    return [
+      ...this.directValueChunkWriteDescriptors.values(),
       ...[...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
-        .flatMap((group) => (group.valueChunkWrites ?? [])
-          .map((write) => ({ write, blockSize: group.blockLayout?.blockSize }))),
-    ];
-    return writes.map(({ write, blockSize }) => {
-      const localOutputBase = blockBase > 0 && blockSize !== undefined
-        && write.outputBase >= blockBase && write.outputBase < blockBase + blockSize
-        ? selectBuilderValueChunkOutputBase(write.outputBase, write.outputBase, blockBase)
-        : write.outputBase;
-      return {
-        ...write,
-        outputBase: absoluteComposedValueChunkOutputBase(localOutputBase, blockBase),
-      };
-    });
+        .flatMap((group) => group.valueChunkWrites ?? []),
+    ].map((write) => ({ ...write }));
   }
 
   setValueChunkRawCommitments(id: string, commitments: string[]): this {
@@ -5504,14 +5448,6 @@ export class StatefulTransactionBuilder {
     return this.valueChunkRawCommitments.get(id) ?? [];
   }
 
-  /**
-   * Absolute base of this participant's balanced block. Composed participants materialize continuation chunks at
-   * block-local coordinates, while the composed value-chunk claims and the covenant argument name the absolute
-   * coordinate in the concatenated transaction.
-   */
-  getComposedBlockBase(): number {
-    return this.composedParticipant ? this.composedBlockBase ?? 0 : 0;
-  }
 
   /** Output index where value chunks begin: after the block, dynamic chunks, and loop-entry (NEW) outputs. */
   getValueChunkOutputBase(): number {
@@ -5793,7 +5729,7 @@ export class StatefulTransactionBuilder {
         identity, categoryId, commitment: binToHex(commitment),
       });
     }
-    // A contract may be called more than once in one composed transaction.
+    // A contract may be called more than once in one transaction.
     // Category identifies the token; identity identifies the call/return slot.
     const existing = this.pendingReturnEventOutputs.findIndex((r) => r.identity === identity);
     if (existing >= 0) {
@@ -6730,9 +6666,7 @@ export class StatefulTransactionBuilder {
     if (owner && owner !== this.categoryId.toLowerCase()) return undefined;
     const exact = persistValueChunkLock(categoryId, value, write, masterLock);
     if (exact || write !== undefined) return exact;
-    if (this._hasChunkableValueWriteMetadata() || !this._permitsLegacyNamedValueChunkFallback()) {
-      return undefined;
-    }
+    if (this._hasChunkableValueWriteMetadata()) return undefined;
     return legacyJobEventsPersistValueChunkLock(categoryId, value, masterLock);
   }
 
@@ -6744,8 +6678,7 @@ export class StatefulTransactionBuilder {
         && selection.write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
       return stagedValueChunkWrite(selection.write, this.valueChunkWriteStagingSession);
     }
-    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
-      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()) return undefined;
     // Descriptor-free compatibility storage still needs a selected owner; insertion order is not authority.
     return categoryId ? settlement().stagedJobEventsValues.get(categoryId) : undefined;
   }
@@ -6759,8 +6692,7 @@ export class StatefulTransactionBuilder {
       return isValueChunkWriteReady(selection.write)
         ? persistedValueChunkWriteState(selection.write)?.value : undefined;
     }
-    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
-      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()) return undefined;
     return categoryId ? persistedJobEventsValue(categoryId) : undefined;
   }
 
@@ -6768,8 +6700,7 @@ export class StatefulTransactionBuilder {
   private _persistUpdateDigestLock(categoryId?: string): Uint8Array | undefined {
     const write = this._persistedValueChunkWrite(categoryId);
     if (write) return persistUpdateDigestLock(categoryId, this._persistDigestCategories(), write);
-    if (write === null || this._hasChunkableValueWriteMetadata()
-      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    if (write === null || this._hasChunkableValueWriteMetadata()) return undefined;
     return legacyJobEventsPersistUpdateDigestLock(categoryId);
   }
 

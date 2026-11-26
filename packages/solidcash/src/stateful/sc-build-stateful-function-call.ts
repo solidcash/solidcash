@@ -70,12 +70,11 @@ export async function buildStatefulFunctionCall(
     }
     const built = stb.build();
     stb.bindMaterializedValueChunkWitnesses(built);
-    const composedBlockBase = stb.getComposedBlockBase();
     const compilerValueChunkWrites = resolveValueChunkWriteGeometry(
       stb.getValueChunkWriteDescriptors(),
       [],
       [...stb.getDerivedChunkOutputs()].map(([offset, chunk]) => ({
-        offset: offset + composedBlockBase,
+        offset,
         resourceIdentity: chunk.resourceIdentity,
         resourcePart: chunk.resourcePart,
       })),
@@ -170,10 +169,7 @@ export async function buildStatefulFunctionCall(
         }));
       }
     }
-    // Derived pins live at block-local coordinates; the composer range-checks every claim against the
-    // participant's absolute trailing range, so shift them by the block base exactly once here.
-    for (const [localOffset, chunk] of stb.getDerivedChunkOutputs()) {
-      const offset = localOffset + composedBlockBase;
+    for (const [offset, chunk] of stb.getDerivedChunkOutputs()) {
       if (computedValueChunks.some((candidate) => candidate.offset === offset)) continue;
       computedValueChunks.push(Object.freeze({
         offset,

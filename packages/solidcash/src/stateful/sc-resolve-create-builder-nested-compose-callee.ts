@@ -18,12 +18,6 @@ import {
   findDeploymentByName,
   registeredAddressValueLockingBytecode,
 } from './deployment-registry.js';
-import {
-  adaptLegacyNestedJobEventArguments,
-  usesLegacyJobEventCompatibility,
-} from './legacy-job-event-wire.js';
-import { providerUnixLocktime } from './soft-state-overlays.js';
-import { readyPersistedCompatibilityValueChunkWidth } from './value-chunk-persist.js';
 
 export type ResolveCreateBuilderNestedComposeCalleeHost = {
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
@@ -293,7 +287,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
       graphPlanningResults,
     )
     : undefined;
-  let nestedArgs = nestedExpressionReturns
+  const nestedArgs = nestedExpressionReturns
     ? host.resolveExternalArgs(
       nestedSources,
       delegateVisibleArgs,
@@ -316,30 +310,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
       + 'that cannot yet be resolved by the SDK.',
     );
   }
-  // Historical legacy-layout artifacts encoded their JobEvent payload after implicitly filling the
-  // timestamp. Keep that wire adapter quarantined to its exact ABI schema. Direct calls retain their
-  // source arguments and derive mutations by executing the authenticated handler behind OP_INVOKE.
   const nestedFunctionName = resolvedRawFunctionName ?? nested.functionName;
-  const hasLegacyJobEventInput = (callee.inner.artifact.abi as readonly AbiFunction[])
-    .filter((candidate) => candidate.name === nestedFunctionName)
-    .some((candidate) => candidate.inputs.some((input) => usesLegacyJobEventCompatibility(
-      callee.inner.artifact, input.type, callee.inner.artifact.structs,
-    )));
-  if (hasLegacyJobEventInput) {
-    const tip = Number(
-      (host.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
-    );
-    const appending = readyPersistedCompatibilityValueChunkWidth(callee.categoryId) > 0;
-    const locktime = appending
-      ? providerUnixLocktime(host.provider as { getBlockTime?: () => number })
-      : undefined;
-    const now = BigInt(
-      locktime ?? (tip > 0 ? tip : Math.floor(Date.now() / 1000)),
-    );
-    nestedArgs = adaptLegacyNestedJobEventArguments(
-      callee.inner.artifact, nestedFunctionName, nestedArgs, now,
-    );
-  }
   const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
       returnSources,

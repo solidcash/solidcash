@@ -18,7 +18,6 @@ import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { calleeConsumedInputs, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
 import { cloneToken } from './stb-output-utils.js';
-import { permitsLegacyDelegateEventRepair } from './chunkable-value-write-selection.js';
 import {
   encodeJobEventEmitCommitment,
   isLearnedEventEmitCommitment,
@@ -217,13 +216,10 @@ export function repairNestedCalleeOutputs(
   const displacedDelegateIdentities: Array<{
     to: Uint8Array; amount: bigint; token: NonNullable<Output['token']>;
   }> = [];
-  const permitsLegacyNestedDelegateEventRepair = permitsLegacyDelegateEventRepair([
-    ...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups,
-  ], host.directCallDelegateBlock);
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
-    // Compiler-owned delegate routes materialize every declared event and entry inside their balanced frame.
+    // Compiler-owned delegate blocks materialize every declared event and entry inside their balanced frame.
     // The legacy nested-delegate repair below is only for layouts without that physical ownership boundary.
-    if (!permitsLegacyNestedDelegateEventRepair) continue;
+    if (host.directCallDelegateBlock) continue;
     if (llc.callMode !== 'delegatecall') continue;
     const implIndex = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (implIndex < 0) continue;

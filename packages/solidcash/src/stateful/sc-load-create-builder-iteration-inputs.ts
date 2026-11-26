@@ -91,12 +91,11 @@ export async function loadCreateBuilderIterationInputs(
     abiFunction: AbiFunction | undefined;
     entryAbiFunction: AbiFunction | undefined;
     stateLayout: any;
-    overrides: any;
     finalArgs: any[];
     [key: string]: any;
   },
 ): Promise<LoadCreateBuilderIterationInputsResult> {
-  const { abiFunction, entryAbiFunction, stateLayout, overrides } = params;
+  const { abiFunction, entryAbiFunction, stateLayout } = params;
 
   let { finalArgs } = params;
 
@@ -232,7 +231,7 @@ export async function loadCreateBuilderIterationInputs(
         .sort((a: any, b: any) => a.chunkIndex - b.chunkIndex);
       for (const { utxo } of chunks) {
         const unlocker = createReadOnlyDynamicChunkUnlocker(
-          host.inner, overrides?.blockBase ?? 0, host.categoryId, dynVar.name, dynVar.type,
+          host.inner, 0, host.categoryId, dynVar.name, dynVar.type,
         );
         const input = { ...utxo, unlocker };
         iterationEntryInputs.push(input);

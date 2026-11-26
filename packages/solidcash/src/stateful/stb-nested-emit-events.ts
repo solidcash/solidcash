@@ -10,7 +10,6 @@ import {
   computeEventNameHash,
 } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { permitsLegacyValueChunkEventReconstruction } from './chunkable-value-write-selection.js';
 import {
   encodeJobEventEmitCommitment,
   jobEventFieldEmpty,
@@ -32,7 +31,6 @@ import {
   hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
   chunkableValueWriteCategory,
-  permitsLegacyNamedValueChunkFallbackForGroups,
   shouldRematerializePersistUpdateForHost,
 } from './stb-chunkable-write-planning.js';
 import {
@@ -100,11 +98,8 @@ export function reassertNestedEmitEvents(
     });
   }
   if (eventSelection.status === 'ambiguous') return;
-  const legacyEventFallback = eventSelection.status === 'absent'
-    && permitsLegacyValueChunkEventReconstruction(
-      [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups],
-      hasChunkableValueWriteMetadata(host),
-    );
+  // Inferred event reconstruction is only for descriptor-free plans.
+  const legacyEventFallback = eventSelection.status === 'absent' && !hasChunkableValueWriteMetadata(host);
   if (eventSelection.status === 'absent' && !legacyEventFallback) return;
   const publishFn = chunkableValueWriteAbi(host);
   // A known writer that declares no event emits none. Reconstructing one mints an immutable NFT no covenant reads,
@@ -264,10 +259,8 @@ export function reassertNestedEmitEvents(
     }
     // Nested publishJobEvent rows may each learn a commitment even when only one
     // physical event slot is reasserted onto the covenant dest. Name discovery is legacy-only.
-    const publishJobEventGroups = permitsLegacyNamedValueChunkFallbackForGroups(host)
-      ? [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]
-        .filter((group) => legacyGroupLooksLikePublishJobEvent(group))
-      : [];
+    const publishJobEventGroups = [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]
+      .filter((group) => legacyGroupLooksLikePublishJobEvent(group));
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_EMIT_MATCH === '1') {
       console.error('publishJobEvent-groups', publishJobEventGroups.map((group, index) => ({

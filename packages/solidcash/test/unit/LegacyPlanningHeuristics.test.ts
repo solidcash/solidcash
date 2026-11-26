@@ -44,7 +44,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
     const host = {
       externalCallUtxoGroups: [group],
       lowLevelCallUtxoGroups: [],
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -58,13 +57,9 @@ describe('legacy planning heuristics isolation (item 1)', () => {
   });
 
   it('requires a matching historical publisher before selecting the legacy collection fallback', () => {
-    expect(legacyNamedJobEventCollectionFallback([], true)).toBeUndefined();
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'appendNotice' }], true))
-      .toBeUndefined();
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], true))
-      .toBe('jobEvents');
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], false))
-      .toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([])).toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'appendNotice' }])).toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }])).toBe('jobEvents');
   });
 
   it('does not treat another category as a ready legacy value-chunk publisher', () => {
@@ -78,7 +73,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
         logicalFunctionArgs: [0n, [16, '', '', 0]],
       }],
       lowLevelCallUtxoGroups: [],
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -104,7 +98,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
     const host = {
       externalCallUtxoGroups: [{ categoryId: proxy, functionName: 'publishJobEvent' }],
       lowLevelCallUtxoGroups: [{ categoryId: implementation, functionName: 'publishJobEvent' }],
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -136,7 +129,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
         functionName: 'publishJobEvent',
         callMode: 'delegatecall',
       }],
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -162,7 +154,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
         functionName: 'publishJobEvent',
         callMode: 'delegatecall',
       }],
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -203,7 +194,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
       lowLevelCallUtxoGroups: [],
       derivedChunkOutputs: new Map(),
       allInputs: [],
-      composedParticipant: false,
       chunkableValueWriteExecution: () => undefined,
       chunkableValueWriteGroups: () => ({
         external: group, externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
@@ -261,7 +251,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
       lowLevelCallUtxoGroups: [],
       derivedChunkOutputs: new Map(),
       allInputs: [],
-      composedParticipant: false,
       chunkableValueWriteExecution: () => undefined,
       chunkableValueWriteGroups: () => ({
         external: group, externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,

@@ -5,7 +5,6 @@
 
 import type { AbiFunction } from '@solidcash/utils';
 import {
-  permitsLegacyNamedValueChunkFallback,
   sameChunkableValueWriteResource,
   selectChunkableValueWriteExecution,
 } from './chunkable-value-write-selection.js';
@@ -34,7 +33,6 @@ import {
 export interface ChunkableWritePlanningHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly composedParticipant: boolean;
   getLowLevelCallMasterInputIndex(index: number): number;
   getExternalCallMasterInputIndex(index: number): number;
 }
@@ -55,12 +53,6 @@ export function hasChunkableValueWriteMetadata(host: ChunkableWritePlanningHost)
     .some((group) => (group.valueChunkWrites?.length ?? 0) > 0);
 }
 
-export function permitsLegacyNamedValueChunkFallbackForGroups(host: ChunkableWritePlanningHost): boolean {
-  return permitsLegacyNamedValueChunkFallback([
-    ...host.externalCallUtxoGroups,
-    ...host.lowLevelCallUtxoGroups,
-  ]);
-}
 
 export function chunkableValueWriteExecution(
   host: ChunkableWritePlanningHost,
@@ -75,7 +67,7 @@ export function chunkableValueWriteExecution(
         group, inputIndex: host.getExternalCallMasterInputIndex(index),
       }] : []
     )),
-  ], { allowCompilerDescribed: host.composedParticipant === true });
+  ]);
 }
 
 export function chunkableValueWriteGroups(host: ChunkableWritePlanningHost): ChunkableValueWriteGroups {
@@ -123,11 +115,7 @@ export function chunkableValueWriteGroups(host: ChunkableWritePlanningHost): Chu
   if (hasChunkableValueWriteMetadata(host)) {
     return { externalIndex: -1, externalIndices: [], lowLevelIndex: -1 };
   }
-  // Compatibility only for plans predating compiler-authored valueChunkWrites.
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) {
-    return { externalIndex: -1, externalIndices: [], lowLevelIndex: -1 };
-  }
-  // Legacy adapter only: name match stays behind permitsLegacyNamedValueChunkFallback.
+  // Compatibility only for plans predating compiler-authored valueChunkWrites: match the historical publisher.
   const externalIndex = host.externalCallUtxoGroups.findIndex((group) =>
     legacyIsPublishJobEventName(group.functionName ?? group.logicalFunctionName));
   const lowLevelIndex = host.lowLevelCallUtxoGroups.findIndex((group) =>
@@ -146,7 +134,6 @@ export function chunkableValueWriteAbi(host: ChunkableWritePlanningHost): AbiFun
   if (structural) return structural.abiFunction;
   if (hasChunkableValueWriteMetadata(host)) return undefined;
   // Compatibility only for artifacts predating chunkable collection/write metadata.
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return undefined;
   for (const group of [...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups]) {
     const abi = (group.externalContract?.inner?.artifact?.abi ?? []) as AbiFunction[];
     const fromAbi = abi.find((fn) => legacyIsPublishJobEventName(fn.name));
@@ -179,7 +166,6 @@ export function isInitialChunkableValueWrite(host: ChunkableWritePlanningHost): 
   if (hasChunkableValueWriteMetadata(host)) {
     throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
   }
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return false;
   // Compatibility only for plans predating compiler/planner value-chunk descriptors.
   const legacyInitial = legacyInitialValueChunkWrite(
     host.lowLevelCallUtxoGroups, host.externalCallUtxoGroups,
@@ -207,7 +193,6 @@ export function shouldRematerializePersistUpdateForHost(host: ChunkableWritePlan
   if (hasChunkableValueWriteMetadata(host)) {
     throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
   }
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return false;
   // Compatibility only for plans predating compiler/planner value-chunk descriptors.
   for (const group of [...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups]) {
     const names = [group.logicalFunctionName, group.functionName];
@@ -230,7 +215,6 @@ export function isInitialChunkableValueWriteForDigest(host: ChunkableWritePlanni
   if (hasChunkableValueWriteMetadata(host)) {
     throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
   }
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return false;
   // Compatibility only for plans predating compiler/planner value-chunk descriptors.
   if (isInitialChunkableValueWrite(host)) return true;
   const plannedInserts = Math.max(
@@ -270,7 +254,6 @@ export function isPersistedChunkableValueWriteReady(host: ChunkableWritePlanning
   return persistedValueChunkReadiness({
     selection,
     hasWriteMetadata: hasChunkableValueWriteMetadata(host),
-    permitsLegacyFallback: permitsLegacyNamedValueChunkFallbackForGroups(host),
     descriptorReady: selection.status === 'exact'
       && persistedChunkableValueWriteState(host) !== undefined,
     legacyReady: legacyCategory !== undefined
@@ -288,7 +271,6 @@ export function persistedValueChunkCategory(host: ChunkableWritePlanningHost): s
   if (hasChunkableValueWriteMetadata(host)) {
     return selectedCategories.size === 1 ? [...selectedCategories][0] : undefined;
   }
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return undefined;
   // An implementation-only delegate group does not identify its state owner. Cached predecessors belong to
   // their own categories and cannot supply the missing proxy identity by insertion order.
   return selectedPersistedValueChunkCategory(host);

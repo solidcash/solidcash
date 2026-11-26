@@ -1,11 +1,10 @@
 import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
-import type { Artifact, ChildDeploymentValueRecipe, FixedBchTransferAbi } from '@solidcash/utils';
+import type { Artifact, ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { describe, expect, it, vi } from 'vitest';
-import { evaluateChildDeploymentRecipe, materializeFixedBchTransfer } from '../../src/stateful/child-deployment-recipes.js';
+import { evaluateChildDeploymentRecipe } from '../../src/stateful/child-deployment-recipes.js';
 import { loadFixedEffectEntries } from '../../src/stateful/fixed-effect-entries.js';
 import { evaluateFixedEffectPredicate } from '../../src/stateful/fixed-effect-predicate.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
-import { createTestProvider } from '../test-util.js';
 
 const collection = { name: 'payments', signature: 'payments:mapping(int256 => Payment)',
   kind: 'mapping', keyType: 'int256', valueType: 'Payment', sorted: true } as const;
@@ -33,27 +32,6 @@ describe('authenticated fixed-effect entry recipes', () => {
       expect(evaluateFixedEffectPredicate(zeroAddress, [value])).toBe(true);
     }
     expect(evaluateFixedEffectPredicate(zeroAddress, [recipient])).toBe(false);
-  });
-
-  it('materializes Solidity BCH recipients as P2PKH without rewriting native locking bytecode', () => {
-    const transfer: FixedBchTransferAbi = {
-      transferIndex: 0,
-      recipient: { kind: 'forward', paramIndex: 0 },
-      amount: { kind: 'forward', paramIndex: 1 },
-    };
-    const solidityArtifact = { ...artifact, compiler: { options: { evmCompat: true } } } as Artifact;
-    const provider = createTestProvider();
-    const identity = recipient.slice(3, 23);
-    const abiWord = new Uint8Array(32);
-    abiWord.set(identity, 12);
-    const materialize = (address: Uint8Array): Uint8Array => materializeFixedBchTransfer(
-      transfer, [address, 1_000n], ['address', 'uint256'], solidityArtifact, provider,
-    ).lockingBytecode;
-    expect(materialize(identity)).toEqual(recipient);
-    expect(materialize(abiWord)).toEqual(recipient);
-    expect(materialize(recipient)).toEqual(recipient);
-    abiWord[0] = 1;
-    expect(() => materialize(abiWord)).toThrow(/malformed Solidity address word/);
   });
 
   it('resolves captured slot keys and typed leaves with one authenticated collection read', async () => {

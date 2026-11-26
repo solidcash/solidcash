@@ -159,7 +159,6 @@ export function constructCreateBuilderTransactionBuilder(
       .map((slot: any) => `${slot.offset}:${slot.slotIndex}`);
     console.error('entry-placement', JSON.stringify({
       functionName, abiFunction: abiFunction?.name, entryFunction: entryAbiFunction?.name,
-      blockBase: overrides?.blockBase,
       layoutEntries,
       accesses: [...(entryAccesses ?? new Map()).entries()].map(([slotIndex, access]: any) =>
         `${slotIndex}:${access.collection}`),
@@ -277,7 +276,6 @@ export function constructCreateBuilderTransactionBuilder(
     ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
       && { lowLevelCallInputBase }),
     ...(directCallDelegateLayout && { directCallDelegateBlock: true }),
-    ...(overrides?.omitLocalFeeTail && { preserveBlockLayoutWidth: true }),
     ...(delegateEventSlots.some((slot: any) => slot.kind === 'entry') && { preserveBlockLayoutWidth: true }),
     ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0
       || runtimeLoopEventOutputs.length > 0 || runtimeLoopTransferOutputs.length > 0)
@@ -290,10 +288,6 @@ export function constructCreateBuilderTransactionBuilder(
     ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
     ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
     ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
-    ...(overrides?.omitLocalFeeTail === true && {
-      composedParticipant: true,
-      ...(overrides?.blockBase !== undefined && { composedBlockBase: overrides.blockBase }),
-    }),
   });
   const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
   const selfIdentityArgumentIndex = abiFunction?.inputs.findIndex((input) =>
@@ -311,12 +305,11 @@ export function constructCreateBuilderTransactionBuilder(
           && input.vout === target.vout)
         : builder.findInputIndexByOutpoint(target);
       if (localIndex < 0) throw new Error('Selected own CREATE identity anchor is absent from the finalized transaction');
-      finalArgs[selfIdentityArgumentIndex] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+      finalArgs[selfIdentityArgumentIndex] = BigInt(localIndex);
     };
   const dynamicOutputArgumentIndex = abiFunction?.inputs.findIndex((input) =>
     input.name === '__internal__dynamicChunkOutputBase') ?? -1;
   const refreshTopLevelDynamicChunkOutputBase = dynamicOutputArgumentIndex < 0
-    || overrides?.omitLocalFeeTail === true
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (materialized === undefined || abiFunction === undefined) return;
@@ -345,13 +338,12 @@ export function constructCreateBuilderTransactionBuilder(
       // to fit in this participant's local frame. buildParticipantProbeProgram performs the inverse conversion
       // only in generated probe bytecode, without changing these shared final-transaction arguments.
       finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(
-        localIndex, overrides?.blockBase ?? 0, dynamicWriteActive,
+        localIndex, 0, dynamicWriteActive,
       );
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
         console.error('dynamic-chunk-root-base', JSON.stringify({
           functionName,
-          blockBase: overrides?.blockBase ?? 0,
           localIndex,
           frameLength: materialized?.inputs.length,
           target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
@@ -455,16 +447,14 @@ export function constructCreateBuilderTransactionBuilder(
         const target = coSpends.get(witness[1] === '' ? 0 : Number(witness[1]));
         if (target === undefined) continue;
         const localIndex = inputIndexOf(target);
-        if (localIndex >= 0) finalArgs[position] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+        if (localIndex >= 0) finalArgs[position] = BigInt(localIndex);
       }
       // A per-turn row names each turn's callee in its list, and the first turn's record where it reads records.
       for (const [row, turns] of turnCoSpends) {
         const { inputs, recordBase } = lowLevelCallTurnWitnessPositions(abiFunction, row);
         const indices = [...turns].map((turn) => (turn === undefined ? -1 : inputIndexOf(turn)));
         if (inputs >= 0 && inputs < finalArgs.length && indices.every((index) => index >= 0)) {
-          finalArgs[inputs] = lowLevelCallTurnInputsWitness(
-            indices.map((index) => index + (overrides?.blockBase ?? 0)),
-          );
+          finalArgs[inputs] = lowLevelCallTurnInputsWitness(indices);
         }
         const first = lowLevelCallUtxoGroups.find((group) => group.edgeLowLevelCallIndex === row
           && group.lowLevelCallTurn === 0);

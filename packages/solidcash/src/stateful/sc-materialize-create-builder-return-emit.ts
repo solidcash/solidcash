@@ -90,10 +90,8 @@ export async function materializeCreateBuilderReturnEmit(
   host: MaterializeCreateBuilderReturnEmitHost,
   params: {
     builder: StatefulTransactionBuilder;
-    overrides: any;
     functionName: string;
     returnEmitOutputIndex: number;
-    returnMaterializationOutputIndex: number;
     delegatecallInputIndex: number | undefined;
     entryAbiFunction: AbiFunction | undefined;
     abiFunction: AbiFunction | undefined;
@@ -104,8 +102,8 @@ export async function materializeCreateBuilderReturnEmit(
   },
 ): Promise<void> {
   const {
-    builder, overrides, functionName, returnEmitOutputIndex,
-    returnMaterializationOutputIndex, delegatecallInputIndex,
+    builder, functionName, returnEmitOutputIndex,
+    delegatecallInputIndex,
     entryAbiFunction, abiFunction, externalCallUtxoGroups,
     preparedAtomicNodes, preparedAtomicNodeByExternalGroup,
   } = params;
@@ -113,9 +111,8 @@ export async function materializeCreateBuilderReturnEmit(
   // B8 emit: derive the encoded return value (the covenant compares it to the return-event output
   // commitment) and set it, replacing the placeholder.
   if (returnEmitOutputIndex >= 0) {
-    let blob = overrides?.returnBlob
-    ?? (builder as any).__derivedReturnBlob as Uint8Array | undefined
-    ?? host.deriveReturnBlob(builder, returnMaterializationOutputIndex, delegatecallInputIndex ?? 0);
+    let blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined
+    ?? host.deriveReturnBlob(builder, returnEmitOutputIndex, delegatecallInputIndex ?? 0);
     if (!blob) {
       // A require that rejects the read produces no return commitment. Preserve the VM/source-mapped error
       // recorded by the derivation pass; the generic missing-return diagnostic masks the actual contract
@@ -204,7 +201,7 @@ export async function materializeCreateBuilderReturnEmit(
         (builder as any).__derivedTokenContainerTransfers = result.derivedTokenContainerTransfers;
         (builder as any).__derivedTokenContainerTransferNfts = result.derivedTokenContainerTransferNfts;
       }
-      blob = host.deriveReturnBlob(builder, returnMaterializationOutputIndex, delegatecallInputIndex ?? 0);
+      blob = host.deriveReturnBlob(builder, returnEmitOutputIndex, delegatecallInputIndex ?? 0);
       if (!blob) {
         throw new Error(`Could not re-derive the expanded loop return value of '${functionName}'.`);
       }

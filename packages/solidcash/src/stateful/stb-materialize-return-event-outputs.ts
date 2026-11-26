@@ -94,9 +94,7 @@ export function materializeReturnEventOutputs(
     placedPrimaryReturnIndices.add(absIndex);
   };
   const unlockerReturnIndices = (): number[] => {
-    // An explicit placement is authoritative for this builder. During atomic composition the unlocker already
-    // carries the final aggregate coordinate, while the isolated participant builder owns a local coordinate;
-    // scanning both would materialize a second empty return slot and pad the participant to the aggregate base.
+    // An explicit placement is authoritative for this builder.
     if (host.plannedReturnOutputIndex >= 0) return [host.plannedReturnOutputIndex];
     const indices: number[] = [];
     for (const input of host.allInputs) {

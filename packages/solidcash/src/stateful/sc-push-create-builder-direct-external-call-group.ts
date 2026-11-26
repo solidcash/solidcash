@@ -34,7 +34,7 @@ import { describeValueChunkWrites } from './writer-group-selection.js';
  * The batch trailing width is the number of DISTINCT non-negative PredOut lanes the batch witnesses name, which
  * is exactly what the covenant's `emitBatchTrailingCountBinding` counts. Several inserts that share one
  * predecessor publish one rewritten predecessor lane, not one per insert; `bPlannedEntryInserts.length` overcounts
- * those shared-gap batches and made the covenant refuse the composed settlement.
+ * those shared-gap batches and made the covenant refuse the settlement.
  */
 export function directVmapBatchTrailingCount(
   internalArgs: Record<string, unknown>,
@@ -261,7 +261,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
         // This frame is the CALLER of `callInfo.externalContract`, so the callee's `msg.sender` is exactly
         // this frame's authenticated identity. Without it the nested probe keys every `msg.sender`-derived
         // mapping slot on the transaction origin (measured: a `transferFrom` allowance probe pinned the
-        // signer-keyed slot while the composed transaction reads the caller-keyed one), and the returned
+        // signer-keyed slot while the transaction reads the caller-keyed one), and the returned
         // value the composition reuses describes a frame the transaction never builds.
         const precomputeValue = await host.deriveReturnValue(
           precomputeName, callInfo.args, undefined, precomputeAbi, undefined,

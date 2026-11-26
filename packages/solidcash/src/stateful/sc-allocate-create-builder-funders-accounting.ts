@@ -137,8 +137,7 @@ export async function allocateCreateBuilderFunders(
     const pads: UnlockableUtxo[] = [];
     for (let i = 0; i < padDemand; i++) {
       const seed = new TextEncoder().encode(
-        `SolidCash insert-band pad\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
-        + `:${overrides?.blockBase ?? 0}:${i}`,
+        `SolidCash insert-band pad\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}:0:${i}`,
       );
       const pad: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
       await padProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), pad);
@@ -177,15 +176,13 @@ export async function allocateCreateBuilderFunders(
     // Dynamic trailing outputs are addressed after the compiler's complete fixed block. If that block includes
     // inactive returnEvent slots, compacting them shifts predecessor, chunk, or runtime-event inputs left of
     // their published outputs. Chunk covenants independently require output[inputIndex] to recreate the NFT.
-    // A read-only chunk run (`iterationEntryInputs`) only has a published output coordinate on an atomic
-    // participant, which is already pinned by `overrides?.omitLocalFeeTail`; a direct compact frame instead
+    // A read-only chunk run (`iterationEntryInputs`) has no published output coordinate: a direct compact frame
     // omits the slot, so the run must land at the compacted coordinate the direct dynamic-read bytecode and
     // `getChunkOutputBase` both subtract to. Chained and dynamic-loop keccak side-cars follow the complete block
     // too: the covenant reads FINAL at blockSize + fullBlocks and loop side-car k at blockSize + k, and each
     // side-car recreates at its own index.
     const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
       || sortedLoopCommitments.size > 0
-      || (iterationEntryInputs.length > 0 && overrides?.omitLocalFeeTail === true)
       // A void entry's slot is its call record: the covenant steps its chunk coordinates down when no record runs.
       || (dynamicChunkInputs.length > 0 && (entryAbiFunction?.outputs?.length ?? 0) > 0)
       || trailingDisposalInputs.length > 0
@@ -198,26 +195,21 @@ export async function allocateCreateBuilderFunders(
     const entryFunction = abiFunction as AbiFunction | undefined;
     builder.setVoidRecordSlotCompacted((entryFunction?.outputs?.length ?? 0) === 0
       && entryFunction?.inputs.some((input) => input.name === '__internal__returnOutputIdx') === true
-      && returnEmitOutputIndex < 0 && !trailingGeometryNeedsReturnSlot && !overrides?.omitLocalFeeTail);
+      && returnEmitOutputIndex < 0 && !trailingGeometryNeedsReturnSlot);
     // An entry that pays the miner fee from the contract's balance funds its own output-only slots out of that fee,
     // so it takes nobody's coin: a withdrawal from a pool needs no BCH of its own.
     const paysOwnFee = effectiveBlockLayout.minerFee !== undefined;
     let neededFunders = effectiveBlockLayout.slots.filter(
       (s) => outputOnlyKinds.has(s.kind) && !paysOwnFee
-        // An atomic participant is assembled against its published fixed-width block. Even when this
-        // invocation emits no return blob, retain the return-event input as an inactive balanced slot so
-        // executor/identity inputs following the route cannot shift left. The composition replaces all local
-        // fee tails with one global tail, but it must not compact compiler-authored block geometry.
-        && (s.kind !== 'returnEvent' || returnEmitOutputIndex >= 0
-          || trailingGeometryNeedsReturnSlot || overrides?.omitLocalFeeTail),
+        // A return-event slot this invocation leaves unused keeps its input only where trailing geometry follows it.
+        && (s.kind !== 'returnEvent' || returnEmitOutputIndex >= 0 || trailingGeometryNeedsReturnSlot),
     ).length;
     // Dense placement puts a loaded container UTXO at its published offset. A funder
     // reserved for that same slot stays unconsumed and is appended past the balanced
-    // block. An empty slot still needs the pad: an inactive route, and trailing
-    // geometry whose container was not loaded into the slot.
-    const inactiveSatoshiContainer = false;
+    // block. An empty slot still needs the pad: trailing geometry whose container was
+    // not loaded into the slot.
     const containerOccupiesPublishedSlot = builder.hasLoadedSatoshiContainer();
-    if ((trailingGeometryNeedsReturnSlot || inactiveSatoshiContainer)
+    if (trailingGeometryNeedsReturnSlot
       && !containerOccupiesPublishedSlot
       && effectiveBlockLayout.slots.some((slot) => slot.kind === 'satoshiContainer')) {
       neededFunders += 1;
@@ -274,7 +266,7 @@ export async function allocateCreateBuilderFunders(
       }
       // One additional input sits after the balanced owner block and funds
       // the fee; the transaction builder pairs it with the final change output.
-      neededFunders += trailingCapacity - existingTrailingInputs + (overrides?.omitLocalFeeTail ? 0 : 1);
+      neededFunders += trailingCapacity - existingTrailingInputs + 1;
     }
     // ANY msg.sender / tx.origin use needs the sender's NATIVE P2PKH input present so the covenant's emitTxOrigin
     // resolves to it (the sender IS tx.origin), even when the write's fees would otherwise come from the contract.
@@ -422,31 +414,7 @@ export async function allocateCreateBuilderFunders(
     }
 
     if (neededFunders > 0) {
-      if (host.signer && overrides?.omitLocalFeeTail && (host.inner.provider as any).addUtxo) {
-        // Atomic composition joins participant blocks before a canonical bare-P2PKH fee tail. Every structural
-        // pad here (including output-only event slots) must use the OP_TRUE dummy covenant: a bare P2PKH pad
-        // becomes authenticated tx.origin (first non-token input) and breaks `rowSubject == tx.origin` on the
-        // Verifier when the fee tail is later. The complete composition's fee funder alone carries
-        // origin; signing dozens of wallet pads is also needlessly expensive.
-        const layoutFunders: UnlockableUtxo[] = [];
-        for (let i = 0; i < neededFunders; i++) {
-          const seed = new TextEncoder().encode(
-            `SolidCash layout funder\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
-            + `:${overrides?.blockBase ?? 0}:${i}`,
-          );
-          const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
-          await (host.inner.provider as any).addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
-          layoutFunders.push({
-            ...dummy,
-            unlocker: {
-              generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
-              generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
-            },
-          });
-        }
-        installFunders(layoutFunders);
-        timing?.('funders-atomic-mock');
-      } else if (host.signer) {
+      if (host.signer) {
         const useSyntheticRelocationReserve = relocationFunderCount > 0
           && !!(host.inner.provider as any).addUtxo;
         const walletFunderCount = useSyntheticRelocationReserve ? layoutFunderCount : neededFunders;
@@ -458,8 +426,7 @@ export async function allocateCreateBuilderFunders(
           const reserve: UnlockableUtxo[] = [];
           for (let i = 0; i < relocationFunderCount; i++) {
             const seed = new TextEncoder().encode(
-              `SolidCash relocation funder\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
-              + `:${overrides?.blockBase ?? 0}:${i}`,
+              `SolidCash relocation funder\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}:0:${i}`,
             );
             const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
             await (host.inner.provider as any).addUtxo(binToHex(lockingBytecode), dummy);
@@ -481,9 +448,9 @@ export async function allocateCreateBuilderFunders(
             functionName, entryFunction: entryAbiFunction?.name, neededFunders: walletFunderCount,
             sharedFunders: sharedFunderPool?.length ?? 0,
           });
-          // Delegate/proxy routes start this snapshot before expanding their large composed transaction.
-          // Reuse it here even when there are no `externalCalls` (delegate calls are represented by
-          // `lowLevelCalls`), otherwise a second wallet scan runs while the full route is resident.
+          // Delegate/proxy calls start this snapshot before expanding their calls. Reuse it here even when
+          // there are no `externalCalls` (delegate calls are represented by `lowLevelCalls`), otherwise a
+          // second wallet scan runs while the expanded calls are resident.
           const signerUtxos = earlySignerUtxos ?? await signerFundingCoins(host.signer);
           timing?.('funder-fetch-complete');
           // The shared pool contains the still-available snapshot tail. Excluding that tail inverted ownership:
@@ -536,8 +503,7 @@ export async function allocateCreateBuilderFunders(
             // alias one another, and retain any real signer input selected above for tx.origin/msg.sender.
             for (let i = selected.length; i < walletFunderCount; i++) {
               const seed = new TextEncoder().encode(
-                `SolidCash mock layout funder\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
-              + `:${overrides?.blockBase ?? 0}:${i}`,
+                `SolidCash mock layout funder\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}:0:${i}`,
               );
               const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
               await mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
@@ -558,10 +524,7 @@ export async function allocateCreateBuilderFunders(
       } else if ((host.inner.provider as any).addUtxo) {
         const dummyFunders: UnlockableUtxo[] = [];
         for (let i = 0; i < neededFunders; i++) {
-          // Atomic participants are assembled independently before their balanced blocks are joined.
-          // Namespace synthetic funders by the compiler-derived absolute block base so two output-only slots
-          // can never reuse one outpoint in the aggregate transaction.
-          const syntheticOutpoint = 0xf0 + (overrides?.blockBase ?? 0) * 0x100 + i;
+          const syntheticOutpoint = 0xf0 + i;
           const dummy: Utxo = {
             txid: '00'.repeat(28) + syntheticOutpoint.toString(16).padStart(8, '0'),
             vout: 0,

@@ -2,14 +2,13 @@
 """
 X49: is the 100,000-byte ceiling POLICY or CONSENSUS, and which policy rules does this node actually apply?
 
-F1 measured the route envelope against real BCH-2026 constants and found that C3 sits inside every
-consensus limit and outside exactly one relay limit. A refusal from `sendrawtransaction` cannot by itself
-tell those apart: the mempool applies consensus and policy together. The distinction only becomes visible
-when the SAME bytes are offered by the other path, inside a block.
+A refusal from `sendrawtransaction` cannot by itself tell policy from consensus: the mempool applies both
+together. The distinction only becomes visible when the SAME bytes are offered by the other path, inside a
+block.
 
 This script is MUTATING - it spends wallet coins and submits blocks - which is why it is a harness rather
-than a test. The non-mutating half of the same evidence is committed as
-`test/e2e/NodeEnvelopeX49.test.ts` and runs under `TESTS_USE_REGTEST`.
+than a test. The non-mutating measurement of the policy rules this node applies is
+`test/e2e/OutputTemplateX64.test.ts`, which runs under `TESTS_USE_REGTEST`.
 
 Usage, from the repo root with the regtest stack up:
     python3 packages/solidcash/test/regtest/x49-policy-vs-consensus.py

@@ -17,7 +17,6 @@ import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js'
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { findLastIndex } from '../utils.js';
 import { isP2sh32LockingBytecode } from './faithful-probe-trace.js';
-import { isExcludedLegacyJobEventTraceCommitment } from './legacy-job-event-wire.js';
 import {
   expectedFromOtcEqualVerify,
   selectExpectedP2sh32OutputLock,
@@ -243,7 +242,6 @@ export function extractExpectedOutputCommitmentFromTrace(
 export function extractFailingValueChunkCommitments(
   trace: AuthenticationProgramStateCommon[],
   authority?: { outputBase: number; outputCount: number; lockingBytecode: Uint8Array } | null,
-  legacyJobEventCompatibility = false,
 ): Map<number, string> {
   if (authority !== undefined) {
     if (authority === null) return new Map();
@@ -335,7 +333,6 @@ export function extractFailingValueChunkCommitments(
     const actualHex = observedActual ?? binToHex(top);
     if (expectedHex === actualHex) continue;
     if (isEmptyValueChunkCommitment(expectedHex)) continue;
-    if (isExcludedLegacyJobEventTraceCommitment(expectedHex, legacyJobEventCompatibility)) continue;
     if (expected.length < 3 || expected.length > 128) continue;
     result.set(outIdx, expectedHex);
     const chunkIndex = valueChunkIndexFromCommitment(expectedHex);

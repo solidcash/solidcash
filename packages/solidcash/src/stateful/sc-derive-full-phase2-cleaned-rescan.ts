@@ -8,7 +8,6 @@ import type { EmitAbi, FunctionBlockLayout } from '@solidcash/utils';
 import type { Output } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
-import { buildParticipantProbeProgram } from './participant-probe-program.js';
 import { deriveFullPhase2ApplyEvents } from './sc-derive-full-phase2-apply-events.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentMapFromTrace, extractExpectedOutputCommitmentFromTrace } from './trace-commitment-helpers.js';
@@ -89,9 +88,7 @@ export function deriveFullPhase2CleanedRescan(
           ? stb.insertBeforeLateValueSuffix(cleanedProbe, { to: dummyLbc, amount: 1000n }, {
             rebindReturnWitnessesOnly: cleanedProbe.outputs.length > 30,
           }) : undefined;
-        const { transaction, sourceOutputs } = buildParticipantProbeProgram(
-          cleanedProbe, stb.getComposedBlockBase(),
-        );
+        const { transaction, sourceOutputs } = cleanedProbe.buildLibauthProgram();
         const cleanedProgram = {
           inputIndex: delegatecallInputIndex ?? 0,
           sourceOutputs,

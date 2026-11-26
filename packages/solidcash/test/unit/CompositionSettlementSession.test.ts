@@ -171,7 +171,6 @@ describe('composition settlement session CompositionSettlementSession', () => {
       isPersistedChunkableValueWriteReady: () => true,
       persistedValueChunkWrite: () => undefined,
       hasChunkableValueWriteMetadata: () => false,
-      permitsLegacyNamedValueChunkFallback: () => true,
       chunkableValueWriteGroups: () => ({ externalIndex: -1, externalIndices: [], lowLevelIndex: -1 }),
       findMintingInputIndex: (categoryId: string) => {
         requestedCategories.push(categoryId);
@@ -221,7 +220,6 @@ describe('composition settlement session CompositionSettlementSession', () => {
     const host = {
       externalCallUtxoGroups: [{ functionName: 'publishJobEvent', categoryId: selected }],
       lowLevelCallUtxoGroups: [],
-      composedParticipant: false,
       getExternalCallMasterInputIndex: () => 0,
       getLowLevelCallMasterInputIndex: () => -1,
       getChunkableValueWriteBand: () => ({ start: 0, end: 0, nNew: 1 }),
@@ -256,7 +254,6 @@ describe('composition settlement session CompositionSettlementSession', () => {
     const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype) as object, {
       _valueChunkWriteCategorySelection: () => ({ status: 'absent' }),
       _hasChunkableValueWriteMetadata: () => false,
-      _permitsLegacyNamedValueChunkFallback: () => true,
     }) as {
       _stagedValueChunkWrite: (categoryId?: string) => Uint8Array | undefined;
       _persistedValueChunkValue: (categoryId?: string) => Uint8Array | undefined;
@@ -291,7 +288,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
     });
   });
 
-  it('does not fetch legacy predecessors when compatibility fallback is disabled', async () => {
+  it('does not fetch legacy predecessors for compiler-described writes', async () => {
     const session = createCompositionSettlementSession();
     const categoryId = 'aa'.repeat(31) + '55';
     const slot = keyToSlot(new Uint8Array());
@@ -338,7 +335,6 @@ describe('composition settlement session CompositionSettlementSession', () => {
       isPersistedChunkableValueWriteReady: () => true,
       persistedValueChunkWrite: () => undefined,
       hasChunkableValueWriteMetadata: () => true,
-      permitsLegacyNamedValueChunkFallback: () => false,
       chunkableValueWriteGroups: () => ({
         external: { externalContract: { inner: contract } },
         externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
@@ -354,7 +350,6 @@ describe('composition settlement session CompositionSettlementSession', () => {
     const legacyHost = {
       ...host,
       hasChunkableValueWriteMetadata: () => false,
-      permitsLegacyNamedValueChunkFallback: () => true,
     };
     await runWithCompositionSettlementSession(session, () => ensurePersistedValueChunkInputs(legacyHost as never));
     expect(legacyUnlockerProviders).toBeGreaterThan(0);
@@ -414,7 +409,6 @@ describe('composition settlement session CompositionSettlementSession', () => {
       isPersistedChunkableValueWriteReady: () => true,
       persistedValueChunkWrite: () => undefined,
       hasChunkableValueWriteMetadata: () => false,
-      permitsLegacyNamedValueChunkFallback: () => true,
       chunkableValueWriteGroups: () => ({
         external: { externalContract: { inner: contract } },
         externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
@@ -463,7 +457,6 @@ describe('composition settlement session CompositionSettlementSession', () => {
       isPersistedChunkableValueWriteReady: () => true,
       persistedValueChunkWrite: () => undefined,
       hasChunkableValueWriteMetadata: () => false,
-      permitsLegacyNamedValueChunkFallback: () => true,
       chunkableValueWriteGroups: () => ({
         external: { externalContract: { inner: { provider, addressType: 'p2sh32', artifact: {} } } },
         externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,

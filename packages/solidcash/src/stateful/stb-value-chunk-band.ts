@@ -17,7 +17,6 @@ import { stripSurplusValueChunkLocks } from './scid-minting-return-layout.js';
 import {
   hasChunkableValueWriteMetadata,
   chunkableValueWriteCategory,
-  permitsLegacyNamedValueChunkFallbackForGroups,
   persistedValueChunkCategory,
   shouldRematerializePersistUpdateForHost,
   shouldStampPersistUpdateDigestLockForHost,
@@ -70,7 +69,6 @@ export interface ValueChunkBandHost extends ScaledPreserveEmitHost {
   valueChunkWriteStagingSession?: ValueChunkWriteStagingSession;
   applyDerivedValueChunks(builder: TransactionBuilder): boolean | void;
   applyDerivedEntryOutputs(builder: TransactionBuilder): void;
-  hasStagedValueChunkOutputs(): boolean;
   rememberJobEventsChunks(
     categoryId: string,
     chunks: ReadonlyArray<{ commitment: string; lockingBytecode: Uint8Array; categoryId?: string }>,
@@ -128,18 +126,6 @@ export function materializeValueChunkBand(
   if ([...host.derivedChunkOutputs.values()].some((chunk) => chunk.resourceIdentity !== undefined)) {
     host.applyDerivedValueChunks(builder);
     return;
-  }
-  // Identity-scan chunks are already appended via stageValueChunkOutputs. Do not re-place them
-  // onto a persist band that sits on another participant's minting master.
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host) && host.hasStagedValueChunkOutputs() && band) {
-    const at = host.allInputs[band.start];
-    if (at?.token?.nft?.capability === 'minting') {
-      const writerCategory = chunkableValueWriteCategory(host);
-      // An unknown writer must not claim another participant's minting slot.
-      if (!writerCategory || at.token.category?.toLowerCase() !== writerCategory.toLowerCase()) {
-        return;
-      }
-    }
   }
   const repairOwner = selectTokenBandRepairOwner(
     host.externalCallUtxoGroups,
@@ -307,9 +293,7 @@ export function materializeValueChunkBand(
   }, reserved, suffixStart, occupancyEnd);
   host.applyDerivedValueChunks(builder);
   const liveLock = placed[0].lockingBytecode;
-  if (permitsLegacyNamedValueChunkFallbackForGroups(host)) {
-    stripSurplusValueChunkLocks(builder.outputs, liveBand, liveLock, host.allInputs);
-  }
+  stripSurplusValueChunkLocks(builder.outputs, liveBand, liveLock, host.allInputs);
 }
 
 /**
@@ -323,15 +307,6 @@ export function ensureLiveValueChunkBand(
 ): void {
   const band = host.getChunkableValueWriteBand();
   if (!band) return;
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host) && host.hasStagedValueChunkOutputs()) {
-    const at = host.allInputs[band.start];
-    if (at?.token?.nft?.capability === 'minting') {
-      const writerCategory = chunkableValueWriteCategory(host);
-      if (!writerCategory || at.token.category?.toLowerCase() !== writerCategory.toLowerCase()) {
-        return;
-      }
-    }
-  }
   const categoryId = chunkableValueWriteCategory(host);
   const fromDerived = [...host.derivedChunkOutputs.entries()]
     .sort(([left], [right]) => left - right)
@@ -343,11 +318,9 @@ export function ensureLiveValueChunkBand(
     ?? persistedValueChunkCategory(host)
     ?? categoryId;
   const persistedWrite = host.persistedValueChunkWrite(persistTokenCategory);
-  const allowLegacyPersistFallback = !hasChunkableValueWriteMetadata(host)
-    && permitsLegacyNamedValueChunkFallbackForGroups(host);
+  const allowLegacyPersistFallback = !hasChunkableValueWriteMetadata(host);
   const persistDigestLock = shouldUseLegacyPersistDigestLockForValueChunks({
     hasWriteMetadata: hasChunkableValueWriteMetadata(host),
-    permitsLegacyFallback: permitsLegacyNamedValueChunkFallbackForGroups(host),
     stampPersistUpdate: shouldStampPersistUpdateDigestLockForHost(host),
   })
     ? host.persistUpdateDigestLock(persistTokenCategory)
@@ -434,9 +407,7 @@ export function ensureLiveValueChunkBand(
     lockingBytecode: siblingLock,
     categoryId: bandCategory,
   }, reserved, suffixStart, occupancyEnd);
-  if (permitsLegacyNamedValueChunkFallbackForGroups(host)) {
-    stripSurplusValueChunkLocks(builder.outputs, liveBand, siblingLock, host.allInputs);
-  }
+  stripSurplusValueChunkLocks(builder.outputs, liveBand, siblingLock, host.allInputs);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_PAD_HOLE === '1' && builder.outputs[6] && !builder.outputs[6]?.token) {
     console.error('pad-hole-at-6', {
@@ -539,8 +510,7 @@ export function persistPlacedValueChunkBand(
       );
     }
     host.valueChunkWriteStagingSession?.delete(selection.write);
-  } else if (selection.status === 'absent' && !hasChunkableValueWriteMetadata(host)
-    && permitsLegacyNamedValueChunkFallbackForGroups(host)) {
+  } else if (selection.status === 'absent' && !hasChunkableValueWriteMetadata(host)) {
     // Compatibility only for descriptor-free artifacts.
     if (spends.length > 0) settlement().persistedJobEventsSpends.set(categoryId, spends);
     const staged = settlement().stagedJobEventsValues.get(categoryId);

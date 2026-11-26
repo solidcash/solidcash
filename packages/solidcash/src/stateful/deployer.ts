@@ -933,7 +933,7 @@ export async function planConstructorCalleeBlock(
     const { loadCreateBuilderSatoshiContainer } = await import('./sc-load-create-builder-satoshi-container.js');
     try {
       const loaded = await loadCreateBuilderSatoshiContainer(
-        { categoryId, inner: contract as never }, { abiFunction: fn, overrides: undefined },
+        { categoryId, inner: contract as never }, { abiFunction: fn },
       );
       if (loaded.satoshiContainerUtxo !== undefined && loaded.satoshiContainerLockingBytecode !== undefined) {
         satoshiContainer = {
@@ -952,7 +952,7 @@ export async function planConstructorCalleeBlock(
     try {
       ({ tokenContainers, tokenContainerLockingBytecodes: tokenContainerLocks } = await loadCreateBuilderTokenContainers(
         { categoryId, inner: contract as never },
-        { abiFunction: fn, args: byPosition, overrides: undefined, stateValues: state.state },
+        { abiFunction: fn, args: byPosition, stateValues: state.state },
       ));
     } catch (error) {
       refuse(`its token container cannot be found: ${(error as Error).message}`);

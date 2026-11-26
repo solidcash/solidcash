@@ -27,7 +27,7 @@ const asHex = (value: string | Uint8Array | undefined): string | undefined => (
 
 /**
  * Resolve a participant's predecessor coordinate against the caller's trailing band. Only a coordinate that is
- * at or past the band start collides (a callee earlier in the composed layout keeps its own natural base); a
+ * at or past the band start collides (a callee earlier in the layout keeps its own natural base); a
  * colliding coordinate is pushed to the end of the caller's complete trailing band (loop entries, chunks,
  * identity anchors, and runtime effects all precede a nested callee's own trailing predecessors).
  */

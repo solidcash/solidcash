@@ -43,7 +43,6 @@ export async function resolveCreateBuilderEffectiveLayout(
     dynamicChunkVars: Array<{ delegate?: boolean; delegateSuffix?: boolean }>;
     delegateReturnEventOffset: number | undefined;
     delegateEventSlots: Array<{ kind: string; offset: number; slotIndex?: number }>;
-    overrides: { logicalIdentity?: ResolvedLogicalIdentity } | undefined;
     functionName: string;
     timingEnabled: boolean;
     timing?: (label: string) => void;
@@ -52,7 +51,7 @@ export async function resolveCreateBuilderEffectiveLayout(
   const {
     physicalAbiFunction, abiFunction, lowLevelCallUtxoGroups,
     nestedDelegateProxyGroupByLowLevel, activeDelegateGroupIndex, externalCallUtxoGroups,
-    dynamicChunkVars, delegateReturnEventOffset, delegateEventSlots, overrides,
+    dynamicChunkVars, delegateReturnEventOffset, delegateEventSlots,
     functionName, timingEnabled, timing,
   } = params;
 
@@ -122,7 +121,6 @@ export async function resolveCreateBuilderEffectiveLayout(
     });
   }
   if (timingEnabled) console.error('logical-identity-input', {
-    override: overrides?.logicalIdentity !== undefined,
     logicalAddress: host.getLogicalAddress(),
     externalGroups: externalCallUtxoGroups.length,
   });
@@ -133,10 +131,9 @@ export async function resolveCreateBuilderEffectiveLayout(
       .find((candidate) => candidate.name === group.functionName);
     return called?.usesMsgSender === true;
   });
-  const logicalIdentity = overrides?.logicalIdentity
-    ?? ((nestedUsesMsgSender || usesOrdinarySelfIdentity(abiFunction)) && host.getLogicalAddress()
-      ? await resolveLogicalIdentity(host.inner.provider, host.getLogicalAddress()!)
-      : undefined);
+  const logicalIdentity = (nestedUsesMsgSender || usesOrdinarySelfIdentity(abiFunction)) && host.getLogicalAddress()
+    ? await resolveLogicalIdentity(host.inner.provider, host.getLogicalAddress()!)
+    : undefined;
   if (logicalIdentity && !host.getLogicalAddress()) {
     host.setLogicalAddress(logicalIdentity.logicalAddress);
   }

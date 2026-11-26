@@ -1320,7 +1320,6 @@ async function deployFromStatefulContractInner<T extends Artifact>(
       abiFunction: deployAbi,
       entryAbiFunction: deployAbi,
       stateLayout: factoryLayout,
-      overrides: {},
       finalArgs,
     },
   );
@@ -1652,7 +1651,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
       }
       ({ tokenContainers: loopTokenContainers } = await loadCreateBuilderTokenContainers(
         { categoryId: factory.categoryId, inner: factory.inner as never },
-        { abiFunction: deployAbi, args: finalArgs, overrides: undefined, stateValues: onChainState.state },
+        { abiFunction: deployAbi, args: finalArgs, stateValues: onChainState.state },
       ));
       const missing = loopTokenContainers.find((container) => container.utxo === undefined);
       if (missing !== undefined) {

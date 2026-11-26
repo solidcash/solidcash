@@ -1,5 +1,5 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, Artifact } from '@solidcash/utils';
+import type { AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
@@ -20,10 +20,6 @@ export function usesOrdinarySelfIdentity(abi: AbiFunction | undefined): boolean 
     && abi.inputs.some((input) => input.name === '__internal__graphSelfIdentityInput');
 }
 
-/** A route that proves its own SCID is addressed by its logical CREATE lock on every call path (graph parity). */
-export function routeAuthenticatesPublicSelf(_artifact: Artifact | undefined): boolean {
-  return false;
-}
 
 export async function resolveOrdinarySelfIdentity(
   contract: OrdinarySelfContract, abi: AbiFunction | undefined,

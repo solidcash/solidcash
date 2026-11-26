@@ -35,9 +35,9 @@ import { SortedList, keyToSlotMulti, bytesToSlotValue, encodeEntryCommitment, de
 import { integerKey, type MappingKey } from './mapping-key-lookup.js';
 import { fillLeftCallArgumentWitnesses } from './call-record.js';
 import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './entry-journal-planning.js';
-import type { GraphEcrecoverCall } from './runtime-call-metadata.js';
+
 import { completeInternalFunctionArguments } from './internal-function-args.js';
-import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
+import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolClock,
 } from '../oracle/pool/reader.js';
@@ -61,14 +61,10 @@ import {
   type EntryNftInfo,
   type ExternalCallUtxoGroup,
   selectDelegateExecutionLayout,
-  isJobEventEmitCommitment,
   isAuthenticatedEventRepairCommitment,
-  stampEmptyJobEventTimestamp,
-  permitsLegacyNamedValueChunkFallback,
   legacyPlannedChunkableValueWriteCollection,
   type ValueChunkWriteDescriptor,
   ValueChunkWriteStagingSession,
-  valueChunkWriteResourceIdentity,
   assertMasterSequence,
 } from './StatefulTransactionBuilder.js';
 import type { StandInCaller } from './stb-materialize-caller-edge-outputs.js';
@@ -307,16 +303,10 @@ import {
 import {
   loadCreateBuilderDynamicChunks as loadCreateBuilderDynamicChunksImpl,
 } from './sc-load-create-builder-dynamic-chunks.js';
-export {
-  orderedActiveTrailingEntryCollections,
-  orderedTrailingEntryCollections,
-} from './sc-load-create-builder-dynamic-chunks.js';
+export { orderedTrailingEntryCollections } from './sc-load-create-builder-dynamic-chunks.js';
 import {
   resolveCreateBuilderEffectiveLayout as resolveCreateBuilderEffectiveLayoutImpl,
 } from './sc-resolve-create-builder-effective-layout.js';
-import {
-  applyCreateBuilderTransportedProductions as applyCreateBuilderTransportedProductionsImpl,
-} from './sc-apply-create-builder-transported-productions.js';
 import {
   constructCreateBuilderTransactionBuilder as constructCreateBuilderTransactionBuilderImpl,
 } from './sc-construct-create-builder-transaction-builder.js';
@@ -539,7 +529,6 @@ export {
   decodeEvmReturnValue,
   decodeAuthenticatedProducerResultVector,
 } from './external-return-encoding.js';
-import { type RouteProbeObservation } from './route-probe-progress.js';
 
 import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-loader.js';
 import { calleeBlockExceedsLowLevelBand } from './sc-select-compat-callee-block-calls.js';
@@ -644,7 +633,7 @@ export async function memoizeGraphPlanningProducerResult(
 
 /** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
 export { materializeInternalFunctionArgument } from './entry-journal-planning.js';
-export type { GraphEcrecoverCall } from './runtime-call-metadata.js';
+
 
 /**
  * Compute the minimum relay fee for a built TransactionBuilder at 1 sat/byte.
@@ -721,8 +710,8 @@ export interface StateEffectReading {
   otherEffectEvidence: StateEffectEvidence[];
   /**
    * The flag is set and the ABI itemizes NOTHING. A plain `this.x = y` lands here: the ABI publishes no
-   * "assigns a state variable" field, so this is as close as an artifact gets to naming one - and it is
-   * indistinguishable from a bus-mode journal reservation, which is why it is reported rather than concluded.
+   * "assigns a state variable" field, so this is as close as an artifact gets to naming one, which is why it is
+   * reported rather than concluded.
    */
   unattributed: boolean;
   /**
@@ -1030,9 +1019,8 @@ export function encodeStructArgument(
     : decodedValue;
   if (canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)) {
     const record = { ...(canonicalValue as Record<string, unknown>) };
-    // This historical wire adapter is deliberately fenced by usesLegacyJobEventCompatibility. Ordinary journal
-    // values are derived from compiler-authenticated flow and must never change because a field happens to have
-    // an application-associated spelling.
+    // This historical wire adapter runs only when the caller selects it. Ordinary values are derived from
+    // compiler-authenticated flow and must never change because a field happens to have an application spelling.
     if (legacyJobEventCompatibility && (
       (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined)
     )) {
@@ -1238,65 +1226,6 @@ function normalizeJobEventAddresses(
   return decoded;
 }
 
-/** Quarantine the historical wire adapter to its exact legacy schema and legacy layout. */
-/** Historical JobEventData wire compatibility is not part of the direct convention. */
-export function usesLegacyJobEventCompatibility(
-  _artifact: Artifact, _type: string, _structs: Artifact['structs'],
-): boolean {
-  return false;
-}
-
-/**
- * Apply the historical JobEvent timestamp wire adapter to a nested legacy-layout call.
- *
- * This compatibility behavior is selected by the callee artifact convention and the exact legacy ABI type,
- * never by a function name or a positional argument assumption. Compiler-described artifacts must preserve user arguments:
- * their state transition is derived by executing the compiler-authenticated handler body.
- */
-export function adaptLegacyNestedJobEventArguments(
-  artifact: Artifact,
-  functionName: string,
-  args: readonly FunctionArgument[],
-  timestamp: bigint,
-): FunctionArgument[] {
-  const functions = (artifact.abi as readonly AbiFunction[])
-    .filter((candidate) => candidate.name === functionName);
-  if (functions.length !== 1) return [...args];
-  const fn = functions[0];
-  if (fn.inputs.length !== args.length) return [...args];
-  const compatibleInputs = fn.inputs.flatMap((input, index) => (
-    usesLegacyJobEventCompatibility(artifact, input.type, artifact.structs) ? [index] : []
-  ));
-  if (compatibleInputs.length !== 1) return [...args];
-  const adapted = [...args];
-  const inputIndex = compatibleInputs[0];
-  adapted[inputIndex] = stampEmptyJobEventTimestamp(adapted[inputIndex], timestamp) as FunctionArgument;
-  return adapted;
-}
-
-/**
- * Opt into the historical event-payload trace exclusion only when artifact metadata identifies the exact legacy
- * wire schema. Modern compiler-described artifacts and descriptor-free general contracts must classify trace commitments by
- * compiler-owned slot/range authority, never by bytes which happen to resemble an application payload.
- */
-export function usesLegacyJobEventTraceCompatibility(artifacts: readonly Artifact[]): boolean {
-  return artifacts.some((artifact) => {
-    const layout = artifact.stateLayout;
-    if (!layout) return false;
-    const collections = [...(layout.collections ?? []), ...(layout.mappings ?? [])];
-    return collections.some((collection) => collection.chunkableValue === true
-      && usesLegacyJobEventCompatibility(
-        artifact, collection.valueType, layout.structs ?? artifact.structs,
-      ));
-  });
-}
-
-/** Payload-shaped exclusion is an explicitly selected legacy adapter, not a general trace classifier. */
-export function isExcludedLegacyJobEventTraceCommitment(
-  commitment: string, legacyJobEventCompatibility: boolean,
-): boolean {
-  return legacyJobEventCompatibility && isJobEventEmitCommitment(commitment);
-}
 
 /**
  * Extract expected commitment hex strings from a VM debug trace, keyed by the output index each verifies.
@@ -1319,89 +1248,6 @@ export function isExcludedLegacyJobEventTraceCommitment(
  */
 function isP2sh32LockingBytecode(bytes: Uint8Array | undefined): boolean {
   return !!bytes && bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87;
-}
-
-/** emitSortedValueChunkPin: `DUP / PICK addr / SWAP / OUTPUTBYTECODE` leaves [addr35, idx] on top. */
-
-export type RouteProbeObservationHistory = Map<string, string>;
-
-/** A resource fingerprint excludes relocatable physical geometry. */
-export function routeValueRunFingerprint(chunks: readonly {
-  outputIndex: number; commitment: string; lockingBytecode: Uint8Array;
-}[]): string {
-  const ordered = [...chunks].sort((left, right) => left.outputIndex - right.outputIndex);
-  const base = ordered[0]?.outputIndex ?? 0;
-  if (ordered.some((chunk, index) => chunk.outputIndex !== base + index)) {
-    throw new Error('Route value-run materialization must occupy one contiguous output band.');
-  }
-  return ordered.map((chunk) => [
-    chunk.outputIndex - base, chunk.commitment, binToHex(chunk.lockingBytecode),
-  ].join(':')).join('|');
-}
-
-/**
- * Record probe facts by their compiler-authenticated resource, independently of physical builder mutations.
- * Physical output indices can move while earlier participant slots hydrate, so callers fingerprint value runs
- * relative to their base. Different semantic bytes for one journal resource remain an SDK/compiler disagreement.
- */
-export function recordRouteProbeObservation(
-  observations: RouteProbeObservationHistory,
-  observation: RouteProbeObservation,
-): 'new' | 'same' | 'changed' {
-  const previous = observations.get(observation.identity);
-  if (previous === undefined) {
-    observations.set(observation.identity, observation.fingerprint);
-    return 'new';
-  }
-  if (previous === observation.fingerprint) return 'same';
-  observations.set(observation.identity, observation.fingerprint);
-  return 'changed';
-}
-
-/** Static convergence budget: each entry may reveal its address and commitment; each value resource its pin/run. */
-export function progressiveRouteProbePassLimit(
-  entrySlotCount: number,
-  writes: readonly ValueChunkWriteDescriptor[],
-): number {
-  const resources = new Set(writes.map(valueChunkWriteResourceIdentity));
-  return Math.max(1, 2 * entrySlotCount + 2 * Math.max(1, resources.size) + 1);
-}
-
-/**
- * Count only entry coordinates reachable from the participant currently being probed. An unrelated participant
- * cannot reveal a fact in this trace and therefore must not enlarge this participant's convergence budget.
- */
-export function routeProbeRepairableEntryCoordinateCount(
-  group: {
-    categoryId: string;
-    masterUtxo: { txid: string; vout: number };
-    blockLayout?: { slots: readonly { kind: string; offset: number }[] };
-  },
-  embeddedDelegate?: {
-    categoryId: string;
-    masterUtxo: { txid: string; vout: number };
-    blockLayout?: { slots: readonly { kind: string; offset: number }[] };
-  },
-): number {
-  const coordinates = new Set<string>();
-  for (const carrier of [group, embeddedDelegate]) {
-    if (!carrier?.blockLayout) continue;
-    const owner = [
-      carrier.categoryId.toLowerCase(),
-      carrier.masterUtxo.txid.toLowerCase(),
-      carrier.masterUtxo.vout,
-    ].join(':');
-    for (const slot of carrier.blockLayout.slots) {
-      if (slot.kind === 'entry') coordinates.add(`${owner}:${slot.offset}`);
-    }
-  }
-  return coordinates.size;
-}
-
-export function permitsRouteValueChunkDerivation(
-  _writes: readonly ValueChunkWriteDescriptor[],
-): boolean {
-  return true;
 }
 
 /** The ABI body carried by a physical participant. */
@@ -1427,11 +1273,6 @@ export function computedStateWriterGroupIndex(
   });
   if (writers.length === 1) return writers[0];
   if (described.length > 0) return undefined;
-  if (!permitsLegacyNamedValueChunkFallback(
-    candidateIndices.map((index) => groups[index]),
-  )) {
-    return undefined;
-  }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
     const name = groups[index]?.functionName;
@@ -1449,14 +1290,12 @@ export function chunkableWriterGroupIndex(
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
-  if (!permitsLegacyNamedValueChunkFallback(groups)) return -1;
   const plannedLegacyCandidates = groups.flatMap((group, index) => (
     legacyPlannedChunkableValueWriteCollection(group) === undefined ? [] : [index]
   ));
   if (plannedLegacyCandidates.length === 1) return plannedLegacyCandidates[0];
   if (plannedLegacyCandidates.length > 1) return -1;
-  // Compatibility only for artifacts predating compiler-published entry effects.
-  // legacy JobEvent name adapter: last-resort name match stays behind permitsLegacyNamedValueChunkFallback above.
+  // Compatibility only for artifacts predating compiler-published entry effects: a last-resort name match.
   return groups.findIndex((group) => legacyIsPublishJobEventName(group.functionName));
 }
 
@@ -1542,22 +1381,6 @@ export {
   resolveChunkableEntryCollection,
   resolvePublishedEntryBlockOffset,
 } from './value-chunk-lanes.js';
-
-/** Map a physical output index to a vmap entry slot offset using proxy and/or implementation layouts. */
-export function routeProbeEntrySlotOffsetForOutput(
-  outputIndex: number,
-  layouts: Array<{ base: number; slots?: Array<{ kind: string; offset?: number }> }>,
-): number | undefined {
-  for (const { base, slots } of layouts) {
-    if (!slots || base < 0) continue;
-    const relative = outputIndex - base;
-    const atIndex = slots[relative];
-    if (atIndex?.kind === 'entry') return atIndex.offset ?? relative;
-    const byOffset = slots.find((slot) => slot.kind === 'entry' && slot.offset === relative);
-    if (byOffset) return byOffset.offset ?? relative;
-  }
-  return undefined;
-}
 
 function extractExpectedOutputCommitmentFromTrace(
   trace: AuthenticationProgramStateCommon[], outputIndex: number, actualCommitment: string,
@@ -3083,9 +2906,6 @@ export function encodeLeadingRouteArrayPushes(params: {
   collection: string;
   valueType: string;
   structs: Artifact['structs'];
-  timestamp?: bigint;
-  /** Historical legacy-layout JobEventData adapter; never inferred from arbitrary field names. */
-  legacyJobEventCompatibility?: boolean;
   /** Evaluate the compiler-authenticated element recipe in this row's exact ABI/state environment. */
   resolveElement?: (
     row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
@@ -3410,7 +3230,7 @@ function unresolvableLabelLocals(
   return names;
 }
 
-/** Current builder-pass id; the composer reports it beside a stall so the stall's own plans can be isolated. */
+/** Current builder-pass id; a stall diagnostic reports it so the stall's own plans can be isolated. */
 export const peekBuilderBuildId = peekBuildId;
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
@@ -3476,7 +3296,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * uses, and the only one this SDK acts on. Everything else is evidence to be read, which is what this
    * returns: each published cause, split by whether it is a change to the handler's OWN persisted state.
    * `unattributed` is the honest residue - the ABI publishes no "assigns a state variable" field at all, so a
-   * plain `this.x = y` is indistinguishable from a bus-mode journal reservation from the outside.
+   * plain `this.x = y` is not itemized from the outside.
    *
    * NOT RENAMED, DELIBERATELY. The flag's conservative direction is correct for its one consumer and the name
    * is published in every artifact on disk; re-deriving it toward "mutates" would make that consumer fail OPEN
@@ -5073,8 +4893,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * args come straight from the direct parameters; the split (chunkA) is VM-probed. Returns a flat A0,B0,A1,B1,.. list.
    */
   private async _resolveEcrecoverComputeCoSpends(
-    abiFunction: AbiFunction, args: any[], selectedCalls?: readonly GraphEcrecoverCall[],
-    options: { deferUnresolved?: boolean; graphExecution?: boolean } = {},
+    abiFunction: AbiFunction, args: any[],
+    options: { deferUnresolved?: boolean } = {},
     sharedSidecarPool?: NetworkProvider,
     takeMiddleCoin?: ResolveEcrecoverCoSpendsHost['takeMiddleCoin'],
   ): Promise<{
@@ -5092,7 +4912,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : { sidecarSalt: new Uint8Array(32), inner: { provider: sharedSidecarPool } as any }),
         ...(takeMiddleCoin === undefined ? {} : { takeMiddleCoin }),
       },
-      abiFunction, args, selectedCalls, options,
+      abiFunction, args, options,
     );
   }
 
@@ -5535,7 +5355,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             functionName: group.functionName,
             required: group.requiredDataNftIndices,
             dataNfts: group.dataNftUtxos.length,
-            routeRows: [],
             precomputed: group.precomputedReturnCommitment
               ? binToHex(group.precomputedReturnCommitment) : undefined,
           })));
@@ -6653,7 +6472,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       externalEntryKeyOverrides?: Map<number, bigint | boolean | Uint8Array>;
       msgSenderCategory?: Uint8Array;
       /**
-       * Locking bytecode of the contract that CALLS this frame, when the frame is a nested/composed participant.
+       * Locking bytecode of the contract that CALLS this frame, when the frame is a nested participant.
        * The runtime's `msg.sender` is the immediate caller's address (the same identity `msgSenderCategory`
        * publishes), never the transaction origin, so a `msg.sender`-keyed mapping must hash THIS value. Absent for
        * a top-level call sent by the signer, where the signer's own address is the caller.
@@ -6682,17 +6501,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
-      /** Atomic composition's provisional/final batch return-event commitment. */
-      returnBlob?: Uint8Array;
       /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
       returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
       signerUtxos?: Utxo[];
-      logicalIdentity?: Awaited<ReturnType<typeof resolveLogicalIdentity>>;
-      /** Absolute base when this local balanced block is concatenated after another participant. */
-      blockBase?: number;
-      /** A atomic composition supplies one global fee tail after all participant blocks. */
-      omitLocalFeeTail?: boolean;
       /** DS-6: the sorted batch targets that spend, or chain on, a node they share with other targets (else the first). */
       sortedNodeOwners?: readonly number[];
       /** DS-6: lent present deletes that run on their node's owner write: the node is relinked at its default value. */
@@ -6716,11 +6528,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const timing = (stage: string): void => {
       if (timingEnabled) console.error('builder-timing', { functionName, stage, ms: Date.now() - startedAt });
     };
-    const isComposedRoute = overrides?.calls?.some((call) => call.type === 'stateful') === true;
-    // Start the wallet snapshot before expanding the very large composed route. Waiting until funding is planned
-    // makes the same provider query run while several gigabytes of transient route objects are live.
-    const earlySignerUtxos = overrides?.signerUtxos ?? ((isComposedRoute || functionName === '__forward') && this._signer
-      // Resolve the snapshot before route expansion. Leaving this promise pending retains the expanded route
+    const hasStatefulCalls = overrides?.calls?.some((call) => call.type === 'stateful') === true;
+    // Start the wallet snapshot before expanding the stateful calls. Waiting until funding is planned makes the
+    // same provider query run while the transient expanded calls are live.
+    const earlySignerUtxos = overrides?.signerUtxos ?? ((hasStatefulCalls || functionName === '__forward') && this._signer
+      // Resolve the snapshot before call expansion. Leaving this promise pending retains the expanded calls
       // while the mock/provider drains prior transaction work, producing the same peak-memory stall as a late scan.
       ? await signerUtxoSnapshot(this._signer) : undefined);
     await this._ensureResolved(); // address-constructed instances: resolve the category before building the tx
@@ -6783,16 +6595,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const authenticatesOwnSelf = usesOrdinarySelfIdentity(abiFunction);
     const publicSelfAddress = authenticatesOwnSelf && logicalCreateLock !== undefined
       ? logicalCreateLock : authenticatedSelfAddress;
-    // The identity a CHILD callee observes as `msg.sender` (anchor witness and msg.sender-keyed entries). A plain
-    // deployment whose route proves its own SCID is addressed by its logical CREATE lock (`getAddress()`), as the
-    // atomic graph presents the same caller; proxy, framed and native deployments keep the physical executing lock.
-    const childSeesLogicalSelf = this._framedAddress === undefined && this._framedProxyAddress === undefined
-      && (registeredSelf?.contract as { implementation?: unknown } | undefined)?.implementation === undefined
-      && routeAuthenticatesPublicSelf(this.inner.artifact);
+    // The identity a CHILD callee observes as `msg.sender` (anchor witness and msg.sender-keyed entries): the
+    // physical executing lock.
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
-      lockingBytecode: binToHex(childSeesLogicalSelf && logicalCreateLock !== undefined
-        ? logicalCreateLock : authenticatedSelfAddress),
+      lockingBytecode: binToHex(authenticatedSelfAddress),
     });
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
@@ -6870,8 +6677,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     finalArgs = earlyArgs.finalArgs;
     let returnEmitOutputIndex = earlyArgs.returnEmitOutputIndex;
-    let returnMaterializationOutputIndex = earlyArgs.returnMaterializationOutputIndex;
-    const returnAbiFunction = earlyArgs.returnAbiFunction;
     let returnEmitBlockOffset = earlyArgs.returnEmitBlockOffset;
     const resolvedMsgSenderCategory = earlyArgs.resolvedMsgSenderCategory;
 
@@ -6899,13 +6704,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...onChainState.state, __block_timestamp: oracleClock.timestamp, __block_number: oracleClock.number,
     };
 
-    // Direct stateful calls publish no route rows: every entry settles its own physical inputs.
-    const selectedRouteRows: readonly RouteExpressionKeyRow[] = [];
-    const selectedUpsertRows: never[] = [];
-    const upsertPlanningFrames: Array<{
-      abiFunction: AbiFunction; args: FunctionArgument[]; routed: boolean; row?: RouteExpressionKeyRow;
-    }> = (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
-      ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false }]
+    const upsertPlanningFrames: Array<{ abiFunction: AbiFunction; args: FunctionArgument[] }> = (
+      entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
+      ? [{ abiFunction: entryAbiFunction!, args: entryArgs }]
       : [];
     let entryNfts: EntryNftInfo[] = [];
     // Value witnesses are keyed by the entry-slot ordinal their own ABI name spells, never by their position in
@@ -6917,9 +6718,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // vmap sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
-    // Routed batch TARGET nodes published with their key and successor link only. The row's handler builds the
-    // value, so the tail is completed after the builder exists: from the transported production of that exact
-    // entry when the atomic graph carries one, otherwise from the value the trace authenticates.
+    // Batch TARGET nodes published with their key and successor link only. The handler builds the value, so the
+    // tail is completed after the builder exists, from the value the trace authenticates.
     let pendingEntryValueTails: Array<{
       slotIndex: number; collection: string; slot: Uint8Array; seed: string; next: Uint8Array; chunkable: boolean;
     }> = [];
@@ -7327,9 +7127,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const routed = resolveRouteRowExpressionKey({
                   expressionLabel: source.expressionLabel,
                   collection: access.collection,
-                  rowArguments: selectedRouteRows.length > 0
-                    ? selectedRouteRows
-                    : [{ args: entryArgs, occurrenceIndex: 0, handler: entryAbiFunction }],
+                  rowArguments: [{ args: entryArgs, occurrenceIndex: 0, handler: entryAbiFunction }],
                   routePlanningArgs: entryArgs,
                   routeVisibleInputs: entryAbiFunction.inputs,
                   structs: stateLayout.structs,
@@ -7355,7 +7153,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const ov = overrides?.entryKeyOverrides?.get(slotIndex);
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
-              // A composer-supplied entry key is the remaining authority that can resolve `msg.sender` correctly
+              // A caller-supplied entry key is the remaining authority that can resolve `msg.sender` correctly
               // while the frame's category witness stays zero; print it next to the collection so the two halves of
               // one identity can be compared in a single run.
                 console.error('entry-key-override', JSON.stringify({
@@ -7872,7 +7670,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // value derived from the trace.
             const present = list.has(slot);
             const wUnlocker = createEntryNftUnlocker(
-              this.inner, overrides?.blockBase ?? 0, this.categoryId, access.collection,
+              this.inner, 0, this.categoryId, access.collection,
             );
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ENTRY_PIN === '1') {
@@ -7909,7 +7707,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
-              // Which identity this build resolved `msg.sender` from: the probe and the composed participant share
+              // Which identity this build resolved `msg.sender` from: the probe and the send share
               // this pin code, so the tuple below is what still differs between them.
               console.error('entry-pin-identity', JSON.stringify({
                 // The derive sequence that is currently executing (see `derive-return-value-entry`): pairing the two
@@ -7928,7 +7726,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 signer: String(this._signer?.getAddress?.() ?? ''),
                 nonceSigner: String(this._logicalNonceSigner?.getAddress?.() ?? ''),
                 probe: overrides?.returnProbeOnly === true,
-                blockBase: overrides?.blockBase,
               }));
             }
             if (present) {
@@ -8074,7 +7871,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           } else {
             let present = list.has(slot);
             // A key that the chain holds can still miss here: the collection entries were fetched once per build,
-            // and a write performed earlier in the same test (its own composed send) may not have been visible to
+            // and a write performed earlier in the same test (its own send) may not have been visible to
             // that fetch yet. Re-fetch before falling back to the bracketing predecessor, whose (empty) value the
             // covenant would otherwise read as "absent". The predecessor remains the correct proof for a key that
             // really is absent.
@@ -8314,7 +8111,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // tx.origin = the first native P2PKH input's lockscript (emitTxOrigin). The sender funds via
             // _signer.unlockP2PKH(), so slot = keyToSlot(the signer's P2PKH lockscript). A wrong address just fails
             // the on-chain slot==keyToSlot(msg.sender) check (fail-closed).
-            // A composed participant is built from a contract instance that may carry only the logical-nonce
+            // A nested participant is built from a contract instance that may carry only the logical-nonce
             // signer (the account that initiated the call), the same fallback the expression-keyed branch uses.
             // Requiring the physical signer here would either throw or, worse, key the entry by an account that
             // never calls this contract, so both are resolved through one sender lookup.
@@ -8442,7 +8239,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         const exists = !!matchingUtxo;
         const entryUnlocker = createEntryNftUnlocker(
-          this.inner, overrides?.blockBase ?? 0, this.categoryId, access.collection,
+          this.inner, 0, this.categoryId, access.collection,
         );
 
         entryNfts.push({
@@ -8570,10 +8367,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0).length;
       }
       const entryLayout = entryAbiFunction?.blockLayout;
-      // PredOut is an absolute OP_OUTPUT index. Direct calls use block base 0;
-      // composed participants must start at their final aggregate output base.
-      let batchPredOutputBase = (overrides?.blockBase ?? 0)
-        + (entryLayout?.trailingBase ?? entryLayout?.blockSize ?? 1)
+      // PredOut is an absolute OP_OUTPUT index past the block.
+      let batchPredOutputBase = (entryLayout?.trailingBase ?? entryLayout?.blockSize ?? 1)
         + preservedTrailingCount;
       if (entryLayout?.trailingBase === undefined && returnEmitOutputIndex < 0
         && entryAbiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {
@@ -8734,28 +8529,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (predOutputs.length > 0) {
           batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
         }
-        // A standalone route with one physical slot keeps the scalar insertion layout even when several
-        // source rows update that same cached key: P' occupies the fixed entry coordinate and NEW trails.
-        // Graph-owned rows retain their complete batch topology; their predecessor trails unless the source
-        // itself has one row. Multi-slot batches always reserve fixed TARGET coordinates.
-        const batchSourceRows: readonly { handler: { entryAccesses?: readonly { collection: string }[] } }[] = [];
-        const uniqueBatchTargets = new Set(
-          batch.slotIndices
-            .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
-            .map((slotIndex) => binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array())),
-        );
-        // The one-slot compiler layout can place its predecessor at the fixed entry coordinate. A journal
-        // union with inactive reserve lanes still has a multi-slot batch covenant: it requires the target
-        // in the fixed slot and the rewritten predecessor in a separate trailing slot, even when one row ran.
-        // The runtime route reports only the lanes its own selected rows use, so a union whose compiled batch
-        // carries inactive reserve lanes projects to a single lane here. Read the compiled width from the
-        // published route: the covenant's topology, not the runtime projection, decides the predecessor slot.
-        const compiledBatchSlots = batch.slotIndices.length;
-        const singleTargetRowBatch = compiledBatchSlots === 1 && batch.slotIndices.length === 1
-          && predOutputs.length > 0
-          && (batchSourceRows.length === 1
-            || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
-          && uniqueBatchTargets.size === 1;
         // The ascending chain of the nodes the active lanes settle at. Linear batches publish it as an explicit row
         // vector, which the covenant binds to each lane's (Slot, Next) witness; it also decides which of several
         // inserts sharing one predecessor rewrites that predecessor. A write settles at its target. A read-only
@@ -8863,35 +8636,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // old key/value commitment format and cannot encode a 32-byte hashed slot as an int/address key.
           const batchAccess = entryAccessForSlot(slotIndex);
           if (!batchAccess) throw new Error(`vmap batch slot has no entry access ${slotIndex}`);
-          // An aggregate compiler-generated route owns physical entry slots, but its union access intentionally omits the
-          // source handler's value expression. A promoted writer batch still uses the writer's source-local lane
-          // ordinals, so recover that exact access (and its row arguments) before declaring the value unknown.
-          // This keeps literal/argument-computable values exact while preserving trace completion for genuinely
-          // runtime-built values.
-          const routedSourceValueCandidates = selectedRouteRows.flatMap((row) => {
-            const access = entryAccessAt(row.handler, slotIndex);
+          // The batch access can omit the source handler's value expression. Recover it from the public handler ABI
+          // before declaring the value unknown: this keeps literal/argument-computable values exact while preserving
+          // trace completion for genuinely runtime-built values.
+          const sourceValueCandidates = (entryArtifact.abi as readonly AbiFunction[]).flatMap((handler) => {
+            if (handler.name !== entryAbiFunction?.name
+              || (handler.selector && entryAbiFunction?.selector
+                && handler.selector.toLowerCase() !== entryAbiFunction.selector.toLowerCase())) return [];
+            const access = entryAccessAt(handler, slotIndex);
             return access?.collection === batch.collection
               && access.operations.includes('write')
               && access.valueSource !== undefined
-              ? [{ access, args: row.args, inputs: row.handler.inputs }]
+              ? [{ access, args: entryArgs, inputs: handler.inputs }]
               : [];
           });
-          // Direct delegate frames do not carry rowArguments. Their runtime ABI may still be a route-shaped
-          // clone with union accesses, so recover source expressions from the immutable public handler ABI.
-          const artifactSourceValueCandidates = routedSourceValueCandidates.length > 0 ? []
-            : (entryArtifact.abi as readonly AbiFunction[]).flatMap((handler) => {
-              if (handler.name !== entryAbiFunction?.name
-                || (handler.selector && entryAbiFunction?.selector
-                  && handler.selector.toLowerCase() !== entryAbiFunction.selector.toLowerCase())) return [];
-              const access = entryAccessAt(handler, slotIndex);
-              return access?.collection === batch.collection
-                && access.operations.includes('write')
-                && access.valueSource !== undefined
-                ? [{ access, args: entryArgs, inputs: handler.inputs }]
-                : [];
-            });
-          const sourceValueCandidates = routedSourceValueCandidates.length > 0
-            ? routedSourceValueCandidates : artifactSourceValueCandidates;
           const sourceValue = sourceValueCandidates.length === 1 ? sourceValueCandidates[0] : undefined;
           const valueAccess = batchAccess.valueSource !== undefined ? batchAccess : sourceValue?.access ?? batchAccess;
           const valueArgs = [...(sourceValue?.args ?? entryArgs)];
@@ -9105,7 +8863,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 collection: batch.collection, slotIndex, slot: binToHex(slot).slice(0, 16),
                 chunkable: collection.chunkableValue === true,
                 valueSource: valueAccess.valueSource,
-                seedBytes: out.commitment.length, singleTargetRowBatch,
+                seedBytes: out.commitment.length,
               }));
             }
           }
@@ -9128,16 +8886,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const proofSlot = bytesToSlotValue(proof.slot).toString();
           const predOrdinal = predOutputs.findIndex((o) => bytesToSlotValue(o.slot).toString() === proofSlot);
           const firstLinearPred = firstPredSlot.get(proofSlot) === slotIndex;
-          // The witness names the coordinate where THIS predecessor's rewritten node is published. A single-row
-          // batch has no trailing predecessor lane: the predecessor is republished at the entry coordinate its
-          // own co-spent NFT occupies, so the sentinel (-1) is not a readable output there - the route reads the
-          // witness coordinate directly and an unset index aborts the VM with "invalid transaction output index".
-          const proofOwner = entryNfts.find((candidate) => candidate.utxo !== undefined
-            && proof.utxo !== undefined
-            && candidate.utxo.txid === proof.utxo.txid && candidate.utxo.vout === proof.utxo.vout);
-          const proofOwnerOffset = proofOwner === undefined ? undefined
-            : entryAbiFunction!.blockLayout?.slots.find((candidate) =>
-              candidate.kind === 'entry' && candidate.slotIndex === proofOwner.slotIndex)?.offset;
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_PRED === '1') {
             console.error('pred-debug', JSON.stringify({
               functionName, slotIndex, target: binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array()).slice(0, 12),
@@ -9150,11 +8898,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // tx.outputs[-1]. A linear batch keeps -1 for the row another lane republishes: its two-lane and
           // rows-table verifiers test that sentinel explicitly.
           const sharedProofOutput = batch.linear !== true;
+          // The witness names the coordinate where THIS predecessor's rewritten node is published.
           const predOut = predOrdinal < 0 || (!firstLinearPred && !sharedProofOutput)
             ? -1n
-            : singleTargetRowBatch
-              ? proofOwnerOffset === undefined ? -1n : BigInt((overrides?.blockBase ?? 0) + proofOwnerOffset)
-              : BigInt(batchPredOutputBase + predOrdinal);
+            : BigInt(batchPredOutputBase + predOrdinal);
           const raw = this._rawVMapBatchWitness?.get(slotIndex);
           if (raw?.proof === undefined && proof.utxo !== undefined) {
             topLevelVmapProofUtxos.set(slotIndex, { txid: proof.utxo.txid, vout: proof.utxo.vout });
@@ -9170,11 +8917,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
         batchPredOutputBase += predOutputs.length;
         batchTrailingCount += predOutputs.length;
-        if (singleTargetRowBatch) {
-          // The one shared trailing lane carries the target node this statement inserts.
-          const target = batchTargetPlaceholders.get(batch.slotIndices[0]!);
-          if (target !== undefined) batchPredCommitments.set(batch.collection, [target]);
-        }
       }
       if ((entryAbiFunction?.sortedBatchInfo?.length ?? 0) > 0) batchWitnesses.push(BigInt(batchTrailingCount));
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -9317,7 +9059,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction,
         entryAbiFunction,
         stateLayout,
-        overrides,
         finalArgs,
       },
     );
@@ -9334,9 +9075,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Unsupported removal, aggregate, and dynamic-value shapes remain fail-closed below.
     let sortedLoopCommitments = new Map<string, string[]>();
     let insertLoopPredecessors: UnlockableUtxo[] = [];
-    const runtimeLoopEntrySegments: Array<{
-      rowIndex: number; collection: string; offset: number; count: number;
-    }> = [];
     const runtimeJournalInputIds = new Set<string>();
     /**
      * A handler describes its physical journal effects while it is traversed; the materializer below drains those
@@ -9384,7 +9122,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         {
           entryAbiFunction,
           stateLayout,
-          overrides,
           entryArgs,
           finalArgs,
           iterationEntryInputs,
@@ -9404,52 +9141,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // at output[master+blockSize+i]. Both known EXACTLY off-chain (SortedList.find + arithmetic) - the covenant pins
     // them. A recipient with NO existing entry throws (insert-in-loop is a separate covenant); the shared v[] param
     // ties the credit total to the debit so supply is conserved.
-    const routeRowIndex = (row: RouteExpressionKeyRow): number => {
-      // A delegated root can carry both a proxy route and one or more implementation routes. The selected row
-      // belongs to exactly one of those frames; preferring a defined-but-unrelated proxy array returns -1 and
-      // makes runtime effects in the implementation appear unpositioned. Resolve identity within each owner.
-      const routeFrames: ReadonlyArray<readonly RouteExpressionKeyRow[] | undefined> = [];
-      for (const rows of routeFrames) {
-        const index = rows?.findIndex((candidate) => candidate === row) ?? -1;
-        if (index >= 0) return index;
-      }
-      return -1;
-    };
-    const selectedRowArgument = (row: RouteExpressionKeyRow, name: string): unknown => {
-      if (name.startsWith('__internal__')) return row.internalArgs?.[name];
-      const inputs = visibleHandlerInputs(row.handler.inputs);
-      const index = inputs.findIndex((input) => input.name === name);
-      return index < 0 ? undefined : row.args[index];
-    };
-    const runtimeLoopsByCollection = new Map<string, Array<(typeof upsertPlanningFrames)[number]>>();
-    for (const frame of upsertPlanningFrames) {
-      for (const info of frame.abiFunction.sortedUpsertLoopInfo ?? []) {
-        const frames = runtimeLoopsByCollection.get(info.collection) ?? [];
-        // One handler may declare multiple upsert loops on the same collection
-        // (updateJobWhitelist add+remove). Deduplicate by frame identity so that
-        // pattern is not treated as cross-transaction concurrent journals.
-        if (!frames.includes(frame)) frames.push(frame);
-        runtimeLoopsByCollection.set(info.collection, frames);
-      }
-    }
-    for (const [collection, frames] of runtimeLoopsByCollection) {
-      if (frames.length < 2) continue;
-      const inputName = vmapRuntimeInputCountName(collection);
-      const outputName = vmapRuntimeOutputCountName(collection);
-      const unthreaded = frames.some((frame) => (
-        !frame.abiFunction.inputs.some((input) => input.name === inputName)
-        || !frame.abiFunction.inputs.some((input) => input.name === outputName)
-      ));
-      if (!unthreaded) continue;
-      const rows = [...new Set(frames.flatMap((frame) => (
-        frame.row === undefined ? [] : [routeRowIndex(frame.row)]
-      )))];
-      const rowDescription = rows.length > 0 ? `Batch rows ${rows.join(', ')}` : 'Runtime loops';
-      throw new Error(
-        `${rowDescription} both mutate the '${collection}' runtime journal, but at least one loop form `
-        + 'does not support threaded collection cardinality; split the loops into separate transactions.',
-      );
-    }
     const runtimeLoopCardinality = new Map<string, { inputs: number; outputs: number }>();
     const addRuntimeLoopCardinality = (collection: string, inputs: number, outputs: number): void => {
       const prior = runtimeLoopCardinality.get(collection) ?? { inputs: 0, outputs: 0 };
@@ -9481,7 +9172,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           {
             info,
             loopAbiFunction,
-            upsertFrame,
             loopArgs,
             entryArtifact,
             stateLayout,
@@ -9490,7 +9180,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             executionSelfAddress,
             insertLoopPredecessorsLength: insertLoopPredecessors.length,
             runtimeJournalMaterializationIntentsLength: runtimeJournalMaterializationIntents.length,
-            selectedRowArgument,
             replaceLoopArgument,
           },
         );
@@ -9632,15 +9321,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
           if (witnessIndex < 0) {
             throw new Error(`vmap runtime expression loop ${info.collection}: missing old-value witness ABI input`);
-          }
-          // A routed nested-key RMW authenticates an existing entry value, but its current fixed-prefix settlement
-          // cannot materialize a missing selected entry as an insertion. Fail before transaction construction rather
-          // than publishing a route which verifies yet omits the requested post-state. Direct execution and the
-          // proven single-key/default-value route retain their existing insertion semantics.
-          if (upsertFrame.routed && info.op !== 'read' && info.fixedKeyParams.length > 0
-          && keysArr.some((key) => !list.find(slotForKey(key)))) {
-            throw new Error(`vmap runtime expression loop ${info.collection}: `
-            + 'selected absent old-value witness cannot be materialized as an insertion');
           }
           const oldValues = await Promise.all(keysArr.map(async (key) => {
             const slot = slotForKey(key);
@@ -10037,7 +9717,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // contributes one additional entry output. Consecutive new keys in one gap chain in the same way.
           let deferred: { slot: Uint8Array; nextKey: Uint8Array } | undefined;
           const runtimeUnlocker = createEntryNftUnlocker(
-            this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
+            this.inner, 0, this.categoryId, info.collection,
           );
           for (let i = 0; i < keysArr.length; i++) {
             const slot = slotForKey(keysArr[i]);
@@ -10113,13 +9793,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           replaceLoopArgument(witnessIndex, oldWitnesses);
           const priorOutputCount = runtimeLoopDerivedCounts.get(info.collection) ?? 0;
           runtimeLoopDerivedCounts.set(info.collection, priorOutputCount + outputCount);
-          if (upsertFrame.routed && selectedUpsertRows.length > 1 && outputCount > 0) {
-            const rowIndex = routeRowIndex(upsertFrame.row!);
-            if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
-            runtimeLoopEntrySegments.push({
-              rowIndex, collection: info.collection, offset: priorOutputCount, count: outputCount,
-            });
-          }
           materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
           addRuntimeLoopCardinality(
             info.collection, insertLoopPredecessors.length - runtimeInputStart, outputCount,
@@ -10249,7 +9922,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           perKeyRawbytes = true;
         }
         const wUnlocker = createEntryNftUnlocker(
-          this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
+          this.inner, 0, this.categoryId, info.collection,
         );
         // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
         // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
@@ -10455,16 +10128,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
       if (commitments.length > 0) {
-        const prior = sortedLoopCommitments.get(info.collection) ?? [];
         captureRuntimeJournalOutputIntent(info.collection, commitments);
         materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
-        if (upsertFrame.routed) {
-          const rowIndex = routeRowIndex(upsertFrame.row!);
-          if (rowIndex < 0) throw new Error('Batch runtime loop row is missing from its route frame');
-          runtimeLoopEntrySegments.push({
-            rowIndex, collection: info.collection, offset: prior.length, count: commitments.length,
-          });
-        }
       } else {
         materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
       }
@@ -10499,9 +10164,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // Every row which can touch a collection receives the same transaction-wide runtime cardinality. The route
-    // verifies that witness against the authenticated physical collection, then each selected handler subtracts
-    // its locally proven width. Empty rows receive the same initial total and subtract zero.
+    // A threaded runtime loop receives its collection's transaction-wide runtime cardinality, which the covenant
+    // verifies against the authenticated physical collection.
     for (const upsertFrame of upsertPlanningFrames) {
       for (const collection of new Set(
         (upsertFrame.abiFunction.sortedUpsertLoopInfo ?? []).map((info) => info.collection),
@@ -10513,11 +10177,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const outputIndex = upsertFrame.abiFunction.inputs.findIndex(
           (input) => input.name === vmapRuntimeOutputCountName(collection),
         );
-        if (inputIndex < 0 || outputIndex < 0) {
-          // Legacy loop forms retain their local cardinality covenant. The preflight above ensures such a
-          // loop never shares its physical collection with another runtime loop in the same transaction.
-          continue;
-        }
+        // Legacy loop forms retain their local cardinality covenant.
+        if (inputIndex < 0 || outputIndex < 0) continue;
         const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
           upsertFrame.args[index] = value;
           // A promoted delegate entry encodes its own frame from entryArgs by name; the outer forwarder's
@@ -10969,7 +10630,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           iterationEntryInputs,
           hasDelegatedDynamicReadChunks,
           onChainState,
-          blockBase: overrides?.blockBase ?? 0,
           phaseCheckpoint: timing,
         },
       );
@@ -11080,7 +10740,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         externalOutStateUtxoGroups,
         legacyRouteDelegateFn,
         returnEmitOutputIndex,
-        overrides,
         functionName,
         allGroupEcSlots,
         timing,
@@ -11186,8 +10845,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           delegateReturnEventOffset,
           returnEmitOutputIndex,
           returnEmitBlockOffset,
-          returnMaterializationOutputIndex,
-          overrides,
           timing,
         });
         delegateEventSlots.length = 0;
@@ -11195,8 +10852,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         delegateReturnEventOffset = projected.delegateReturnEventOffset;
         returnEmitBlockOffset = projected.returnEmitBlockOffset as typeof returnEmitBlockOffset;
         returnEmitOutputIndex = projected.returnEmitOutputIndex;
-        returnMaterializationOutputIndex =
-          projected.returnMaterializationOutputIndex as typeof returnMaterializationOutputIndex;
       }
       await fixCreateBuilderDelegateUnlockersImpl(
         {
@@ -11231,7 +10886,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           directCallDelegateLayout,
           returnEmitOutputIndex,
           groupProxyMasterIndices,
-          overrides,
           entryBatchWitnesses,
           entryValueWitnesses,
           pendingDynamicChunkInputFills,
@@ -11260,7 +10914,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       {
         abiFunction: tokenContainerAbiFunction,
         args: tokenContainerArgs,
-        overrides,
         stateValues: onChainState?.state,
         timing,
       },
@@ -11281,7 +10934,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       {
         abiFunction: satoshiContainerAbiFunction,
-        overrides,
       },
     );
     const satoshiContainerUtxo = satoshiContainerLoad.satoshiContainerUtxo;
@@ -11487,16 +11139,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const delegatedEcrecover = ecrecoverExecutingGroup !== undefined;
       delegateComputeResources ||= delegatedEcrecover;
       const ecrecoverArgs = ecrecoverAbiFunction === entryAbiFunction ? entryArgs : args;
-      const graphCalls = undefined;
-      const graphExecution = false;
       const resolution = await this._resolveEcrecoverComputeCoSpends(
-        ecrecoverAbiFunction, ecrecoverArgs, graphCalls, {
-          deferUnresolved: true,
-          graphExecution,
-        },
-        ownSidecarPool,
-        // A composed graph funds the slots no covenant reads with its own neutral coin.
-        graphCalls === undefined && !graphExecution ? takeMiddleCoin : undefined,
+        ecrecoverAbiFunction, ecrecoverArgs, { deferUnresolved: true }, ownSidecarPool, takeMiddleCoin,
       );
       ecrecoverComputeCoSpendUtxos = resolution.coSpends.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       ecrecoverComputeRecreates = resolution.coSpends.map((cs) => cs.recreate);
@@ -11646,10 +11290,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const delegatedKeccak = executingGroup !== undefined;
       delegateComputeResources ||= delegatedKeccak;
       const keccakArgs = keccakAbiFunction === entryAbiFunction ? entryArgs : args;
-      // Graph-owned routes force keccak preimages to null so learning comes from the full authenticated
-      // transcript. Mirror ecrecover: defer the isolated probe — mapping entry gates abort before
-      // OP_INPUTBYTECODE on the sidecar, so a minimal master+dataNft probe never sees a side-car read.
-      const graphOwnedKeccak = false;
       const resolution = await this._resolveKeccakComputeCoSpends(keccakAbiFunction, keccakArgs, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
@@ -11657,8 +11297,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         locktime: maxBhLocktime,
         trailingReadInputs: iterationEntryInputs, firstDynamicReadInput: dynamicReadChunkInputs[0],
         ecrecoverPreimages: ecrecoverEvmPreimages,
-        ...((delegatedKeccak || graphOwnedKeccak
-          || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
+        ...((delegatedKeccak || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
           deferUnresolved: true,
         }),
         ...(delegatedKeccak && {
@@ -11760,15 +11399,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const eventNftLockingBytecodes = eventLocks.eventNftLockingBytecodes;
     const runtimeEventNftLockingBytecodes = eventLocks.runtimeEventNftLockingBytecodes;
     // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
-    const selectedDynamicRows: RouteExpressionKeyRow[] = [];
-    // A route's dynamic layout is the union of every dispatchable handler and determines the ordering
-    // of all trailing read/write runs. Preserve that geometry, but separately authenticate which variables this
-    // concrete envelope can mutate; only those may receive speculative output placeholders.
     const dynamicWrites = [...(abiFunction?.dynamicWrites ?? [])];
-    const hasSelectedDynamicRows = selectedDynamicRows.length > 0;
-    const activeDynamicWrites = new Set(hasSelectedDynamicRows
-      ? selectedDynamicRows.flatMap((row) => row.handler.dynamicWrites ?? [])
-      : dynamicWrites);
+    const activeDynamicWrites = new Set(dynamicWrites);
     const delegateDynamicWrites = new Set<string>();
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
@@ -11833,7 +11465,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         valueChunkGc,
         onChainState,
         stateLayout,
-        overrides,
         abiFunction,
         entryAbiFunction,
         lowLevelCallUtxoGroups,
@@ -11850,7 +11481,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         executionSelfAddress,
         functionName,
         tokenContainers,
-        runtimeLoopEntrySegments,
         entryAccesses: abiFunction?.entryAccesses,
         dynamicWrites,
         activeDynamicWrites,
@@ -11884,7 +11514,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         dynamicChunkVars,
         delegateReturnEventOffset,
         delegateEventSlots,
-        overrides,
         functionName,
         timingEnabled,
         timing,
@@ -11904,14 +11533,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       dynamicInputs: dynamicChunkInputs.length,
       disposalInputs: trailingDisposalInputs.length,
       heapMb: Math.round((((globalThis as any).process?.memoryUsage?.().heapUsed ?? 0) / 1048576)),
-    });
-    const transportedProductions: any[] = [];
-    const ordinaryTransportedRoute = false;
-    applyCreateBuilderTransportedProductionsImpl({
-      transportedProductions,
-      activeDelegateGroupIndex,
-      lowLevelCallUtxoGroups,
-      overrides,
     });
     const constructed = constructCreateBuilderTransactionBuilderImpl(
       {
@@ -12012,7 +11633,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         oldDynamicChunkCommitments,
         oldDynamicChunkCounts,
         overrides,
-        masterUtxo,
         entryDeleteSlots,
         condSoftDeleteSlots,
         entryNfts,
@@ -12024,34 +11644,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         activeDynamicWrites,
         usesComposedDelegateDynamicTail,
         computedValueChunkRuns,
-        onChainState,
         entryArgs,
         pendingEntryValueTails,
-        transportedProductions,
-        ordinaryTransportedRoute,
         valueChunkMints,
         maxBhLocktime,
         functionName,
         timing,
         dynamicChunkVars,
-        selectedDynamicRows,
         sortedLoopCommitments,
         runtimeExpressionLoopCollections,
         batchPredCommitments,
         batchTargetSlots,
         runtimeLoopDerivedCounts,
         computedValueUpdateCollections,
-        effectiveBlockLayout,
         loopValueChunkMints,
       },
     );
     // Registration above has materialized these owner-local continuations into the builder. Nested call chunks
-    // can occupy the same builder's staged/derived tables, but are not evidence for this route's ABI witness.
+    // can occupy the same builder's staged/derived tables, but are not evidence for this function's ABI witness.
     const ownedMaterializedValueChunkCounts = [
       ...valueChunkMints.map((mint) => mint.chunks.length),
       ...loopValueChunkMints.map((mint) => mint.chunks.length),
-      ...(ordinaryTransportedRoute
-        ? transportedProductions.map((production) => production.write.outputCount) : []),
     ];
 
     await allocateCreateBuilderFundersImpl(
@@ -12100,7 +11713,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       refreshNestedIdentityAnchorWitnesses,
     } = applyCreateBuilderPendingInputFillsImpl({
       builder,
-      overrides,
       functionName,
       entryAbiFunction,
       externalCallUtxoGroups,
@@ -12161,13 +11773,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         tokenContainerAccesses,
         onChainState,
         executionSelfAddress,
-        overrides,
         functionName,
-        returnAbiFunction,
         returnEmitOutputIndex,
-        returnMaterializationOutputIndex,
-        returnEmitBlockOffset,
-        delegateReturnEventOffset,
         lowLevelCallUtxoGroups,
         externalCallUtxoGroups,
         externalOutStateUtxoGroups,
@@ -12236,10 +11843,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       {
         builder,
-        overrides,
         functionName,
         returnEmitOutputIndex,
-        returnMaterializationOutputIndex,
         delegatecallInputIndex,
         entryAbiFunction,
         abiFunction,
@@ -12353,8 +11958,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const full = await caller.getFullState();
           return full.masterUtxo as UnlockableUtxo | undefined;
         },
-        contract: self,
-        signer: self._logicalNonceSigner ?? self._signer,
       } as any,
       functionName, args, calls, exactAbiFunction, calleeCalls,
       callerLockingBytecode, callerCategoryId, callerContract,
@@ -12992,10 +12595,10 @@ export class StatefulFunctionCall {
   private extraOutputs: Output[] = [];
   private extraInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
   /**
-   * Declare the contract that CALLS this frame. A nested/composed frame resolves `msg.sender` from the immediate
-   * caller's identity (the value the route publishes as `__internal__msgSenderCategory`), so a `msg.sender`-keyed
+   * Declare the contract that CALLS this frame. A nested frame resolves `msg.sender` from the immediate
+   * caller's identity (the value published as `__internal__msgSenderCategory`), so a `msg.sender`-keyed
    * mapping must hash that locking bytecode - hashing the transaction origin instead keys the entry on a slot the
-   * covenant never reads. Returns the call so a composition can annotate it inline.
+   * covenant never reads. Returns the call so a caller can annotate it inline.
    */
   withCallerIdentity(lockingBytecode: Uint8Array, categoryId?: string): this {
     this.callerLockingBytecode = Uint8Array.from(lockingBytecode);
@@ -13174,13 +12777,13 @@ export class StatefulFunctionCall {
     return this;
   }
 
-  /** Supply an event commitment explicitly when a composed delegate trace cannot be auto-derived. */
+  /** Supply an event commitment explicitly when a delegate trace cannot be auto-derived. */
   emitEvent(name: string, ...args: StateValueType[]): this {
     this.manualEvents.push({ name, args });
     return this;
   }
 
-  /** Compatibility event placed after composed delegate blocks, so it cannot shift positional covenant slots. */
+  /** Compatibility event placed after delegate blocks, so it cannot shift positional covenant slots. */
   emitDetachedEvent(name: string, ...args: StateValueType[]): this {
     this.detachedEvents.push({ name, args });
     return this;

@@ -232,10 +232,9 @@ export function shouldStampPersistUpdateDigestLock(parts: {
 /** Entry-covenant digest locks are a descriptor-free compatibility transport, never a value-chunk identity. */
 export function shouldUseLegacyPersistDigestLockForValueChunks(parts: {
   hasWriteMetadata: boolean;
-  permitsLegacyFallback: boolean;
   stampPersistUpdate: boolean;
 }): boolean {
-  return !parts.hasWriteMetadata && parts.permitsLegacyFallback && parts.stampPersistUpdate;
+  return !parts.hasWriteMetadata && parts.stampPersistUpdate;
 }
 
 export function isIntegerType(type: string): boolean {

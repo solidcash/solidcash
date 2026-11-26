@@ -3,12 +3,11 @@ import { computeCollectionHash } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
   progressiveRouteProbePassLimit,
-  permitsRouteValueChunkDerivation,
   recordRouteProbeObservation,
   routeProbeEntrySlotOffsetForOutput,
   routeProbeRepairableEntryCoordinateCount,
   routeValueRunFingerprint,
-} from '../../src/stateful/StatefulContract.js';
+} from '../../src/stateful/route-probe-progress.js';
 import {
   valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
@@ -80,10 +79,6 @@ describe('progressive route probe progress', () => {
     expect(routeProbeEntrySlotOffsetForOutput(23, layouts)).toBeUndefined();
   });
 
-  it('permits derivation with or without compiler-authored writes', () => {
-    expect(permitsRouteValueChunkDerivation([])).toBe(true);
-    expect(permitsRouteValueChunkDerivation([write('records', 1, 8)])).toBe(true);
-  });
 
   it('keys progress by stable storage resource rather than physical output geometry', () => {
     const first = write('records', 1, 8);
@@ -127,13 +122,13 @@ describe('progressive route probe progress', () => {
     const observations = new Map<string, string>();
     const coordinate = { identity: 'value-coordinate:category:12', fingerprint: 'first' };
 
-    expect(recordRouteProbeObservation(observations, coordinate, 'legacy-unroll')).toBe('new');
+    expect(recordRouteProbeObservation(observations, coordinate)).toBe('new');
     expect(recordRouteProbeObservation(observations, {
       ...coordinate, fingerprint: 'second',
-    }, 'legacy-unroll')).toBe('changed');
+    })).toBe('changed');
     expect(recordRouteProbeObservation(observations, {
       ...coordinate, fingerprint: 'second',
-    }, 'legacy-unroll')).toBe('same');
+    })).toBe('same');
     expect(progressiveRouteProbePassLimit(0, [])).toBe(3);
   });
 });

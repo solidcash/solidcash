@@ -20,7 +20,7 @@ export interface VmapCounterPermutationSpec {
 export function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
   // A witness-filled stride always advances by at least one co-spent input per occurrence. Keeping the sentinel at
-  // one reproduces the pre-witness assumption wherever no composed block pins the real width.
+  // one reproduces the pre-witness assumption wherever no block pins the real width.
   if (name.startsWith('__internal__loopTargetStride')) return 1n;
   // A computed target's lock witness: an empty value matches no co-spent input, so an unreached call fails closed.
   if (name.startsWith('__internal__computedCallTarget')) return new Uint8Array();

@@ -320,7 +320,7 @@ export function createAppendDelegateOutputHelpers(
         };
         entryOutput.amount = host.loopEntryTransitionSatoshis(lv, commitment)
         ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
-        // Earlier composed participant/identity outputs may already have been materialized. The implementation
+        // Earlier participant/identity outputs may already have been materialized. The implementation
         // covenant owns an absolute master-relative loop coordinate, so insert at that coordinate rather than
         // appending after whichever caller outputs happened to be built first.
         builder.outputs.splice(outputIndex++, 0, entryOutput);

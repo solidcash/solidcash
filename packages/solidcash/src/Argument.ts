@@ -209,7 +209,7 @@ export function encodeFunctionArgument(
       // argument push. This special case is only needed for a top-level empty array argument.
       return argument.length === 0 ? Uint8Array.from([0x01, 0x00]) : encoded;
     }
-    // Compose/preflight sometimes seeds scalar `bytes` witnesses as `[]`. Treat an empty JS array as empty bytes
+    // A scalar `bytes` witness can arrive as `[]`. Treat an empty JS array as empty bytes
     // rather than attempting array encoding against a non-array ABI type.
     if (argument.length === 0 && (typeStr === 'bytes' || typeStr === 'string' || /^bytes\d+$/.test(typeStr))) {
       argument = new Uint8Array();

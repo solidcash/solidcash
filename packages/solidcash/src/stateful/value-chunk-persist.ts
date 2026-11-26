@@ -787,7 +787,6 @@ export function isInitialValueChunkWrite(
 export function persistedValueChunkReadiness(parts: {
   selection: ValueChunkWriteCategorySelection;
   hasWriteMetadata: boolean;
-  permitsLegacyFallback: boolean;
   descriptorReady: boolean;
   legacyReady: boolean;
 }): boolean {
@@ -799,7 +798,7 @@ export function persistedValueChunkReadiness(parts: {
   if (parts.hasWriteMetadata) {
     throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
   }
-  return parts.permitsLegacyFallback && parts.legacyReady;
+  return parts.legacyReady;
 }
 
 /** Descriptor-owned rematerialization decision; `undefined` delegates to old-artifact compatibility. */
@@ -977,7 +976,7 @@ export function markPersistedCompatibilityValueChunkReady(categoryId: string): v
   settlement().readyPersistedCompatibilityValueChunks.add(categoryId.toLowerCase());
 }
 
-/** True only after a successful compatibility-value send, not compose/extract. */
+/** True only after a successful compatibility-value send, not after a probe or an extraction. */
 export function isPersistedCompatibilityValueChunkReady(categoryId?: string): boolean {
   if (categoryId !== undefined) {
     return settlement().readyPersistedCompatibilityValueChunks.has(categoryId.toLowerCase());

@@ -37,7 +37,6 @@ export type ApplyCreateBuilderPendingInputFillsResult = {
  */
 export function applyCreateBuilderPendingInputFills(params: {
   builder: StatefulTransactionBuilder;
-  overrides: any;
   functionName: string;
   entryAbiFunction: AbiFunction | undefined;
   externalCallUtxoGroups: ExternalCallUtxoGroup[];
@@ -52,7 +51,6 @@ export function applyCreateBuilderPendingInputFills(params: {
 }): ApplyCreateBuilderPendingInputFillsResult {
   const {
     builder,
-    overrides,
 
     externalCallUtxoGroups,
     lowLevelCallUtxoGroups,
@@ -76,7 +74,7 @@ export function applyCreateBuilderPendingInputFills(params: {
       if (target !== undefined && inputIndex < 0) {
         throw new Error('Selected dynamic-storage chunk input is absent from the finalized transaction');
       }
-      const next = BigInt(inputIndex < 0 ? -1 : (overrides?.blockBase ?? 0) + inputIndex);
+      const next = BigInt(inputIndex < 0 ? -1 : inputIndex);
       if (fill.group.internalArgs?.__internal__dynamicChunkInputBase === next) continue;
       fill.group.refreshInternalArgs({ __internal__dynamicChunkInputBase: next });
       changed = true;

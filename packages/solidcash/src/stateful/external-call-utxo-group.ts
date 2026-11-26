@@ -408,7 +408,7 @@ export interface ExternalCallUtxoGroup {
   relocatedPredOutBase?: number;
   /** Planned continuation-NFT count for a chunkable vmap write (publishJobEvent). */
   valueChunkOutputCount?: number;
-  /** Absolute first continuation output selected for this composed write. */
+  /** Absolute first continuation output selected for this write. */
   valueChunkOutputBase?: number;
   /** Exact computed value-chunk writes owned by this physical call. */
   valueChunkWrites?: ValueChunkWriteDescriptor[];

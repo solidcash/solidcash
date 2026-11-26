@@ -24,7 +24,7 @@ import {
 } from './finalization-byte-gate.js';
 
 export {
-  inputSubjectsOfBuilder, finalizedByteGateReceiptOf, assertFinalizedTransactionBytes,
+  inputSubjectsOfBuilder, assertFinalizedTransactionBytes,
   finalizedByteGateOptionsForProvider,
 } from './finalization-byte-gate.js';
 export type { FinalizedByteSubject } from './finalization-byte-gate.js';

@@ -103,25 +103,6 @@ export function repeatedTypedLoopRefusal(call: ExternalCallAbi): Error {
     + 'connect a signer before sending');
 }
 
-/**
- * Whether a bus-compiled root's discovered graph runs as bus rows: it reaches one state owner more than once, or
- * the root loops over a fixed callee and reaches any callee. A direct callee run settles one call (D50).
- */
-export function plansRepeatedBusRows(
-  entry: Pick<AbiFunction, 'externalCalls'>,
-  calls: readonly { contract: { categoryId: string; inner: { lockingBytecode: string } } }[],
-): boolean {
-  if (calls.length < 2) return false;
-  if (entry.externalCalls?.some(isRepeatedTypedLoopCallsite)) return true;
-  const owners = new Set<string>();
-  return calls.some(({ contract }) => {
-    const owner = `${contract.categoryId.toLowerCase()}:${contract.inner.lockingBytecode.toLowerCase()}`;
-    if (owners.has(owner)) return true;
-    owners.add(owner);
-    return false;
-  });
-}
-
 /** Counter names of compiler `loopIndex` sources nested in a published callsite. */
 function collectLoopCounters(value: unknown, seen = new Set<object>(), out = new Set<string>()): Set<string> {
   if (!value || typeof value !== 'object' || seen.has(value as object)) return out;
@@ -526,8 +507,8 @@ export async function expandResolveCreateBuilderExternalCalls(
 
   // This legacy builder places one physical callee block per published callsite. A non-array loop can reach
   // that same callsite repeatedly, but expanding it here would duplicate the owner's master input and cannot
-  // authenticate one ordered journal across the rows. The atomic composer handles that exact source domain;
-  // without a connected signer, refuse rather than broadcasting only the first call as a successful prefix.
+  // authenticate one ordered journal across the rows, so refuse rather than broadcasting only the first call as a
+  // successful prefix.
   // A published ceiling above one is that variable-width journal even when this invocation takes one row.
   // A domain that resolves to a single occurrence is one callee block, same as a call that is not a loop.
   // A return probe broadcasts nothing: when the loop's results form a published result array, it keeps the one

@@ -67,20 +67,6 @@ export function orderedTrailingEntryCollections(
   return collections;
 }
 
-/** The route ABI is a union; only collections reached by this envelope own physical slots. */
-export function orderedActiveTrailingEntryCollections(
-  sortedBatches: readonly { collection: string }[] | undefined,
-  ...activeCollections: readonly Iterable<string>[]
-): string[] {
-  const sources = activeCollections.map((source) => [...source]);
-  const active = new Set<string>();
-  for (const source of sources) for (const collection of source) active.add(collection);
-  return orderedTrailingEntryCollections(
-    sortedBatches?.filter((batch) => active.has(batch.collection)),
-    ...sources,
-  );
-}
-
 /** A placeholder recipient for a runtime loop's transfer until the trace names the real one. */
 const RUNTIME_TRANSFER_PLACEHOLDER = encodeLockingBytecodeP2pkh(new Uint8Array(20));
 
@@ -278,7 +264,6 @@ export async function loadCreateBuilderDynamicChunks(
     valueChunkGc: readonly any[];
     onChainState: OnChainState;
     stateLayout: StateLayout;
-    overrides: { blockBase?: number } | undefined;
     abiFunction: AbiFunction | undefined;
     entryAbiFunction: AbiFunction | undefined;
     lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -296,7 +281,7 @@ export async function loadCreateBuilderDynamicChunks(
   },
 ): Promise<LoadCreateBuilderDynamicChunksResult> {
   const {
-    dynamicVarInfos, valueChunkGc, onChainState, stateLayout, overrides,
+    dynamicVarInfos, valueChunkGc, onChainState, stateLayout,
     abiFunction, entryAbiFunction, lowLevelCallUtxoGroups,
     batchPredCommitments, sortedLoopCommitments, runtimeLoopDerivedCounts, sortedInserts,
     args, entryArgs, eventDefs, runtimeEventNftLockingBytecodes, timing,
@@ -304,7 +289,6 @@ export async function loadCreateBuilderDynamicChunks(
   const executionSelfAddress = params.executionSelfAddress as Uint8Array;
   const functionName = params.functionName as string;
   const tokenContainers = params.tokenContainers as any[];
-  const runtimeLoopEntrySegments = params.runtimeLoopEntrySegments as any[];
   const entryAccesses = params.entryAccesses as any;
   const dynamicWrites = params.dynamicWrites as string[];
   const activeDynamicWrites = params.activeDynamicWrites as Set<string>;
@@ -334,7 +318,7 @@ export async function loadCreateBuilderDynamicChunks(
     for (const chunk of chunks) {
       const utxo = chunk.utxo as any;
       const unlocker = createDynamicChunkUnlocker(
-        host.inner, overrides?.blockBase ?? 0, host.categoryId, v.name, v.type,
+        host.inner, 0, host.categoryId, v.name, v.type,
       );
       dynamicChunkInputs.push({ ...utxo, unlocker });
     }
@@ -373,7 +357,7 @@ export async function loadCreateBuilderDynamicChunks(
     for (const utxo of oldChunks) {
       trailingDisposalInputs.push({ ...utxo, unlocker:
         createValueChunkUnlocker(
-          host.inner, overrides?.blockBase ?? 0, host.categoryId, gc.collection, gcSlot, gcRoot,
+          host.inner, 0, host.categoryId, gc.collection, gcSlot, gcRoot,
         ) });
     }
   }
@@ -420,7 +404,7 @@ export async function loadCreateBuilderDynamicChunks(
   // preserve events around it. Repeat each resolved site list without inspecting mapping keys.
   const runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
-    /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
+    /** Source row of this occurrence; -1 for a direct call. */
     rowIndex: number;
     /** A chunked site's head; its continuation records are learned from the trace. */
     chunked?: true;
@@ -716,22 +700,13 @@ export async function loadCreateBuilderDynamicChunks(
   | { kind: 'events'; offset: number; count: number }
   | { kind: 'transfers'; offset: number; count: number }
   > = [];
-  if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
-    || runtimeLoopTransferSegments.length > 0) {
+  if (runtimeLoopEventSegments.length > 0 || runtimeLoopTransferSegments.length > 0) {
     const rowIndices = new Set([
-      ...runtimeLoopEntrySegments.map((segment) => segment.rowIndex),
       ...runtimeLoopEventSegments.map((segment) => segment.rowIndex),
       ...runtimeLoopTransferSegments.map((segment) => segment.rowIndex),
       ...runtimeLoopEffectOccurrences.map((occurrence) => occurrence.rowIndex),
     ]);
     for (const rowIndex of [...rowIndices].sort((left, right) => left - right)) {
-      for (const segment of runtimeLoopEntrySegments
-        .filter((candidate: any) => candidate.rowIndex === rowIndex)) {
-        runtimeLoopTrailingSegments.push({
-          kind: 'entries', collection: segment.collection,
-          offset: segment.offset, count: segment.count,
-        });
-      }
       const orderedEffects = runtimeLoopEffectOccurrences
         .filter((occurrence) => occurrence.rowIndex === rowIndex)
         .sort((left, right) => left.sequence - right.sequence
@@ -766,7 +741,6 @@ export async function loadCreateBuilderDynamicChunks(
       effectiveEntryLoopWrites: entryAbiFunction?.entryLoopWrites,
       entryAccesses: entryAccesses?.length ?? 0,
       orderedLoopCollections,
-      runtimeLoopEntrySegments,
       sortedLoopCommitmentCounts: [...sortedLoopCommitments].map(([collection, commitments]) => ({
         collection, count: commitments.length,
       })),

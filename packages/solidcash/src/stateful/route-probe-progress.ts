@@ -89,11 +89,6 @@ export function routeProbeRepairableEntryCoordinateCount(
   return coordinates.size;
 }
 
-export function permitsRouteValueChunkDerivation(
-  _writes: readonly ValueChunkWriteDescriptor[],
-): boolean {
-  return true;
-}
 
 export function routeProbeEntrySlotOffsetForOutput(
   outputIndex: number,

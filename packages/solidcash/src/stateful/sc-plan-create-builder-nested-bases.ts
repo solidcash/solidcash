@@ -48,7 +48,6 @@ export function planCreateBuilderNestedBases(params: {
   }[];
   legacyRouteDelegateFn: AbiFunction | undefined;
   returnEmitOutputIndex: number;
-  overrides: { blockBase?: number } | undefined;
   functionName: string;
   allGroupEcSlots: readonly { hasReturnValues?: boolean }[];
   timing?: (label: string) => void;
@@ -60,7 +59,7 @@ export function planCreateBuilderNestedBases(params: {
     requiredNftIndices, delegateInputCount, externalReadUtxos, outStateInputCount,
     delegatedLoopOutputSurplus, delegatedLoopOutputCount, abiFunction, lowLevelCallUtxoGroups,
     externalCallUtxoGroups, externalOutStateUtxoGroups, legacyRouteDelegateFn,
-    returnEmitOutputIndex, overrides, functionName, allGroupEcSlots, timing,
+    returnEmitOutputIndex, functionName, allGroupEcSlots, timing,
   } = params;
 
   let nestedInputBase = directCallDelegateLayout
@@ -122,7 +121,7 @@ export function planCreateBuilderNestedBases(params: {
     + (returnEmitOutputIndex >= 0 ? 1 : 0);
   let nestedOutputBase = Math.max(
     packedNestedOutputBase,
-    (overrides?.blockBase ?? 0) + projectedRouteBlockSize,
+    projectedRouteBlockSize,
   ) + delegatedLoopOutputCount + delegatedLoopOutputSurplus
     // RMW write chunks occupy impl+trailing outputs (burned, recreated at the suffix).
     // Without them here, nested output bases sit early once the dynamic collection has chunks.

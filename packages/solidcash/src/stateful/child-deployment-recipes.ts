@@ -1,6 +1,5 @@
 /**
- * phase-boundary extract: compose recipe / materialization helpers (phase-boundary extract from compose.ts).
- * Child-deployment recipes, fixed BCH transfer materialization, native result fields.
+ * Child-deployment value recipes and entry-value materialization.
  */
 
 import { sha1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
@@ -8,21 +7,13 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  decodePushdataValue, encodeEventPushdataValue, encodePushdataValue,
-  bytecodeToScript, scriptToAsm,
   AddressType, BytesType, FixedType, IntType,
   parseArrayTypeString, parseTypeStrict, PrimitiveType,
   hash160, hash256, ripemd160, sha256,
 } from '@solidcash/utils';
-import type {
-  Artifact, ChildDeploymentValueRecipe, FixedBchTransferAbi, StateValue,
-  StructDefinitionInfo,
-} from '@solidcash/utils';
+import type { ChildDeploymentValueRecipe, StateValue, StructDefinitionInfo } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
-import { Contract } from '../Contract.js';
 import { addressToLockScript } from '../utils.js';
-import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
-import type NetworkProvider from '../network/NetworkProvider.js';
 import type { FixedEffectEntryResolver } from './fixed-effect-entries.js';
 
 const recipeType = (
@@ -404,85 +395,6 @@ export const evaluateChildDeploymentRecipe = (
   );
 };
 
-/** Materialize one compiler-authenticated fixed BCH effect without probing placeholder outputs. */
-export const materializeFixedBchTransfer = (
-  transfer: FixedBchTransferAbi,
-  args: readonly FunctionArgument[],
-  inputTypes: readonly string[],
-  executionArtifact: Artifact,
-  provider: NetworkProvider,
-  state: Readonly<Record<string, FunctionArgument>> = {},
-  logicalCaller?: FunctionArgument,
-  entryResolver?: FixedEffectEntryResolver,
-): { lockingBytecode: Uint8Array; amount: bigint } => {
-  const solidityAbi = artifactUsesSolidityAbi(executionArtifact);
-  const recipientValue = transfer.derivedRecipient
-    ? (() => {
-      const derived = transfer.derivedRecipient!;
-      const constructorArgs = derived.constructorArgs.map((recipe) =>
-        evaluateChildDeploymentRecipe(recipe, args, inputTypes, solidityAbi));
-      const saltValue = derived.salt
-        ? evaluateChildDeploymentRecipe(derived.salt, args, inputTypes, solidityAbi)
-        : undefined;
-      const salt = saltValue instanceof Uint8Array ? saltValue
-        : typeof saltValue === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(saltValue)
-          ? hexToBin(saltValue.replace(/^0x/i, '')) : undefined;
-      if (derived.salt && !salt) {
-        throw new Error('deployment: stateless child recipient has an invalid salt');
-      }
-      const childArtifact = {
-        contractName: derived.contractName,
-        constructorInputs: derived.constructorInputs,
-        abi: [],
-        bytecode: scriptToAsm(bytecodeToScript(hexToBin(derived.creationBytecode))),
-        source: '',
-        compiler: executionArtifact.compiler,
-        updatedAt: executionArtifact.updatedAt,
-      } as Artifact;
-      const child = new Contract(childArtifact, constructorArgs as never[], {
-        provider,
-        // Language-level `new T(...)` always derives a P2SH32 expression, regardless of the parent's wrapper.
-        addressType: 'p2sh32',
-        ...(salt && { salt }),
-      });
-      return hexToBin(child.lockingBytecode);
-    })()
-    : transfer.recipientRecipe
-      ? evaluateChildDeploymentRecipe(
-        transfer.recipientRecipe, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,
-      )
-      : transfer.recipient.kind === 'forward' && transfer.recipient.paramIndex !== undefined
-        ? args[transfer.recipient.paramIndex] : undefined;
-  let lockingBytecode = recipientValue;
-  if (typeof lockingBytecode === 'string') {
-    lockingBytecode = lockingBytecode.includes(':') ? addressToLockScript(lockingBytecode)
-      : hexToBin(lockingBytecode.startsWith('0x') ? lockingBytecode.slice(2) : lockingBytecode);
-  }
-  if (solidityAbi && lockingBytecode instanceof Uint8Array) {
-    if (lockingBytecode.length === 32) {
-      if (lockingBytecode.slice(0, 12).some((byte) => byte !== 0)) {
-        throw new Error('deployment: BCH transfer has a malformed Solidity address word');
-      }
-      lockingBytecode = lockingBytecode.slice(12);
-    }
-    if (lockingBytecode.length === 20) {
-      lockingBytecode = hexToBin(`76a914${binToHex(lockingBytecode)}88ac`);
-    }
-  }
-  const amountValue = transfer.amountRecipe
-    ? evaluateChildDeploymentRecipe(
-      transfer.amountRecipe, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,
-    )
-    : transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
-      ? args[transfer.amount.paramIndex]
-      : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
-        ? BigInt(transfer.amount.value) : undefined;
-  if (!(lockingBytecode instanceof Uint8Array) || typeof amountValue !== 'bigint') {
-    throw new Error('deployment: BCH transfer is not a canonical typed effect');
-  }
-  return { lockingBytecode, amount: amountValue };
-};
-
 /** Normalize a replayed scalar into the physical state-codec domain used by entry commitments. */
 export const materializeChildDeploymentEntryScalar = (
   value: FunctionArgument, typeName: string, solidityAbi: boolean,
@@ -528,27 +440,4 @@ export const materializeChildDeploymentEntryValue = (
     ));
   }
   return materializeChildDeploymentEntryScalar(value, typeName, solidityAbi);
-};
-
-/** Accept either a raw invocation vector or the one-push aggregate used by participant return events. */
-export const canonicalNativeResultField = (
-  vector: Uint8Array, cursor: number, type: string, structs: readonly StructDefinitionInfo[] | undefined,
-): { bytesConsumed: number; encoded: Uint8Array } => {
-  try {
-    const decoded = decodePushdataValue(vector, cursor, type, structs);
-    return {
-      bytesConsumed: decoded.bytesConsumed,
-      // As the callee's return pushes it: an address of 20 zero bytes stays 20 bytes.
-      encoded: encodeEventPushdataValue(decoded.value, type, structs),
-    };
-  } catch (error) {
-    // `encodeFunctionArgument` protects an empty top-level dynamic array count from an enclosing unlocking push by
-    // spelling the value as `01 00`. If that transport spelling is forwarded into a provisional result vector,
-    // consume it as exactly one empty array field and immediately restore the canonical result spelling (`00`).
-    const array = parseArrayTypeString(type);
-    if (array?.bound === undefined && vector[cursor] === 0x01 && vector[cursor + 1] === 0x00) {
-      return { bytesConsumed: 2, encoded: encodePushdataValue([], type, structs) };
-    }
-    throw error;
-  }
 };

@@ -93,7 +93,6 @@ export function deriveFullPhase1ReturnAndEvents(
       max: returnEventOutputBase + totalReturnEvents,
     };
     let returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
-    const routeReturnTypes: string[] = [];
     const calleeReturnArtifact = group.externalContract.inner.artifact;
     const calleeReturnFunction = (calleeReturnArtifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName);
@@ -105,12 +104,8 @@ export function deriveFullPhase1ReturnAndEvents(
         calleeReturnTypes,
         `function '${calleeReturnFunction?.name ?? group.functionName}' result`,
       );
-    const routeReturnPushes = routeReturnTypes.length || 1;
-    let aggregatePending = routeReturnPushes > 1
-      ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
-    if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
-    else if (!returnCommitments?.length) {
-      const pending = extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes);
+    if (!returnCommitments?.length) {
+      const pending = extractPendingReturnCommitment(fullTraceRet, 1, []);
       if (pending) returnCommitments = [pending];
     }
     let evmScalar = calleeReturnEncoding === 'evm-abi-v1'
@@ -123,11 +118,8 @@ export function deriveFullPhase1ReturnAndEvents(
     if (!returnCommitments?.length && !evmScalar) {
       fullTraceRet = evaluateFaithfulOrDebugTrace(host.inner.provider, returnProgram);
       returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
-      aggregatePending = routeReturnPushes > 1
-        ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
-      if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
-      else if (!returnCommitments?.length) {
-        const pending = extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes);
+      if (!returnCommitments?.length) {
+        const pending = extractPendingReturnCommitment(fullTraceRet, 1, []);
         if (pending) returnCommitments = [pending];
       }
       evmScalar = calleeReturnEncoding === 'evm-abi-v1'
@@ -233,8 +225,6 @@ export function deriveFullPhase1ReturnAndEvents(
         returnOutputRange,
         configuredReturnOutputIndex: group.returnOutputIndex,
         derivedInBlockIdx,
-        routeReturnTypes,
-        routeReturnPushes,
         returnCommitments,
         traceError: fullTraceRet.at(-1)?.error,
         traceTail: fullTraceRet.slice((globalThis as { process?: { env?: Record<string, string> } })
@@ -532,21 +522,14 @@ export function deriveFullPhase1ReturnAndEvents(
     let returnCommitments = extractCommitmentsFromTrace(
       returnTrace, 1, { min: returnOutputIndex, max: returnOutputIndex + 1 }, true,
     );
-    const routeReturnTypes: string[] = [];
-    const routeReturnPushes = routeReturnTypes.length || 1;
-    let aggregatePending = routeReturnPushes > 1
-      ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;
-    if (!returnCommitments?.length && !aggregatePending) {
+    if (!returnCommitments?.length) {
       returnTrace = evaluateFaithfulOrDebugTrace(host.inner.provider, returnProgram);
       returnCommitments = extractCommitmentsFromTrace(
         returnTrace, 1, { min: returnOutputIndex, max: returnOutputIndex + 1 }, true,
       );
-      aggregatePending = routeReturnPushes > 1
-        ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;
     }
-    if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
-    else if (!returnCommitments?.length) {
-      const pending = extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes);
+    if (!returnCommitments?.length) {
+      const pending = extractPendingReturnCommitment(returnTrace, 1, []);
       if (pending) returnCommitments = [pending];
     }
     // The same rule as the pre-event derivation: a void callee that pins no record returns no bytes, so the

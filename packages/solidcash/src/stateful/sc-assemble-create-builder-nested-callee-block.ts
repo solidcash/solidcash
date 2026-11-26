@@ -136,10 +136,8 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     // A loop-expanded slot shares ONE contiguous return-event band across its iterations, so its callees
     // keep the appended-tail shape and take no returnEvent funder.
     const bLoopExpanded = loopIdxRanges.some((r) => slotIndex >= r.start && slotIndex < r.start + r.count);
-    const hasStreamedEvents = false;
-    const physicalFixedSize = hasStreamedEvents
-      ? bBlockLayout.trailingBase ?? bBlockLayout.blockSize : bBlockLayout.blockSize;
-    const hasExtraSlots = hadFullBlockKinds || hasStreamedEvents
+    const physicalFixedSize = bBlockLayout.blockSize;
+    const hasExtraSlots = hadFullBlockKinds
       || (!bLoopExpanded && bBlockLayout.slots.some((s) => s.kind === 'returnEvent'));
     if ((hasExtraSlots || bHasLoop) && bSc) {
       // Build B's full block following blockLayout slot order.
@@ -600,13 +598,8 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             }
             break;
           }
-          case 'trailing':
-            // This is capacity, not a fixed effect slot. A lifted stream materializes only its actual
-            // resources/records here; reserving the whole band would push the first event past that band.
-            if (!hasStreamedEvents) ctx.bBlockInputs.push(await makeFunder());
-            break;
           default:
-            // Output-only slots (transfer, tcTransfer, event) - funder
+            // Output-only slots (transfer, tcTransfer, event) and trailing capacity - funder
             ctx.bBlockInputs.push(await makeFunder());
             break;
         }
@@ -732,7 +725,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           ctx.bBlockInputs.push(await makeFunder());
         }
       }
-      // Direct callees use this block's sorted-entry proofs, but unlike composed/transitive callees
+      // Direct callees use this block's sorted-entry proofs, but unlike transitive callees
       // they do not pass through the nested batch planner. Publish the same ordered row vector and
       // per-slot ranks from the authenticated target/next witnesses assembled above.
       for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {

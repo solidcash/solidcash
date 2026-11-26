@@ -196,7 +196,7 @@ export function buildInputs(
   // Funders are required only to hold output-only holes open. A mapping writer + external call often needs none
   // (no event/transfer pads), so requiring `funderUtxos.length > 0` forced the legacy order and the covenant
   // failure above. External groups themselves are enough reason to take the dense path and defer participants
-  // past the caller's complete block (compose already does this; plain `.send()` must match).
+  // past the caller's complete block.
   const hasExternalGroups = externalOutStateInputs.length > 0 || externalCallInputs.length > 0;
   const denseBlockLayout = host.blockLayout;
   const identityPlacement = identityAnchorPlacement(
@@ -205,7 +205,7 @@ export function buildInputs(
   // A satoshi/token container occupies a fixed block slot before the trailing band. It must be placed at that
   // offset even when the transaction has no fee funder yet (the dense path positions block slots and appends
   // the trailing side-cars after them), otherwise a keccak-loop co-spend parks the container past the side-cars.
-  // A fixed-width frame (compose participant / delegate entry slots) cannot take that shortcut at construction:
+  // A fixed-width frame (delegate entry slots) cannot take that shortcut at construction:
   // the dense path then requires every output-only slot to be padded, but funders are only allocated after the
   // builder is constructed. Fall back to the legacy order there; `setFunderUtxos` rebuilds the inputs densely
   // once the funder pool exists.

@@ -28,8 +28,8 @@ export interface MaterializeValueAndDynamicChunksHost {
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
   readonly delegateDynamicChunksAtSuffix: boolean;
-  /** Runtime-loop outputs or a composed block base move the run by what the transaction carries. */
-  readonly runtimeLoopOrComposed: boolean;
+  /** Runtime-loop outputs move the run by what the transaction carries. */
+  readonly hasRuntimeLoopOutputs: boolean;
   /** The executing input's current unlocker: its witnesses name the coordinates its covenant reads. */
   masterUnlocker(): Unlocker;
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
@@ -200,7 +200,7 @@ export function appendDynamicChunks(
     }
   }
   // Each written var's run follows the runs of the vars declared before it.
-  const runBase = host.delegateDynamicChunksAtSuffix || host.runtimeLoopOrComposed ? undefined
+  const runBase = host.delegateDynamicChunksAtSuffix || host.hasRuntimeLoopOutputs ? undefined
     : returningCallChunkRunBase(host.masterUnlocker(), host.dynamicChunkVars.map((dv) => dv.name),
       host.iterationEntryInputs.length);
   let priorRunChunks = 0;

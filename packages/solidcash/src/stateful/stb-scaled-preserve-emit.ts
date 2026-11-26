@@ -12,7 +12,6 @@ import {
   hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
   isPersistedChunkableValueWriteReady,
-  permitsLegacyNamedValueChunkFallbackForGroups,
   type ChunkableWritePlanningHost,
 } from './stb-chunkable-write-planning.js';
 import { externalCallEventDestinations } from './value-chunk-base-writer-select.js';
@@ -71,7 +70,6 @@ export function chunkableValueWriteInputIndex(host: ScaledPreserveEmitHost): num
   const structural = chunkableValueWriteExecution(host);
   if (structural) return structural.inputIndex;
   if (hasChunkableValueWriteMetadata(host)) return -1;
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return -1;
   // Dest is INPUTINDEX+4 of the earliest executing publishJobEvent. Occupied
   // dests are displaced; do not relocate dest because persist sits at +4. Compatibility only: old artifacts
   // without chunkable-write metadata still identify this executor by their historical ABI function name.

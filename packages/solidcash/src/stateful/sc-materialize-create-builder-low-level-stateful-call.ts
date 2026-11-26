@@ -266,9 +266,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   // argument, graph-seeding, and return-carrier passes for this build epoch.
   const graphPlanningResults = createGraphPlanningProducerResultContext();
   // The implementation input authenticates code execution, but Solidity-visible calls execute in the
-  // proxy/state-owner context. New graph routes authenticate the same public CREATE identity for address(this)
-  // and the outgoing caller. Older routes retain their physical self projection. Storage and executor identities
-  // remain separately pinned by the delegate block.
+  // proxy/state-owner context. Storage and executor identities remain separately pinned by the delegate block.
   const storedLogical = host.selfContract?._logicalAddress as string | undefined;
   const logicalCreateLock = storedLogical ? addressToLockScript(storedLogical) : undefined;
   const implementationLock = String(callInfo.contract?.inner?.lockingBytecode ?? '');
@@ -282,14 +280,11 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     && ownerLock !== ''
     && implementationLock.toLowerCase() !== ownerLock.toLowerCase()
     && binToHex(logicalCreateLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase();
-  const routeAuthenticatesPublicSelf = false;
   const delegateSelfAddress = proxyFacade && logicalCreateLock !== undefined
-    ? logicalCreateLock
-    : routeAuthenticatesPublicSelf ? authenticatedSelfAddress : publicSelfAddress;
+    ? logicalCreateLock : publicSelfAddress;
   const delegateCallerIdentity = Object.freeze({
     categoryId: host.categoryId,
-    // The outgoing caller is exactly the state-owner identity used for address(this). A legacy delegate
-    // without a public-self witness uses the physical proxy; an authenticated CREATE route uses its SCID.
+    // The outgoing caller is exactly the state-owner identity used for address(this).
     lockingBytecode: binToHex(delegateSelfAddress),
   });
   // The implementation's code runs in the owner's state and reads the block from the pool it binds itself. Its guards

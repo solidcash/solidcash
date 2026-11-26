@@ -20,7 +20,6 @@ import {
   visibleHandlerInputs,
   type RouteExpressionKeyRow,
 } from './route-expression-key.js';
-import { encodeStructArgument } from './legacy-job-event-wire.js';
 
 /** Place a resolved complete array fold in its compiler-published hidden ABI slot by name. */
 export function materializeCompletePushValueWitness(
@@ -672,18 +671,6 @@ export function evaluateFoldActivation(
   return false;
 }
 
-export type FoldActivationEnvResolveOptions = {
-  participantIndex?: number;
-  nestedScopeId?: number;
-};
-
-/** Direct compilation selects no route rows, so every row resolves to an empty activation environment. */
-export function createFoldRowActivationEnvResolver(
-  _options?: FoldActivationEnvResolveOptions & { useActiveSettlement?: boolean },
-): (row: RouteExpressionKeyRow, rowIndex?: number) => FoldActivationEnvironment {
-  return () => ({});
-}
-
 function routeRowCollectionKey(
   row: RouteExpressionKeyRow,
   access: NonNullable<RouteExpressionKeyRow['handler']['entryAccesses']>[number],
@@ -736,16 +723,10 @@ type FoldParams = {
   collection: string;
   valueType: string;
   structs: Artifact['structs'];
-  timestamp?: bigint;
-  legacyJobEventCompatibility?: boolean;
   resolveElement?: (
     row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
   ) => Uint8Array | undefined;
   activationEnv?: FoldActivationEnvironment;
-  resolveRowActivationEnv?: (
-    row: RouteExpressionKeyRow,
-    rowIndex?: number,
-  ) => FoldActivationEnvironment;
   isActive?: (step: ChunkablePushFoldStep) => boolean;
 };
 
@@ -757,7 +738,7 @@ export function buildChunkablePushFoldPlan(params: FoldParams & { minimumRows?: 
   const array = parseArrayTypeString(params.valueType);
   if (!array || array.bound !== undefined) return undefined;
   const rows: Array<{
-    row: RouteExpressionKeyRow; key: string; access: EntryAccessAbi; legacyElementIndex?: number;
+    row: RouteExpressionKeyRow; key: string; access: EntryAccessAbi;
   }> = params.rowArguments.flatMap((row) => {
     const accesses = (row.handler.entryAccesses ?? []).filter((access) => (
       access.collection === params.collection && access.operations?.includes('write')
@@ -766,15 +747,8 @@ export function buildChunkablePushFoldPlan(params: FoldParams & { minimumRows?: 
     const key = routeRowCollectionKey(row, accesses[0], params.structs);
     if (key === undefined) return [];
     const recipe = accesses[0].storedElementSource;
-    if (accesses[0].arrayMutation === 'push' && recipe?.version === 1) {
-      return [{ row, key, access: accesses[0] }];
-    }
-    if (params.legacyJobEventCompatibility !== true) return [];
-    const visible = visibleHandlerInputs(row.handler.inputs);
-    const elementInputs = visible.map((input, index) => ({ input, index }))
-      .filter(({ input }) => input.type === array.elementType);
-    return elementInputs.length === 1
-      ? [{ row, key, access: accesses[0], legacyElementIndex: elementInputs[0].index }] : [];
+    return accesses[0].arrayMutation === 'push' && recipe?.version === 1
+      ? [{ row, key, access: accesses[0] }] : [];
   });
   const minimumRows = params.minimumRows ?? 2;
   if (rows.length < minimumRows) return undefined;
@@ -784,12 +758,7 @@ export function buildChunkablePushFoldPlan(params: FoldParams & { minimumRows?: 
   const elements: Uint8Array[] = [];
   const steps: ChunkablePushFoldStep[] = [];
   for (const [index, candidate] of sameKey.entries()) {
-    const element = candidate.legacyElementIndex === undefined
-      ? params.resolveElement?.(candidate.row, candidate.access, array.elementType)
-      : encodeStructArgument(
-        candidate.row.args[candidate.legacyElementIndex], array.elementType, params.structs,
-        params.timestamp, true,
-      );
+    const element = params.resolveElement?.(candidate.row, candidate.access, array.elementType);
     if (!element) throw new Error(
       `Cannot evaluate compiler-authenticated stored element for '${params.collection}'.`,
     );
@@ -821,11 +790,7 @@ export function buildChunkablePushFoldPlan(params: FoldParams & { minimumRows?: 
 function activeFoldIndexes(built: ChunkablePushFold, params: FoldParams): number[] {
   return built.plan.steps.flatMap((step, index) => {
     if (params.isActive !== undefined) return params.isActive(step) === false ? [] : [index];
-    const row = built.rows[index];
-    const env = row !== undefined && params.resolveRowActivationEnv !== undefined
-      ? params.resolveRowActivationEnv(row, index)
-      : params.activationEnv;
-    return evaluateFoldActivation(step.activation, env) ? [index] : [];
+    return evaluateFoldActivation(step.activation, params.activationEnv) ? [index] : [];
   });
 }
 

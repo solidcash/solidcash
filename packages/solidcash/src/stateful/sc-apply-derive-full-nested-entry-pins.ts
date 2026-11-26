@@ -13,7 +13,6 @@ import {
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { getEntryNftLockingBytecode } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import { legacyNamedJobEventCollectionFallback } from './legacy-planning-heuristics.js';
 import {
   resolveChunkableEntryCollection,
@@ -90,9 +89,7 @@ export function applyDeriveFullNestedEntryPins(
       categoryId: chunkCategory,
       publishedCollections: entryCollections,
       // Compatibility for a descriptor-free historical publisher only.
-      legacyFallback: legacyNamedJobEventCollectionFallback(
-        legacyGroups, permitsLegacyNamedValueChunkFallback(legacyGroups),
-      ),
+      legacyFallback: legacyNamedJobEventCollectionFallback(legacyGroups),
     });
     const blockSize = nestedEntryAbi?.blockLayout?.blockSize
     ?? llc.blockLayout?.blockSize

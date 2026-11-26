@@ -7,7 +7,6 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction } from '@solidcash/utils';
 import { isValidComputedValueChunkCommitmentEncoding } from './computed-value-chunk-pin.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import type { AssembledWitnessBag } from './sc-rebind-create-builder-assembled-witnesses.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { dropSkippedConditionalInserts } from './conditional-sorted-activity.js';
@@ -16,9 +15,7 @@ import {
   persistedValueChunkWriteState,
   readyPersistedCompatibilityValueChunkWidth,
   selectPersistedValueChunkWrite,
-  valueChunkWriteResourceIdentity,
 } from './value-chunk-persist.js';
-import { orderTransportedContinuationResourceClaims } from './ValueChunkProducerIdentity.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
 
 export type RunCreateBuilderDerivePassHost = {
@@ -35,72 +32,6 @@ export function hasMaterializedValueChunkWitness(
   return ownedMaterializedChunkCounts.some((count) => Number.isSafeInteger(count) && count > 0)
     || runs.some((run) => builder.getValueChunkRawCommitments(run.id)
       .some(isValidComputedValueChunkCommitmentEncoding));
-}
-
-/** Rebase graph write descriptors without flattening authenticated, separately placed resources. */
-export function rebaseGraphValueChunkWrites(
-  target: ExternalCallUtxoGroup,
-  outputBase: number,
-  outputCount: number,
-): void {
-  const writes = target.valueChunkWrites;
-  if (!writes?.length) return;
-  const readyBases = writes.map((write) => write.outputBase)
-    .filter((base) => Number.isSafeInteger(base) && base >= 0);
-  const distinctReadyBases = new Set(readyBases);
-  if (distinctReadyBases.size > 1) {
-    // Each lane is already placed; move the entire frame without collapsing its geometry.
-    const delta = outputBase - Math.min(...readyBases);
-    const nextWrites = writes.map((write) => (
-      write.outputBase >= 0 ? { ...write, outputBase: write.outputBase + delta } : write
-    ));
-    let nextClaims = target.continuationResourceClaims;
-    if (target.continuationResourceClaims?.length) {
-      // Write bases can arrive as transaction-absolute production coordinates, while claims are already
-      // participant-local. Moving the scalar to its local slot must not subtract the participant base from
-      // those claims; a later local move advances each claim by the scalar's own local displacement.
-      const claimDelta = outputBase - target.continuationResourceClaims[0]!.bandOffset;
-      const shiftedClaims = target.continuationResourceClaims.map((claim) => ({
-        ...claim, bandOffset: claim.bandOffset + claimDelta,
-      }));
-      const ordered = orderTransportedContinuationResourceClaims(shiftedClaims);
-      if (!ordered) throw new Error('Multi-resource continuation claims lost local band geometry.');
-      nextClaims = ordered;
-    }
-    target.valueChunkWrites = nextWrites;
-    target.continuationResourceClaims = nextClaims;
-    return;
-  }
-  const identities = writes.map(valueChunkWriteResourceIdentity);
-  const distinctIdentities = new Set(identities);
-  if (distinctIdentities.size > 1 || (target.transportedValueChunkProductions === true
-    && (target.continuationResourceClaims?.length ?? 0) > 1)) {
-    const claims = target.transportedValueChunkProductions === true
-      ? orderTransportedContinuationResourceClaims(target.continuationResourceClaims ?? [])
-      : undefined;
-    const byResource = new Map(claims?.map((claim) => [claim.producerClaim.resourceIdentity, claim]));
-    if (!claims || claims.length !== writes.length || byResource.size !== writes.length
-      || distinctIdentities.size !== writes.length) {
-      throw new Error('Multi-resource value-chunk writes lack exact continuation geometry.');
-    }
-    const firstOffset = claims[0]!.bandOffset;
-    const reconstructed = writes.map((write, index) => {
-      const claim = byResource.get(identities[index]!);
-      const base = claim === undefined ? NaN : outputBase + claim.bandOffset - firstOffset;
-      if (!claim || !Number.isSafeInteger(base) || base < 0
-        || !Number.isSafeInteger(base + claim.chunkCount)) {
-        throw new Error('Multi-resource value-chunk writes lack exact continuation geometry.');
-      }
-      return { ...write, outputBase: base, outputCount: claim.chunkCount };
-    });
-    target.valueChunkWrites = reconstructed;
-    return;
-  }
-  target.valueChunkWrites = writes.map((write) => ({
-    ...write,
-    outputBase,
-    outputCount: write.outputCount > 0 ? write.outputCount : outputCount,
-  }));
 }
 
 /**
@@ -163,9 +94,8 @@ export async function runCreateBuilderDerivePass(
   && (entryAccesses?.length ?? 0) === 0
   && (entryAbiFunction?.entryLoopWrites?.length ?? 0) === 0
   && (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
-  // A compiler-generated route owns no mapping metadata itself: selected row metadata materializes directly as physical
-  // loop-entry variables above. Those variables are the authoritative derivation plan even when every wrapper
-  // metadata list is empty; skipping here would publish link-only placeholder commitments for computed values.
+  // Loop-entry variables are the authoritative derivation plan even when every wrapper metadata list is empty;
+  // skipping here would publish link-only placeholder commitments for computed values.
   && loopEntryVars.length === 0
   && runtimeLoopEventOutputs.length === 0
   && runtimeLoopTransferOutputs.length === 0
@@ -250,9 +180,8 @@ export async function runCreateBuilderDerivePass(
     );
     const persistBeforeDerive = describedPersistedWrite && isValueChunkWriteReady(describedPersistedWrite)
       ? (persistedValueChunkWriteState(describedPersistedWrite)?.width ?? 0)
-      : (describedPersistedWrites.length === 0 && permitsLegacyNamedValueChunkFallback(
-        [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()],
-      ) ? readyPersistedCompatibilityValueChunkWidth(builder.getSelectedPersistedValueChunkCategory()) : 0);
+      : (describedPersistedWrites.length === 0
+        ? readyPersistedCompatibilityValueChunkWidth(builder.getSelectedPersistedValueChunkCategory()) : 0);
     const layoutRevisionBeforeDerive = builder.getDynamicLayoutRevision();
     const firstDeriveStarted = Date.now();
     deriveResult = await host.deriveFullTransactionState(

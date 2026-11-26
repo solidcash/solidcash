@@ -34,7 +34,7 @@ export interface LateValueSuffixRebindHost {
 
 /**
  * Rebase absolute output coordinates when a final, non-covenant output is inserted before the
- * authenticated suffix. Reverse-indexed suffix checks remain valid after the insertion, but composed
+ * authenticated suffix. Reverse-indexed suffix checks remain valid after the insertion, but
  * continuation writers can also receive an absolute `__internal__valueChunkOutputBase` witness. Keep the
  * recovered-output cache and every carrier of that witness aligned with the shifted physical outputs.
  *

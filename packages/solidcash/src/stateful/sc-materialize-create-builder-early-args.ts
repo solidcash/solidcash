@@ -39,9 +39,7 @@ export interface MaterializeCreateBuilderEarlyArgsOverrides {
   calls?: ReadonlyArray<CreateBuilderEarlyArgsStatefulCall | { type: string }>;
   externalCalls?: readonly CreateBuilderEarlyArgsExternalCall[];
   emitReturn?: boolean;
-  omitLocalFeeTail?: boolean;
   returnProbeOnly?: boolean;
-  blockBase?: number;
   msgSenderCategory?: Uint8Array;
   callerLockingBytecode?: Uint8Array;
 }
@@ -49,8 +47,6 @@ export interface MaterializeCreateBuilderEarlyArgsOverrides {
 export interface MaterializeCreateBuilderEarlyArgsResult {
   finalArgs: FunctionArgument[];
   returnEmitOutputIndex: number;
-  returnMaterializationOutputIndex: number;
-  returnAbiFunction: AbiFunction | undefined;
   returnEmitBlockOffset: number;
   resolvedMsgSenderCategory: Uint8Array | undefined;
 }
@@ -94,7 +90,6 @@ export async function materializeCreateBuilderEarlyArgs(
   // B8 return-value emit: -1 means "do not emit" (default). With .emitReturn(), point the covenant's
   // __internal__returnOutputIdx at the function's returnEvent output slot (a fixed block-layout offset).
   let returnEmitOutputIndex = -1;
-  let returnMaterializationOutputIndex = -1;
   const delegatedReturnFunction = overrides?.calls
     ?.filter((call): call is CreateBuilderEarlyArgsStatefulCall => call.type === 'stateful')
     .map((call) => {
@@ -112,13 +107,7 @@ export async function materializeCreateBuilderEarlyArgs(
       throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
     }
     returnEmitBlockOffset = slot.offset;
-    returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
-    // Atomic composition builds each balanced participant in isolation before concatenating the blocks. Its
-    // route witness is already bound to the final absolute output, while this temporary builder must place and
-    // derive the return event at the participant-local offset. Keeping the coordinates distinct prevents a
-    // later participant from padding its local block up to its final aggregate base.
-    returnMaterializationOutputIndex = overrides?.omitLocalFeeTail
-      ? returnEmitBlockOffset : returnEmitOutputIndex;
+    returnEmitOutputIndex = returnEmitBlockOffset;
     // X12/X56. A delegated call's return event is verified by the IMPLEMENTATION (emitReturnEventCovenant-
     // Verification is gated `!functionHasDelegatecall`), which resolves EVERY output-only slot
     // implementation-relative - its event and its own returnEvent alike. When the implementation also emits,
@@ -175,12 +164,10 @@ export async function materializeCreateBuilderEarlyArgs(
       console.error('msg-sender-category-zero', JSON.stringify({
         functionName, abiFunction: abiFunction?.name,
         // Which build flavour reaches the zero fallback: a V8 stack is unavailable in these synthetic builders,
-        // so the override SHAPE is what distinguishes the paths (probe vs composed participant vs user call).
+        // so the override SHAPE is what distinguishes the paths (probe vs user call).
         build: {
           returnProbeOnly: overrides?.returnProbeOnly === true,
-          omitLocalFeeTail: overrides?.omitLocalFeeTail === true,
           emitReturn: overrides?.emitReturn === true,
-          blockBase: overrides?.blockBase,
           externalCalls: overrides?.externalCalls?.length ?? 0,
           calls: overrides?.calls?.length ?? 0,
           callerLockingBytecode: overrides?.callerLockingBytecode !== undefined,
@@ -195,22 +182,20 @@ export async function materializeCreateBuilderEarlyArgs(
   if (bhSlot && abiFunction?.inputs.some((input) => input.name === '__internal__blockhashInputIndex')) {
     nextFinalArgs = materializeInternalFunctionArgument(
       nextFinalArgs, abiFunction.inputs, '__internal__blockhashInputIndex',
-      BigInt((overrides?.blockBase ?? 0) + bhSlot.offset),
+      BigInt(bhSlot.offset),
     );
   }
   const infoSlot = abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle');
   if (infoSlot && abiFunction?.inputs.some((input) => input.name === '__internal__blockOracleInputIndex')) {
     nextFinalArgs = materializeInternalFunctionArgument(
       nextFinalArgs, abiFunction.inputs, '__internal__blockOracleInputIndex',
-      BigInt((overrides?.blockBase ?? 0) + infoSlot.offset),
+      BigInt(infoSlot.offset),
     );
   }
 
   return {
     finalArgs: nextFinalArgs,
     returnEmitOutputIndex,
-    returnMaterializationOutputIndex,
-    returnAbiFunction,
     returnEmitBlockOffset,
     resolvedMsgSenderCategory,
   };

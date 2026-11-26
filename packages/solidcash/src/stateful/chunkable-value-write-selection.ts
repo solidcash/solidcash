@@ -21,7 +21,7 @@ import {
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
 import { valueChunkWriteResourceIdentity } from './value-chunk-persist.js';
 
-/** Resolve the one active chunkable dynamic-value collection written by a composed group.
+/** Resolve the one active chunkable dynamic-value collection written by a group.
  * Ambiguous metadata fails closed rather than selecting a collection by source-level name. */
 export type ChunkableValueWriteGroup = {
   categoryId?: string;
@@ -41,34 +41,6 @@ export type ChunkableValueWriteGroup = {
   valueChunkOutputBase?: number;
   valueChunkOutputCount?: number;
 };
-
-/**
- * Old route plans identified the chunkable writer by application ABI names because their artifacts did
- * not publish resource descriptors. Keep that migration path out of the compiler-described layout: once an artifact
- * declares no descriptors, missing descriptors mean "not described", never permission to guess from names.
- */
-export function permitsLegacyNamedValueChunkFallback(
-  _groups: ReadonlyArray<ChunkableValueWriteGroup>,
-): boolean {
-  return true;
-}
-
-/** Permit inferred event reconstruction only for descriptor-free pre-journal plans. */
-export function permitsLegacyValueChunkEventReconstruction(
-  groups: ReadonlyArray<ChunkableValueWriteGroup>,
-  hasChunkableValueWriteMetadata: boolean,
-): boolean {
-  return !hasChunkableValueWriteMetadata
-    && permitsLegacyNamedValueChunkFallback(groups);
-}
-
-/** Legacy delegate event placement is unavailable once either the artifact or the active layout owns the frame. */
-export function permitsLegacyDelegateEventRepair(
-  groups: ReadonlyArray<ChunkableValueWriteGroup>, compilerOwnedDelegateBlock: boolean,
-): boolean {
-  return !compilerOwnedDelegateBlock
-    && permitsLegacyNamedValueChunkFallback(groups);
-}
 
 export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGroup): string[] {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
@@ -187,7 +159,6 @@ export function groupChunkableValueWriteResource(
   if (groupOwnsLinearSortedBatch(group)) return undefined;
   const claimed = claimedChunkableValueWriteResource(group);
   if (claimed) return claimed;
-  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
   const collection = groupChunkableValueWriteCollection(group)
     ?? legacyPlannedChunkableValueWriteCollection(group);
   return collection === undefined ? undefined : { collection };
@@ -251,7 +222,6 @@ export function legacyPlannedChunkableValueWriteCollection(
   if (!Number.isSafeInteger(group.valueChunkOutputCount) || group.valueChunkOutputCount! <= 0) {
     return undefined;
   }
-  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
   const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact]
     .filter((artifact, index, all): artifact is Artifact => artifact !== undefined
       && all.indexOf(artifact) === index);
@@ -285,7 +255,6 @@ export function legacyPlannedChunkableValueWriteCollection(
 /** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */
 export function selectChunkableValueWriteExecution(
   candidates: ReadonlyArray<{ group: ChunkableValueWriteGroup; inputIndex: number }>,
-  options?: { allowCompilerDescribed?: boolean },
 ): {
     inputIndex: number; abiFunction: AbiFunction; collection: string;
     resourceIdentity?: string; resourceOwnerIdentity?: string;
@@ -296,14 +265,7 @@ export function selectChunkableValueWriteExecution(
   }>();
   for (const { group, inputIndex } of candidates) {
     if (inputIndex < 0) continue;
-    // With compiler-described writes the named fallback is closed, but a COMPOSED participant still needs the band: the
-    // compiler describes the chunkable collection it writes, and the composed path is the only one that asks for
-    // this relaxation, so ordinary direct sends keep the strict claim.
-    const described = options?.allowCompilerDescribed === true
-      ? groupChunkableValueWriteCollections(group)
-      : [];
-    const resource = groupChunkableValueWriteResource(group)
-      ?? (described.length === 1 ? { collection: described[0] } : undefined);
+    const resource = groupChunkableValueWriteResource(group);
     if (resource === undefined) continue;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;

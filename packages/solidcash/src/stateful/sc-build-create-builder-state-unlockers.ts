@@ -23,7 +23,6 @@ export type BuildCreateBuilderStateUnlockersResult = {
     builder: StatefulTransactionBuilder, materialized?: TransactionBuilder,
   ) => Unlocker) | undefined;
   dataNftUnlockers: Unlocker[];
-  blockBase: number;
   topLevelDynamicChunkArgumentIndex: number;
 };
 
@@ -74,14 +73,13 @@ export function buildCreateBuilderStateUnlockers(
       const localIndex = materializedIndex !== undefined && materializedIndex >= 0
         ? materializedIndex
         : builder.getLowLevelCallMasterInputIndex(activeDelegateGroupIndex!);
-      finalArgs[delegateInputArgumentIndex] = BigInt((overrides?.blockBase ?? 0) + localIndex);
+      finalArgs[delegateInputArgumentIndex] = BigInt(localIndex);
       return unlockFn(...finalArgs);
     };
   }
   let stateInputUnlocker = buildStateInputUnlocker();
-  const blockBase = overrides?.blockBase ?? 0;
   const dataNftUnlockers = filteredDataNftUtxos.map(
-    () => createDataNftUnlocker(host.inner, blockBase, host.categoryId),
+    () => createDataNftUnlocker(host.inner, 0, host.categoryId),
   );
 
   return {
@@ -89,7 +87,6 @@ export function buildCreateBuilderStateUnlockers(
     buildStateInputUnlocker,
     refreshPhysicalDelegateInputIndex,
     dataNftUnlockers,
-    blockBase,
     topLevelDynamicChunkArgumentIndex,
   };
 }

@@ -13,7 +13,6 @@ import {
   encodeExternalReturnValue, encodeExternalReturnValues, isCanonicalMixedReturnBlob,
 } from '../../src/stateful/external-return-encoding.js';
 import { encodeExternalReturnValue as encodeStatefulContractReturnValue } from '../../src/stateful/StatefulContract.js';
-import { canonicalNativeResultField } from '../../src/stateful/child-deployment-recipes.js';
 import { StatefulTransactionBuilder } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { createTestProvider } from '../test-util.js';
 
@@ -100,8 +99,6 @@ describe('a native call result', () => {
     const vector = hexToBin(`${ZERO20_PUSH}57`);
     expect(isCanonicalMixedReturnBlob(encodeDataPush(vector), [['address', 'uint8']], ['compact-pushdata-v1']))
       .toBe(true);
-    expect(canonicalNativeResultField(vector, 0, 'address', undefined))
-      .toEqual({ bytesConsumed: 21, encoded: hexToBin(ZERO20_PUSH) });
   });
 });
 

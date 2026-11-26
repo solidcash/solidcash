@@ -364,7 +364,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           ...group.mintingInputWitnessCategories, [paramName]: reader.categoryId,
         };
       } else if (paramName === '__internal__valueChunkOutputBase') {
-        // Composed computed values are relocated after the complete participant layout is materialized.
+        // Computed values are relocated after the complete layout is materialized.
         bFinalArgs.push(-1n);
       } else if (paramName === '__internal__dynamicChunkInputBase') {
         // Old chunks follow this callee's fixed block. With none, the negative sentinel makes the covenant
@@ -460,7 +460,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           }
         }
       }
-      // Preserve ABI order even when this composed call does not exercise a compiler-owned optional path.
+      // Preserve ABI order even when this call does not exercise a compiler-owned optional path.
       // Any path that actually consumes the sentinel still fails closed in its covenant.
       if (bFinalArgs.length === argumentCountBefore && paramName.startsWith('__internal__')) {
         bFinalArgs.push(defaultInternalFunctionArg(bAbiInputs[i]));

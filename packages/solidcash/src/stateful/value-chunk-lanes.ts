@@ -56,10 +56,10 @@ export function resolveValueChunkResourceLane(
 /**
  * Resolve the one collection whose entry covenant owns a chunkable-value write.
  *
- * Compiler-generated routes must publish an unambiguous resource identity. A category alone
+ * Compiler-described writes must publish an unambiguous resource identity. A category alone
  * is insufficient: two mappings on the same contract category have different
  * entry covenants. Descriptor-free legacy artifacts may retain their historical
- * fallback, but it is never reachable from a compiler-generated route.
+ * fallback, but it is never reachable from a compiler-described write.
  */
 export function resolveChunkableEntryCollection(parts: {
   writes: readonly ValueChunkWriteDescriptor[];

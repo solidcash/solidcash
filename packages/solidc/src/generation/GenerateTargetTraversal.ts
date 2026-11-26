@@ -48814,22 +48814,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, locationData);         // [idx]
 
       // A raw call checks no digest of its callee's record: an opaque payload names no arguments to digest. Its
-      // callee's run answers this caller alone instead (emitRawCalleeReaderPin), which a CREATE identity anchor
-      // (anchor >= 0) skips.
-      if (this.bindsRawCalleeReader(node, slot)) {
-        if (anchorParamIdx >= 0) {
-          this.emit(Op.OP_FROMALTSTACK, locationData);
-          this.emit(Op.OP_DUP, locationData);
-          this.emit(Op.OP_TOALTSTACK, locationData);
-          this.emit(encodeInt(0n), locationData);
-          this.emit(Op.OP_LESSTHAN, locationData);
-          this.emit(Op.OP_IF, locationData);
-          this.emitRawCalleeReaderPin(locationData);
-          this.emit(Op.OP_ENDIF, locationData);
-        } else {
-          this.emitRawCalleeReaderPin(locationData);
-        }
-      }
+      // callee's run answers this caller alone instead (emitRawCalleeReaderPin), whatever the anchor witness names:
+      // an anchored callee is the same physical master, and a proxy frame, which pushes no reader, fails closed.
+      if (this.bindsRawCalleeReader(node, slot)) this.emitRawCalleeReaderPin(locationData);
 
       // 4. Verify B's function selector (REGULAR only, skip for call/staticcall)
       if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification) {

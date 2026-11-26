@@ -7,6 +7,10 @@
 - Framed compiles refuse an `upgrade`, `deploy`, `split` or `merge` entry with no trusted-key signature check, and a
   `selfdestruct` entry with no `require`, as direct compiles do. 0.52.1 compiled them framed, so anyone could spend
   them.
+- A raw low-level call (`addr.call(payload)`) whose callee is named by its CREATE identity binds the callee's run to
+  its caller, as a call naming the callee by its lock does. 0.52.1 skipped the reader pin there, so one run of the
+  callee could answer two callers (one withdrawal credited twice) and a proxy-backed callee could run another method.
+  Direct contracts with such a call compile to new bytes; a raw call into a proxy-backed CREATE identity fails closed.
 - A framed function whose `{value:}` call runs on only some paths compiles and pays the callee exactly when the call
   runs; 0.52.1 failed with `Expected variable '__internal__frameSendOutput_0' does not exist on the stack`.
 

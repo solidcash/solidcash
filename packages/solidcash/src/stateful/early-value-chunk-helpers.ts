@@ -311,7 +311,7 @@ export function shouldGrowSpeculativeChunkRegion(parts: {
     && parts.reverseIndexedChunkSuffix !== true;
 }
 
-/** Materialize persist/compose `v` onto the live jobEvents band. */
+/** Materialize the persisted `v` onto the live jobEvents band. */
 export function seedChunksFromPersistedValue(
   setChunk: (
     outputIndex: number,

@@ -164,7 +164,7 @@ export async function materializeCreateBuilderEarlyArgs(
       console.error('msg-sender-category-zero', JSON.stringify({
         functionName, abiFunction: abiFunction?.name,
         // Which build flavour reaches the zero fallback: a V8 stack is unavailable in these synthetic builders,
-        // so the override SHAPE is what distinguishes the paths (probe vs composed participant vs user call).
+        // so the override SHAPE is what distinguishes the paths (probe vs user call).
         build: {
           returnProbeOnly: overrides?.returnProbeOnly === true,
           emitReturn: overrides?.emitReturn === true,

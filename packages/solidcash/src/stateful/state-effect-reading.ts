@@ -61,8 +61,8 @@ export interface StateEffectReading {
   otherEffectEvidence: StateEffectEvidence[];
   /**
    * The flag is set and the ABI itemizes NOTHING. A plain `this.x = y` lands here: the ABI publishes no
-   * "assigns a state variable" field, so this is as close as an artifact gets to naming one - and it is
-   * indistinguishable from a bus-mode journal reservation, which is why it is reported rather than concluded.
+   * "assigns a state variable" field, so this is as close as an artifact gets to naming one, which is why it is
+   * reported rather than concluded.
    */
   unattributed: boolean;
   /**

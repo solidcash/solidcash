@@ -21,7 +21,7 @@ import {
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
 import { valueChunkWriteResourceIdentity } from './value-chunk-persist.js';
 
-/** Resolve the one active chunkable dynamic-value collection written by a composed group.
+/** Resolve the one active chunkable dynamic-value collection written by a group.
  * Ambiguous metadata fails closed rather than selecting a collection by source-level name. */
 export type ChunkableValueWriteGroup = {
   categoryId?: string;

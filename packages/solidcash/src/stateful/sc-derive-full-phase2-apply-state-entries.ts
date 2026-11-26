@@ -58,8 +58,8 @@ export function deriveFullPhase2ApplyStateAndEntries(
     requiredNftIndices, entryAccesses, delegatecallInputIndex, phaseCheckpoint,
   } = params;
 
-  // A direct call emits its state immediately after output 0. In a composed delegate call, the proxy
-  // block follows all routed callees, so locate its minting master by category and read the contiguous
+  // A direct call emits its state immediately after output 0. In a delegate call, the proxy
+  // block can follow its callees, so locate its minting master by category and read the contiguous
   // data-NFT outputs which follow it.
   const delegateMasterOutputIndex = delegatecallInputIndex === undefined ? -1
     : probeBuilder2.outputs.findIndex((output, outputIndex, outputs) =>

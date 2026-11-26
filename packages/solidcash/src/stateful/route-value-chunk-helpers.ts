@@ -513,8 +513,8 @@ export function deriveRouteValueChunks(
   // loop match it wherever it lands.
   // The complete computed value is already present in the first failing trace. Recover its whole continuation
   // run at once: probing one placeholder at a time adds O(chunks) full VM evaluations and cannot expand a later
-  // participant's already-fixed input base. This also applies to ordinary nested handlers, not only compiler
-  // routes and embedded delegates; they use the same chunk covenant and balanced block geometry.
+  // participant's already-fixed input base. This applies to ordinary nested handlers and embedded delegates
+  // alike; they use the same chunk covenant and balanced block geometry.
   let progressed = false;
   let discovered = false;
   const writes = group.valueChunkWrites ?? describeValueChunkWrites(group);

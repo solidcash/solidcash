@@ -4741,7 +4741,7 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Place persist/compose jobEvents chunks before the first VM probe so
+   * Place persisted jobEvents chunks before the first VM probe so
    * updateJobPost does not spend the 64-iteration budget rediscovering v.
    */
   seedPersistedJobEventsBand(): number {
@@ -4931,7 +4931,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * Rebase absolute output coordinates when a final, non-covenant output is inserted before the
-   * authenticated suffix. Reverse-indexed suffix checks remain valid after the insertion, but composed
+   * authenticated suffix. Reverse-indexed suffix checks remain valid after the insertion, but
    * continuation writers can also receive an absolute `__internal__valueChunkOutputBase` witness. Keep the
    * recovered-output cache and every carrier of that witness aligned with the shifted physical outputs.
    *
@@ -5317,7 +5317,7 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Register a routed batch TARGET node whose VALUE the planner cannot reproduce: the route row builds it inside
+   * Register a routed batch TARGET node whose VALUE the planner cannot reproduce: the handler builds it inside
    * its handler, so the node is published with its key and successor link only. Registration is keyed by the entry
    * that owns the node, so completion never depends on the lane's physical coordinate.
    */
@@ -5729,7 +5729,7 @@ export class StatefulTransactionBuilder {
         identity, categoryId, commitment: binToHex(commitment),
       });
     }
-    // A contract may be called more than once in one composed transaction.
+    // A contract may be called more than once in one transaction.
     // Category identifies the token; identity identifies the call/return slot.
     const existing = this.pendingReturnEventOutputs.findIndex((r) => r.identity === identity);
     if (existing >= 0) {

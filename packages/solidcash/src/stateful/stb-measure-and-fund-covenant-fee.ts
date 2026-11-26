@@ -38,7 +38,7 @@ export type MeasureAndFundCovenantFeeResult = {
   dustMinimum: bigint;
 };
 
-// A mock provider can fund several sends before their UTXOs are consumed by a composed transaction. Their
+// A mock provider can fund several sends before their UTXOs are consumed by one transaction. Their
 // outpoints must be distinct just like real funding outputs; reusing one fixed fe:0 outpoint makes that later
 // transaction invalid even though each fee funder was individually provisioned.
 let mockFeeFunderNonce = 0n;

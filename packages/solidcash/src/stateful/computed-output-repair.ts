@@ -123,7 +123,7 @@ export function isForwardStateRepairCoordinate(args: {
 
 /**
  * A delegate executes against its proxy's physical state, which can precede the implementation input in the
- * composed block. The caller must authenticate both fixed lineage and category ownership before setting
+ * block. The caller must authenticate both fixed lineage and category ownership before setting
  * `delegateOwnedFixedState`; ordinary participants retain the forward-only rule.
  */
 export function isOwnedStateRepairCoordinate(args: {
@@ -183,7 +183,7 @@ export function canApplyRepairedNftCommitment(args: {
   /**
    * When set, a proposal that exactly matches this prior input commitment is preserve-shaped.
    * Do not use such a proposal to roll a non-empty optimistic / recipe-authored fixed-state write
-   * back to the pre-state (ahead-of-time compose coverage proxy counter+emit under recipe).
+   * back to the pre-state.
    */
   inputCommitmentHex?: string;
 }): RepairedNftApply {

@@ -404,7 +404,7 @@ export async function loadCreateBuilderDynamicChunks(
   // preserve events around it. Repeat each resolved site list without inspecting mapping keys.
   const runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
-    /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
+    /** Source row of this occurrence; -1 for a direct call. */
     rowIndex: number;
     /** A chunked site's head; its continuation records are learned from the trace. */
     chunked?: true;

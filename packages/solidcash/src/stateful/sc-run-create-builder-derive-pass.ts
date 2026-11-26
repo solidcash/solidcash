@@ -94,9 +94,8 @@ export async function runCreateBuilderDerivePass(
   && (entryAccesses?.length ?? 0) === 0
   && (entryAbiFunction?.entryLoopWrites?.length ?? 0) === 0
   && (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
-  // A compiler-generated route owns no mapping metadata itself: selected row metadata materializes directly as physical
-  // loop-entry variables above. Those variables are the authoritative derivation plan even when every wrapper
-  // metadata list is empty; skipping here would publish link-only placeholder commitments for computed values.
+  // Loop-entry variables are the authoritative derivation plan even when every wrapper metadata list is empty;
+  // skipping here would publish link-only placeholder commitments for computed values.
   && loopEntryVars.length === 0
   && runtimeLoopEventOutputs.length === 0
   && runtimeLoopTransferOutputs.length === 0

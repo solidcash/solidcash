@@ -228,7 +228,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
       const funder = host.shiftSharedFunder();
       if (funder) { markSharedFunder(funder); return funder; }
       // MockNetworkProvider can materialize deterministic OP_TRUE
-      // funding inputs. This keeps large composed tests focused on
+      // funding inputs. This keeps large tests focused on
       // covenant behavior without requiring users to pre-split an
       // arbitrary number of wallet UTXOs. Real providers continue
       // to fail closed and request additional funding.

@@ -148,9 +148,9 @@ export function registerCreateBuilderBuilderState(
   // Break the first-probe ordering cycle when a scalar vmap INSERT follows newly-written dynamic state chunks:
   // reserve one chunk candidate so NEW is placed after the dynamic region and the VM can reach both commitment
   // checks. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
-  // Route proxy callees (compose executionArtifact/executor) publish trailingCapacity for ChunkNft
-  // co-spends, but empty first-writes have no pre-state chunks. Without a speculative placeholder the trailing
-  // band stays OP_TRUE density pads and the executor EQUALVERIFYs ChunkNft P2SH32 against 0x51.
+  // Proxy callees publish trailingCapacity for ChunkNft co-spends, but empty first-writes have no pre-state chunks.
+  // Without a speculative placeholder the trailing band stays OP_TRUE density pads and the executor EQUALVERIFYs
+  // ChunkNft P2SH32 against 0x51.
   const directCallEmptyDynamicMint = directCallDelegateLayout !== undefined
     && dynamicChunkVars.some((variable: any) => variable.delegate === true
       && activeDynamicWrites.has(variable.name)

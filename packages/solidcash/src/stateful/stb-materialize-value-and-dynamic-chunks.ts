@@ -28,7 +28,7 @@ export interface MaterializeValueAndDynamicChunksHost {
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
   readonly delegateDynamicChunksAtSuffix: boolean;
-  /** Runtime-loop outputs or a composed block base move the run by what the transaction carries. */
+  /** Runtime-loop outputs move the run by what the transaction carries. */
   readonly hasRuntimeLoopOutputs: boolean;
   /** The executing input's current unlocker: its witnesses name the coordinates its covenant reads. */
   masterUnlocker(): Unlocker;

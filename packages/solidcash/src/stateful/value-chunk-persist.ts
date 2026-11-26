@@ -976,7 +976,7 @@ export function markPersistedCompatibilityValueChunkReady(categoryId: string): v
   settlement().readyPersistedCompatibilityValueChunks.add(categoryId.toLowerCase());
 }
 
-/** True only after a successful compatibility-value send, not compose/extract. */
+/** True only after a successful compatibility-value send, not after a probe or an extraction. */
 export function isPersistedCompatibilityValueChunkReady(categoryId?: string): boolean {
   if (categoryId !== undefined) {
     return settlement().readyPersistedCompatibilityValueChunks.has(categoryId.toLowerCase());

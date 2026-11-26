@@ -153,7 +153,7 @@ export async function deriveReturnValue(
   callerCategoryId?: string,
   /**
  * The contract that calls this callee. Its master UTXO is co-spent into the probe so the compiled frame can
- * resolve `msg.sender` exactly as it will in the composed transaction.
+ * resolve `msg.sender` exactly as it will in the sent transaction.
  */
   callerContract?: StatefulContract<Artifact>,
 ): Promise<StateValue> {

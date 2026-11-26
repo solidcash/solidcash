@@ -282,7 +282,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
    * before and after it. These live after runtime mapping entries and before dynamic-storage chunks. */
   runtimeLoopEventOutputs?: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
-    /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
+    /** Source row of this occurrence; -1 for a direct call. */
     rowIndex: number;
     /** Record of a chunked site: its head, or (`continuation`) a later chunk under the continuation covenant. */
     chunked?: true;

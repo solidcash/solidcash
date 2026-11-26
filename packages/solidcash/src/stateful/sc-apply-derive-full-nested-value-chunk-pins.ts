@@ -121,7 +121,7 @@ export function applyDeriveFullNestedValueChunkPin(
   let nestedProbeHadError = false;
 
   if (llc.callMode !== 'delegatecall') return { skipped: true as const };
-  // A composed implementation band can shift as sorted inserts and dynamic outputs converge. Resolve
+  // An implementation band can shift as sorted inserts and dynamic outputs converge. Resolve
   // the executed implementation from the materialized transaction, not from a function-name exception
   // or a provisional dense coordinate.
   const builtImplInputIndex = probeBuilder2.inputs.findIndex((input) => (
@@ -259,11 +259,10 @@ export function applyDeriveFullNestedValueChunkPin(
   const valueChunkResourceSelection = selectValueChunkResource(valueChunkWrites);
   const valueChunkResourceIdentity = valueChunkResourceSelection.status === 'exact'
     ? valueChunkResourceSelection.identity : undefined;
-  // Old descriptor-free routes reconstructed their computed array value from a historical ABI shape.
-  // Keep that adapter outside compiler-generated routes. A compiler-described candidate must come from the VM trace
-  // or from the
-  // exact producer/resource pair staged while evaluating `storedElementSource`; a function name, argument
-  // position, or same-typed value is not producer authority.
+  // Old descriptor-free plans reconstructed their computed array value from a historical ABI shape. A
+  // compiler-described candidate must come from the VM trace or from the exact producer/resource pair staged while
+  // evaluating `storedElementSource`; a function name, argument position, or same-typed value is not producer
+  // authority.
   const legacyValueCandidates: Uint8Array[] = [];
   const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent';
   const publishName = llc.functionName ?? llc.logicalFunctionName;

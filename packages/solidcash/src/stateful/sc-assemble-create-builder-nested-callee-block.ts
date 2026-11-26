@@ -725,7 +725,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           ctx.bBlockInputs.push(await makeFunder());
         }
       }
-      // Direct callees use this block's sorted-entry proofs, but unlike composed/transitive callees
+      // Direct callees use this block's sorted-entry proofs, but unlike transitive callees
       // they do not pass through the nested batch planner. Publish the same ordered row vector and
       // per-slot ranks from the authenticated target/next witnesses assembled above.
       for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {

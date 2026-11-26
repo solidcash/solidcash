@@ -710,8 +710,8 @@ export interface StateEffectReading {
   otherEffectEvidence: StateEffectEvidence[];
   /**
    * The flag is set and the ABI itemizes NOTHING. A plain `this.x = y` lands here: the ABI publishes no
-   * "assigns a state variable" field, so this is as close as an artifact gets to naming one - and it is
-   * indistinguishable from a bus-mode journal reservation, which is why it is reported rather than concluded.
+   * "assigns a state variable" field, so this is as close as an artifact gets to naming one, which is why it is
+   * reported rather than concluded.
    */
   unattributed: boolean;
   /**
@@ -3230,7 +3230,7 @@ function unresolvableLabelLocals(
   return names;
 }
 
-/** Current builder-pass id; the composer reports it beside a stall so the stall's own plans can be isolated. */
+/** Current builder-pass id; a stall diagnostic reports it so the stall's own plans can be isolated. */
 export const peekBuilderBuildId = peekBuildId;
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
@@ -3296,7 +3296,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * uses, and the only one this SDK acts on. Everything else is evidence to be read, which is what this
    * returns: each published cause, split by whether it is a change to the handler's OWN persisted state.
    * `unattributed` is the honest residue - the ABI publishes no "assigns a state variable" field at all, so a
-   * plain `this.x = y` is indistinguishable from a bus-mode journal reservation from the outside.
+   * plain `this.x = y` is not itemized from the outside.
    *
    * NOT RENAMED, DELIBERATELY. The flag's conservative direction is correct for its one consumer and the name
    * is published in every artifact on disk; re-deriving it toward "mutates" would make that consumer fail OPEN
@@ -5355,7 +5355,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             functionName: group.functionName,
             required: group.requiredDataNftIndices,
             dataNfts: group.dataNftUtxos.length,
-            routeRows: [],
             precomputed: group.precomputedReturnCommitment
               ? binToHex(group.precomputedReturnCommitment) : undefined,
           })));
@@ -6473,7 +6472,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       externalEntryKeyOverrides?: Map<number, bigint | boolean | Uint8Array>;
       msgSenderCategory?: Uint8Array;
       /**
-       * Locking bytecode of the contract that CALLS this frame, when the frame is a nested/composed participant.
+       * Locking bytecode of the contract that CALLS this frame, when the frame is a nested participant.
        * The runtime's `msg.sender` is the immediate caller's address (the same identity `msgSenderCategory`
        * publishes), never the transaction origin, so a `msg.sender`-keyed mapping must hash THIS value. Absent for
        * a top-level call sent by the signer, where the signer's own address is the caller.
@@ -6529,11 +6528,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const timing = (stage: string): void => {
       if (timingEnabled) console.error('builder-timing', { functionName, stage, ms: Date.now() - startedAt });
     };
-    const isComposedRoute = overrides?.calls?.some((call) => call.type === 'stateful') === true;
-    // Start the wallet snapshot before expanding the very large composed route. Waiting until funding is planned
-    // makes the same provider query run while several gigabytes of transient route objects are live.
-    const earlySignerUtxos = overrides?.signerUtxos ?? ((isComposedRoute || functionName === '__forward') && this._signer
-      // Resolve the snapshot before route expansion. Leaving this promise pending retains the expanded route
+    const hasStatefulCalls = overrides?.calls?.some((call) => call.type === 'stateful') === true;
+    // Start the wallet snapshot before expanding the stateful calls. Waiting until funding is planned makes the
+    // same provider query run while the transient expanded calls are live.
+    const earlySignerUtxos = overrides?.signerUtxos ?? ((hasStatefulCalls || functionName === '__forward') && this._signer
+      // Resolve the snapshot before call expansion. Leaving this promise pending retains the expanded calls
       // while the mock/provider drains prior transaction work, producing the same peak-memory stall as a late scan.
       ? await signerUtxoSnapshot(this._signer) : undefined);
     await this._ensureResolved(); // address-constructed instances: resolve the category before building the tx
@@ -6719,9 +6718,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // vmap sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
-    // Routed batch TARGET nodes published with their key and successor link only. The row's handler builds the
-    // value, so the tail is completed after the builder exists: from the transported production of that exact
-    // entry when the atomic graph carries one, otherwise from the value the trace authenticates.
+    // Batch TARGET nodes published with their key and successor link only. The handler builds the value, so the
+    // tail is completed after the builder exists, from the value the trace authenticates.
     let pendingEntryValueTails: Array<{
       slotIndex: number; collection: string; slot: Uint8Array; seed: string; next: Uint8Array; chunkable: boolean;
     }> = [];
@@ -7155,7 +7153,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const ov = overrides?.entryKeyOverrides?.get(slotIndex);
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
-              // A composer-supplied entry key is the remaining authority that can resolve `msg.sender` correctly
+              // A caller-supplied entry key is the remaining authority that can resolve `msg.sender` correctly
               // while the frame's category witness stays zero; print it next to the collection so the two halves of
               // one identity can be compared in a single run.
                 console.error('entry-key-override', JSON.stringify({
@@ -7709,7 +7707,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
-              // Which identity this build resolved `msg.sender` from: the probe and the composed participant share
+              // Which identity this build resolved `msg.sender` from: the probe and the send share
               // this pin code, so the tuple below is what still differs between them.
               console.error('entry-pin-identity', JSON.stringify({
                 // The derive sequence that is currently executing (see `derive-return-value-entry`): pairing the two
@@ -7873,7 +7871,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           } else {
             let present = list.has(slot);
             // A key that the chain holds can still miss here: the collection entries were fetched once per build,
-            // and a write performed earlier in the same test (its own composed send) may not have been visible to
+            // and a write performed earlier in the same test (its own send) may not have been visible to
             // that fetch yet. Re-fetch before falling back to the bracketing predecessor, whose (empty) value the
             // covenant would otherwise read as "absent". The predecessor remains the correct proof for a key that
             // really is absent.
@@ -8113,7 +8111,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // tx.origin = the first native P2PKH input's lockscript (emitTxOrigin). The sender funds via
             // _signer.unlockP2PKH(), so slot = keyToSlot(the signer's P2PKH lockscript). A wrong address just fails
             // the on-chain slot==keyToSlot(msg.sender) check (fail-closed).
-            // A composed participant is built from a contract instance that may carry only the logical-nonce
+            // A nested participant is built from a contract instance that may carry only the logical-nonce
             // signer (the account that initiated the call), the same fallback the expression-keyed branch uses.
             // Requiring the physical signer here would either throw or, worse, key the entry by an account that
             // never calls this contract, so both are resolved through one sender lookup.
@@ -12597,10 +12595,10 @@ export class StatefulFunctionCall {
   private extraOutputs: Output[] = [];
   private extraInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
   /**
-   * Declare the contract that CALLS this frame. A nested/composed frame resolves `msg.sender` from the immediate
-   * caller's identity (the value the route publishes as `__internal__msgSenderCategory`), so a `msg.sender`-keyed
+   * Declare the contract that CALLS this frame. A nested frame resolves `msg.sender` from the immediate
+   * caller's identity (the value published as `__internal__msgSenderCategory`), so a `msg.sender`-keyed
    * mapping must hash that locking bytecode - hashing the transaction origin instead keys the entry on a slot the
-   * covenant never reads. Returns the call so a composition can annotate it inline.
+   * covenant never reads. Returns the call so a caller can annotate it inline.
    */
   withCallerIdentity(lockingBytecode: Uint8Array, categoryId?: string): this {
     this.callerLockingBytecode = Uint8Array.from(lockingBytecode);
@@ -12779,13 +12777,13 @@ export class StatefulFunctionCall {
     return this;
   }
 
-  /** Supply an event commitment explicitly when a composed delegate trace cannot be auto-derived. */
+  /** Supply an event commitment explicitly when a delegate trace cannot be auto-derived. */
   emitEvent(name: string, ...args: StateValueType[]): this {
     this.manualEvents.push({ name, args });
     return this;
   }
 
-  /** Compatibility event placed after composed delegate blocks, so it cannot shift positional covenant slots. */
+  /** Compatibility event placed after delegate blocks, so it cannot shift positional covenant slots. */
   emitDetachedEvent(name: string, ...args: StateValueType[]): this {
     this.detachedEvents.push({ name, args });
     return this;

@@ -67,7 +67,7 @@ export function callerIdentityAnchorBand(
   return matches[0]!.band;
 }
 
-/** Compiler-owned bytes witnesses used to fold chunkable array pushes across selected route rows. */
+/** Compiler-owned bytes witnesses that fold repeated chunkable array pushes into one value. */
 export function isRoutePushValueWitnessName(name: string): boolean {
   return /^__internal__(?:leading|complete)PushValue_\d+$/.test(name);
 }
@@ -593,7 +593,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           // Multiple logical calls to one category share a single physical
           // covenant input. A later state-writing call can replace an earlier
           // view call as that input's selected function, so pin the selector
-          // actually present in the composed input. Upgrade proxies select on
+          // actually present in that input. Upgrade proxies select on
           // their co-spent delegate; direct stateful contracts select on the
           // shared external group itself.
           const physicalSelector = physicalExternalCallSelectorHex(

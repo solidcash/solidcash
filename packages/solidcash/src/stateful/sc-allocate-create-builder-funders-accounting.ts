@@ -448,9 +448,9 @@ export async function allocateCreateBuilderFunders(
             functionName, entryFunction: entryAbiFunction?.name, neededFunders: walletFunderCount,
             sharedFunders: sharedFunderPool?.length ?? 0,
           });
-          // Delegate/proxy routes start this snapshot before expanding their large composed transaction.
-          // Reuse it here even when there are no `externalCalls` (delegate calls are represented by
-          // `lowLevelCalls`), otherwise a second wallet scan runs while the full route is resident.
+          // Delegate/proxy calls start this snapshot before expanding their calls. Reuse it here even when
+          // there are no `externalCalls` (delegate calls are represented by `lowLevelCalls`), otherwise a
+          // second wallet scan runs while the expanded calls are resident.
           const signerUtxos = earlySignerUtxos ?? await signerFundingCoins(host.signer);
           timing?.('funder-fetch-complete');
           // The shared pool contains the still-available snapshot tail. Excluding that tail inverted ownership:

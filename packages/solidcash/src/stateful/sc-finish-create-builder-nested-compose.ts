@@ -45,6 +45,7 @@ export function finishCreateBuilderNestedCompose(
     latestRouteValueChunkProducerBinding: any;
     routeValueChunkProducerEpochByPhysicalGroup: WeakMap<ExternalCallUtxoGroup, number>;
     preparedAtomicNodes: any[] | undefined;
+    preparedAtomicNodeByExternalGroup: Map<number, number>;
     latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
     externalCallUtxoGroups: ExternalCallUtxoGroup[];
     lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
@@ -59,7 +60,7 @@ export function finishCreateBuilderNestedCompose(
     childCompilerInternalArgs, directInvocationRows, proxyCallee,
     publishRouteValueChunkProducerBinding,
     latestRouteValueChunkProducerBinding, routeValueChunkProducerEpochByPhysicalGroup,
-    preparedAtomicNodes, latestPreparedAtomicNodeByPhysicalGroup,
+    preparedAtomicNodes, preparedAtomicNodeByExternalGroup, latestPreparedAtomicNodeByPhysicalGroup,
     externalCallUtxoGroups, lowLevelCallUtxoGroups, delegateGroupIndex, timingEnabled, bags,
   } = params;
   const callee = params.callee as any;
@@ -94,6 +95,7 @@ export function finishCreateBuilderNestedCompose(
   ].filter((group): group is ExternalCallUtxoGroup => group !== undefined))];
   publishRouteValueChunkProducerBinding(latestRouteValueChunkProducerBinding);
   if (preparedAtomicNodes) {
+    preparedAtomicNodeByExternalGroup.set(childExternalGroupIndex, preparedAtomicNodes.length);
     if (directInvocationRows?.length) {
       const rowsWithProducerPaths = directInvocationRows.map((row: any) => ({
         row,

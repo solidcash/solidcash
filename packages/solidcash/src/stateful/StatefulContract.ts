@@ -268,6 +268,9 @@ import {
 import {
   prepareCreateBuilderUpsertLoopKeyTopology as prepareCreateBuilderUpsertLoopKeyTopologyImpl,
 } from './sc-prepare-create-builder-upsert-loop-key-topology.js';
+import {
+  expandCreateBuilderLateTransitive as expandCreateBuilderLateTransitiveImpl,
+} from './sc-expand-create-builder-late-transitive.js';
 import { planCreateBuilderNestedBases as planCreateBuilderNestedBasesImpl } from './sc-plan-create-builder-nested-bases.js';
 import {
   relocateCreateBuilderPredOutBases as relocateCreateBuilderPredOutBasesImpl,
@@ -516,6 +519,10 @@ export {
   nestedProxyImplementationInputIndex,
   physicalExternalCallSelectorHex,
 } from './physical-external-call.js';
+export {
+  assertAcyclicExternalCallPath,
+  visitExpandingExternalCallGroups,
+} from './external-call-graph-frontier.js';
 import { buildStatefulFunctionCall as buildStatefulFunctionCallImpl } from './sc-build-stateful-function-call.js';
 import { ExternalCallReachUndecidedError } from './external-call-iteration-domain.js';
 import { decodeScriptNumber, extractExpectedOutputCommitmentFromTrace } from './trace-commitment-helpers.js';
@@ -8897,9 +8904,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const delegateExternalGroupByCallsite = lowLevelNestedCaches.delegateExternalGroupByCallsite;
     const routeValueChunkProducerEpochByPhysicalGroup =
       lowLevelNestedCaches.routeValueChunkProducerEpochByPhysicalGroup;
+    const lateTransitiveGroupIndices = lowLevelNestedCaches.lateTransitiveGroupIndices;
     const nestedDelegateProxyGroupByLowLevel = lowLevelNestedCaches.nestedDelegateProxyGroupByLowLevel;
     const selectActiveRootDelegateGroup = lowLevelNestedCaches.selectActiveRootDelegateGroup;
     let preparedAtomicNodes = lowLevelNestedCaches.preparedAtomicNodes;
+    const preparedAtomicNodeByExternalGroup = lowLevelNestedCaches.preparedAtomicNodeByExternalGroup;
     const latestPreparedAtomicNodeByPhysicalGroup =
       lowLevelNestedCaches.latestPreparedAtomicNodeByPhysicalGroup;
     // Materialization initializes/replaces the node list after cache creation. Resolve the parent here,
@@ -9058,6 +9067,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   allGroupEcSlots,
                   allGroupParentIndices,
                   routeValueChunkProducerEpochByPhysicalGroup,
+                  preparedAtomicNodeByExternalGroup,
                   latestPreparedAtomicNodeByPhysicalGroup,
                   nestedSortedListCache,
                   valueChunkWriteStagingSession,
@@ -9092,7 +9102,39 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       timing('nested-compose-all-complete');
-
+      {
+        const lateBags = await expandCreateBuilderLateTransitiveImpl(
+          {
+            categoryId: this.categoryId,
+            inner: this.inner,
+            signer: this._signer,
+            externalRegistry: this._externalRegistry,
+            nestedFullState: (contract: any) => nestedFullState(contract),
+            nestedAddressUtxos,
+            markSharedFunder: (utxo: UnlockableUtxo) => markSharedFunder(utxo),
+            shiftSharedFunder: () => sharedFunderPool?.shift(),
+            nextNestedFunderIndex: () => nestedFunderIndex++,
+            selectProxyForwardInput: (...a: any[]) => (selectProxyForwardInput as any)(...a),
+            preparedChildProducerPath,
+            timing: (label: string) => timing(label),
+          },
+          {
+            externalCallUtxoGroups,
+            lowLevelCallUtxoGroups,
+            preparedAtomicNodes,
+            preparedAtomicNodeByExternalGroup,
+            publicSelfAddress,
+            bags: {
+              allGroupEcSlots,
+              allGroupParentIndices,
+              lateTransitiveGroupIndices,
+            },
+          },
+        );
+        allGroupEcSlots = lateBags.allGroupEcSlots;
+        allGroupParentIndices = lateBags.allGroupParentIndices;
+        // lateTransitiveGroupIndices mutated in place via Set reference
+      }
       const delegatedDyn = await createBuilderLoadDelegatedDynamicChunksImpl(
         {
           categoryId: this.categoryId,
@@ -9299,6 +9341,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           allGroupEcSlots,
           delegateExternalGroupIndices,
           delegateExternalGroupByCallsite,
+          lateTransitiveGroupIndices,
           pendingDelegateInputFills,
           pendingAnchorFills,
           pendingExternalCallInputFills,

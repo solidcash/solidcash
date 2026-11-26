@@ -4,7 +4,6 @@
  */
 
 import type { AbiFunction, Artifact, FunctionBlockLayout } from '@solidcash/utils';
-import type { TransportedContinuationResourceClaim } from './ValueChunkProducerIdentity.js';
 
 /**
  * The in-block return NFT is owned by one logical callsite. A later write fused onto an earlier read
@@ -521,21 +520,6 @@ export function valueChunkBandWidth(parts: {
     ? Math.max(0, parts.derivedEnd - parts.chunkBase + 1)
     : 0;
   return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.entryChunkCount ?? 0, derivedWidth);
-}
-
-/** Total trailing width reserved by ordered per-resource continuation bands. */
-export function valueChunkBandWidthForContinuationClaims(
-  claims: readonly Pick<TransportedContinuationResourceClaim, 'chunkCount'>[],
-  parts: {
-    minimum?: number;
-    planned?: number;
-    entryChunkCount?: number;
-    derivedEnd?: number;
-    chunkBase?: number;
-  } = {},
-): number {
-  const claimed = claims.reduce((width, claim) => width + Math.max(0, claim.chunkCount), 0);
-  return valueChunkBandWidth({ ...parts, planned: Math.max(parts.planned ?? 0, claimed) });
 }
 
 /** First output coordinate available before a reverse-indexed authenticated suffix and its terminal anchor. */

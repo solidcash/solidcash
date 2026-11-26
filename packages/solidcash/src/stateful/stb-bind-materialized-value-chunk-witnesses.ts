@@ -12,7 +12,6 @@ import {
   ownsCapturedValueChunkOutputBase,
   refreshCapturedValueChunkOutputBase,
   rebaseValueChunkWriteDescriptors,
-  transportedContinuationLocalBase,
 } from './value-chunk-base-writer-select.js';
 import {
   coherentAuthenticatedValueChunkRun,
@@ -96,88 +95,6 @@ export function bindMaterializedValueChunkWitnesses(
     let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
       ? undefined
       : provisionalBase >= coordinateBase ? provisionalBase - coordinateBase : provisionalBase;
-    const transportedClaims = aliasGroups.flatMap((group) => group?.continuationResourceClaims ?? []);
-    const canonicalLocalBases = [...resourceIdentities].flatMap((resourceIdentity) => {
-      const writeCount = aliasGroups.flatMap((group) => group?.valueChunkWrites ?? [])
-        .find((write) => valueChunkWriteResourceIdentity(write) === resourceIdentity)?.outputCount;
-      if (writeCount === undefined) return [];
-      const base = transportedContinuationLocalBase(transportedClaims, resourceIdentity, writeCount);
-      return base === undefined ? [] : [base];
-    });
-    if (canonicalLocalBases.length === 1) preferredLocalBase = canonicalLocalBases[0];
-    // One scalar witness cannot describe several independently placed resources. Their authenticated
-    // claims supply each physical base; bind each write to its own exact run and refresh only the scalar
-    // for the first (lowest) band. A single observed run must never shift the other resources as a group.
-    const claimsByResource = new Map<string, (typeof transportedClaims)[number]>();
-    for (const claim of transportedClaims) {
-      const identity = claim.producerClaim.resourceIdentity;
-      const prior = claimsByResource.get(identity);
-      if (prior && (prior.bandOffset !== claim.bandOffset || prior.chunkCount !== claim.chunkCount)) {
-        throw new Error(`Transported value-chunk resource '${identity}' has conflicting carrier bands.`);
-      }
-      claimsByResource.set(identity, claim);
-    }
-    if (claimsByResource.size > 1) {
-      const claimedWrites = aliasGroups.flatMap((group) => group?.valueChunkWrites ?? []);
-      const complete = [...claimsByResource].every(([identity, claim]) => {
-        if (!resourceIdentities.has(identity)
-          || !Number.isSafeInteger(claim.bandOffset) || claim.bandOffset < 0
-          || !Number.isSafeInteger(claim.chunkCount) || claim.chunkCount < 1
-          || !Number.isSafeInteger(claim.bandOffset + claim.chunkCount)
-          || claim.bandOffset + claim.chunkCount > builder.outputs.length
-          || !claimedWrites.some((write) => valueChunkWriteResourceIdentity(write) === identity)) return false;
-        for (let index = 0; index < claim.chunkCount; index += 1) {
-          const offset = claim.bandOffset + index;
-          const observed = host.derivedChunkOutputs.get(offset);
-          const output = builder.outputs[offset];
-          const lock = output?.to instanceof Uint8Array
-            ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
-          if (observed?.resourceIdentity !== identity
-            || observed.resourcePart !== `chunk:${index}`
-            || valueChunkIndexFromCommitment(observed.commitment) !== index
-            || lock === undefined || !isP2sh32LockScript(lock)
-            || binToHex(lock) !== binToHex(observed.lockingBytecode)
-            || output.token?.category !== outputCategoryId
-            || output.token.nft?.capability !== 'mutable'
-            || output.token.nft.commitment !== observed.commitment) return false;
-        }
-        return true;
-      });
-      // A progressive probe may not have materialized every claimed run yet. Leave all claims untouched;
-      // the final composer validates every resource/output pair before publishing the transaction.
-      if (!complete) continue;
-      const firstClaim = [...claimsByResource.values()].reduce((first, claim) => (
-        claim.bandOffset < first.bandOffset ? claim : first
-      ));
-      const scalarStart = coordinateBase + firstClaim.bandOffset;
-      const priorOwner = occupiedBases.get(scalarStart);
-      if (priorOwner !== undefined && priorOwner !== physicalOwnerId) {
-        throw new Error('Transported value-chunk carrier bands have conflicting physical owners.');
-      }
-      occupiedBases.set(scalarStart, physicalOwnerId);
-      for (const alias of aliasGroups.filter(
-        (candidate): candidate is ExternalCallUtxoGroup => candidate !== undefined
-          && ownsCapturedValueChunkOutputBase(candidate),
-      )) {
-        const nextWrites = alias.valueChunkWrites?.map((write) => {
-          const claim = claimsByResource.get(valueChunkWriteResourceIdentity(write));
-          return claim === undefined ? write : {
-            ...write, outputBase: coordinateBase + claim.bandOffset, outputCount: claim.chunkCount,
-          };
-        });
-        const writesChanged = nextWrites?.some((write, index) => (
-          write.outputBase !== alias.valueChunkWrites?.[index]?.outputBase
-            || write.outputCount !== alias.valueChunkWrites?.[index]?.outputCount
-        )) === true;
-        if (writesChanged) alias.valueChunkWrites = nextWrites;
-        if (alias.valueChunkOutputBase !== scalarStart
-          || alias.internalArgs?.__internal__valueChunkOutputBase !== BigInt(scalarStart)) {
-          refreshCapturedValueChunkOutputBase(alias, scalarStart, { shiftPredOut: false });
-          changedCarriers.add(alias);
-        } else if (writesChanged) changedCarriers.add(alias);
-      }
-      continue;
-    }
     const exactResourceStarts = [...host.derivedChunkOutputs.entries()]
       .filter(([, chunk]) => resourceIdentities.has(chunk.resourceIdentity ?? '')
         && chunk.resourcePart === 'chunk:0')

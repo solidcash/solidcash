@@ -11,7 +11,6 @@ import { getDataNftAddress, getEntryNftAddress } from './covenant-helpers.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
-import { preserveTransportedValueChunkWriteGeometry } from './sc-prepare-derive-full-value-chunk-writes.js';
 import {
   valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
@@ -62,9 +61,8 @@ export async function buildStatefulFunctionCall(
       // not silently change the category component of the stable resource identity established by derivation.
       const described = describeValueChunkWrites(group, group.valueChunkStateOwner?.categoryId);
       if (described.length > 0 || group.valueChunkWrites === undefined) {
-        const published = preserveTransportedValueChunkWriteGeometry(group, described);
         group.valueChunkWrites = retainCompleteObservedValueChunkWriteGeometry(
-          published, group.valueChunkWrites ?? [], observedChunks,
+          described, group.valueChunkWrites ?? [], observedChunks,
         );
       }
     }
@@ -72,7 +70,6 @@ export async function buildStatefulFunctionCall(
     stb.bindMaterializedValueChunkWitnesses(built);
     const compilerValueChunkWrites = resolveValueChunkWriteGeometry(
       stb.getValueChunkWriteDescriptors(),
-      [],
       [...stb.getDerivedChunkOutputs()].map(([offset, chunk]) => ({
         offset,
         resourceIdentity: chunk.resourceIdentity,

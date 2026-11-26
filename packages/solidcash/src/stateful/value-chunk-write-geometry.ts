@@ -37,10 +37,9 @@ export function retainCompleteObservedValueChunkWriteGeometry(
   });
 }
 
-/** Reconcile a route's provisional scalar witness with exact, resource-owned output bands. */
+/** Reconcile a provisional scalar witness with exact, resource-owned output bands. */
 export function resolveValueChunkWriteGeometry(
   writes: readonly ValueChunkWriteDescriptor[],
-  transported: readonly ValueChunkWriteDescriptor[],
   observed: readonly ObservedChunk[],
 ): ValueChunkWriteDescriptor[] {
   const geometry = new Map<string, { base: number; count: number }>();
@@ -70,27 +69,10 @@ export function resolveValueChunkWriteGeometry(
     }
     geometry.set(identity, { base, count });
   }
-  // Graph transport is authoritative for the resources it replaces: the isolated builder may still expose
-  // a provisional local pin for the same resource, but composition installs the graph's final band.
-  const transportedGeometry = new Map<string, { base: number; count: number }>();
-  for (const write of transported) {
-    const identity = valueChunkWriteResourceIdentity(write);
-    const next = { base: write.outputBase, count: write.outputCount };
-    if (!Number.isSafeInteger(next.base) || next.base < 0
-      || !Number.isSafeInteger(next.count) || next.count < 1) {
-      throw new Error(`Transported value-chunk resource '${identity}' has invalid geometry.`);
-    }
-    const prior = transportedGeometry.get(identity);
-    if (prior !== undefined && (prior.base !== next.base || prior.count !== next.count)) {
-      throw new Error(`Transported value-chunk resource '${identity}' has conflicting geometry.`);
-    }
-    transportedGeometry.set(identity, next);
-    geometry.set(identity, next);
-  }
   return writes.map((write) => {
     const identity = valueChunkWriteResourceIdentity(write);
     const resolved = geometry.get(identity);
-    if (resolved !== undefined && !transportedGeometry.has(identity)) {
+    if (resolved !== undefined) {
       // A progressive VM probe can expose only chunk:0 of a wider local value. A contiguous prefix is
       // not proof that the resource ends there; keep the compiler-published width authoritative.
       if (write.outputCount > resolved.count) {

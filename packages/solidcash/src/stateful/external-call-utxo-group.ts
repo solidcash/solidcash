@@ -6,7 +6,6 @@
 import type { AbiFunction, Artifact, FunctionBlockLayout, StateLayout, StateValue } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import type {
-  TransportedContinuationResourceClaim,
   ValueChunkProducerPathDisposition,
   ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
@@ -240,13 +239,6 @@ export interface ExternalCallUtxoGroup {
   logicalArtifact?: Artifact;
   /** Compiler-authenticated producer/resource occurrences represented by this physical or logical alias. */
   valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
-  /**
-   * Ordered per-resource continuation bands under this carrier. Band[0] absolute base is also published as
-   * `valueChunkOutputBase` / `__internal__valueChunkOutputBase`; later bands are authenticated here.
-   */
-  continuationResourceClaims?: readonly TransportedContinuationResourceClaim[];
-  /** Claims and exact post-values were transported from a prepared atomic invocation into this final carrier. */
-  transportedValueChunkProductions?: boolean;
   /** Exact physical state owner against which producer claims are authenticated. */
   valueChunkStateOwner?: { categoryId: string; lockingBytecode: string };
   callMode?: 'call' | 'staticcall' | 'delegatecall';

@@ -12,36 +12,34 @@ const write = (key: string, outputBase: number, outputCount: number): ValueChunk
 });
 
 describe('value-chunk write geometry', () => {
-  it('keeps transported and locally materialized resources in separate authenticated bands', () => {
-    const transported = write('33', 102, 2);
+  it('rebinds an observed resource and keeps an unobserved one in its own band', () => {
+    const unobserved = write('33', 102, 2);
     const local = write('44', 102, 3);
     const observed = [0, 1, 2].map((index) => ({
       offset: 110 + index, resourceIdentity: valueChunkWriteResourceIdentity(local),
       resourcePart: `chunk:${index}`,
     }));
-    expect(resolveValueChunkWriteGeometry([transported, local], [transported], observed))
-      .toEqual([transported, { ...local, outputBase: 110, outputCount: 3 }]);
+    expect(resolveValueChunkWriteGeometry([unobserved, local], observed))
+      .toEqual([unobserved, { ...local, outputBase: 110, outputCount: 3 }]);
   });
 
-  it('rejects contradictory resource pins and transported geometry', () => {
+  it('rejects contradictory resource pins', () => {
     const resource = write('55', 102, 2);
     const identity = valueChunkWriteResourceIdentity(resource);
-    expect(() => resolveValueChunkWriteGeometry([resource], [], [
+    expect(() => resolveValueChunkWriteGeometry([resource], [
       { offset: 110, resourceIdentity: identity, resourcePart: 'chunk:0' },
       { offset: 112, resourceIdentity: identity, resourcePart: 'chunk:1' },
     ])).toThrow(/non-contiguous/);
-    expect(() => resolveValueChunkWriteGeometry([resource], [resource, { ...resource, outputBase: 104 }], []))
-      .toThrow(/conflicting geometry/);
   });
 
   it('does not narrow a compiler-owned span from a partial observed prefix', () => {
     const resource = write('66', 102, 3);
     const identity = valueChunkWriteResourceIdentity(resource);
-    expect(() => resolveValueChunkWriteGeometry([resource], [], [
+    expect(() => resolveValueChunkWriteGeometry([resource], [
       { offset: 110, resourceIdentity: identity, resourcePart: 'chunk:0' },
     ])).toThrow(/incomplete observed output band/);
     const unresolved = write('77', -1, 0);
-    expect(resolveValueChunkWriteGeometry([unresolved], [], [
+    expect(resolveValueChunkWriteGeometry([unresolved], [
       { offset: 110, resourceIdentity: valueChunkWriteResourceIdentity(unresolved), resourcePart: 'chunk:0' },
     ])).toEqual([unresolved]);
   });

@@ -44,7 +44,7 @@ silently substitute different bytecode after satisfying the source-level authori
 :::danger
 The source-level guard decides who controls future code. Use a constructor- or state-bound key, multi-signature
 policy, or another non-caller-chosen authority. `require(checkSig(s, pk))` is not authorization if the caller also
-chooses `pk`. A direct compile rejects an `upgrade` function without an unconditional `require(checkSig(s, key))`
+chooses `pk`. The compiler rejects an `upgrade` function without an unconditional `require(checkSig(s, key))`
 against a key the caller cannot choose (`UnauthorizedLifecycleError`).
 :::
 

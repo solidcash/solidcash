@@ -60,7 +60,7 @@ Framed creators keep the older genesis that this page describes.
 
 :::danger
 A deploy entry needs an unconditional `require(checkSig(s, key))` where the caller cannot choose `key`: a
-constructor argument, a state variable, or a constant. A direct compile rejects a deploy, `upgrade`, `split`, or
+constructor argument, a state variable, or a constant. The compiler rejects a deploy, `upgrade`, `split`, or
 `merge` function without one (`UnauthorizedLifecycleError`). `allowUnsafeOperations` turns the error into a
 warning for an intentionally permissionless entry.
 :::

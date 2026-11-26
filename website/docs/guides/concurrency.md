@@ -147,7 +147,7 @@ The compiler enforces these rules:
 
 - The modifier argument names an integer parameter of the function.
 - The body needs an unconditional `require(checkSig(s, key))` with a key the caller cannot choose: a constructor
-  argument, state or a constant. A direct compile rejects one without it (`UnauthorizedLifecycleError`).
+  argument, state or a constant. The compiler rejects one without it (`UnauthorizedLifecycleError`).
 - The body follows the `unsafe(1)` restrictions: it cannot write state, touch entries, emit events, move satoshis or
   tokens, call or read other contracts, or deploy.
 - `split` and `merge` combine with no other lifecycle modifier, `unsafe`, `pure`, `view`, `internal` or `private`.

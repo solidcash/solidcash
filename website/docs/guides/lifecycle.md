@@ -139,7 +139,7 @@ function join(int n, sig s) merge(n) { require(n >= 1); require(checkSig(s, admi
   [Contract Concurrency](/docs/guides/concurrency).
 
 `deploy`, `upgrade`, `split` and `merge` entries need an unconditional `require(checkSig(s, key))` with a key the
-caller cannot choose, such as a constructor argument. A direct compile rejects one without it.
+caller cannot choose, such as a constructor argument. The compiler rejects one without it.
 
 ```ts
 import { StatefulContract } from '@solidcash/solidcash/stateful';

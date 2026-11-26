@@ -847,8 +847,8 @@ bytes code = type(Child).creationCode;         // redeem script (runtimeCode ali
 ```
 
 - `deploy`, `upgrade`, `split` and `merge` entries need an unconditional `require(checkSig(s, key))` with a key the
-  caller cannot choose (constructor argument, state or constant); a direct compile rejects one without it
-  (`UnauthorizedLifecycleError`).
+  caller cannot choose (constructor argument, state or constant); a compile in either convention rejects one without
+  it (`UnauthorizedLifecycleError`).
 - `new` of a stateful child works only in a stateful contract's function. In a direct creator it is a deployer
   `new`. It spends a one-shot coin of the child's generated `Deploy<C>` program, which runs the child's constructor
   on chain. The SDK builds each child's prep transaction first, and the child's category is that prep's txid.

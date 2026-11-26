@@ -14,7 +14,6 @@ import {
   logicalIdentityBandKey,
   resolveLogicalIdentity,
 } from './logical-identity.js';
-import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import { selectDelegateForwardingGroupIndex } from './DelegateForwarding.js';
 import { SortedList } from './SortedList.js';
 import type { OnChainState } from './StateReader.js';
@@ -65,14 +64,30 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
   nestedDelegateProxyGroupByLowLevel: Map<number, number>;
   selectActiveRootDelegateGroup: () => number | undefined;
   preparedAtomicNodes: any[] | undefined;
-  preparedAtomicNodeByExternalGroup: Map<number, number>;
   latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
   preparedChildProducerPath: (
-    parent: RuntimeCallMetadata | undefined,
+    parent: PreparedAtomicNode | undefined,
     source: Pick<Parameters<typeof deriveValueChunkProducerChildPath>[0],
     'sourceCallsiteId' | 'sourceLogicalIndex' | 'occurrenceIndex' | 'sourceEffectOrdinal'>,
   ) => ValueChunkProducerPathDisposition;
   nestedFunderIndex: number;
+};
+
+/** The forwarded delegate frame (index 0, parent null) or one call it makes (parent 0). */
+export type PreparedAtomicNode = {
+  contract: any;
+  functionName: string;
+  selector?: string;
+  args: readonly FunctionArgument[];
+  executionArtifact?: Artifact;
+  executor?: any;
+  parent: number | null;
+  callsiteId?: number;
+  sourceCallsiteId?: number;
+  sourceLogicalIndex?: number;
+  occurrenceIndex?: number;
+  sourceEffectOrdinal?: number;
+  producerPath: ValueChunkProducerPathDisposition;
 };
 
 /**
@@ -296,31 +311,10 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
       candidateIndexes,
     });
   };
-type PreparedAtomicNode = RuntimeCallMetadata & {
-  parent: number | null;
-  callsiteId?: number;
-  active: boolean;
-  producerPath: ValueChunkProducerPathDisposition;
-  /** Re-evaluate complete argument expressions after sibling return commitments are authenticated. */
-  resolveArgsFromResults?: (
-    results: ReadonlyMap<number, FunctionArgument>,
-  ) => FunctionArgument[] | undefined;
-  /**
-   * Re-derive this row's terminal chunkable-value productions against a complete route row list.
-   *
-   * A row discovery only sees its own callsite, so a resource written by several reached rows would publish a
-   * value that stops at the row planned last. The compiled program chunks the post-state after every row it
-   * executes, so the promotion pass re-runs this derivation over the owner's whole row list.
-   */
-  deriveRouteValueChunkProductions?: (
-    rows: readonly any[],
-  ) => NonNullable<RuntimeCallMetadata['valueChunkProductions']>;
-};
 let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
-const preparedAtomicNodeByExternalGroup = new Map<number, number>();
-// Logical aliases retain their own node index for convergence. Reused physical groups separately point at the
-// latest reached callsite, so a later sequential row is copied wholly from one stable node rather than mixing
-// mutable physical arguments with the selector/path of the first call that happened to allocate the group.
+// Reused physical groups point at the latest reached callsite, so a later sequential row is copied wholly from
+// one stable node rather than mixing mutable physical arguments with the selector/path of the first call that
+// happened to allocate the group.
 const latestPreparedAtomicNodeByPhysicalGroup = new Map<number, number>();
 const preparedChildProducerPath: PrepareCreateBuilderLowLevelNestedCachesResult['preparedChildProducerPath'] = (
   parent,
@@ -374,7 +368,6 @@ return {
   nestedDelegateProxyGroupByLowLevel,
   selectActiveRootDelegateGroup,
   preparedAtomicNodes,
-  preparedAtomicNodeByExternalGroup,
   latestPreparedAtomicNodeByPhysicalGroup,
   preparedChildProducerPath,
   nestedFunderIndex,

@@ -371,29 +371,6 @@ function typedSolidityAddressPayload(value: string | Uint8Array): Uint8Array | u
   return undefined;
 }
 
-/** Recover the exact registered native address which projects to a typed Solidity identity. */
-export function registeredAddressValueLockingBytecode(
-  provider: NetworkProvider, value: string | Uint8Array,
-): Uint8Array | undefined {
-  const deployment = findDeploymentByAddressValue(provider, value);
-  if (!deployment) return undefined;
-  const payload = typedSolidityAddressPayload(value);
-  if (!payload) {
-    if (value instanceof Uint8Array) return value;
-    try { return addressToLockScript(value); } catch { return hexToBin(value.replace(/^0x/iu, '')); }
-  }
-  const candidates = new Set([deployment.lockingBytecode, registeredExecutionLockingBytecode(deployment)]);
-  try { candidates.add(binToHex(addressToLockScript(deployment.address))); } catch { /* not a cashaddr */ }
-  const wanted = binToHex(payload);
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const bytes = hexToBin(candidate.replace(/^0x/iu, ''));
-    const identity = lockingBytecodeToSolidityAddressPayload(bytes);
-    if (identity && binToHex(identity) === wanted) return bytes;
-  }
-  return undefined;
-}
-
 /**
  * Find the most recently deployed contract whose ABI exposes `functionName`.
  * Used when an external call is typed as an interface (e.g. IERC20.balanceOf) but

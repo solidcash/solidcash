@@ -93,9 +93,6 @@ export {
 export {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerPathContext,
-  createValueChunkProducerArgumentEpoch,
-  advanceValueChunkProducerArgumentEpoch,
-  valueChunkProducerArgumentsInEpoch,
   appendValueChunkProducerSourceSite,
   deriveValueChunkProducerChildPath,
   canonicalValueChunkProducerResourceIdentity,
@@ -113,7 +110,6 @@ export {
   type ValueChunkProducerMutationRow,
   type ValueChunkProducerPathContext,
   type ValueChunkProducerPathDisposition,
-  type ValueChunkProducerArgumentEpoch,
   type SingletonValueChunkProducerSelection,
 } from './ValueChunkProducerIdentity.js';
 export {

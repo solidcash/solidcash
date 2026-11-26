@@ -10417,7 +10417,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const nestedDelegateProxyGroupByLowLevel = lowLevelNestedCaches.nestedDelegateProxyGroupByLowLevel;
     const selectActiveRootDelegateGroup = lowLevelNestedCaches.selectActiveRootDelegateGroup;
     let preparedAtomicNodes = lowLevelNestedCaches.preparedAtomicNodes;
-    const preparedAtomicNodeByExternalGroup = lowLevelNestedCaches.preparedAtomicNodeByExternalGroup;
     const latestPreparedAtomicNodeByPhysicalGroup =
       lowLevelNestedCaches.latestPreparedAtomicNodeByPhysicalGroup;
     // Materialization initializes/replaces the node list after cache creation. Resolve the parent here,
@@ -10541,7 +10540,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   preparedChildProducerPath,
                   selectProxyForwardInput,
                   resolvePreparedProducerEntry,
-                  externalReturnsForCallsites,
                   externalCallReachedOccurrenceIndices: (...a: any[]) => (
                     externalCallReachedOccurrenceIndices as any
                   )(...a),
@@ -10577,7 +10575,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   allGroupEcSlots,
                   allGroupParentIndices,
                   routeValueChunkProducerEpochByPhysicalGroup,
-                  preparedAtomicNodeByExternalGroup,
                   latestPreparedAtomicNodeByPhysicalGroup,
                   nestedSortedListCache,
                   valueChunkWriteStagingSession,
@@ -11843,14 +11840,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         entryAbiFunction,
         abiFunction,
         externalCallUtxoGroups,
-        preparedAtomicNodes,
-        preparedAtomicNodeByExternalGroup,
       },
     );
     // return-emit-complete (size-guarded end marker for materializeCreateBuilderReturnEmit)
 
     finishCreateBuilderAtomicPromotionImpl({
-      builder,
       preparedAtomicNodes,
       functionName,
     });

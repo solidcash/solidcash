@@ -228,7 +228,6 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
         executor: callInfo.contract,
         parent: null,
         producerPath: rootProducerPath,
-        active: true,
       }];
     }
   }

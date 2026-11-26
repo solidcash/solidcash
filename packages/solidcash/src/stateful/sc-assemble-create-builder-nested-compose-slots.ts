@@ -24,7 +24,6 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import { addressToLockScript } from '../utils.js';
 import { artifactOraclePool, poolInfoCoSpend, readPoolTimestamp } from '../oracle/pool/reader.js';
 import {
@@ -61,7 +60,6 @@ import {
 import {
   canonicalValueChunkProducerPathContext,
   terminalValueChunkProducerClaim,
-  type ValueChunkProducerPathDisposition,
   type ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
 
@@ -140,7 +138,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
     bags: AssembleCreateBuilderNestedComposeSlotsBags;
     // Closures / caches from outer nested-compose scope:
     publishRouteValueChunkProducerBinding: (binding: any) => void;
-    valueChunkProductionsForPath: (path: any) => readonly any[] | any[];
     nestedSortedListCache: Map<string, SortedList>;
     nestedAddressUtxos: (address: string) => Promise<Utxo[]>;
     evaluateProxyRead?: (...args: any[]) => Promise<any>;
@@ -714,21 +711,12 @@ export async function assembleCreateBuilderNestedComposeSlots(
       // available to terminal producer selection; the selector resolver and producer path both fail
       // closed for overloaded or incompletely-coordinated edges.
       const discoveredProducerRows = sequentialRows ?? directInvocationRows;
-      const valueResultsByPath = new Map<string, ReadonlyMap<number, FunctionArgument>>();
       refreshChunkableRouteWitnesses = (
         rowArguments, finalVisibleArgs,
         refreshStagingSession = new ValueChunkWriteStagingSession(),
-        resultUpdate?: { producerPath: ValueChunkProducerPathDisposition; results: ReadonlyMap<number, FunctionArgument> },
       ) => {
-        if (resultUpdate?.producerPath.status === 'complete') {
-          const key = canonicalValueChunkProducerPathContext(resultUpdate.producerPath.context);
-          if (key) valueResultsByPath.set(key, resultUpdate.results);
-        }
         const internalArgs: Record<string, FunctionArgument> = {};
         const producerClaims: ValueChunkProducerResourceClaim[] = [];
-        const productions: Array<NonNullable<
-        RuntimeCallMetadata['valueChunkProductions']
-        >[number]> = [];
         let producerStateOwner: { categoryId: string; lockingBytecode: string } | undefined;
         const effectiveRowArguments = rowArguments ?? discoveredProducerRows?.map((row, index, rows) => (
           index === rows.length - 1 ? { ...row, args: finalVisibleArgs } : row
@@ -866,7 +854,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               const key = path?.status === 'complete' ? canonicalValueChunkProducerPathContext(path.context) : undefined;
               const externalReturns = externalReturnsForCallsites(
                 [{ kind: 'expression', expression: recipe.expression }],
-                key ? valueResultsByPath.get(key) ?? new Map() : new Map(),
+                new Map(),
                 terminal.row.handler.externalCalls ?? [],
               );
               const value = host.encodeStoredValueSource(
@@ -979,12 +967,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 }
                 producerClaims.push(producerClaim);
                 producerStateOwner = stateOwner;
-                productions.push({
-                  write: exactWrite,
-                  claim: producerClaim,
-                  stateOwner,
-                  value: nextValue.slice(),
-                });
               } else {
                 stageValueChunkWrite(
                   exactWrite, nextValue, refreshStagingSession,
@@ -1000,7 +982,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
           producerStateOwner && producerClaims.length > 0 ? {
             claims: Object.freeze([...producerClaims]),
             stateOwner: Object.freeze({ ...producerStateOwner }),
-            productions: Object.freeze([...productions]),
           } : undefined,
         );
         return { internalArgs, payloadBytes: encodedPayloadBytes };

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   findDeploymentByAddressValue, findDeploymentByLockingBytecode, isCreate2ProjectedAddressValue,
   registerDeployment,
-  registeredAddressValueLockingBytecode, registeredPhysicalLockingBytecode,
+  registeredPhysicalLockingBytecode,
   registeredValueAddressLockingBytecode,
 } from '../../src/stateful/deployment-registry.js';
 import { createTestProvider } from '../test-util.js';
@@ -24,7 +24,6 @@ describe('typed deployment address resolution', () => {
       const payload = hash160(native);
       for (const value of [native, payload, word(payload), `0x${binToHex(word(payload))}`]) {
         expect(findDeploymentByAddressValue(provider, value)).toBe(deployment);
-        expect(registeredAddressValueLockingBytecode(provider, value)).toEqual(native);
       }
       expect(findDeploymentByLockingBytecode(provider, binToHex(word(payload)))).toBeUndefined();
     }
@@ -56,16 +55,13 @@ describe('typed deployment address resolution', () => {
     malformed[0] = 1;
     for (const value of [malformed, `0x${binToHex(malformed)}`, word(new Uint8Array(20).fill(0x77))]) {
       expect(findDeploymentByAddressValue(provider, value)).toBeUndefined();
-      expect(registeredAddressValueLockingBytecode(provider, value)).toBeUndefined();
     }
     registerDeployment(provider, {
       contractName: 'Second', address: 'second', lockingBytecode: `a914${binToHex(payload)}87`, contract: {},
     });
     for (const value of [payload, word(payload), `0x${binToHex(word(payload))}`]) {
       expect(findDeploymentByAddressValue(provider, value)).toBeUndefined();
-      expect(registeredAddressValueLockingBytecode(provider, value)).toBeUndefined();
     }
-    expect(registeredAddressValueLockingBytecode(provider, lock)).toEqual(lock);
   });
 
   it('resolves a lock-derived child identity and a unique off-chain CREATE2 projection', () => {

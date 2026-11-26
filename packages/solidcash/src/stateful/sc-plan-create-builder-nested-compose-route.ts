@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose route plan + state/NFT + selectedFn.
  */
 
-import type { AbiFunction, Artifact, ExternalCallAbi, StateLayout } from '@solidcash/utils';
+import type { AbiFunction, ExternalCallAbi, StateLayout } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
@@ -17,7 +17,6 @@ import {
 
 export type PlanCreateBuilderNestedComposeRouteHost = {
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
-  externalReturnsForCallsites: (...args: any[]) => Map<string, FunctionArgument>;
   selectProxyForwardInput: (...args: any[]) => FunctionArgument;
   resolvePreparedProducerEntry: (...args: any[]) => { selector?: string } | undefined;
   externalCallReachedOccurrenceIndices: (...args: any[]) => readonly number[] | undefined;
@@ -30,12 +29,6 @@ export type PlanCreateBuilderNestedComposeRouteHost = {
 };
 
 export type PlanCreateBuilderNestedComposeRouteResult = {
-  calleeRouteArtifact: Artifact;
-  resolveGraphNestedReturns: ((results: ReadonlyMap<number, FunctionArgument>) => {
-    externalReturns: Map<string, FunctionArgument>;
-    nextArgs: FunctionArgument[];
-  } | undefined) | undefined;
-  resolveGraphNestedArgs: ((results: ReadonlyMap<number, FunctionArgument>) => FunctionArgument[] | undefined) | undefined;
   childState: OnChainState & { masterUtxo: NonNullable<OnChainState['masterUtxo']> };
   childLayout: StateLayout;
   nestedAbiFn: AbiFunction | undefined;
@@ -73,8 +66,6 @@ export async function planCreateBuilderNestedComposeRoute(
     callInfoContract: any;
     onChainState: { state: Record<string, unknown> };
     delegateSelfAddress: FunctionArgument;
-    publishedNestedExternalCalls: readonly ExternalCallAbi[];
-    preparedAtomicNodes: unknown[] | undefined;
     proxyCallee: any | undefined;
     callee: any;
     nestedArgs: FunctionArgument[];
@@ -93,43 +84,14 @@ export async function planCreateBuilderNestedComposeRoute(
 ): Promise<PlanCreateBuilderNestedComposeRouteResult> {
   const {
     nested, nestedSources, delegateVisibleArgs, delegateVisibleInputs, delegateFn,
-    callInfoContract, onChainState, delegateSelfAddress, publishedNestedExternalCalls,
-    preparedAtomicNodes, proxyCallee, callee, nestedArgs, graphNestedArgs,
+    callInfoContract, onChainState, delegateSelfAddress,
+    proxyCallee, callee, nestedArgs, graphNestedArgs,
     graphExpressionReturns, resolvedRawFunctionName,
     rootProducerPath, nestedIndices, nestedByCallsite, externalCallUtxoGroups,
     lowLevelCallUtxoGroups, groupProxyMasterIndices, nestedDelegateProxyGroupByLowLevel,
   } = params;
   const timingEnabled = host.timingEnabled;
 
-  // One authenticated producer-result epoch for this callsite: the returns it publishes plus the caller
-  // arguments they re-resolve. Every consumer of the epoch (the nested call itself and any shared
-  // route planned from the same callsite) must observe exactly these values, so it is
-  // computed once here instead of per consumer.
-  const resolveGraphNestedReturns = preparedAtomicNodes && nestedSources
-    ? (results: ReadonlyMap<number, FunctionArgument>) => {
-      const externalReturns = host.externalReturnsForCallsites(
-        nestedSources, results, publishedNestedExternalCalls,
-        nested.callsiteId === undefined ? undefined : {
-          callsiteId: nested.callsiteId,
-          resultConsumers: delegateFn?.resultConsumers,
-        },
-      );
-      if (externalReturns.size === 0) return undefined;
-      const nextArgs = host.resolveExternalArgs(
-        nestedSources, delegateVisibleArgs, callInfoContract.inner.artifact, onChainState.state,
-        delegateVisibleInputs, externalReturns, 0, false, delegateSelfAddress,
-      );
-      if (!nextArgs) return undefined;
-      return { externalReturns, nextArgs };
-    }
-    : undefined;
-  const resolveGraphNestedArgs = resolveGraphNestedReturns
-    ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined =>
-      resolveGraphNestedReturns(results)?.nextArgs
-    : undefined;
-  const calleeRouteArtifact = proxyCallee?.implementation.inner.artifact.delegateArtifact
-  ?? proxyCallee?.implementation.inner.artifact
-  ?? callee.inner.artifact;
   const childState = await host.nestedFullState(callee);
   if (timingEnabled) console.error('nested-callsite-state-loaded', { callsiteId: nested.callsiteId });
   if (!childState.masterUtxo) {
@@ -362,9 +324,6 @@ export async function planCreateBuilderNestedComposeRoute(
   }
 
   return {
-    calleeRouteArtifact,
-    resolveGraphNestedReturns,
-    resolveGraphNestedArgs,
     childState: childState as OnChainState & { masterUtxo: NonNullable<OnChainState['masterUtxo']> },
     childLayout,
     nestedAbiFn,

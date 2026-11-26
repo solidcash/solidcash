@@ -1,6 +1,7 @@
 import {
-  AssignNode, BinaryOpNode, DeleteLocalNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, UnaryOpNode,
-  Node, TupleAssignmentNode, VariableDefinitionNode, type ExpressionNode, type ExternalCallExpression,
+  AssignNode, BinaryOpNode, BranchNode, DeleteLocalNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode,
+  MappingAssignNode, MappingDeleteNode, UnaryOpNode, Node, TupleAssignmentNode, VariableDefinitionNode,
+  type ExpressionNode, type ExternalCallExpression,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -96,4 +97,48 @@ export function argumentConditionActivation(
   const right = operand(expression.right);
   if (!left || !right || left.kind === right.kind) return undefined;
   return { kind: 'binary', operator: expression.operator, left, right };
+}
+
+/**
+ * Stamps on each fixed entry a conditional mapping write or delete makes the branch condition it runs under, where its
+ * entry's own arguments decide that condition: a framed frame plans the entry by it. Entry accesses come from semantic
+ * analysis, so this runs after it, once their mutation ordinals are assigned.
+ */
+export function stampArgumentConditionalEntryActivations(fn: FunctionDefinitionNode): void {
+  if (!fn.body || !fn.entryAccesses) return;
+  const stableArguments = stableArgumentIndices(fn);
+  const booleanArguments = booleanArgumentIndices(fn);
+  const conditionRecipe = (expression: ExpressionNode): ExternalCallExpression | undefined =>
+    argumentConditionActivation(expression, stableArguments, booleanArguments);
+  const byOrdinal = new Map<number, ExternalCallExpression>();
+  const combine = (outer: ExternalCallExpression | undefined, inner: ExternalCallExpression): ExternalCallExpression =>
+    outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
+  const scan = (node: Node, activation: ExternalCallExpression | undefined, representable: boolean): void => {
+    if (node instanceof BranchNode) {
+      const branch = node.entryActivation ?? conditionRecipe(node.condition);
+      const supported = representable && branch !== undefined;
+      scan(node.ifBlock, supported ? combine(activation, branch!) : undefined, supported);
+      if (node.elseBlock) scan(node.elseBlock, supported ? combine(activation, {
+        kind: 'unary', operator: '!', expression: branch!,
+      }) : undefined, supported);
+      return;
+    }
+    if ((node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
+      && representable && activation !== undefined
+      && node.sourceEffectOrdinal !== undefined) byOrdinal.set(node.sourceEffectOrdinal, activation);
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) scan(value, activation, representable);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) scan(item, activation, representable);
+      }
+    }
+  };
+  scan(fn.body, undefined, true);
+  for (const access of fn.entryAccesses) {
+    if (access.activation !== undefined || access.mutationEffectOrdinals?.length !== 1) continue;
+    const activation = byOrdinal.get(access.mutationEffectOrdinals[0]);
+    if (activation !== undefined) access.activation = activation;
+  }
 }

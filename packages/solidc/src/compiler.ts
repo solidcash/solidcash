@@ -88,6 +88,7 @@ import GenerateTargetTraversal, {
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
 import SymbolTableTraversal, { assignFunctionSourceEffectOrdinals } from './semantic/SymbolTableTraversal.js';
+import { stampArgumentConditionalEntryActivations } from './semantic/ArgumentConditionActivation.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
 import { packedStateLayoutVariables } from './semantic/packedStateLayout.js';
@@ -4127,6 +4128,9 @@ function compileResolvedAst(
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
   if (ast.contract.functions.some((fn) => fn.callBatchCandidate === true)) {
     assertNoReservedCallBatchSelector(ast.contract.functions);
+  }
+  if (mergedCompilerOptions.composition === 'framed') {
+    for (const fn of ast.contract.functions) stampArgumentConditionalEntryActivations(fn);
   }
   profileLog('resolved:symbol', semanticStarted, { contract: contractName });
   for (const fn of ast.contract.functions) {

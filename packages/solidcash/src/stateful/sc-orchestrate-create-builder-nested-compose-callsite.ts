@@ -478,7 +478,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     resolveLoopReturnCommitment,
     resolveLoopReturnValue,
     resolveLoopFunctionArgs,
-    refreshChunkableRouteWitnesses,
     delegateCallerIdentity,
     externalCallUtxoGroups,
     lowLevelCallUtxoGroups,

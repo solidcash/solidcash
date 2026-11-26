@@ -46,7 +46,6 @@ export type PublishCreateBuilderNestedComposeGroupParams = {
   resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<any>) | undefined;
   resolveLoopFunctionArgs: ((occurrenceIndex: number) => any[] | undefined) | undefined;
-  refreshChunkableRouteWitnesses: ((...args: any[]) => any) | undefined;
   delegateCallerIdentity: unknown;
   externalCallUtxoGroups: ExternalCallUtxoGroup[];
   lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
@@ -68,7 +67,7 @@ export function publishCreateBuilderNestedComposeGroup(
     childBatchEntryCommitments, childDynamicChunkResources, selectedLayout,
     sharedGroupIndex, delegateCallGroupIndex,
     childValueChunkSlots, precomputedReturnCommitment, loopReturnCommitments,
-    resolveLoopReturnCommitment, resolveLoopReturnValue, resolveLoopFunctionArgs, refreshChunkableRouteWitnesses,
+    resolveLoopReturnCommitment, resolveLoopReturnValue, resolveLoopFunctionArgs,
     delegateCallerIdentity, externalCallUtxoGroups, lowLevelCallUtxoGroups,
   } = params;
 
@@ -179,9 +178,6 @@ export function publishCreateBuilderNestedComposeGroup(
     ...(resolveLoopReturnValue && { resolveLoopReturnValue }),
     ...(resolveLoopFunctionArgs && { resolveLoopFunctionArgs }),
     ...(childValueChunkSlots > 0 && { valueChunkOutputCount: childValueChunkSlots }),
-    ...(refreshChunkableRouteWitnesses && {
-      refreshRouteDerivedArguments: refreshChunkableRouteWitnesses,
-    }),
   });
   // Publish the exact continuation resource before constructing the transaction builder. Waiting for
   // VM derivation is too late: output-band planning already treats compiler collection effects as

@@ -5,10 +5,7 @@
 
 import type { AbiFunction, Artifact, FunctionBlockLayout, StateLayout, StateValue } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
-import type {
-  ValueChunkProducerPathDisposition,
-  ValueChunkProducerResourceClaim,
-} from './ValueChunkProducerIdentity.js';
+import type { ValueChunkProducerResourceClaim } from './ValueChunkProducerIdentity.js';
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
 import type { DirectCallBatch, DirectCallBatchFrameBlock, DirectCallBatchUnit } from './direct-call-batch.js';
 
@@ -320,22 +317,6 @@ export interface ExternalCallUtxoGroup {
   ) => void;
   /** Rebuild the physical unlocker after compiler-derived visible arguments change during dependency convergence. */
   refreshFunctionArgs?: (args: any[]) => void;
-  /** Recompute hidden witnesses derived from a direct call frame's visible arguments (for example, replayed
-   * array pushes). */
-  refreshRouteDerivedArguments?: (
-    rowArguments: readonly {
-      selector: string;
-      args: any[];
-      handler: AbiFunction;
-      internalArgs?: Readonly<Record<string, any>>;
-      sourceLogicalIndex?: number;
-      sourceCallsiteId?: number;
-      occurrenceIndex?: number;
-      sourceEffectOrdinal?: number;
-      producerPath?: ValueChunkProducerPathDisposition;
-    }[] | undefined,
-    finalVisibleArgs: readonly any[],
-  ) => { internalArgs: Record<string, any>; payloadBytes: number };
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
   /** Old dynamic-state chunks consumed by an ordinary direct callee after its master/data block. */

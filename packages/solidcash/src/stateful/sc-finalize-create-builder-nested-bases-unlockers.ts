@@ -18,30 +18,11 @@ import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './internal-function-args.js';
 import { externalReturnParamSlot } from './physical-external-call.js';
 import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
+import type { selectorParamSlot } from './physical-external-call.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import { groupLayoutTrailingBase } from './writer-event-delegate-layout.js';
-
-export function selectorParamSlot(
-  paramName: string,
-  externalCalls: ReadonlyArray<{
-    needsSelectorVerification?: boolean;
-    selectorArrayVar?: string;
-  }> | undefined,
-): number {
-  const match = paramName.match(/^__internal__externalCallSelector(\d*)$/);
-  if (!match) return 0;
-  if (match[1] !== '') return Number(match[1]);
-  const explicit = (externalCalls ?? [])
-    .map((call, index) => ({ call, index }))
-    .filter(({ call }) => call.needsSelectorVerification === true && !call.selectorArrayVar);
-  if (explicit.length === 1) return explicit[0].index;
-  const implicit = (externalCalls ?? [])
-    .map((call, index) => ({ call, index }))
-    .filter(({ call }) => call.needsSelectorVerification !== false && !call.selectorArrayVar);
-  return implicit.length === 1 ? implicit[0].index : 0;
-}
 
 export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;

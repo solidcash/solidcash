@@ -19,6 +19,17 @@ export class TypeError extends Error {
   }
 }
 
+/** An artifact compiled with the message bus, which this SDK no longer runs. */
+export class MessageBusArtifactError extends Error {
+  readonly name = 'MessageBusArtifactError';
+
+  constructor(readonly contractName: string) {
+    super(`Artifact '${contractName}' was compiled with the message bus, which was removed: recompile it with the `
+      + 'current compiler and deploy the new build. A contract that took a message-bus route compiles to the direct '
+      + 'convention.');
+  }
+}
+
 export class MixedCompileModeCallError extends Error {
   constructor(interfaceName: string, functionName: string, callerEvmCompat: boolean) {
     const [caller, callee] = callerEvmCompat ? ['under evmCompat', 'natively'] : ['natively', 'under evmCompat'];

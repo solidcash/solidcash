@@ -11,6 +11,7 @@ import type { IdentityRecord } from '../bcmr/identity.js';
 import type { SplitFacets } from './stateful-lifecycle-types.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 import { assertDeploymentSpendable, assertSpendableContract } from './spendable-code.js';
+import { refuseMessageBusArtifact } from '../legacy-artifact.js';
 
 // Heavy value imports are deferred to method/helper bodies so that loading this
 // module (the `@solidcash/solidcash/contract-factory` entry) does not evaluate the
@@ -291,7 +292,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
      * states it once here rather than at every call site.
      */
     private readonly defaultDeployOptions: DeployContractOptions = {},
-  ) {}
+  ) {
+    refuseMessageBusArtifact(artifact);
+  }
 
   /** Return a new factory bound to a different runner (ethers `factory.connect`). */
   connect(runner: ContractRunner): ContractFactory<T> {

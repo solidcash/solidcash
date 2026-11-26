@@ -22,6 +22,7 @@ import { stripTrailingEthersOverrides } from './sc-build-namespaces.js';
 import {
   type ConnectedStatefulContract, type ContractRunner, StatefulContract, StatefulFunctionCall,
 } from './StatefulContract.js';
+import { refuseMessageBusArtifact } from '../legacy-artifact.js';
 
 export interface SplitDeployOptions extends DeployContractOptions {
   facetOverrides?: Record<string, DeployContractOptions>;
@@ -345,6 +346,7 @@ export class SplitContractBundle {
 
 function validateSplitBundle(bundle: SplitArtifactBundle): void {
   if (bundle.format !== 'solidcash-split-v1') throw new Error(`Unsupported split bundle format '${bundle.format}'.`);
+  for (const artifact of [bundle.root, ...Object.values(bundle.facets)]) refuseMessageBusArtifact(artifact);
   if (
     bundle.manifest.identityBinding?.scheme !== 'solidcash-create-v1'
     || bundle.manifest.identityBinding.owner !== 'root'

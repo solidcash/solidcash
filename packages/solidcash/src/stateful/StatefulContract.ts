@@ -543,6 +543,7 @@ import { type RouteProbeObservation } from './route-probe-progress.js';
 
 import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-loader.js';
 import { calleeBlockExceedsLowLevelBand } from './sc-select-compat-callee-block-calls.js';
+import { refuseMessageBusArtifact } from '../legacy-artifact.js';
 
 function isFramedArtifact(artifact: Artifact): boolean {
   return artifact.composition?.convention === 'framed';
@@ -3618,6 +3619,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** Register a child contract artifact so deployFrom can resolve it by the deploy function's deployTarget. */
   registerChild(artifact: Artifact): this {
+    refuseMessageBusArtifact(artifact);
     this._childRegistry.set(artifact.contractName, artifact);
     return this;
   }
@@ -3630,6 +3632,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   registerArtifacts(map: ArtifactMap): this {
     for (const artifact of Object.values(map)) {
+      refuseMessageBusArtifact(artifact);
       this._childRegistry.set(artifact.contractName, artifact);
     }
     return this;
@@ -4229,6 +4232,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     constructorArgs: ConstructorArgument[],
     options: DeployOptions,
   ): Promise<DeployResult<T>> {
+    refuseMessageBusArtifact(artifact);
     if (isFramedArtifact(artifact)) await loadFramedCallHandle();
     return deployStatefulContractImpl(artifact, constructorArgs, options);
   }
@@ -4251,6 +4255,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   static async upgrade<T extends Artifact>(
     options: UpgradeOptions<T>,
   ): Promise<UpgradeResult<T>> {
+    refuseMessageBusArtifact(options.newArtifact);
     if (isFramedArtifact(options.newArtifact)) await loadFramedCallHandle();
     return upgradeStatefulContractImpl(options);
   }
@@ -4271,6 +4276,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   static async deployFrom<T extends Artifact>(
     options: DeployFromOptions<T>,
   ): Promise<DeployFromResult<T>> {
+    if (options.childArtifact !== undefined) refuseMessageBusArtifact(options.childArtifact);
     if (options.childArtifact !== undefined && isFramedArtifact(options.childArtifact)) {
       await loadFramedCallHandle();
     }

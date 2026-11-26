@@ -23,6 +23,7 @@ import {
   bindArtifactOraclePool, boundOraclePool, isPoolInfoOutput, isPoolSlotOutput, withOraclePoolArgument,
 } from './oracle/pool/reader.js';
 import semver from 'semver';
+import { refuseMessageBusArtifact } from './legacy-artifact.js';
 
 // Large generated contracts can carry multi-megabyte ASM listings. Stateful deployment and proxy wiring create
 // several Contract instances from the exact same artifact (withCategory, logical-address attachment, delegates).
@@ -145,6 +146,7 @@ export class Contract<
     if (!expectedProperties.every((property) => property in artifact)) {
       throw new Error('Invalid or incomplete artifact provided');
     }
+    refuseMessageBusArtifact(artifact);
 
     if (!semver.satisfies(artifact.compiler.version, '>=0.7.0', { includePrerelease: true })) {
       throw new Error(`Artifact compiled with unsupported compiler version: ${artifact.compiler.version}, required >=0.7.0`);

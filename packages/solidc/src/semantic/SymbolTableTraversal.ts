@@ -19282,20 +19282,25 @@ export default class SymbolTableTraversal extends AstTraversal {
         // inert hint, dropped below, and its `value` is the call's authenticated transfer.
         const readsRecord = this.compilerOptions.composition !== 'framed' && node.callOptions?.salt === undefined
           && this.payloadNamesReturningFunction(data);
-        const graphRawValueCall = node.methodName === 'call'
-          && (readsRecord)
+        // `to.call{value: v}("")` is a plain send: it pays `to` and runs no callee, returning `(true, "")` as solc's
+        // call to an account does. A payload naming a function keeps its callee.
+        const plainSend = this.compilerOptions.composition !== 'framed'
+          && data instanceof StringLiteralNode && data.value.length === 0
+          && hasEffectiveCallValue(node.callOptions?.value);
+        const rawValueCall = node.methodName === 'call'
+          && (readsRecord || plainSend)
           && node.callOptions?.value !== undefined
           && node.callOptions.salt === undefined;
         const gasOnlyRecordRead = readsRecord && node.callOptions?.value === undefined;
         if ((node.methodName === 'call' || node.methodName === 'staticcall')
-          && (!node.callOptions || graphRawValueCall || gasOnlyRecordRead)) {
+          && (!node.callOptions || rawValueCall || gasOnlyRecordRead)) {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
           const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
           callNode.resultArrayOutput = node.resultArrayOutput;
           callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
           callNode.sourceActivationConditions = node.sourceActivationConditions;
           callNode.opaqueReturn = true;
-          if (graphRawValueCall) {
+          if (rawValueCall) {
             callNode.callOptions = node.callOptions;
             // `gas` is an inert Solidity compatibility hint on BCH; the authenticated value effect binds the
             // only transaction-visible option (recipient and amount).

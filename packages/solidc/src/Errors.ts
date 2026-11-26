@@ -55,6 +55,8 @@ import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
 export type SolidcDiagnosticCode =
+  // A compiler option the message bus took, passed after its removal.
+  | 'REMOVED_COMPILER_OPTION'
   | 'DELEGATE_CONTEXT_UNPRESERVABLE'
   | 'REPEATED_CALL_UNSUPPORTED'
   | 'FRAMED_CODEGEN_UNAVAILABLE'

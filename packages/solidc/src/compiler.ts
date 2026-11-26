@@ -1852,7 +1852,22 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   };
 }
 
+/** The message bus's options other than the `messageBus*` family, removed with it. */
+const REMOVED_BUS_OPTIONS = new Set(['ownerAltAnchor', 'handlerBandModel']);
+
+/** A removed bus option is refused whatever its value: ignoring it would compile something other than was asked. */
+function refuseRemovedCompilerOptions(options: CompilerOptions): void {
+  const removed = Object.keys(options).filter((key) => key.startsWith('messageBus') || REMOVED_BUS_OPTIONS.has(key));
+  if (removed.length === 0) return;
+  const names = removed.map((key) => `'${key}'`).join(', ');
+  throw new SolidcDiagnosticError('REMOVED_COMPILER_OPTION', `${removed.length > 1 ? 'the options' : 'the option'} `
+    + `${names} ${removed.length > 1 ? 'were' : 'was'} removed with the message bus; delete `
+    + `${removed.length > 1 ? 'them' : 'it'} from the compiler options. A contract that took a message-bus route `
+    + 'compiles to the direct convention.', { options: removed });
+}
+
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
+  refuseRemovedCompilerOptions(options);
   // Composition convention is resolved and checked before any lowering: the two conventions produce different
   // addresses and unlocking bytecode, so a request whose code generation is absent must refuse rather than emit
   // an artifact for the other convention. The resolved value replaces the request in the normalized options.
@@ -2573,6 +2588,7 @@ function withoutUpgradesFrom(options: CompileOptions): CompileOptions {
 }
 
 export function compileString(code: string, options: CompileStringOptions = {}): Artifact {
+  refuseRemovedCompilerOptions(options);
   if (options.split !== undefined && options.split !== 'off') {
     throw new Error(
       "compileString does not accept split 'size' or 'func'; use compileStringSplit. split is 'off', 'size', or 'func'",
@@ -5143,6 +5159,7 @@ export function framedCreationTargetsOfSource(code: string, options: CompileStri
 }
 
 export function compileStringMulti(code: string, options: CompileStringOptions = {}): ArtifactMap {
+  refuseRemovedCompilerOptions(options);
   const compilerOptions: CompileOptions = withFilesResolver(options);
   const { upgradesFrom } = compilerOptions;
   return runWithWarningListener(compilerOptions, () => {
@@ -5460,6 +5477,7 @@ export function compileStringSplit(
 export function compileStringSplit(
   code: string, options: SplitCompileOptions & CompileStringOptions = {},
 ): Artifact | SplitArtifactBundle | FunctionSplitBundle {
+  refuseRemovedCompilerOptions(options);
   const compilerOptions: SplitCompileOptions = withFilesResolver(options);
   return runWithWarningListener(
     compilerOptions,

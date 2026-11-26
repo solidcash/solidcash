@@ -6,7 +6,7 @@ import { MockNetworkProvider } from '../../src/network/mock/index.js';
  * Guards the diamond false-pin class: settle helpers must call `stateSuccess`.
  * A missing `testSuccess` spelling under try/catch falsely reports red.
  */
-describe('messageBusVmAccepts', () => {
+describe('provider VM success API', () => {
   it('provider VM exposes stateSuccess and does not expose testSuccess', () => {
     const vm = createVirtualMachineBch2026ForProvider(new MockNetworkProvider());
     expect(typeof vm.stateSuccess).toBe('function');

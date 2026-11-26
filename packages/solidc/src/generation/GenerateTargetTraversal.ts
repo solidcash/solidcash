@@ -29981,9 +29981,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // ANOTHER master's block, and the delegate would authorize that master while this proxy's own state
     // covenant is skipped on the delegatecall path. A proxy publishes the distance as the constructor input
     // `__proxyBlockSize`, which its own p2sh32 commits to; the SDK supplies the grafted `1 + dataNftCount`.
-    // A proxy that also publishes `__proxyRouteBlockSize` (the built-in one does) keeps the two-distance form
-    // 0.52.1 deployed: the forwarded selector SCB1 picks that distance and any other the direct one, and the payload
-    // pin below requires the selector to be the delegate's first push, the item its dispatcher invokes.
     // A custom proxy that places the delegate by its own layout keeps the witness-only pin until it declares
     // `__proxyBlockSize`, which docs/delegatecall-security.md records as the remaining requirement.
     const singleFunctionLibrary = node instanceof LowLevelCallStatementNode
@@ -29994,8 +29991,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.currentFunction.parameters[0]?.name === 'input';
     const positionPinned = this.forwardsProxyDistance('__proxyBlockSize')
       && !this.currentFunction.delegateIndexFromBlockSlot;
-    const routeDistance = positionPinned && !singleFunctionLibrary
-      && this.forwardsProxyDistance('__proxyRouteBlockSize');
     if (positionPinned) {
       this.debugComputeBase('delegate-position', '__proxyBlockSize',
         this.getStackIndex('__proxyBlockSize'), 0);
@@ -30003,28 +29998,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // pick is only the named slot while the model's length is the runtime depth.
       this.emitPickTrackedFromBottom('__proxyBlockSize', locationData);  // [blockSize]
       this.pushToStack('(proxy-block-size)');
-      if (routeDistance) {
-        if (ownForwardInput) {
-          this.emitPickTrackedFromBottom('input', locationData);         // [blockSize, input]
-          this.pushToStack('(proxy-call-kind)');
-        } else {
-          this.visit(node.data);                                         // [blockSize, input]
-        }
-        // A payload shorter than a selector fails the split.
-        this.emit(encodeInt(4n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);                            // [blockSize, selector]
-        this.emit(hexToBin('53434231'), locationData);
-        this.emit(Op.OP_EQUAL, locationData);                           // [blockSize, isRoute]
-        this.emit(Op.OP_IF, locationData);
-        this.popFromStack();
-        this.emit(Op.OP_DROP, locationData);
-        this.popFromStack();
-        this.emitPickTrackedFromBottom('__proxyRouteBlockSize', locationData); // [routeBlockSize]
-        this.pushToStack('(proxy-block-size)');
-        this.emit(Op.OP_ENDIF, locationData);                           // [distance]
-      }
-      this.emitMasterInputIndex(locationData);                          // [distance, proxyMaster]
+      this.emitMasterInputIndex(locationData);                          // [blockSize, proxyMaster]
       this.pushToStack('(proxy-master)');
       this.emit(Op.OP_ADD, locationData);                               // [expectedDelegate]
       this.popFromStack(2);
@@ -30068,14 +30042,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_INPUTBYTECODE, locationData); // [input, ubcode]
     this.emit(encodeInt(1n), locationData);
     this.emit(Op.OP_SPLIT, locationData);        // [input, pushbyte, ubcode_rest]
-    if (routeDistance) {
-      // The selector the position pin read is the delegate's first push: a push of exactly four bytes.
-      this.emit(Op.OP_SWAP, locationData);       // [input, ubcode_rest, pushbyte]
-      this.emit(hexToBin('04'), locationData);
-      this.emit(Op.OP_EQUALVERIFY, locationData); // [input, ubcode_rest]
-    } else {
-      this.emit(Op.OP_NIP, locationData);        // [input, ubcode_rest]
-    }
+    this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest]
     this.emit(Op.OP_OVER, locationData);         // [input, ubcode_rest, input]
     this.emit(Op.OP_SIZE, locationData);         // [input, ubcode_rest, input, input_len]
     this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest, input_len]

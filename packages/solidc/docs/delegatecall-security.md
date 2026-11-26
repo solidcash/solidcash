@@ -81,12 +81,6 @@ the proxy's *entire* state:
    committed by the forwarder's own p2sh32, so no witness selects it. A custom forwarder that omits the input keeps
    the position-free pin and must place its delegate by its own layout.
 
-   **The distance is published twice.** The built-in proxy also takes the same distance as the constructor input
-   `__proxyRouteBlockSize` (`deployProxy` passes the grafted `1 + dataNftCount` for both), so a witness cannot
-   choose it. The payload pin also requires the delegate's first push to be exactly a four-byte selector (its
-   leading opcode is a push of four bytes), so the selector the forward reads is the item the delegate's
-   dispatcher invokes, and a payload shorter than four bytes is refused.
-
 **B. A function that issues a delegatecall must not self-mutate.** Because the delegatecall epilogue skips
 `emitAutoCovenantVerification` *unconditionally*, any `this.x = ...` in that function is unauthorized — and this
 is not specific to the fallback:

@@ -39,7 +39,6 @@ export interface EnsurePersistedValueChunkInputsHost {
   isPersistedChunkableValueWriteReady(): boolean;
   persistedValueChunkWrite(categoryId: string): ValueChunkWriteDescriptor | null | undefined;
   hasChunkableValueWriteMetadata(): boolean;
-  permitsLegacyNamedValueChunkFallback(): boolean;
   chunkableValueWriteGroups(): ChunkableValueWriteGroups;
   findMintingInputIndex(categoryId: string): number;
   placeValueChunkPredecessorInputs(extras: UnlockableUtxo[]): void;
@@ -67,8 +66,7 @@ export async function ensurePersistedValueChunkInputs(
   if (!band || !categoryId) return;
   const write = host.persistedValueChunkWrite(categoryId);
   const exactState = write ? persistedValueChunkWriteState(write) : undefined;
-  const legacyFallback = write === undefined && !host.hasChunkableValueWriteMetadata()
-    && host.permitsLegacyNamedValueChunkFallback();
+  const legacyFallback = write === undefined && !host.hasChunkableValueWriteMetadata();
   const compatibility = legacyFallback ? persistedCompatibilityContinuation(categoryId) : undefined;
   const persistLock = exactState?.lockingBytecode ?? (legacyFallback
     ? compatibility?.lockingBytecode : undefined);

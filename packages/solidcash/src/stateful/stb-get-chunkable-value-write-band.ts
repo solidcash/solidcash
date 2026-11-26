@@ -25,10 +25,7 @@ import {
   persistedJobEventsWidth,
   type DerivedChunkOutputObservation,
 } from './value-chunk-persist.js';
-import {
-  groupChunkableValueWriteCollections,
-  permitsLegacyNamedValueChunkFallback,
-} from './chunkable-value-write-selection.js';
+import { groupChunkableValueWriteCollections } from './chunkable-value-write-selection.js';
 import type {
   ChunkableValueWriteExecution,
   ChunkableValueWriteGroups,
@@ -110,12 +107,7 @@ export function getChunkableValueWriteBand(
     throw new Error('Ambiguous compiler-published chunkable-value band collections');
   }
   const activeCollection = structural?.collection ?? publishedCollections[0]
-    ?? legacyNamedJobEventCollectionFallback(
-      selectedGroups,
-      permitsLegacyNamedValueChunkFallback([
-        ...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups,
-      ]),
-    );
+    ?? legacyNamedJobEventCollectionFallback(selectedGroups);
   const valueChunkEntryCount = activeCollection === undefined ? 0 : new Set(
     host.getLoopEntryCommitments(activeCollection)
       .filter((commitment) => !isEmptyValueChunkCommitment(commitment)),

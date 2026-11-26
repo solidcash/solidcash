@@ -8,12 +8,10 @@ import {
   Op,
   buildEventNftCovenantScript,
   computeEventNameHash,
-  type Artifact,
 } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { usesLegacyJobEventTraceCompatibility } from './legacy-job-event-wire.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   decodeScriptNumber,
@@ -80,14 +78,7 @@ export function applyDeriveFullNestedCommitsEventPins(params: {
     : writeSelection.status === 'absent'
       ? undefined
       : null;
-  const traceArtifacts = [llc, ...(proxyGroup ? [proxyGroup] : [])].flatMap((group) => [
-    group.logicalArtifact,
-    group.logicalContract?.inner?.artifact,
-    group.externalContract?.inner?.artifact,
-  ]).filter((artifact): artifact is Artifact => artifact !== undefined);
-  const failingCommits = extractFailingValueChunkCommitments(
-    nestedTrace, exactAuthority, usesLegacyJobEventTraceCompatibility(traceArtifacts),
-  );
+  const failingCommits = extractFailingValueChunkCommitments(nestedTrace, exactAuthority);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process
     ?.env?.SOLIDC_DEBUG_CHUNK_SCAN === '1') {
     console.error('failing-otc-commits', {

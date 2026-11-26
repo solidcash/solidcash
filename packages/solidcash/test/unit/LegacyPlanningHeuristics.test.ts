@@ -58,13 +58,9 @@ describe('legacy planning heuristics isolation (item 1)', () => {
   });
 
   it('requires a matching historical publisher before selecting the legacy collection fallback', () => {
-    expect(legacyNamedJobEventCollectionFallback([], true)).toBeUndefined();
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'appendNotice' }], true))
-      .toBeUndefined();
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], true))
-      .toBe('jobEvents');
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], false))
-      .toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([])).toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'appendNotice' }])).toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }])).toBe('jobEvents');
   });
 
   it('does not treat another category as a ready legacy value-chunk publisher', () => {

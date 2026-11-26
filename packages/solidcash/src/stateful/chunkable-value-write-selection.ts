@@ -42,34 +42,6 @@ export type ChunkableValueWriteGroup = {
   valueChunkOutputCount?: number;
 };
 
-/**
- * Old route plans identified the chunkable writer by application ABI names because their artifacts did
- * not publish resource descriptors. Keep that migration path out of the compiler-described layout: once an artifact
- * declares no descriptors, missing descriptors mean "not described", never permission to guess from names.
- */
-export function permitsLegacyNamedValueChunkFallback(
-  _groups: ReadonlyArray<ChunkableValueWriteGroup>,
-): boolean {
-  return true;
-}
-
-/** Permit inferred event reconstruction only for descriptor-free pre-journal plans. */
-export function permitsLegacyValueChunkEventReconstruction(
-  groups: ReadonlyArray<ChunkableValueWriteGroup>,
-  hasChunkableValueWriteMetadata: boolean,
-): boolean {
-  return !hasChunkableValueWriteMetadata
-    && permitsLegacyNamedValueChunkFallback(groups);
-}
-
-/** Legacy delegate event placement is unavailable once either the artifact or the active layout owns the frame. */
-export function permitsLegacyDelegateEventRepair(
-  groups: ReadonlyArray<ChunkableValueWriteGroup>, compilerOwnedDelegateBlock: boolean,
-): boolean {
-  return !compilerOwnedDelegateBlock
-    && permitsLegacyNamedValueChunkFallback(groups);
-}
-
 export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGroup): string[] {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
@@ -187,7 +159,6 @@ export function groupChunkableValueWriteResource(
   if (groupOwnsLinearSortedBatch(group)) return undefined;
   const claimed = claimedChunkableValueWriteResource(group);
   if (claimed) return claimed;
-  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
   const collection = groupChunkableValueWriteCollection(group)
     ?? legacyPlannedChunkableValueWriteCollection(group);
   return collection === undefined ? undefined : { collection };
@@ -251,7 +222,6 @@ export function legacyPlannedChunkableValueWriteCollection(
   if (!Number.isSafeInteger(group.valueChunkOutputCount) || group.valueChunkOutputCount! <= 0) {
     return undefined;
   }
-  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
   const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact]
     .filter((artifact, index, all): artifact is Artifact => artifact !== undefined
       && all.indexOf(artifact) === index);

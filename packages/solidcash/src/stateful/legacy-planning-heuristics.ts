@@ -1,9 +1,8 @@
 /**
  * Legacy planning heuristics isolated from the direct builder path.
  *
- * Artifacts with typed value-chunk /
- * state-transition descriptors) must never take these branches. Older plans without descriptors
- * may opt in explicitly via `permitsLegacyNamedValueChunkFallback`.
+ * Artifacts with typed value-chunk / state-transition descriptors must never take these branches; only older
+ * plans without descriptors reach them.
  */
 
 export type LegacyScalarNameHints = {
@@ -70,15 +69,7 @@ export const LEGACY_JOB_EVENTS_COLLECTION_ALIASES: readonly string[] = Object.fr
 /** A descriptor-free collection fallback requires the historical publisher, not merely a legacy owner. */
 export function legacyNamedJobEventCollectionFallback(
   groups: readonly Parameters<typeof legacyGroupLooksLikePublishJobEvent>[0][],
-  permitted: boolean,
 ): string | undefined {
-  return permitted && groups.some(legacyGroupLooksLikePublishJobEvent)
+  return groups.some(legacyGroupLooksLikePublishJobEvent)
     ? LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0] : undefined;
-}
-
-/**
- * Whether leftover integer/bool fields may be seeded from function-name regexes.
- */
-export function permitsLegacyScalarNameHeuristics(): boolean {
-  return true;
 }

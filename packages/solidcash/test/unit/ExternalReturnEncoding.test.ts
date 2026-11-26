@@ -605,34 +605,5 @@ describe('encodeLeadingRouteArrayPushes', () => {
     expect(renamedValue).toEqual([{ observedAt: 0n, payload }]);
   });
 
-  it('retains timestamp and packed-address adaptation behind the explicit legacy adapter', () => {
-    const legacyStructs: StructDefinitionInfo[] = [{
-      name: 'JobEventData',
-      fields: [
-        { name: 'type_', type: 'uint8' }, { name: 'address_', type: 'bytes' },
-        { name: 'data_', type: 'bytes' }, { name: 'timestamp_', type: 'uint32' },
-      ],
-    }];
-    const rawAddress = new Uint8Array(20).fill(0x31);
-    const makeRow = (type: bigint): RouteRow => ({
-      args: [7n, [type, rawAddress, new Uint8Array(), 0n]],
-      handler: {
-        inputs: [
-          { name: 'id', type: 'uint256' }, { name: 'record', type: 'JobEventData' },
-        ],
-        entryAccesses: [{ collection: 'history', keyParams: ['id'], operations: ['read', 'write'] }],
-      },
-    });
-    const encoded = encodeLeadingRouteArrayPushes({
-      rowArguments: [makeRow(1n), makeRow(2n)],
-      collection: 'history', valueType: 'JobEventData[]', structs: legacyStructs,
-      timestamp: 42n, legacyJobEventCompatibility: true,
-    });
-    const decoded = decodePushdataValue(encoded!, 0, 'JobEventData[]', legacyStructs).value as Array<{
-      address_: Uint8Array; timestamp_: bigint;
-    }>;
-    expect(decoded[0].timestamp_).toBe(42n);
-    expect(decoded[0].address_).toHaveLength(25);
-  });
 
 });

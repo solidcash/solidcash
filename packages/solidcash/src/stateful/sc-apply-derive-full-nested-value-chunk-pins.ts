@@ -13,7 +13,6 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
-import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import {
   extractIdentityScanValueChunkPin,
 } from './early-value-chunk-helpers.js';
@@ -266,8 +265,7 @@ export function applyDeriveFullNestedValueChunkPin(
   // exact producer/resource pair staged while evaluating `storedElementSource`; a function name, argument
   // position, or same-typed value is not producer authority.
   const legacyValueCandidates: Uint8Array[] = [];
-  const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent'
-  && permitsLegacyNamedValueChunkFallback([llc, ...(proxyGroup ? [proxyGroup] : [])]);
+  const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent';
   const publishName = llc.functionName ?? llc.logicalFunctionName;
   // legacy JobEvent name adapter: JobEvent value-candidate discovery only via legacy adapter under the gate above.
   if (permitsLegacyValueCandidate && (
@@ -431,12 +429,8 @@ export function applyDeriveFullNestedValueChunkPin(
       const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
         (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),
       ));
-      if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
-        [llc, ...(proxyGroup ? [proxyGroup] : [])],
-      )) {
       // Compatibility only for descriptor-free artifacts.
-        rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
-      }
+      if (selection.status === 'absent') rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
     }
   }
   const redeemLock = pin?.lockingBytecode && isP2sh32LockingBytecode(pin.lockingBytecode)
@@ -447,12 +441,8 @@ export function applyDeriveFullNestedValueChunkPin(
     const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
       (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),
     ));
-    if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
-      [llc, ...(proxyGroup ? [proxyGroup] : [])],
-    )) {
     // Compatibility only for descriptor-free artifacts.
-      rememberJobEventsLock(chunkCategory, redeemLock);
-    }
+    if (selection.status === 'absent') rememberJobEventsLock(chunkCategory, redeemLock);
     stb.setValueChunkRedeemLock(redeemLock);
   }
   if (identityPin && allChunks.length > 0 && identityPin.nNew === allChunks.length) {

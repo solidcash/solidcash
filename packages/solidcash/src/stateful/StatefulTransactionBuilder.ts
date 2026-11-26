@@ -338,9 +338,6 @@ export {
 } from './sorted-entry-commitment.js';
 
 export {
-  permitsLegacyNamedValueChunkFallback,
-  permitsLegacyValueChunkEventReconstruction,
-  permitsLegacyDelegateEventRepair,
   groupChunkableValueWriteCollections,
   groupChunkableValueWriteCollection,
   claimedChunkableValueWriteCollection,
@@ -370,7 +367,6 @@ import {
   isPersistedChunkableValueWriteReady,
   chunkableValueWriteCategory,
   selectedPersistedValueChunkCategory,
-  permitsLegacyNamedValueChunkFallbackForGroups,
   persistDigestCategories,
   persistedValueChunkCategory,
   persistedChunkableValueWriteState,
@@ -2664,7 +2660,6 @@ export class StatefulTransactionBuilder {
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       chunkableValueWriteCategory: () => this._chunkableValueWriteCategory(),
       hasStagedValueChunkOutputs: () => this.hasStagedValueChunkOutputs(),
-      permitsLegacyNamedValueChunkFallback: () => this._permitsLegacyNamedValueChunkFallback(),
       stripSurplusDerivedValueChunkLocks: (b) => { this._stripSurplusDerivedValueChunkLocks(b); },
       repackViewTailsAfterMaterialization: (b) => this._repackViewTailsAfterMaterialization(b),
       refreshInputs: () => { this._refreshInputs(); },
@@ -2714,7 +2709,6 @@ export class StatefulTransactionBuilder {
       valueChunkWriteStagingSession: this.valueChunkWriteStagingSession,
       applyDerivedValueChunks: (builder) => this._applyDerivedValueChunks(builder),
       applyDerivedEntryOutputs: (builder) => { this._applyDerivedEntryOutputs(builder); },
-      hasStagedValueChunkOutputs: () => this.hasStagedValueChunkOutputs(),
       rememberJobEventsChunks: (categoryId, chunks) => {
         this.rememberJobEventsChunks(categoryId, chunks);
       },
@@ -3031,9 +3025,6 @@ export class StatefulTransactionBuilder {
     return hasChunkableValueWriteMetadata(this._chunkableWritePlanningHost());
   }
 
-  private _permitsLegacyNamedValueChunkFallback(): boolean {
-    return permitsLegacyNamedValueChunkFallbackForGroups(this._chunkableWritePlanningHost());
-  }
 
   /** Physical/logical group views of the one compiler-described chunkable-value writer. */
   private _chunkableValueWriteGroups(): ChunkableValueWriteGroups {
@@ -3161,14 +3152,12 @@ export class StatefulTransactionBuilder {
       ? structuralGroups
       : this._hasChunkableValueWriteMetadata()
         ? []
-        : !this._permitsLegacyNamedValueChunkFallback()
-          ? []
-          : [
-            ...this.externalCallUtxoGroups.filter((group) =>
-              legacyGroupLooksLikePublishJobEvent(group)),
-            ...this.lowLevelCallUtxoGroups.filter((group) =>
-              legacyGroupLooksLikePublishJobEvent(group)),
-          ];
+        : [
+          ...this.externalCallUtxoGroups.filter((group) =>
+            legacyGroupLooksLikePublishJobEvent(group)),
+          ...this.lowLevelCallUtxoGroups.filter((group) =>
+            legacyGroupLooksLikePublishJobEvent(group)),
+        ];
     for (const group of groups) {
       const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
       if (next !== group.valueChunkOutputCount) {
@@ -3237,7 +3226,6 @@ export class StatefulTransactionBuilder {
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
       persistedValueChunkWrite: (categoryId) => this._persistedValueChunkWrite(categoryId),
       hasChunkableValueWriteMetadata: () => this._hasChunkableValueWriteMetadata(),
-      permitsLegacyNamedValueChunkFallback: () => this._permitsLegacyNamedValueChunkFallback(),
       chunkableValueWriteGroups: () => this._chunkableValueWriteGroups(),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
       placeValueChunkPredecessorInputs: (extras) => {
@@ -4796,7 +4784,7 @@ export class StatefulTransactionBuilder {
     const persistedWrite = this._persistedValueChunkWrite(categoryId);
     const lock = persistUpdateRedeemLock(
       categoryId, this.valueChunkRedeemLock, persistedWrite,
-      !this._hasChunkableValueWriteMetadata() && this._permitsLegacyNamedValueChunkFallback(),
+      !this._hasChunkableValueWriteMetadata(),
     );
     if (!value || !lock) return 0;
     if (this.bumpChunkableValueWriteWidth(valueChunkCountFor(value))) this._refreshInputs();
@@ -6730,9 +6718,7 @@ export class StatefulTransactionBuilder {
     if (owner && owner !== this.categoryId.toLowerCase()) return undefined;
     const exact = persistValueChunkLock(categoryId, value, write, masterLock);
     if (exact || write !== undefined) return exact;
-    if (this._hasChunkableValueWriteMetadata() || !this._permitsLegacyNamedValueChunkFallback()) {
-      return undefined;
-    }
+    if (this._hasChunkableValueWriteMetadata()) return undefined;
     return legacyJobEventsPersistValueChunkLock(categoryId, value, masterLock);
   }
 
@@ -6744,8 +6730,7 @@ export class StatefulTransactionBuilder {
         && selection.write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
       return stagedValueChunkWrite(selection.write, this.valueChunkWriteStagingSession);
     }
-    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
-      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()) return undefined;
     // Descriptor-free compatibility storage still needs a selected owner; insertion order is not authority.
     return categoryId ? settlement().stagedJobEventsValues.get(categoryId) : undefined;
   }
@@ -6759,8 +6744,7 @@ export class StatefulTransactionBuilder {
       return isValueChunkWriteReady(selection.write)
         ? persistedValueChunkWriteState(selection.write)?.value : undefined;
     }
-    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
-      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()) return undefined;
     return categoryId ? persistedJobEventsValue(categoryId) : undefined;
   }
 
@@ -6768,8 +6752,7 @@ export class StatefulTransactionBuilder {
   private _persistUpdateDigestLock(categoryId?: string): Uint8Array | undefined {
     const write = this._persistedValueChunkWrite(categoryId);
     if (write) return persistUpdateDigestLock(categoryId, this._persistDigestCategories(), write);
-    if (write === null || this._hasChunkableValueWriteMetadata()
-      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    if (write === null || this._hasChunkableValueWriteMetadata()) return undefined;
     return legacyJobEventsPersistUpdateDigestLock(categoryId);
   }
 

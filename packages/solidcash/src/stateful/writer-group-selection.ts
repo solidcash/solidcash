@@ -14,7 +14,6 @@ import {
   decodeEntryCommitment,
 } from './SortedList.js';
 import {
-  permitsLegacyNamedValueChunkFallback,
   legacyPlannedChunkableValueWriteCollection,
   valueChunkWriteResourceIdentity,
   type ExternalCallUtxoGroup,
@@ -55,11 +54,6 @@ export function computedStateWriterGroupIndex(
   });
   if (writers.length === 1) return writers[0];
   if (described.length > 0) return undefined;
-  if (!permitsLegacyNamedValueChunkFallback(
-    candidateIndices.map((index) => groups[index]),
-  )) {
-    return undefined;
-  }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
     const name = groups[index]?.functionName;
@@ -77,14 +71,12 @@ export function chunkableWriterGroupIndex(
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
-  if (!permitsLegacyNamedValueChunkFallback(groups)) return -1;
   const plannedLegacyCandidates = groups.flatMap((group, index) => (
     legacyPlannedChunkableValueWriteCollection(group) === undefined ? [] : [index]
   ));
   if (plannedLegacyCandidates.length === 1) return plannedLegacyCandidates[0];
   if (plannedLegacyCandidates.length > 1) return -1;
-  // Compatibility only for artifacts predating compiler-published entry effects.
-  // legacy JobEvent name adapter: last-resort name match stays behind permitsLegacyNamedValueChunkFallback above.
+  // Compatibility only for artifacts predating compiler-published entry effects: a last-resort name match.
   return groups.findIndex((group) => legacyIsPublishJobEventName(group.functionName));
 }
 

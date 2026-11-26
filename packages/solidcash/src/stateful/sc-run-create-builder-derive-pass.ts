@@ -7,7 +7,6 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction } from '@solidcash/utils';
 import { isValidComputedValueChunkCommitmentEncoding } from './computed-value-chunk-pin.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import type { AssembledWitnessBag } from './sc-rebind-create-builder-assembled-witnesses.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { dropSkippedConditionalInserts } from './conditional-sorted-activity.js';
@@ -250,9 +249,8 @@ export async function runCreateBuilderDerivePass(
     );
     const persistBeforeDerive = describedPersistedWrite && isValueChunkWriteReady(describedPersistedWrite)
       ? (persistedValueChunkWriteState(describedPersistedWrite)?.width ?? 0)
-      : (describedPersistedWrites.length === 0 && permitsLegacyNamedValueChunkFallback(
-        [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()],
-      ) ? readyPersistedCompatibilityValueChunkWidth(builder.getSelectedPersistedValueChunkCategory()) : 0);
+      : (describedPersistedWrites.length === 0
+        ? readyPersistedCompatibilityValueChunkWidth(builder.getSelectedPersistedValueChunkCategory()) : 0);
     const layoutRevisionBeforeDerive = builder.getDynamicLayoutRevision();
     const firstDeriveStarted = Date.now();
     deriveResult = await host.deriveFullTransactionState(

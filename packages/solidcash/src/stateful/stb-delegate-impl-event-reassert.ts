@@ -22,7 +22,6 @@ import {
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { isJobEventEmitCommitment } from './same-index-twin-emit.js';
-import { permitsLegacyNamedValueChunkFallbackForGroups } from './stb-chunkable-write-planning.js';
 import {
   isPersistedCompatibilityValueChunkReady,
   persistedJobEventsWidth,
@@ -56,8 +55,7 @@ export function ensureDistinctJobEventNfts(
 ): void {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DISABLE_JOBEVENT_DETACH === '1') return;
-  // Multi-emit receipt detach uses legacy-name discovery; journal uses descriptor emits.
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return;
+  // Multi-emit receipt detach uses legacy-name discovery.
   const eventSignature = 'JobEvent(uint256,JobEventData)';
   const publishers = [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups].filter((group) => {
     if (legacyGroupLooksLikePublishJobEvent(group)) {

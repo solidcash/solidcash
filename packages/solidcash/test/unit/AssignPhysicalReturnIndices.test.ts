@@ -191,8 +191,6 @@ import {
   selectChunkableValueWriteExecution,
   valueChunkWriteResourceIdentity,
   legacyPlannedChunkableValueWriteCollection,
-  permitsLegacyValueChunkEventReconstruction,
-  permitsLegacyDelegateEventRepair,
   placeSameIndexTwin,
   placeInsertNewAt,
   shouldOverwriteForSameIndexTwin,
@@ -401,20 +399,6 @@ describe('generic persisted value-chunk write identity', () => {
     expect(groupWritesSingleChunkableArrayCollection(array)).toBe(true);
   });
 
-  it('reconstructs descriptor-free events only for legacy plans, ignoring a named kernel decoy', () => {
-    const legacyRenamed = { functionName: 'appendNotice' };
-
-    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], false)).toBe(true);
-    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], true)).toBe(false);
-  });
-
-  it('keeps nested delegate event repair legacy-only across misleading names', () => {
-    const legacyNamed = { functionName: 'publishJobEvent' };
-    const legacyRenamed = { functionName: 'appendNotice' };
-
-    expect(permitsLegacyDelegateEventRepair([legacyNamed, legacyRenamed], false)).toBe(true);
-    expect(permitsLegacyDelegateEventRepair([legacyNamed], true)).toBe(false);
-  });
 
   it('selects a renamed physical value writer from metadata and rejects a named decoy', () => {
     const renamed = makeGroup('appendNotice');
@@ -647,7 +631,6 @@ describe('generic persisted value-chunk write identity', () => {
     expect(persistedValueChunkReadiness({
       selection,
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: false,
       legacyReady: true,
     })).toBe(false);
@@ -662,42 +645,30 @@ describe('generic persisted value-chunk write identity', () => {
     expect(persistedValueChunkReadiness({
       selection: exact,
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: false,
       legacyReady: true,
     })).toBe(false);
     expect(persistedValueChunkReadiness({
       selection: exact,
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: true,
       legacyReady: false,
     })).toBe(true);
     expect(persistedValueChunkReadiness({
       selection: { status: 'absent' },
       hasWriteMetadata: false,
-      permitsLegacyFallback: false,
-      descriptorReady: false,
-      legacyReady: true,
-    })).toBe(false);
-    expect(persistedValueChunkReadiness({
-      selection: { status: 'absent' },
-      hasWriteMetadata: false,
-      permitsLegacyFallback: true,
       descriptorReady: false,
       legacyReady: true,
     })).toBe(true);
     expect(() => persistedValueChunkReadiness({
       selection: { status: 'absent' },
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: false,
       legacyReady: true,
     })).toThrow(/did not produce one exact resource descriptor/);
     expect(() => persistedValueChunkReadiness({
       selection: { status: 'ambiguous' },
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: false,
       legacyReady: true,
     })).toThrow(/Ambiguous compiler-described value-chunk write identity/);
@@ -3330,31 +3301,6 @@ describe('assignPhysicalReturnIndices', () => {
     StatefulTransactionBuilder.clearPersistedJobEvents(categoryId);
   });
 
-  it('does not seed a kernel persist band from an unowned legacy lock', () => {
-    const categoryId = 'e8'.repeat(31) + '17';
-    const legacyLock = new Uint8Array(35);
-    legacyLock[0] = 0xaa; legacyLock[1] = 0x20; legacyLock[34] = 0x87;
-    legacyRememberValueChunkLock(categoryId, legacyLock);
-
-    for (const sessionLock of [legacyLock, undefined]) {
-      let placed = 0;
-      const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype) as object, {
-        valueChunkRedeemLock: sessionLock,
-        _shouldRematerializePersistUpdate: () => true,
-        getChunkableValueWriteBand: () => ({ start: 4, end: 4, nNew: 1 }),
-        _chunkableValueWriteCategory: () => categoryId,
-        _persistedValueChunkValue: () => new Uint8Array(80).fill(0x43),
-        _persistedValueChunkWrite: () => undefined,
-        _hasChunkableValueWriteMetadata: () => false,
-        _permitsLegacyNamedValueChunkFallback: () => false,
-        bumpChunkableValueWriteWidth: () => false,
-        setDerivedChunkOutput: () => { placed += 1; return true; },
-      }) as unknown as StatefulTransactionBuilder;
-      expect(builder.seedPersistedJobEventsBand()).toBe(0);
-      expect(placed).toBe(0);
-    }
-    StatefulTransactionBuilder.clearPersistedJobEvents(categoryId);
-  });
 
   it('rematerializes persist UPDATE only for empty-address dest, not Created or Whitelisted', () => {
     expect(isWithdrawShapedJobEvent([16, '', '', 0])).toBe(true);
@@ -3478,13 +3424,10 @@ describe('assignPhysicalReturnIndices', () => {
       persistReady: true, persistWidth: 0, firstPublishInsert: false,
     })).toBe(false);
     expect(shouldUseLegacyPersistDigestLockForValueChunks({
-      hasWriteMetadata: false, permitsLegacyFallback: true, stampPersistUpdate: true,
+      hasWriteMetadata: false, stampPersistUpdate: true,
     })).toBe(true);
     expect(shouldUseLegacyPersistDigestLockForValueChunks({
-      hasWriteMetadata: true, permitsLegacyFallback: true, stampPersistUpdate: true,
-    })).toBe(false);
-    expect(shouldUseLegacyPersistDigestLockForValueChunks({
-      hasWriteMetadata: false, permitsLegacyFallback: false, stampPersistUpdate: true,
+      hasWriteMetadata: true, stampPersistUpdate: true,
     })).toBe(false);
     expect(persistUpdateDigestLock('missing-category')).toBeUndefined();
     expect(persistUpdateDigestLock(

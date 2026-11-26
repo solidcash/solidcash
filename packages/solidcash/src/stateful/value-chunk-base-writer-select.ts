@@ -15,10 +15,7 @@ import type {
 import { computeCollectionHash } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
-import {
-  groupChunkableValueWriteCollections,
-  permitsLegacyNamedValueChunkFallback,
-} from './chunkable-value-write-selection.js';
+import { groupChunkableValueWriteCollections } from './chunkable-value-write-selection.js';
 import {
   type EntryNftInfo,
   type ExternalCallUtxoGroup,
@@ -176,9 +173,8 @@ export function selectProtectedLoopEntryCollections(
     // cannot claim this application's collection merely because the owner uses the legacy layout.
     return {
       status: 'absent',
-      collections: [legacyNamedJobEventCollectionFallback(
-        groups, permitsLegacyNamedValueChunkFallback(groups),
-      )].filter((collection): collection is string => collection !== undefined),
+      collections: [legacyNamedJobEventCollectionFallback(groups)]
+        .filter((collection): collection is string => collection !== undefined),
     };
   }
   return {

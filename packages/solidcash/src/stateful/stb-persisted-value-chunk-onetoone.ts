@@ -31,7 +31,6 @@ import {
   isInitialChunkableValueWrite,
   isPersistedChunkableValueWriteReady,
   chunkableValueWriteCategory,
-  permitsLegacyNamedValueChunkFallbackForGroups,
   persistedValueChunkCategory,
   shouldRematerializePersistUpdateForHost,
   shouldStampPersistUpdateDigestLockForHost,
@@ -214,7 +213,7 @@ export function reassertPersistedValueChunkOneToOnes(
     const persistedWrite = host.persistedValueChunkWrite(digestCategory);
     const digestLock = persistUpdateRedeemLock(
       digestCategory, host.valueChunkRedeemLock, persistedWrite,
-      !hasChunkableValueWriteMetadata(host) && permitsLegacyNamedValueChunkFallbackForGroups(host),
+      !hasChunkableValueWriteMetadata(host),
     );
     const chunkIndex = valueChunkIndexFromCommitment(commit);
     // Only long persisted event chunks (created head / continuations).

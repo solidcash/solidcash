@@ -22,7 +22,6 @@ export interface FinalizeBuildValueChunkBandAndViewsHost {
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   chunkableValueWriteCategory(): string | undefined;
   hasStagedValueChunkOutputs(): boolean;
-  permitsLegacyNamedValueChunkFallback(): boolean;
   stripSurplusDerivedValueChunkLocks(builder: TransactionBuilder): void;
   repackViewTailsAfterMaterialization(builder: TransactionBuilder): boolean;
   refreshInputs(): void;
@@ -84,8 +83,7 @@ export function finalizeBuildValueChunkBandAndViews(
   // drive the chunk loop to index 2+ (OP_SPLIT past the value). Strip them.
   const shouldStripStagedSurplus = host.hasStagedValueChunkOutputs()
     && host.valueChunkOutputs.length > 0;
-  const shouldStripLegacySurplus = host.permitsLegacyNamedValueChunkFallback()
-    && !host.hasStagedValueChunkOutputs()
+  const shouldStripLegacySurplus = !host.hasStagedValueChunkOutputs()
     && !skipCompilerOwnedInBlockCollectionStrip({
       preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
       pinnedEntryCount: host.pinnedEntrySlots.size,

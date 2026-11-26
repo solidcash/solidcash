@@ -3,7 +3,6 @@ import { computeCollectionHash } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
   progressiveRouteProbePassLimit,
-  permitsRouteValueChunkDerivation,
   recordRouteProbeObservation,
   routeProbeEntrySlotOffsetForOutput,
   routeProbeRepairableEntryCoordinateCount,
@@ -80,10 +79,6 @@ describe('progressive route probe progress', () => {
     expect(routeProbeEntrySlotOffsetForOutput(23, layouts)).toBeUndefined();
   });
 
-  it('permits derivation with or without compiler-authored writes', () => {
-    expect(permitsRouteValueChunkDerivation([])).toBe(true);
-    expect(permitsRouteValueChunkDerivation([write('records', 1, 8)])).toBe(true);
-  });
 
   it('keys progress by stable storage resource rather than physical output geometry', () => {
     const first = write('records', 1, 8);

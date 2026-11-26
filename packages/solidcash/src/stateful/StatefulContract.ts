@@ -37,7 +37,7 @@ import { fillLeftCallArgumentWitnesses } from './call-record.js';
 import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './entry-journal-planning.js';
 import type { GraphEcrecoverCall } from './runtime-call-metadata.js';
 import { completeInternalFunctionArguments } from './internal-function-args.js';
-import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
+import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolClock,
 } from '../oracle/pool/reader.js';
@@ -61,10 +61,7 @@ import {
   type EntryNftInfo,
   type ExternalCallUtxoGroup,
   selectDelegateExecutionLayout,
-  isJobEventEmitCommitment,
   isAuthenticatedEventRepairCommitment,
-  stampEmptyJobEventTimestamp,
-  permitsLegacyNamedValueChunkFallback,
   legacyPlannedChunkableValueWriteCollection,
   type ValueChunkWriteDescriptor,
   ValueChunkWriteStagingSession,
@@ -1030,9 +1027,8 @@ export function encodeStructArgument(
     : decodedValue;
   if (canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)) {
     const record = { ...(canonicalValue as Record<string, unknown>) };
-    // This historical wire adapter is deliberately fenced by usesLegacyJobEventCompatibility. Ordinary journal
-    // values are derived from compiler-authenticated flow and must never change because a field happens to have
-    // an application-associated spelling.
+    // This historical wire adapter runs only when the caller selects it. Ordinary values are derived from
+    // compiler-authenticated flow and must never change because a field happens to have an application spelling.
     if (legacyJobEventCompatibility && (
       (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined)
     )) {
@@ -1238,65 +1234,6 @@ function normalizeJobEventAddresses(
   return decoded;
 }
 
-/** Quarantine the historical wire adapter to its exact legacy schema and legacy layout. */
-/** Historical JobEventData wire compatibility is not part of the direct convention. */
-export function usesLegacyJobEventCompatibility(
-  _artifact: Artifact, _type: string, _structs: Artifact['structs'],
-): boolean {
-  return false;
-}
-
-/**
- * Apply the historical JobEvent timestamp wire adapter to a nested legacy-layout call.
- *
- * This compatibility behavior is selected by the callee artifact convention and the exact legacy ABI type,
- * never by a function name or a positional argument assumption. Compiler-described artifacts must preserve user arguments:
- * their state transition is derived by executing the compiler-authenticated handler body.
- */
-export function adaptLegacyNestedJobEventArguments(
-  artifact: Artifact,
-  functionName: string,
-  args: readonly FunctionArgument[],
-  timestamp: bigint,
-): FunctionArgument[] {
-  const functions = (artifact.abi as readonly AbiFunction[])
-    .filter((candidate) => candidate.name === functionName);
-  if (functions.length !== 1) return [...args];
-  const fn = functions[0];
-  if (fn.inputs.length !== args.length) return [...args];
-  const compatibleInputs = fn.inputs.flatMap((input, index) => (
-    usesLegacyJobEventCompatibility(artifact, input.type, artifact.structs) ? [index] : []
-  ));
-  if (compatibleInputs.length !== 1) return [...args];
-  const adapted = [...args];
-  const inputIndex = compatibleInputs[0];
-  adapted[inputIndex] = stampEmptyJobEventTimestamp(adapted[inputIndex], timestamp) as FunctionArgument;
-  return adapted;
-}
-
-/**
- * Opt into the historical event-payload trace exclusion only when artifact metadata identifies the exact legacy
- * wire schema. Modern compiler-described artifacts and descriptor-free general contracts must classify trace commitments by
- * compiler-owned slot/range authority, never by bytes which happen to resemble an application payload.
- */
-export function usesLegacyJobEventTraceCompatibility(artifacts: readonly Artifact[]): boolean {
-  return artifacts.some((artifact) => {
-    const layout = artifact.stateLayout;
-    if (!layout) return false;
-    const collections = [...(layout.collections ?? []), ...(layout.mappings ?? [])];
-    return collections.some((collection) => collection.chunkableValue === true
-      && usesLegacyJobEventCompatibility(
-        artifact, collection.valueType, layout.structs ?? artifact.structs,
-      ));
-  });
-}
-
-/** Payload-shaped exclusion is an explicitly selected legacy adapter, not a general trace classifier. */
-export function isExcludedLegacyJobEventTraceCommitment(
-  commitment: string, legacyJobEventCompatibility: boolean,
-): boolean {
-  return legacyJobEventCompatibility && isJobEventEmitCommitment(commitment);
-}
 
 /**
  * Extract expected commitment hex strings from a VM debug trace, keyed by the output index each verifies.
@@ -1427,11 +1364,6 @@ export function computedStateWriterGroupIndex(
   });
   if (writers.length === 1) return writers[0];
   if (described.length > 0) return undefined;
-  if (!permitsLegacyNamedValueChunkFallback(
-    candidateIndices.map((index) => groups[index]),
-  )) {
-    return undefined;
-  }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
     const name = groups[index]?.functionName;
@@ -1449,14 +1381,12 @@ export function chunkableWriterGroupIndex(
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
-  if (!permitsLegacyNamedValueChunkFallback(groups)) return -1;
   const plannedLegacyCandidates = groups.flatMap((group, index) => (
     legacyPlannedChunkableValueWriteCollection(group) === undefined ? [] : [index]
   ));
   if (plannedLegacyCandidates.length === 1) return plannedLegacyCandidates[0];
   if (plannedLegacyCandidates.length > 1) return -1;
-  // Compatibility only for artifacts predating compiler-published entry effects.
-  // legacy JobEvent name adapter: last-resort name match stays behind permitsLegacyNamedValueChunkFallback above.
+  // Compatibility only for artifacts predating compiler-published entry effects: a last-resort name match.
   return groups.findIndex((group) => legacyIsPublishJobEventName(group.functionName));
 }
 
@@ -3083,9 +3013,6 @@ export function encodeLeadingRouteArrayPushes(params: {
   collection: string;
   valueType: string;
   structs: Artifact['structs'];
-  timestamp?: bigint;
-  /** Historical legacy-layout JobEventData adapter; never inferred from arbitrary field names. */
-  legacyJobEventCompatibility?: boolean;
   /** Evaluate the compiler-authenticated element recipe in this row's exact ABI/state environment. */
   resolveElement?: (
     row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
@@ -6783,16 +6710,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const authenticatesOwnSelf = usesOrdinarySelfIdentity(abiFunction);
     const publicSelfAddress = authenticatesOwnSelf && logicalCreateLock !== undefined
       ? logicalCreateLock : authenticatedSelfAddress;
-    // The identity a CHILD callee observes as `msg.sender` (anchor witness and msg.sender-keyed entries). A plain
-    // deployment whose route proves its own SCID is addressed by its logical CREATE lock (`getAddress()`), as the
-    // atomic graph presents the same caller; proxy, framed and native deployments keep the physical executing lock.
-    const childSeesLogicalSelf = this._framedAddress === undefined && this._framedProxyAddress === undefined
-      && (registeredSelf?.contract as { implementation?: unknown } | undefined)?.implementation === undefined
-      && routeAuthenticatesPublicSelf(this.inner.artifact);
+    // The identity a CHILD callee observes as `msg.sender` (anchor witness and msg.sender-keyed entries): the
+    // physical executing lock.
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
-      lockingBytecode: binToHex(childSeesLogicalSelf && logicalCreateLock !== undefined
-        ? logicalCreateLock : authenticatedSelfAddress),
+      lockingBytecode: binToHex(authenticatedSelfAddress),
     });
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
@@ -12353,8 +12275,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const full = await caller.getFullState();
           return full.masterUtxo as UnlockableUtxo | undefined;
         },
-        contract: self,
-        signer: self._logicalNonceSigner ?? self._signer,
       } as any,
       functionName, args, calls, exactAbiFunction, calleeCalls,
       callerLockingBytecode, callerCategoryId, callerContract,

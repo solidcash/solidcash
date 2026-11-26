@@ -27,7 +27,6 @@ import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import { addressToLockScript } from '../utils.js';
 import { artifactOraclePool, poolInfoCoSpend, readPoolTimestamp } from '../oracle/pool/reader.js';
-import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import {
   createEntryNftUnlocker,
   createReadOnlyDynamicChunkUnlocker,
@@ -36,9 +35,6 @@ import {
   getValueChunkAddress,
 } from './covenant-helpers.js';
 import { voidRecordUnread, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import {
-  usesLegacyJobEventCompatibility,
-} from './legacy-job-event-wire.js';
 import {
   anchorRoutedDynamicResourcesAtOwner,
   rebaseRoutedBatchProofOffsets,
@@ -52,7 +48,7 @@ import { entryAccessAt, resolvePreparedProducerEntry, resolveRouteRowExpressionK
 import {
   SortedList, getCachedSortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
 } from './SortedList.js';
-import { isMsgSenderKeySource, providerUnixLocktime } from './soft-state-overlays.js';
+import { isMsgSenderKeySource } from './soft-state-overlays.js';
 import { externalReturnsForCallsites } from './external-returns-for-callsites.js';
 import type { OnChainState } from './StateReader.js';
 import {
@@ -764,25 +760,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
           let payloadBytes = fallbackPayloadBytes;
           let nextValue: Uint8Array | undefined;
           if (collection.valueType.endsWith('[]')) {
-            const legacyCompatibility = usesLegacyJobEventCompatibility(
-              sharedLogicalArtifact, collection.valueType, structs,
-            );
-            const legacyTimestamp = (() => {
-              if (!legacyCompatibility) return undefined;
-              const raw = (childState as { state?: Record<string, unknown> })
-                ?.state?.__block_timestamp;
-              if (typeof raw === 'bigint' && raw > 0n) return raw;
-              if (typeof raw === 'number' && raw > 0) return BigInt(raw);
-              const providerTime = Number(
-                (host.inner.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
-              );
-              if (providerTime <= 0) return undefined;
-              const appending = [...childStoredValues.values()].some((value) => value.length > 1);
-              const plannedLocktime = providerUnixLocktime(
-                host.inner.provider as { getBlockTime?: () => number },
-              );
-              return BigInt(appending ? plannedLocktime ?? providerTime : providerTime);
-            })();
             const leadingName = `__internal__leadingPushValue_${routeSlot}`;
             const completeName = `__internal__completePushValue_${routeSlot}`;
             const inheritedLeading = inheritedRouteInternalArgs[leadingName];
@@ -792,8 +769,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 collection: access.collection,
                 valueType: collection.valueType,
                 structs,
-                timestamp: legacyTimestamp,
-                legacyJobEventCompatibility: legacyCompatibility,
                 resolveElement: (row: any, rowAccess: any, elementType: any) => host.encodeStoredElementSource(
                   rowAccess, elementType, [...row.args], row.handler, sharedLogicalArtifact,
                   recipeState,
@@ -1015,12 +990,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   exactWrite, nextValue, refreshStagingSession,
                 );
               }
-            } else if (permitsLegacyNamedValueChunkFallback(
-              [{
-                logicalArtifact: sharedLogicalArtifact,
-                externalContract: { inner: { artifact: sharedLogicalArtifact } },
-              }],
-            )) {
+            } else {
               stageJobEventsValue(callee.categoryId, nextValue);
             }
           }

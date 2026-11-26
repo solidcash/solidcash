@@ -42,6 +42,11 @@
   `handlerBandModel` options and the `@solidcash/solidc` exports `resolveSolidcFeatureFlags`,
   `solidcFeatureIdentityBits` and `SolidcFeatureFlags` are removed; passing either option is refused
   (`REMOVED_COMPILER_OPTION`) and a strict-env run refuses the two switches.
+- The `@solidcash/solidcash/stateful` exports that served bus composition are removed: the transported continuation
+  claims (`TransportedContinuationResourceClaim`, `buildTransportedContinuationResourceClaim`,
+  `canonicalTransportedContinuationResourceClaim`, `orderTransportedContinuationResourceClaims`) and the producer
+  argument epochs (`ValueChunkProducerArgumentEpoch`, `createValueChunkProducerArgumentEpoch`,
+  `advanceValueChunkProducerArgumentEpoch`, `valueChunkProducerArgumentsInEpoch`).
 
 ## 0.52.1
 

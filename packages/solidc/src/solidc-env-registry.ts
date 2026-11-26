@@ -38,7 +38,6 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_USER_FUNCTION_CALL_TARGET', class: 'observation' },
   { name: 'SOLIDC_DEBUG_USER_FUNCTION_CALL_STACK', class: 'observation' },
   { name: 'SOLIDC_DEBUG_COMPUTE_BASE', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_COMPUTE_BASE_MARKERS', class: 'observation' },
   { name: 'SOLIDC_DEBUG_ENTRY_INPUT_INDEX', class: 'observation' },
   { name: 'SOLIDC_DEBUG_EMIT_TRAP', class: 'observation' },
   { name: 'SOLIDC_DEBUG_EMIT_TRAP_WINDOW', class: 'observation' },

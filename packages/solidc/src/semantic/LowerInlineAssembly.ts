@@ -38,7 +38,6 @@ import {
   memZeroBytes,
   memGrowTo,
 } from './YulMemPrimitives.js';
-import { isNativeAssemblySafe } from './NativeAssemblySafety.js';
 import { expandYulLoopBreakContinue } from './BreakContinueTransformation.js';
 
 // Thrown when a Yul construct is outside the supported codegen subset; the block is then left as-is for the
@@ -283,25 +282,6 @@ function bodyHasAssembly(node: Node | undefined): boolean {
     const val = (node as any)[key];
     if (val instanceof Node) { if (bodyHasAssembly(val)) return true; } else if (Array.isArray(val)) {
       for (const v of val) if (v instanceof Node && bodyHasAssembly(v)) return true;
-    }
-  }
-  return false;
-}
-
-// Unsafe native BCH opcodes intentionally remain opaque to Yul lowering. With `skipFunctionsWithNativeAssembly`,
-// the pass leaves a mixed Yul/unsafe-native function untouched.
-function bodyHasUnsafeNativeAssembly(node: Node | undefined): boolean {
-  if (!node) return false;
-  if (node instanceof AssemblyStatementNode) {
-    return node.yulBlock === undefined && !isNativeAssemblySafe(node);
-  }
-  for (const key of Object.keys(node)) {
-    if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
-    const value = (node as any)[key];
-    if (value instanceof Node) {
-      if (bodyHasUnsafeNativeAssembly(value)) return true;
-    } else if (Array.isArray(value)) {
-      for (const item of value) if (item instanceof Node && bodyHasUnsafeNativeAssembly(item)) return true;
     }
   }
   return false;
@@ -3595,10 +3575,6 @@ function lowerBlock(block: YulBlockNode): BlockNode {
 // existing codegen (stack model, control flow, type checking). Unsupported Yul is left untouched for the
 // inline-assembly diagnostic. Native BCH-ASM (no yulBlock) is unaffected. See docs/yul-inline-assembly.md.
 export default class LowerInlineAssembly extends AstTraversal {
-  constructor(private readonly skipFunctionsWithNativeAssembly = false) {
-    super();
-  }
-
   visitSourceFile(node: SourceFileNode): Node {
     declaredLibraryNames = new Set(node.declaredLibraryNames);
     currentConstantTypes = new Map(node.constantDefinitions.map((constant) => [constant.name, constant.type]));
@@ -3665,7 +3641,6 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const hasAssembly = bodyHasAssembly(node.body);
     if (!hasAssembly) return node;
-    if (this.skipFunctionsWithNativeAssembly && bodyHasUnsafeNativeAssembly(node.body)) return node;
     const previousSourceFunction = currentSourceFunction;
     currentSourceFunction = node;
     const sourceStatements = node.body.statements ?? [];

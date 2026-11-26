@@ -2428,14 +2428,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__msgData',
         '__internal__msgSig',
         '__internal__msgSenderCategory',
-        '__internal__graphCallManifest',
-        '__internal__graphParticipantOffset',
-        '__internal__graphFixedSize', '__internal__graphBlockSize',
-        '__internal__graphEmissions',
-        '__internal__graphCallers',
-        '__internal__graphSettlementBoundary',
-        '__internal__graphCompletionPositions',
-        '__internal__graphSettlementTable',
         '__internal__graphSelfIdentityInput',
         '__internal__activeVerifierIndex',
         '__internal__participantBlockSize',
@@ -4196,7 +4188,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             // general per-target witness rather than the dense linear row vector.
             ...(slotIndices.length > 1 && slotIndices.every((batchSlot) => {
               const info = ordered.find((candidate) => candidate.slotIndex === batchSlot);
-              return info?.aliasCondDeleteSlot === undefined && (info?.runtimeAliasPriorSlots?.length ?? 0) === 0
+              return info?.aliasCondDeleteSlot === undefined
                 && !info?.keySources?.some((source) => source.producer !== undefined);
             }) && { linear: true }),
           }));
@@ -16287,7 +16279,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const fn of byName.get(name) ?? []) {
         walkInvocationAst(fn.body, (node) => {
           if (node instanceof FunctionCallNode) queue.push(node.identifier.name);
-        }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+        });
       }
     }
     return false;
@@ -20276,7 +20268,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     walkInvocationAst(body, (visited) => {
       if (visited instanceof InstantiationNode && visited.isDeployerNew === true
         && hasEffectiveCallValue(visited.callOptions?.value)) found = true;
-    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    });
     return found;
   }
 

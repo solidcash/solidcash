@@ -1143,8 +1143,7 @@ function derivableTargetBatches(
       const access = accesses.find((candidate) => candidate.slotIndex === slot);
       if (access === undefined) return undefined;
       if (!isOneWrite(access.operations)) return undefined;
-      if (access.inLoop === true || aliasesOutsideBatch(access, batch)
-        || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
+      if (access.inLoop === true || aliasesOutsideBatch(access, batch)) return undefined;
     }
     derivable.push({
       slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true,
@@ -1365,7 +1364,7 @@ function unsupportedBatchWriteShape(
       return `the body writes a mapping at slot ${slot} in a loop, so the records it declares are not a fixed set`;
     }
     const batch = batches.find((candidate) => candidate.slotIndices.includes(slot))!;
-    if (aliasesOutsideBatch(access, batch) || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) {
+    if (aliasesOutsideBatch(access, batch)) {
       return `the body writes a mapping at slot ${slot} that can alias another target at run time, so its record `
         + 'is not fixed';
     }

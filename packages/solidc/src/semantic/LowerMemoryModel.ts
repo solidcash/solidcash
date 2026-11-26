@@ -548,10 +548,6 @@ export default class LowerMemoryModel extends AstTraversal {
     const freeInternal = free && !fn.isLibraryFunction && !fn.modifiers.includes(FunctionModifier.PUBLIC)
       && !fn.modifiers.includes(FunctionModifier.EXTERNAL);
     if (vis !== 'internal' && vis !== 'private' && !freeInternal && !(entry && vis === 'public')) return false;
-    // A pooled function carries a pending-value exit. A decoded array argument is an isolated ABI value, not a
-    // user memory alias requiring pass-by-reference inlining; flattening it would reopen persisted entries beside
-    // the pooled cache and lose sequential read/write semantics.
-    if (fn.forceCollectionJournalPool) return false;
     if (fn.customModifiers.length !== 0 || !fn.body) return false;
     if (!fn.parameters.some((p) => this.isPassByRefType(p.type, free))) return false;
     if (this.bodyHas(fn.body, (n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;

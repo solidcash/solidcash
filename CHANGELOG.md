@@ -16,6 +16,8 @@
   `MESSAGE_BUS_REQUIRED`).
 - A split contract's facets carried a message-bus route; they no longer do, so split facets and their roots compile to
   new bytes.
+- The default proxy drops its message-bus distance `__proxyRouteBlockSize`, so every default proxy's bytes and address
+  change and proxies must be redeployed.
 - Every other contract, direct or framed, compiles to the bytes 0.52.1 emitted.
 - An SDK preflight refusal no longer starts with `messageBus: `: it reads `BCH-2026 preflight failed at input N: ...`,
   and `finalized transaction refused by its covenant and ...`.

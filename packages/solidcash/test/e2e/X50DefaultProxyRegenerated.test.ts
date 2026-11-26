@@ -48,8 +48,8 @@ const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
 // The own-category conservation still ends with a compare against remaining == 0. Production outlining no
 // longer folds that OP_0 into a shared helper (window 12/10 leaves the output loop inline), so the A/B pair
 // is exactly one opcode apart at the tail: `== 0` against `<= 0`.
-const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_2DROP OP_1';
-const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_2DROP OP_1';
+const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_DROP OP_1';
+const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_DROP OP_1';
 /** A VALID pushdata state commitment (OP_16 -> counter 16), same one byte as the genuine one after an
  *  increment (OP_6 -> 6). Only position tells the two apart. */
 const FORGED_COMMITMENT = '60';
@@ -121,13 +121,12 @@ async function deployPair(
   const implLbc = addressToLockScript(implementation.address);
   const graftedProxy = graft(proxyArtifact, implArtifact);
   // The forward pins its delegate to `activeInputIndex + __proxyBlockSize`, so the constructor argument is the
-  // grafted block the SDK lays the implementation after. The implementation has no message-bus route, so the
-  // route distance is the same block.
+  // grafted block the SDK lays the implementation after.
   const proxyBlockSize = BigInt(
     graftedProxy.abi.find((entry) => entry.name === '__forward')?.blockLayout?.blockSize ?? 1,
   );
   const proxy = await new ContractFactory(graftedProxy, signer)
-    .deploy(implLbc, proxyBlockSize, proxyBlockSize, { initialState: { counter: 5n }, logicalNonce: false });
+    .deploy(implLbc, proxyBlockSize, { initialState: { counter: 5n }, logicalNonce: false });
   return {
     handle: new ProxyContract(
       proxy, implementation as any, { name: '__forward', mode: 'baked' }, () => [], signer,
@@ -152,12 +151,11 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     expect(defaultProxyArtifact.fingerprint).toBe(fresh.fingerprint);
     expect(JSON.parse(JSON.stringify(defaultProxyArtifact))).toEqual(JSON.parse(JSON.stringify(fresh)));
 
-    // The two fields the hand edit desynchronised agree. The forwarder is 387 bytes: 350 before the
-    // delegate-position pin, 362 with it, plus the 20-byte selection of the route distance by the forwarded
-    // selector, the payload pin's two-byte check of the delegate's leading push, and the three-byte exact-stack
-    // check its arm opens with (O8). bytecode, debug.bytecode, and fingerprint still come from one compile.
-    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(387);
-    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(387);
+    // The two fields the hand edit desynchronised agree. The forwarder is 365 bytes: 350 before the
+    // delegate-position pin, 362 with it, plus the three-byte exact-stack check its arm opens with (O8).
+    // bytecode, debug.bytecode, and fingerprint still come from one compile.
+    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(365);
+    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(365);
     expect(defaultProxyArtifact.bytecode.endsWith(STRICT_TAIL)).toBe(true);
   });
 

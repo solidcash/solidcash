@@ -104,7 +104,6 @@ export {
   proxyValueChunkPadCount,
   participantRelocationExtraFunders,
   valueChunkBandWidth,
-  valueChunkBandWidthForContinuationClaims,
   continuationOutputBaseBeforeSuffix,
   selectValueChunkOutputBase,
   viewTailOccupancyCap,
@@ -777,7 +776,6 @@ export {
   lowLevelCallImmutableEventDestinations,
   groupEventSignatures,
   lowLevelCallStateOwnerCategory,
-  transportedContinuationLocalBase,
   rebaseValueChunkWriteDescriptors,
   type ProtectedLoopEntryCollectionSelection,
   type CompilerWriterEventCandidate,
@@ -2871,9 +2869,6 @@ export class StatefulTransactionBuilder {
       dynamicChunkVars: this.dynamicChunkVars,
       chunkRawCommitments: this.chunkRawCommitments,
       derivedChunkOutputs: this.derivedChunkOutputs,
-      externalCallUtxoGroups: this.externalCallUtxoGroups,
-      lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
-      blockLayout: this.blockLayout,
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       setChunkRawCommitments: (name, commitments) => {
         this.setChunkRawCommitments(name, commitments);

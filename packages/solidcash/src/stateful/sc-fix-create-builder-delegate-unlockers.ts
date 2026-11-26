@@ -419,12 +419,6 @@ export async function fixCreateBuilderDelegateUnlockers(
         // empty persisted value because the generated loop performs no transaction introspection.
         if (inp.name === '__internal__dynamicChunkInputBase') return -1n;
         if (inp.name === '__internal__dynamicChunkOutputBase') return -1n;
-        // Standalone route execution has no atomic verifier region. The compiler uses the same negative
-        // sentinel as _batchRaw to skip its optional verifier binder; graph composition replaces it with
-        // the finalized verifier input through the complete compiler-owned argument vector above.
-        if (inp.name === '__internal__activeVerifierIndex' || inp.name === '__internal__participantBlockSize') {
-          return -1n;
-        }
         if (inp.name === '__internal__msgSenderCategory') {
           // A top-level `call` / `staticcall` runs the callee as itself, called BY this contract, so its msg.sender is
           // this contract: the one co-spent minting master of this category. Only a delegatecall keeps its caller's.

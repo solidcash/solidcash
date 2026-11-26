@@ -27,21 +27,6 @@ import {
 } from './legacy-planning-heuristics.js';
 import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 
-/** A transported claim is usable only for one resource at the observed physical width. */
-export function transportedContinuationLocalBase(
-  claims: readonly {
-    bandOffset: number;
-    chunkCount: number;
-    producerClaim: { resourceIdentity: string };
-  }[],
-  resourceIdentity: string,
-  observedWidth: number,
-): number | undefined {
-  const matches = claims.filter((claim) => claim.producerClaim.resourceIdentity === resourceIdentity
-    && claim.chunkCount === observedWidth);
-  return matches.length === 1 ? matches[0]!.bandOffset : undefined;
-}
-
 /** Shift every resolved lane with its carrier while preserving relative spacing. */
 export function rebaseValueChunkWriteDescriptors(
   writes: readonly ValueChunkWriteDescriptor[] | undefined,

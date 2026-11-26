@@ -3,7 +3,7 @@ import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
 import { AbiCoder } from 'ethers';
 import { decodePushdataValue, encodePushdataValue, sha256, type StructDefinitionInfo } from '@solidcash/utils';
 import {
-  decodeEvmReturnValue, encodeCompleteRouteArrayPushes, encodeExternalReturnValue, encodeExternalReturnValues,
+  decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues,
   encodeLeadingRouteArrayPushes,
   encodeStructArgument,
   isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
@@ -17,10 +17,6 @@ import {
 import {
   decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
 } from '../../src/stateful/evm-abi-result.js';
-import {
-  discoveredReturnFollowsParticipantWrite,
-  selectPreparedAtomicReturnSeed,
-} from '../../src/stateful/sc-materialize-create-builder-return-emit.js';
 
 const structs: StructDefinitionInfo[] = [{
   name: 'Pair',
@@ -330,84 +326,6 @@ describe('selectMaterializedTailReturnEvents', () => {
     expect(events[0].commitment).toHaveLength(32);
   });
 
-  it('keeps a logical read result when its physical carrier becomes a writer', () => {
-    const readResult = new Uint8Array(32);
-    readResult[31] = 7;
-    const writerResult = new Uint8Array(32);
-    writerResult[31] = 1;
-    const carrier = {
-      functionName: 'write', logicalFunctionName: 'write', precomputedReturnCommitment: readResult,
-    };
-    expect(selectPreparedAtomicReturnSeed(carrier, 'read', writerResult)).toEqual(readResult);
-    expect(selectPreparedAtomicReturnSeed(carrier, 'write', writerResult)).toEqual(writerResult);
-    expect(selectPreparedAtomicReturnSeed({ ...carrier, functionName: '__forward', logicalFunctionName: 'read' },
-      'read', writerResult)).toEqual(writerResult);
-    expect(selectPreparedAtomicReturnSeed({ ...carrier, precomputedReturnCommitment: undefined },
-      'read', writerResult)).toBeUndefined();
-  });
-
-  it('does not prepare an isolated read after an earlier mutation of its participant', () => {
-    const artifact = { abi: [
-      { name: 'balanceOf', writesState: false },
-      { name: 'transferFrom', writesState: true },
-    ] };
-    const contract = (categoryId: string): { categoryId: string; inner: { artifact: typeof artifact } } => (
-      { categoryId, inner: { artifact } }
-    );
-    const nodes = [
-      { contract: contract('token'), functionName: 'balanceOf' },
-      { contract: contract('other'), functionName: 'transferFrom' },
-      { contract: contract('token'), functionName: 'transferFrom' },
-      { contract: contract('token'), functionName: 'balanceOf' },
-    ] as never;
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 0)).toBe(false);
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 2)).toBe(false);
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
-  });
-
-  it('does not prepare a cross-contract result whose nested read follows an earlier write', () => {
-    const artifact = { abi: [
-      { name: 'root', writesState: true },
-      { name: 'release', writesState: true },
-      { name: 'claim', writesState: true },
-      { name: 'getEscrow', writesState: false },
-      { name: 'unrelatedRead', writesState: false },
-    ] };
-    const contract = (categoryId: string): { categoryId: string; inner: { artifact: typeof artifact } } => (
-      { categoryId, inner: { artifact } }
-    );
-    const nodes = [
-      { contract: contract('marketplace'), functionName: 'root', parent: null },
-      { contract: contract('escrow'), functionName: 'release', parent: 0 },
-      { contract: contract('claim'), functionName: 'claim', parent: 1 },
-      { contract: contract('escrow'), functionName: 'getEscrow', parent: 2 },
-      { contract: contract('unrelated'), functionName: 'unrelatedRead', parent: 0 },
-    ] as never;
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 2)).toBe(true);
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 4)).toBe(false);
-  });
-
-  it('does not treat missing interface effect metadata as a read-only proof', () => {
-    const interfaceArtifact = { abi: [{ name: 'release' }] };
-    const readArtifact = { abi: [{ name: 'claim', writesState: true }, { name: 'getEscrow', writesState: false }] };
-    const nodes = [
-      {
-        contract: { categoryId: 'escrow', inner: { artifact: interfaceArtifact } },
-        functionName: 'release', selector: '01020304', parent: null,
-      },
-      {
-        contract: { categoryId: 'claim', inner: { artifact: readArtifact } },
-        functionName: 'claim', parent: 0,
-      },
-      {
-        contract: { categoryId: 'escrow', inner: { artifact: readArtifact } },
-        functionName: 'getEscrow', parent: 1,
-      },
-    ] as never;
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 1)).toBe(true);
-  });
-
   it('promotes an exact writer probe over its provisional seed', () => {
     const exact = Uint8Array.of(1);
     const events = selectMaterializedTailReturnEvents([group()], [
@@ -456,39 +374,6 @@ describe('encodeLeadingRouteArrayPushes', () => {
   it('encodes only earlier pushes targeting the final row key', () => {
     const encoded = encodeLeadingRouteArrayPushes({
       rowArguments: [row(7n, 2n), row(8n, 3n), row(7n, 4n)],
-      collection: 'history',
-      valueType: 'Pair[]',
-      structs,
-      resolveElement: resolveElement(structs),
-    });
-    expect(encoded).toBeDefined();
-    expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([{
-      count: 2n,
-      active: true,
-    }]);
-  });
-
-  it('encodes the terminal push when pinning the complete selected-route value', () => {
-    const initialValue = encodePushdataValue([{ count: 1n, active: false }], 'Pair[]', structs);
-    const encoded = encodeCompleteRouteArrayPushes({
-      rowArguments: [row(7n, 2n), row(8n, 3n), row(7n, 4n)],
-      collection: 'history',
-      valueType: 'Pair[]',
-      structs,
-      initialValue,
-      resolveElement: resolveElement(structs),
-    });
-    expect(encoded).toBeDefined();
-    expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([
-      { count: 1n, active: false },
-      { count: 2n, active: true },
-      { count: 4n, active: true },
-    ]);
-  });
-
-  it('encodes a singleton terminal push from the empty array pre-state', () => {
-    const encoded = encodeCompleteRouteArrayPushes({
-      rowArguments: [row(7n, 2n)],
       collection: 'history',
       valueType: 'Pair[]',
       structs,

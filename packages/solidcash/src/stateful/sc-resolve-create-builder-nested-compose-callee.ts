@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose callee target + argument resolution.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type {
   AbiFunction,
   ArgSource,
@@ -13,10 +13,8 @@ import type { FunctionArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   connectedContractMatchesExactAddress,
-  exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue,
   findDeploymentByName,
-  registeredAddressValueLockingBytecode,
 } from './deployment-registry.js';
 
 export type ResolveCreateBuilderNestedComposeCalleeHost = {
@@ -36,7 +34,6 @@ export type ResolveCreateBuilderNestedComposeCalleeResult =
     skip: false;
     nestedSources: readonly ArgSource[] | undefined;
     addressValue: FunctionArgument | undefined;
-    resolvedTargetLockingBytecode: Uint8Array | undefined;
     /** Concrete proxy pair when the registry entry is a ConnectedStatefulContract. */
     proxyCallee: any | undefined;
     /** Resolved StatefulContract target for the nested callsite. */
@@ -201,10 +198,6 @@ export async function resolveCreateBuilderNestedComposeCallee(
     ? resolvedAddress : addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined;
   const typedAddress = typeof addressValue === 'string' || addressValue instanceof Uint8Array
     ? addressValue : undefined;
-  const exactLockHex = typedAddress === undefined ? undefined : exactAddressLockingBytecodeHex(typedAddress);
-  const resolvedTargetLockingBytecode = typedAddress === undefined ? undefined
-    : registeredAddressValueLockingBytecode(host.provider, typedAddress)
-      ?? (exactLockHex ? hexToBin(exactLockHex) : undefined);
   const deploymentAtAddress = typedAddress === undefined ? undefined
     : findDeploymentByAddressValue(host.provider, typedAddress)?.contract;
   // Hardhat-style factories connect externals on the public proxy
@@ -333,7 +326,6 @@ export async function resolveCreateBuilderNestedComposeCallee(
     skip: false,
     nestedSources,
     addressValue,
-    resolvedTargetLockingBytecode,
     proxyCallee,
     callee,
     resolvedRawFunctionName,

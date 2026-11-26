@@ -4,14 +4,11 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { moveLateOutputsBeforeReverseSuffix } from './mutable-output-reassert.js';
-import { claimedFixedContinuationCoverage } from './stb-claimed-fixed-continuations.js';
 import { cloneToken } from './stb-output-utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
 
@@ -35,9 +32,6 @@ export interface ReverseSuffixValueChunkHost {
   readonly dynamicChunkVars: readonly DynamicChunkVar[];
   readonly chunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
-  readonly externalCallUtxoGroups?: readonly ExternalCallUtxoGroup[];
-  readonly lowLevelCallUtxoGroups?: readonly ExternalCallUtxoGroup[];
-  readonly blockLayout?: FunctionBlockLayout;
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   setChunkRawCommitments(name: string, commitments: string[]): void;
   dynamicChunkOutputCount(): number;
@@ -48,14 +42,7 @@ export function reassertStagedValueChunkOutputs(
   host: ReverseSuffixValueChunkHost,
   builder: TransactionBuilder,
 ): number {
-  if (host.valueChunkOutputs.length === 0) return 0;
-  const claimed = claimedFixedContinuationCoverage({
-    staged: host.valueChunkOutputs,
-    derived: host.derivedChunkOutputs,
-    groups: [...(host.externalCallUtxoGroups ?? []), ...(host.lowLevelCallUtxoGroups ?? [])],
-    blockLayout: host.blockLayout,
-  });
-  const stagedOutputs = host.valueChunkOutputs.filter((_, index) => !claimed.stagedIndices.has(index));
+  const stagedOutputs = host.valueChunkOutputs;
   if (stagedOutputs.length === 0) return 0;
   const lockHex = (to: string | Uint8Array | undefined): string | undefined => {
     if (to instanceof Uint8Array) return binToHex(to);

@@ -1,16 +1,14 @@
 /* eslint-disable max-len, @typescript-eslint/no-loop-func, @typescript-eslint/no-shadow */
-import { type Artifact, type FunctionSplitBundle, type ArtifactMap, type AbiFunction, type ArgSource, type ExternalCallExpression, type ExternalCallAbi, type ExternalResultConsumerAbi, type SortedUpsertLoopAbi, buildDataNftCovenantScript, buildEntryNftCovenantScript, computeCollectionHash, dynamicChunkSignature, parseValueChunkCommitment, splitValueIntoValueChunks, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT, VALUE_INLINE_LIMIT, encodeChunkableValueTail, joinValueChunks, parseEntryCommitment, type StateValue, attachDecodedAccessors, decodePushdataValue, parseEntryCommitmentMultiKey, Op, type StateLayout, type ExternalReadAbi, type EntryAccessAbi, type EmitAbi, type EventDefinitionAbi, type FunctionBlockLayout, isComputedBlockhashKey, encodePushdataValue, encodeEventPushdataValue, ORACLE_POOL_PARAMETER, getDefaultStateValue, keccakComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, sha256 as sha256Sync, ripemd160 as ripemd160Sync, hash160 as hash160Sync, hash256 as hash256Sync, parseArrayTypeString, addressToGraphEmissionBytes, peekPushdataEncodedLength } from '@solidcash/utils';
+import { type Artifact, type FunctionSplitBundle, type ArtifactMap, type AbiFunction, type ArgSource, type ExternalCallExpression, type ExternalCallAbi, type ExternalResultConsumerAbi, type SortedUpsertLoopAbi, buildDataNftCovenantScript, buildEntryNftCovenantScript, computeCollectionHash, dynamicChunkSignature, parseValueChunkCommitment, splitValueIntoValueChunks, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT, encodeChunkableValueTail, joinValueChunks, parseEntryCommitment, type StateValue, attachDecodedAccessors, decodePushdataValue, parseEntryCommitmentMultiKey, Op, type StateLayout, type ExternalReadAbi, type EntryAccessAbi, type EmitAbi, type EventDefinitionAbi, type FunctionBlockLayout, isComputedBlockhashKey, encodePushdataValue, ORACLE_POOL_PARAMETER, getDefaultStateValue, keccakComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, sha256 as sha256Sync, ripemd160 as ripemd160Sync, hash160 as hash160Sync, hash256 as hash256Sync, parseArrayTypeString, addressToGraphEmissionBytes } from '@solidcash/utils';
 import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
 import { boundedIntegerRange, givenOrderRangeBreak, upsertLoopRewriteReason } from './upsert-loop-rewrites.js';
-import { encodeEvmInvocationResult } from './evm-abi-result.js';
 import {
   buildKeccakComputeSidecar, learnKeccakPreimages, scanKeccakPreimageReads,
 } from '../keccak/keccakComputeSidecar.js';
 import { type ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 import { binToHex, hexToBin, binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin, binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
-import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { encodeAuthenticationInstructions, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import {
@@ -32,7 +30,11 @@ import { isScidIdentityCommitment, resolveLogicalIdentity } from './logical-iden
 import { addressToLockScript, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode, tryCashAddressToLockScript } from '../utils.js';
 
 import { SortedList, keyToSlotMulti, bytesToSlotValue, encodeEntryCommitment, decodeEntryCommitment } from './SortedList.js';
-import { integerKey, type MappingKey } from './mapping-key-lookup.js';
+import {
+  mappingKeySlotCandidates,
+  mappingEntryMatchesLegacyKeys,
+  selectMappingEntryByKeys,
+} from './mapping-key-lookup.js';
 import { fillLeftCallArgumentWitnesses } from './call-record.js';
 import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './entry-journal-planning.js';
 
@@ -61,14 +63,11 @@ import {
   type EntryNftInfo,
   type ExternalCallUtxoGroup,
   selectDelegateExecutionLayout,
-  isAuthenticatedEventRepairCommitment,
-  legacyPlannedChunkableValueWriteCollection,
   type ValueChunkWriteDescriptor,
   ValueChunkWriteStagingSession,
   assertMasterSequence,
 } from './StatefulTransactionBuilder.js';
 import type { StandInCaller } from './stb-materialize-caller-edge-outputs.js';
-import { legacyIsPublishJobEventName } from './legacy-planning-heuristics.js';
 import { type OnChainState, type ParsedEvent, type EventFilter } from './StateReader.js';
 import {
   getDataNftAddress,
@@ -340,8 +339,8 @@ import {
   materializeCreateBuilderReturnEmit as materializeCreateBuilderReturnEmitImpl,
 } from './sc-materialize-create-builder-return-emit.js';
 import {
-  finishCreateBuilderAtomicPromotion as finishCreateBuilderAtomicPromotionImpl,
-} from './sc-finish-create-builder-atomic-promotion.js';
+  refuseRepeatedOwnerCalls as refuseRepeatedOwnerCallsImpl,
+} from './sc-refuse-repeated-owner-calls.js';
 import {
   destroyStatefulContract as destroyStatefulContractImpl, refuseOrdinarySelfdestructCall,
 } from './sc-destroy.js';
@@ -463,7 +462,7 @@ import {
   encodeStoredElementSource as encodeStoredElementSourceImpl,
   encodeStoredValueSource as encodeStoredValueSourceImpl,
 } from './sc-encode-stored-element-source.js';
-import { foldCompleteRouteArrayPushes, foldLeadingRouteArrayPushes, materializeCompletePushValueWitness } from './resource-fold-route.js';
+import { materializeCompletePushValueWitness } from './resource-fold-route.js';
 import { resolveExternalArgs as resolveExternalArgsImpl } from './sc-resolve-external-args.js';
 import { sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl } from './sc-send-without-logical-nonce.js';
 import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from './sc-with-external-call.js';
@@ -506,21 +505,28 @@ import { evaluateFixedEffectPredicate } from './fixed-effect-predicate.js';
 import type { FixedEffectEntryResolver } from './fixed-effect-entries.js';
 import { runtimeEntryAliasOwners } from './sorted-batch-activity.js';
 export { runtimeEntryAliasOwners };
-export { uniqueParticipantIndexForTarget } from './physical-external-call.js';
 export {
-  assertAcyclicExternalCallPath,
-  visitExpandingExternalCallGroups,
-} from './external-call-graph-frontier.js';
+  uniqueParticipantIndexForTarget,
+  groupIndexForExternalCallSlot,
+  externalReturnParamSlot,
+  vmapBatchWitnessFallback,
+  selectorParamSlot,
+  physicalExternalCallGroupIndexByMasterOutpoint,
+  selectProxyForwardInput,
+  nestedProxyImplementationInputIndex,
+  physicalExternalCallSelectorHex,
+} from './physical-external-call.js';
 import { buildStatefulFunctionCall as buildStatefulFunctionCallImpl } from './sc-build-stateful-function-call.js';
 import { ExternalCallReachUndecidedError } from './external-call-iteration-domain.js';
-import { decodeScriptNumber } from './trace-commitment-helpers.js';
+import { decodeScriptNumber, extractExpectedOutputCommitmentFromTrace } from './trace-commitment-helpers.js';
 export {
   compactFaithfulProbeTrace,
   evaluateBoundedProbeCandidates,
   evaluateProbeTrace,
   MAX_BOUNDED_PROBE_STATES,
+  fingerprintLibauthTransaction,
 } from './faithful-probe-trace.js';
-import { isCanonicalEvmScalarReturnVector, probeRequireMessage } from './external-return-encoding.js';
+import { probeRequireMessage } from './external-return-encoding.js';
 export {
   isCanonicalEvmScalarReturnVector,
   probeRequireMessage,
@@ -528,112 +534,74 @@ export {
   decodeEvmScalarReturn,
   decodeEvmReturnValue,
   decodeAuthenticatedProducerResultVector,
+  selectEvmScalarReturnCommitment,
+  isCanonicalEvmScalarReturnBlob,
+  isConstrainedEvmResultVector,
+  encodeExternalReturnValues,
+  encodeExternalReturnValue,
 } from './external-return-encoding.js';
 
 import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-loader.js';
 import { calleeBlockExceedsLowLevelBand } from './sc-select-compat-callee-block-calls.js';
 import { refuseMessageBusArtifact } from '../legacy-artifact.js';
+import {
+  createGraphPlanningProducerResultContext,
+  memoizeGraphPlanningProducerResult,
+  type GraphPlanningProducerResultContext,
+} from './graph-planning-producer-result.js';
+import { OWN_STATE_EVIDENCE, LIFECYCLE_MODIFIERS } from './state-effect-reading.js';
+import { p2pkhLockingBytecode } from './legacy-job-event-wire.js';
+import { isP2sh32LockingBytecode, isValueChunkIdentityCountPin } from './faithful-probe-trace.js';
+import {
+  decodeInlineVmapValue,
+  decodeInlineVmapStruct,
+  substPreservedStructFields,
+  parseNftCapability,
+} from './trace-verified-value-helpers.js';
+import { legacyStatefulSimulationEnabled } from './soft-state-overlays.js';
+import {
+  selectorParamSlot,
+  selectProxyForwardInput,
+  externalCallReachedOccurrenceIndices,
+} from './physical-external-call.js';
+import {
+  parseRowArgsDecodeLabel,
+  visibleHandlerInputs,
+  canonicalAbiFunctionSignature,
+  resolvePreparedProducerEntry,
+  entryAccessAt,
+  matchingRouteRowsForExpressionKey,
+} from './route-expression-key.js';
+export { externalReturnsForCallsites } from './external-returns-for-callsites.js';
+export {
+  createGraphPlanningProducerResultContext,
+  memoizeGraphPlanningProducerResult,
+} from './graph-planning-producer-result.js';
+export { isCompilerDescribedRouteEventCommitment } from './compiler-described-route-event.js';
+export { deriveChunkableArrayValueChannels, encodeLeadingRouteArrayPushes } from './resource-fold-route.js';
+export { encodeStructArgument } from './legacy-job-event-wire.js';
+export { selectMappingEntryByKeys, externalCallTargetSourceLockingBytecodeHex } from './mapping-key-lookup.js';
+export { computedStateWriterGroupIndex, chunkableWriterGroupIndex } from './writer-group-selection.js';
+export {
+  selectAuthenticatedCollectionValue,
+  selectAuthenticatedPreValueWitness,
+} from './authenticated-collection-value.js';
+export { providerUnixLocktime } from './soft-state-overlays.js';
+export {
+  parseRowArgsDecodeLabel,
+  visibleHandlerInputs,
+  resolvePreparedProducerEntry,
+  selectVisibleCallArguments,
+  canShareIdempotentCounterLoopSettlement,
+  matchingRouteRowsForExpressionKey,
+  directMappingReadPlan,
+} from './route-expression-key.js';
 
 function isFramedArtifact(artifact: Artifact): boolean {
   return artifact.composition?.convention === 'framed';
 }
 
-function functionArgumentValuesEqual(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if ((typeof left === 'bigint' || typeof left === 'number')
-    && (typeof right === 'bigint' || typeof right === 'number')) {
-    return BigInt(left) === BigInt(right);
-  }
-  if (left instanceof Uint8Array && right instanceof Uint8Array) return binsAreEqual(left, right);
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length
-      && left.every((value, index) => functionArgumentValuesEqual(value, right[index]));
-  }
-  if (left && right && typeof left === 'object' && typeof right === 'object') {
-    const leftEntries = Object.entries(left as Record<string, unknown>);
-    const rightRecord = right as Record<string, unknown>;
-    return leftEntries.length === Object.keys(rightRecord).length
-      && leftEntries.every(([key, value]) => functionArgumentValuesEqual(value, rightRecord[key]));
-  }
-  return false;
-}
-
-function functionArgumentListsEqual(left: readonly unknown[], right: readonly unknown[]): boolean {
-  return left.length === right.length
-    && left.every((value, index) => functionArgumentValuesEqual(value, right[index]));
-}
-
-type GraphPlanningProducerResultEntry = {
-  args: readonly unknown[];
-  target: unknown;
-  provisional: boolean;
-  pending: Promise<FunctionArgument | undefined>;
-};
-
-/** One graph-build epoch's speculative producer results, indexed by compiler-stable callsite identity. */
-export interface GraphPlanningProducerResultContext {
-  readonly entries: Map<number, GraphPlanningProducerResultEntry[]>;
-}
-
-export function createGraphPlanningProducerResultContext(): GraphPlanningProducerResultContext {
-  return { entries: new Map() };
-}
-
-export function isCompilerDescribedRouteEventCommitment(
-  commitment: string | undefined,
-  compilerMetadata: { compilerOwnedEventSlot: boolean; eventSignature?: string },
-): commitment is string {
-  if (commitment === undefined || commitment.length === 0 || commitment.length % 2 !== 0) return false;
-  const compilerDescribed = compilerMetadata.compilerOwnedEventSlot
-    && typeof compilerMetadata.eventSignature === 'string'
-    && compilerMetadata.eventSignature.length > 0;
-  if (compilerMetadata.compilerOwnedEventSlot && !compilerDescribed) return false;
-  return isAuthenticatedEventRepairCommitment(hexToBin(commitment), compilerDescribed);
-}
-
-function snapshotFunctionArgument(value: unknown): unknown {
-  if (value instanceof Uint8Array) return Uint8Array.from(value);
-  if (Array.isArray(value)) return value.map(snapshotFunctionArgument);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .map(([key, child]) => [key, snapshotFunctionArgument(child)]));
-  }
-  return value;
-}
-
-/**
- * Evaluate one published producer at most once for an unchanged callsite invocation in a planning epoch.
- * Exact results may seed provisional consumers, but provisional fallbacks never satisfy an exact request.
- */
-export async function memoizeGraphPlanningProducerResult(
-  context: GraphPlanningProducerResultContext,
-  callsiteId: number,
-  args: readonly FunctionArgument[],
-  target: FunctionArgument | undefined,
-  provisional: boolean,
-  evaluate: () => Promise<FunctionArgument | undefined>,
-): Promise<FunctionArgument | undefined> {
-  const entries = context.entries.get(callsiteId) ?? [];
-  const matching = entries.find((entry) => (
-    (entry.provisional === provisional || (provisional && !entry.provisional))
-    && functionArgumentListsEqual(entry.args, args)
-    && functionArgumentValuesEqual(entry.target, target)
-  ));
-  if (matching) return matching.pending;
-  const pending = evaluate();
-  entries.push({
-    args: args.map(snapshotFunctionArgument),
-    target: snapshotFunctionArgument(target),
-    provisional,
-    pending,
-  });
-  context.entries.set(callsiteId, entries);
-  return pending;
-}
-
-/** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
 export { materializeInternalFunctionArgument } from './entry-journal-planning.js';
-
 
 /**
  * Compute the minimum relay fee for a built TransactionBuilder at 1 sat/byte.
@@ -722,14 +690,6 @@ export interface StateEffectReading {
   contractHasNoState: boolean;
 }
 
-/** Evidence classes that are changes to the handler's OWN persisted state. */
-const OWN_STATE_EVIDENCE: readonly StateEffectEvidence[] = [
-  'entry-write', 'entry-loop-write', 'dynamic-write', 'lifecycle-modifier',
-];
-
-/** Function modifiers the compiler treats as covenant-rewriting. Mirrors `STATE_WRITING_MODIFIERS`. */
-const LIFECYCLE_MODIFIERS = ['upgrade', 'selfdestruct', 'delegate', 'unsafe'];
-
 /** Custom error class for auto-derivation failures (VM execution, trace parsing, etc.) */
 export class AutoDerivationError extends Error {
   constructor(message: string, public readonly cause?: Error) {
@@ -738,47 +698,7 @@ export class AutoDerivationError extends Error {
   }
 }
 
-export { resolveDynamicChunkInputBase } from './return-abi-plan.js';
-
-export type ReturnAbiCandidate<T> = {
-  logicalFunction: AbiFunction;
-  physicalFunction: AbiFunction;
-  context: T;
-};
-
-export type ReturnAbiPlan<T> = {
-  logicalFunction: AbiFunction;
-  physicalFunction: AbiFunction;
-  context?: T;
-};
-
-/**
- * Select the ABI which describes a call's logical value independently from the ABI which physically carries
- * its return event. A route can aggregate many rows, so a facade with no direct result fails closed
- * unless exactly one selected row returns a value.
- */
-export function selectReturnAbiPlan<T>(
-  functionName: string,
-  directFunction: AbiFunction | undefined,
-  candidates: readonly ReturnAbiCandidate<T>[],
-): ReturnAbiPlan<T> | undefined {
-  if ((directFunction?.outputs?.length ?? 0) > 0) {
-    return { logicalFunction: directFunction!, physicalFunction: directFunction! };
-  }
-  const returning = candidates.filter((candidate) => candidate.logicalFunction.outputs?.length);
-  if (returning.length > 1) {
-    throw new Error(
-      `staticCall: '${functionName}' selects ${returning.length} logical return rows; `
-      + 'an aggregate route has no single return value.',
-    );
-  }
-  const selected = returning[0];
-  return selected && {
-    logicalFunction: selected.logicalFunction,
-    physicalFunction: selected.physicalFunction,
-    context: selected.context,
-  };
-}
+export { resolveDynamicChunkInputBase, selectReturnAbiPlan } from './return-abi-plan.js';
 
 export interface DeployOptions {
   provider: NetworkProvider;
@@ -938,374 +858,6 @@ export type CallInfo = {
   utxo: UnlockableUtxo;
 };
 
-// X10. Cap on the speculative growth of a dynamic-storage chunk region whose length the probe has not revealed
-// yet (a trailing vmap entry mint aborts the probe before the data NFT is verified). One extra probe per output,
-/** Concatenate a pushdata-encoded struct onto a JobEventData[] (or similar) blob. */
-function appendEncodedArrayElement(arrayBlob: Uint8Array, element: Uint8Array): Uint8Array {
-  const count = decodePushdataValue(arrayBlob, 0, 'bigint');
-  const prefix = encodePushdataValue(BigInt(count.value as bigint) + 1n, 'bigint');
-  const out = new Uint8Array(prefix.length + (arrayBlob.length - count.bytesConsumed) + element.length);
-  out.set(prefix, 0);
-  out.set(arrayBlob.subarray(count.bytesConsumed), prefix.length);
-  out.set(element, prefix.length + arrayBlob.length - count.bytesConsumed);
-  return out;
-}
-
-/** Concatenate two pushdata-encoded dynamic arrays of the same element type. */
-function concatenateEncodedArrays(left: Uint8Array, right: Uint8Array): Uint8Array {
-  const leftCount = decodePushdataValue(left, 0, 'bigint');
-  const rightCount = decodePushdataValue(right, 0, 'bigint');
-  const prefix = encodePushdataValue(
-    BigInt(leftCount.value as bigint) + BigInt(rightCount.value as bigint),
-    'bigint',
-  );
-  const leftElements = left.subarray(leftCount.bytesConsumed);
-  const rightElements = right.subarray(rightCount.bytesConsumed);
-  const out = new Uint8Array(prefix.length + leftElements.length + rightElements.length);
-  out.set(prefix, 0);
-  out.set(leftElements, prefix.length);
-  out.set(rightElements, prefix.length + leftElements.length);
-  return out;
-}
-
-/**
- * Keep a chunkable array access's authenticated inputs separate from its derived result.
- *
- * The value witness is the exact proof-entry value before the handler. A leading mutation
- * represents earlier selected rows, while `postValue` is used only for persistence and
- * continuation outputs. In particular, deriving `postValue` must never replace the witness.
- */
-export function deriveChunkableArrayValueChannels({
-  preValueWitness,
-  storedPreValue,
-  leadingMutation,
-  currentElement,
-}: {
-  preValueWitness?: Uint8Array;
-  storedPreValue: Uint8Array;
-  leadingMutation?: Uint8Array;
-  currentElement?: Uint8Array;
-}): {
-    preValueWitness?: Uint8Array;
-    leadingMutation?: Uint8Array;
-    postValue: Uint8Array;
-  } {
-  let postValue = storedPreValue;
-  if (leadingMutation && leadingMutation.length > 0) {
-    postValue = concatenateEncodedArrays(postValue, leadingMutation);
-  }
-  if (currentElement) postValue = appendEncodedArrayElement(postValue, currentElement);
-  return { preValueWitness, leadingMutation, postValue };
-}
-
-/** Encode a struct argument, applying the explicitly selected legacy payload adapter when requested. */
-export function encodeStructArgument(
-  value: FunctionArgument, typeName: string, structs: Artifact['structs'],
-  timestamp?: bigint, legacyJobEventCompatibility = false,
-): Uint8Array {
-  let decodedValue: FunctionArgument = value;
-  if (value instanceof Uint8Array) {
-    try {
-      const decoded = decodePushdataValue(value, 0, typeName, structs);
-      if (decoded.bytesConsumed !== value.length) return value;
-      decodedValue = decoded.value as FunctionArgument;
-    } catch {
-      return value;
-    }
-  }
-  const struct = structs?.find((candidate) => candidate.name === typeName);
-  const canonicalValue = Array.isArray(decodedValue) && struct
-    ? Object.fromEntries(struct.fields.map((field, index) => [field.name, decodedValue[index]]))
-    : decodedValue;
-  if (canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)) {
-    const record = { ...(canonicalValue as Record<string, unknown>) };
-    // This historical wire adapter runs only when the caller selects it. Ordinary values are derived from
-    // compiler-authenticated flow and must never change because a field happens to have an application spelling.
-    if (legacyJobEventCompatibility && (
-      (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined)
-    )) {
-      record.timestamp_ = timestamp !== undefined && timestamp > 0n
-        ? timestamp : BigInt(Math.floor(Date.now() / 1000));
-    }
-    if (legacyJobEventCompatibility) {
-      normalizeJobEventAddresses(record, typeName, structs);
-    }
-    return encodePushdataValue(record as never, typeName, structs);
-  }
-  return encodePushdataValue(canonicalValue as never, typeName, structs);
-}
-
-function p2pkhLockingBytecode(pkh: Uint8Array): Uint8Array {
-  const out = new Uint8Array(25);
-  out[0] = 0x76; out[1] = 0xa9; out[2] = 0x14;
-  out.set(pkh, 3);
-  out[23] = 0x88; out[24] = 0xac;
-  return out;
-}
-
-/**
- * Derive every storage-slot spelling accepted for typed mapping keys.
- *
- * SolidCash stores `address` values as locking bytecode, while Solidity/ethers
- * compatibility surfaces can round-trip a P2PKH account as its 20-byte hash.
- * Preserve the exact supplied bytes as the first candidate, then add the
- * canonical P2PKH script only for an address-typed 20-byte value. Other types
- * (notably `bytes20`) never receive this alias. The Cartesian product keeps the
- * rule correct for nested mappings with more than one address key.
- */
-export function mappingKeySlotCandidates(
-  keys: Array<MappingKey>,
-  keyTypes?: readonly string[],
-  collection?: Parameters<typeof keyToSlotMulti>[1],
-): Uint8Array[] {
-  const options = keys.map((arg, index): Uint8Array[] => {
-    const keyType = keyTypes?.[index];
-    let encoded: Uint8Array;
-    if (typeof arg === 'string') {
-      if (keyType === 'address' && arg.includes(':')) encoded = addressToLockScript(arg);
-      else if (keyType === 'address' && /^(?:[0-9a-fA-F]{2})+$/.test(arg)) encoded = hexToBin(arg);
-      // 0x-hex locking bytecode (23/25/35) or other hex keys. Do not UTF-8 pack the hex text.
-      else if (/^0x(?:[0-9a-fA-F]{2})+$/i.test(arg)) encoded = hexToBin(arg.slice(2));
-      else if (keyType && /^(?:u?int|bigint)/.test(keyType) && /^-?\d+$/.test(arg)) {
-        encoded = bigIntToVmNumber(BigInt(arg));
-      } else encoded = utf8ToBin(arg);
-    } else if (arg instanceof Uint8Array) encoded = arg;
-    else if (typeof arg === 'bigint') encoded = bigIntToVmNumber(arg);
-    // An ethers-style caller names an index as a JS number (`factory.allPairs(2)`): it is that integer, not a
-    // truthy flag, which would read every key above 0 as key 1.
-    else if (typeof arg === 'number') encoded = bigIntToVmNumber(integerKey(arg));
-    else encoded = bigIntToVmNumber(arg ? 1n : 0n);
-
-    return keyType === 'address' && encoded.length === 20
-      ? [encoded, p2pkhLockingBytecode(encoded)]
-      : [encoded];
-  });
-  const encodings = options.reduce<Uint8Array[][]>(
-    (rows, candidates) => rows.flatMap((row) => candidates.map((candidate) => [...row, candidate])),
-    [[]],
-  );
-  const seen = new Set<string>();
-  return encodings.flatMap((encoding) => {
-    const slot = keyToSlotMulti(encoding, collection);
-    const hex = binToHex(slot);
-    if (seen.has(hex)) return [];
-    seen.add(hex);
-    return [slot];
-  });
-}
-
-type MappingEntryLookup = {
-  slot?: Uint8Array;
-  key?: bigint | boolean | Uint8Array;
-  keys?: Array<bigint | boolean | Uint8Array>;
-};
-
-function mappingEntryMatchesLegacyKeys(
-  entry: MappingEntryLookup,
-  keys: Array<MappingKey>,
-): boolean {
-  const entryKeys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
-  if (entryKeys.length !== keys.length) return false;
-  return entryKeys.every((stored, index) => {
-    const arg = keys[index];
-    const supplied = typeof arg === 'string' ? new TextEncoder().encode(arg)
-      : typeof arg === 'number' ? integerKey(arg) : arg;
-    if (stored instanceof Uint8Array) {
-      return supplied instanceof Uint8Array && binsAreEqual(stored, supplied);
-    }
-    return stored === supplied;
-  });
-}
-
-/** Select a mapping entry deterministically: exact spelling first, compatibility aliases only as fallback. */
-export function selectMappingEntryByKeys<T extends MappingEntryLookup>(
-  entries: readonly T[],
-  keys: Array<MappingKey>,
-  keyTypes?: readonly string[],
-  collection?: Parameters<typeof keyToSlotMulti>[1],
-): T | undefined {
-  const [exactSlot, ...aliasSlots] = mappingKeySlotCandidates(keys, keyTypes, collection);
-  const exactMatches = entries.filter((entry) => entry.slot
-    ? exactSlot !== undefined && binsAreEqual(entry.slot, exactSlot)
-    : mappingEntryMatchesLegacyKeys(entry, keys));
-  if (exactMatches.length > 1) {
-    throw new Error('Authenticated mapping lookup found duplicate entries for the exact key slot.');
-  }
-  if (exactMatches.length === 1) return exactMatches[0];
-
-  const aliasMatches = entries.filter((entry) => entry.slot !== undefined
-    && aliasSlots.some((slot) => binsAreEqual(entry.slot!, slot)));
-  if (aliasMatches.length > 1) {
-    throw new Error('Authenticated mapping lookup found multiple entries for compatibility key aliases.');
-  }
-  return aliasMatches[0];
-}
-
-function isLockingBytecode(bytes: Uint8Array): boolean {
-  return (bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87)
-    || (bytes.length === 23 && bytes[0] === 0xa9 && bytes[1] === 0x14 && bytes[22] === 0x87)
-    || (bytes.length === 25 && bytes[0] === 0x76 && bytes[1] === 0xa9
-      && bytes[2] === 0x14 && bytes[23] === 0x88 && bytes[24] === 0xac);
-}
-
-function addressArgumentLockingBytecodeHex(value: FunctionArgument | undefined): string | undefined {
-  let bytes: Uint8Array | undefined;
-  if (value instanceof Uint8Array) bytes = value;
-  else if (typeof value === 'string') {
-    try {
-      bytes = value.includes(':')
-        ? addressToLockScript(value)
-        : hexToBin(value.replace(/^0x/i, ''));
-    } catch { return undefined; }
-  }
-  return bytes && isLockingBytecode(bytes) ? binToHex(bytes) : undefined;
-}
-
-function externalCallTargetArgumentLockingBytecodeHex(
-  owner: AbiFunction,
-  slot: number,
-  visibleArgs: readonly FunctionArgument[],
-): string | undefined {
-  const call = owner.externalCalls?.[slot];
-  if (!call) return undefined;
-  const inputs = owner.inputs.filter((input) => !input.name.startsWith('__internal__'));
-  const index = call.addressSource?.kind === 'forward'
-    ? call.addressSource.paramIndex
-    : call.addressParam === undefined ? undefined
-      : inputs.findIndex((input) => input.name === call.addressParam);
-  return index === undefined || index < 0
-    ? undefined : addressArgumentLockingBytecodeHex(visibleArgs[index]);
-}
-
-/**
- * Resolve the Solidity-visible target which authenticates an external-call master. A direct parameter is only
- * one possible source: interface values are commonly loaded from authenticated contract state. Once the SDK has
- * evaluated that compiler-published source, it has exactly the same authority as a forwarded argument and may
- * select the direct physical identity proof when it already names the co-spent locking bytecode.
- */
-export function externalCallTargetSourceLockingBytecodeHex(
-  owner: AbiFunction,
-  slot: number,
-  visibleArgs: readonly FunctionArgument[],
-  resolvedAddressSource?: FunctionArgument,
-): string | undefined {
-  return addressArgumentLockingBytecodeHex(resolvedAddressSource)
-    ?? externalCallTargetArgumentLockingBytecodeHex(owner, slot, visibleArgs);
-}
-
-/** JobEventData.address_ is packed address locking bytecode (p2sh20=23, p2pkh=25, p2sh32=35). */
-function normalizeJobEventAddresses(
-  decoded: unknown, type: string, structs: Artifact['structs'],
-): typeof decoded {
-  const structName = type.endsWith('[]') ? type.slice(0, -2) : type;
-  const def = structs?.find((candidate) => candidate.name === structName);
-  if (!def?.fields.some((field) => field.name === 'address_' && field.type === 'bytes')) return decoded;
-  const rows = Array.isArray(decoded) ? decoded : [decoded];
-  for (const row of rows) {
-    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
-    const record = row as Record<string, unknown>;
-    const raw = record.address_;
-    let bytes: Uint8Array | undefined;
-    if (raw instanceof Uint8Array) bytes = raw;
-    else if (typeof raw === 'string') {
-      if (raw.includes(':')) {
-        try { bytes = addressToLockScript(raw); } catch { bytes = utf8ToBin(raw); }
-      } else if (raw.startsWith('0x') && raw.length % 2 === 0) bytes = hexToBin(raw.slice(2));
-      else bytes = utf8ToBin(raw);
-    }
-    if (!bytes || bytes.length === 0) continue;
-    if (!isLockingBytecode(bytes)) {
-      try {
-        const text = binToUtf8(bytes);
-        if (text.includes(':')) bytes = addressToLockScript(text);
-      } catch { /* not UTF-8 */ }
-    }
-    if (bytes.length === 20) bytes = p2pkhLockingBytecode(bytes);
-    record.address_ = bytes;
-  }
-  return decoded;
-}
-
-
-/**
- * Extract expected commitment hex strings from a VM debug trace, keyed by the output index each verifies.
- *
- * The contract verifies state via: <expected> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY
- * This scans the trace for those patterns and records the expected commitment bytes per output index.
- */
-/**
- * A chunkable vmap write whose value is computed on-chain carries no `valueParam`, so the caller cannot build
- * its chunks off-chain the way a
- * parameter-valued write does. The covenant still pins them, in the CALLEE's trailing band.
- *
- * The pin is verified BEFORE any entry commitment is revealed (the probe aborts with `revealed: []`), so the
- * entry head is not available to describe the value. It does not need to be: at the aborting
- * `OP_OUTPUTBYTECODE OP_EQUALVERIFY` the covenant has already computed everything the output needs, and it is
- * all live on the stack - the output index, the chunk address, and the expected chunk commitment.
- *
- * One chunk is recovered per probe pass; satisfying chunk i lets the covenant reach i+1, exactly like the
- * progressive entry derivation this runs inside. Returns true when it placed something new.
- */
-function isP2sh32LockingBytecode(bytes: Uint8Array | undefined): boolean {
-  return !!bytes && bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87;
-}
-
-/** The ABI body carried by a physical participant. */
-function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
-  return (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
-    ?.find((candidate) => candidate.name === group.functionName);
-}
-
-function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean {
-  return physicalExternalCallFunction(group)?.entryAccesses !== undefined;
-}
-
-/** Select the single compiler-described participant which owns a computed state-writing call. A modern effect
- * list is authoritative and ambiguity fails closed. Source names remain only for artifacts with no effect list. */
-export function computedStateWriterGroupIndex(
-  groups: readonly ExternalCallUtxoGroup[], candidateIndices: readonly number[],
-): number | undefined {
-  const described = candidateIndices.filter((index) => hasPublishedEntryEffects(groups[index]));
-  const writers = described.filter((index) => {
-    const abi = physicalExternalCallFunction(groups[index]);
-    return abi?.writesState === true
-      && abi.entryAccesses?.some((access) => access.operations.includes('write')) === true;
-  });
-  if (writers.length === 1) return writers[0];
-  if (described.length > 0) return undefined;
-  // Compatibility only for artifacts predating compiler-published entry effects.
-  return candidateIndices.find((index) => {
-    const name = groups[index]?.functionName;
-    return name === 'transferFrom' || name === 'transfer' || name === 'approve';
-  });
-}
-
-/** Select one physical chunkable-array writer by its published collection effects. */
-export function chunkableWriterGroupIndex(
-  groups: readonly ExternalCallUtxoGroup[],
-): number {
-  const candidates = groups.flatMap((group, index) => {
-    const abi = physicalExternalCallFunction(group);
-    return abi && writesChunkableValue(group, abi) ? [index] : [];
-  });
-  if (candidates.length === 1) return candidates[0];
-  if (groups.some(hasPublishedEntryEffects)) return -1;
-  const plannedLegacyCandidates = groups.flatMap((group, index) => (
-    legacyPlannedChunkableValueWriteCollection(group) === undefined ? [] : [index]
-  ));
-  if (plannedLegacyCandidates.length === 1) return plannedLegacyCandidates[0];
-  if (plannedLegacyCandidates.length > 1) return -1;
-  // Compatibility only for artifacts predating compiler-published entry effects: a last-resort name match.
-  return groups.findIndex((group) => legacyIsPublishJobEventName(group.functionName));
-}
-
-function writesChunkableValue(
-  group: ExternalCallUtxoGroup,
-  abiFunction: AbiFunction,
-): boolean {
-  return chunkableValueWriteCollections(group, abiFunction).length > 0;
-}
-
 /** Build exact continuation identities from compiler entry metadata and the planner's authenticated entry input. */
 export function describeValueChunkWrites(
   group: ExternalCallUtxoGroup,
@@ -1358,22 +910,6 @@ export function describeValueChunkWrites(
   return writes;
 }
 
-function chunkableValueWriteCollections(
-  group: ExternalCallUtxoGroup,
-  abiFunction: AbiFunction,
-): string[] {
-  const activeFunctions = [abiFunction];
-  return [...new Set(activeFunctions.flatMap((activeFunction) => (
-    activeFunction.entryAccesses ?? []
-  ).flatMap((access) => {
-    if (!access.operations.includes('write')) return [];
-    const collection = group.stateLayout.collections?.find((candidate) =>
-      candidate.name === access.collection || candidate.signature === access.collection);
-    return access.chunkableArrayValue === true || collection?.chunkableValue === true
-      ? [access.collection] : [];
-  })))];
-}
-
 // Preserve the historical StatefulContract import surface while the extracted helper owns one implementation.
 export {
   resolveValueChunkResourceLanes,
@@ -1382,122 +918,6 @@ export {
   resolvePublishedEntryBlockOffset,
 } from './value-chunk-lanes.js';
 
-function extractExpectedOutputCommitmentFromTrace(
-  trace: AuthenticationProgramStateCommon[], outputIndex: number, actualCommitment: string,
-): string | undefined {
-  // Output-pin helpers can be nested: an outer OUTPUTTOKENCOMMITMENT remains live while an invoked helper
-  // performs and verifies another output pin. Keep the pending checks as a stack so the inner EQUALVERIFY does
-  // not discard the outer output association. This is the same tightly-coupled pattern accepted by
-  // extractCommitmentMapFromTrace, extended to outlined helpers which invoke other output-pin helpers.
-  const pendingOutputIndices: number[] = [];
-  for (const state of trace) {
-    if (state.controlStack.some((flag) => flag === false)) continue;
-    const opcode = state.instructions[state.ip]?.opcode;
-    if (opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
-      pendingOutputIndices.push(state.stack.length > 0
-        ? Number(decodeScriptNumber(state.stack[state.stack.length - 1])) : -1);
-      continue;
-    }
-    const isPush = opcode !== undefined && opcode <= Op.OP_16;
-    const isCommitmentComparison = opcode === Op.OP_EQUALVERIFY || opcode === Op.OP_EQUAL;
-    if (!isCommitmentComparison) {
-      if (!isPush && opcode !== Op.OP_INVOKE) pendingOutputIndices.length = 0;
-      continue;
-    }
-    const inspectedOutputIndex = pendingOutputIndices.pop();
-    if (inspectedOutputIndex !== outputIndex || state.stack.length < 2) continue;
-    const below = binToHex(state.stack[state.stack.length - 2]);
-    const top = binToHex(state.stack[state.stack.length - 1]);
-    if (below === actualCommitment && top !== actualCommitment) return top;
-    if (top === actualCommitment && below !== actualCommitment) return below;
-    // A malformed/placeholder actual can be transformed before comparison. Prefer the structurally complete vmap
-    // node over a neighboring hash/default, while leaving equal-width ambiguity to the ordinary extractor.
-    if (below.length >= 128 && top.length < 128) return below;
-    if (top.length >= 128 && below.length < 128) return top;
-  }
-  return undefined;
-}
-
-/** Select a complete Solidity return from strongest-to-weakest live stack candidates. */
-export function selectEvmScalarReturnCommitment(
-  candidates: readonly Uint8Array[], expectedTypes: readonly string[], allowRaw = true,
-): string | undefined {
-  const bytes = expectedTypes.length * 32;
-  // Batch routes frame the complete Solidity return vector as one canonical `bytes` field before
-  // publishing it. Prefer that compiler-authored boundary over raw ABI-width values which happen to remain in
-  // the route frame: state hashes, mapping witnesses, and zero placeholders are all valid `uint256` words, but
-  // none of them is a complete framed return. A progressive probe can stop after the frame is assembled and
-  // before its output comparison, so this is also the strongest result available in that state.
-  for (const candidate of candidates) {
-    // A complete outer bytes field is exactly one push. Resolving that from the length prefix rejects the
-    // ordinary route-frame item (a raw state value, hash, or script) without slicing it and without the
-    // exception `decodePushdataValue` would raise and capture a stack trace for.
-    if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
-    try {
-      const outer = decodePushdataValue(candidate, 0, 'bytes');
-      if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) continue;
-      if (!isCanonicalEvmScalarReturnVector(outer.value, expectedTypes)) continue;
-      return binToHex(outer.value);
-    } catch {
-      // Ordinary route-frame items are not canonical outer bytes fields.
-    }
-  }
-  if (!allowRaw) return undefined;
-  for (const candidate of candidates) {
-    if (candidate.length !== bytes) continue;
-    if (!isCanonicalEvmScalarReturnVector(candidate, expectedTypes)) continue;
-    if (expectedTypes.length === 1 && expectedTypes[0] === 'bool') {
-      // A failing probe contains many unrelated ABI-sized zero words (state fields, hashes, placeholders).
-      // They cannot authenticate `false`; the targeted return-output comparison does that when execution
-      // reaches it. `true` remains a useful advancing observation, while precomputed false views are retained
-      // by the fixed-point caller until that stronger output evidence replaces them.
-      if (candidate[31] === 0) continue;
-    }
-    return binToHex(candidate);
-  }
-  return undefined;
-}
-
-/** Validate the canonical outer bytes field used by Solidity return channels. */
-export function isCanonicalEvmScalarReturnBlob(
-  candidate: Uint8Array, expectedTypes: readonly string[],
-): boolean {
-  if (peekPushdataEncodedLength(candidate) !== candidate.length) return false;
-  try {
-    const outer = decodePushdataValue(candidate, 0, 'bytes');
-    return outer.value instanceof Uint8Array
-      && outer.bytesConsumed === candidate.length
-      && isCanonicalEvmScalarReturnVector(outer.value, expectedTypes);
-  } catch {
-    return false;
-  }
-}
-
-const EVM_DYNAMIC_RETURN_TYPES = new Set(['bytes', 'string']);
-
-/**
- * True when a multi-row Solidity result vector may be recognized from its bare (unframed) encoding.
- *
- * A lone ABI-width word is ambiguous: state hashes, mapping witnesses, and placeholders are all canonical
- * `uint256` words. A *complete* vector is only stronger than that when at least one row's declared type
- * constrains its 32-byte encoding (a bool word is 0/1, an address zero-extends, a narrow integer sign-extends);
- * a vector built only from unbounded `int`/`uint`/`bigint` rows is still indistinguishable from concatenated
- * state words and must keep waiting for a compiler-framed observation.
- */
-export function isConstrainedEvmResultVector(
-  resultTypeGroups: readonly (readonly string[])[],
-): boolean {
-  const rows = resultTypeGroups.flat();
-  if (resultTypeGroups.length < 2 || rows.length === 0) return false;
-  if (rows.some((type) => EVM_DYNAMIC_RETURN_TYPES.has(type))) return false;
-  return rows.some((type) => {
-    if (type === 'bool' || type === 'address' || type === 'address payable') return true;
-    if (/^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)) return true;
-    const bounded = /^u?(?:int|fixed)(\d+)(?:x\d+)?$/.exec(type);
-    return bounded !== null && Number(bounded[1]) < 256;
-  });
-}
-
 export {
   canonicalEvmReturnVectorLength,
   isCanonicalEvmReturnVector,
@@ -1505,217 +925,6 @@ export {
   isCanonicalEvmReturnBlob,
   selectEvmReturnCommitment,
 } from './external-return-encoding.js';
-
-/** Encode a complete external invocation result using the callee's declared ABI mode and named schemas. */
-export function encodeExternalReturnValues(
-  values: readonly StateValue[],
-  types: readonly string[],
-  structs: Artifact['structs'],
-  solidityAbi: boolean,
-  enums?: Artifact['enums'],
-): Uint8Array {
-  if (solidityAbi) return encodeEvmInvocationResult(values, types, structs, enums);
-  if (values.length !== types.length) {
-    throw new Error(`Native result has ${values.length} values for ${types.length} declared types`);
-  }
-  // A native result is pushed as the callee's return pushes it: an address of 20 zero bytes stays 20 bytes.
-  const parts = values.map((value, index) => encodeEventPushdataValue(value, types[index], structs));
-  const encoded = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
-  let offset = 0;
-  for (const part of parts) { encoded.set(part, offset); offset += part.length; }
-  return encoded;
-}
-
-/** Encode a one-value external invocation result. */
-export function encodeExternalReturnValue(
-  value: StateValue,
-  type: string,
-  structs: Artifact['structs'],
-  solidityAbi: boolean,
-  enums?: Artifact['enums'],
-): Uint8Array {
-  return encodeExternalReturnValues([value], [type], structs, solidityAbi, enums);
-}
-
-/** Bind compiler-identified returning call expressions to already authenticated invocation results. */
-export function externalReturnsForCallsites(
-  argSources: readonly ArgSource[] | undefined,
-  results: ReadonlyMap<number, FunctionArgument>,
-  producerCalls: readonly ExternalCallAbi[],
-  consumer?: {
-    callsiteId: number;
-    resultConsumers?: readonly ExternalResultConsumerAbi[];
-  },
-): Map<string, FunctionArgument> {
-  const resolved = new Map<string, FunctionArgument>();
-  const producerById = new Map<number, ExternalCallAbi>();
-  for (const producer of producerCalls) {
-    if (producer.callsiteId === undefined || producer.callsiteId < 0) {
-      throw new Error('Graph external-call metadata requires a nonnegative callsiteId for every producer.');
-    }
-    if (producerById.has(producer.callsiteId)) {
-      throw new Error(`Graph external-call metadata has duplicate callsiteId ${producer.callsiteId}.`);
-    }
-    producerById.set(producer.callsiteId, producer);
-  }
-  if (consumer?.resultConsumers) {
-    const lanes = new Set<string>();
-    for (const lane of consumer.resultConsumers) {
-      if (!Number.isInteger(lane.consumerCallsiteId) || lane.consumerCallsiteId < 0
-        || ('argument' in lane && (!Number.isInteger(lane.argument) || lane.argument! < 0))
-        || (!('argument' in lane) && lane.condition !== true && lane.iterationDomain !== true)
-        || !Number.isInteger(lane.producerCallsiteId) || lane.producerCallsiteId < 0) {
-        throw new Error('Graph result-consumer metadata requires nonnegative integer callsite and argument lanes.');
-      }
-      if (Number(lane.condition === true) + Number('iterationDomain' in lane && lane.iterationDomain === true)
-        + Number('argument' in lane) !== 1) {
-        throw new Error('Graph result-consumer metadata requires one valid consumer lane.');
-      }
-      const producer = producerById.get(lane.producerCallsiteId);
-      if (!producer) {
-        throw new Error(
-          `Graph result-consumer metadata references missing producer callsite ${lane.producerCallsiteId}.`,
-        );
-      }
-      if (lane.resultIndex !== undefined && (!Number.isInteger(lane.resultIndex) || lane.resultIndex < 0
-        || lane.resultIndex >= (producer.returnTypes?.length ?? 0))) {
-        throw new Error(
-          `Graph result-consumer metadata has invalid result index ${String(lane.resultIndex)} for producer `
-          + `${lane.producerCallsiteId}.`,
-        );
-      }
-      const key = `${lane.consumerCallsiteId}:${lane.argument ?? ('iterationDomain' in lane ? 'domain' : 'condition')}`
-        + `:${lane.producerCallsiteId}`
-        + `:${lane.resultIndex ?? '*'}`;
-      if (lanes.has(key)) throw new Error(`Graph result-consumer metadata has duplicate lane ${key}.`);
-      lanes.add(key);
-    }
-  }
-  const visit = (expression: ExternalCallExpression | undefined, argument: number): void => {
-    if (!expression) return;
-    for (const child of [expression.target, expression.expression, expression.left, expression.right,
-      expression.condition, expression.ifTrue, expression.ifFalse]) visit(child, argument);
-    for (const child of expression.args ?? []) visit(child, argument);
-    if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
-      const producer = producerById.get(expression.callsiteId);
-      const resultIndex = expression.resultIndex;
-      if (!producer || resultIndex === undefined || !Number.isInteger(resultIndex)
-        || resultIndex < 0 || resultIndex >= (producer.returnTypes?.length ?? 0)) {
-        throw new Error(
-          `Graph producerResult ${expression.callsiteId}:${String(resultIndex)} does not identify one published result.`,
-        );
-      }
-      if (consumer?.resultConsumers) {
-        const lanes = consumer.resultConsumers.filter((lane) =>
-          lane.consumerCallsiteId === consumer.callsiteId && lane.argument === argument
-          && lane.producerCallsiteId === expression.callsiteId
-          && (lane.resultIndex === undefined || lane.resultIndex === resultIndex));
-        if (lanes.length !== 1) {
-          throw new Error(
-            `Graph producerResult ${expression.callsiteId}:${resultIndex} does not identify exactly one `
-            + `published consumer lane ${consumer.callsiteId}:${argument}.`,
-          );
-        }
-      }
-      const result = results.get(expression.callsiteId);
-      if (result !== undefined && (producer.returnTypes?.length ?? 0) > 1
-        && (!Array.isArray(result) || result.length !== producer.returnTypes!.length)) {
-        throw new Error(
-          `Authenticated graph result for producer ${expression.callsiteId} does not match its `
-          + `${producer.returnTypes!.length}-component schema.`,
-        );
-      }
-      const selected = (producer.returnTypes?.length ?? 0) === 1
-        ? result : Array.isArray(result) ? result[resultIndex] as FunctionArgument : undefined;
-      if (selected !== undefined) resolved.set(JSON.stringify(expression), selected);
-      return;
-    }
-    if (expression.kind !== 'externalCall' || expression.callsiteId === undefined) return;
-    const result = results.get(expression.callsiteId);
-    if (result !== undefined) resolved.set(JSON.stringify(expression), result);
-  };
-  for (const [argument, source] of (argSources ?? []).entries()) visit(source.expression, argument);
-  return resolved;
-}
-
-/** True when a trace candidate is exactly one encoded collection value, with no trailing neighboring value. */
-function isCompleteCollectionValue(
-  candidate: Uint8Array, valueType: string | undefined, structs: StateLayout['structs'],
-): boolean {
-  if (!valueType) return true;
-  try {
-    return decodePushdataValue(candidate, 0, valueType, structs).bytesConsumed === candidate.length;
-  } catch {
-    return false;
-  }
-}
-
-function authenticatedCollectionValueSelector(
-  valueType: string | undefined, structs: StateLayout['structs'],
-): (
-    items: readonly Uint8Array[], roots: ReadonlySet<string>, preferredRoots: ReadonlySet<string>,
-  ) => Uint8Array | undefined {
-  // Sparse probe states share immutable stack items by reference. Cache their two pure classifications across
-  // states so a long collection is not decoded and hashed hundreds of times during one witness search.
-  const digests = new WeakMap<Uint8Array, string>();
-  const completeness = new WeakMap<Uint8Array, boolean>();
-  const digest = (item: Uint8Array): string => {
-    const cached = digests.get(item);
-    if (cached !== undefined) return cached;
-    const computed = binToHex(sha256Sync(item));
-    digests.set(item, computed);
-    return computed;
-  };
-  const complete = (item: Uint8Array): boolean => {
-    const cached = completeness.get(item);
-    if (cached !== undefined) return cached;
-    const computed = isCompleteCollectionValue(item, valueType, structs);
-    completeness.set(item, computed);
-    return computed;
-  };
-  const newestRooted = (
-    items: readonly Uint8Array[], candidateRoots: ReadonlySet<string>,
-  ): Uint8Array | undefined => {
-    for (let index = items.length - 1; index >= 0; index--) {
-      const item = items[index];
-      if (item.length <= VALUE_HEAD_SIZE || item.length > 10_000) continue;
-      // Almost every large stack item is unrelated. Hashing first limits the substantially more expensive typed
-      // decode to candidates that are actually authenticated by a root observed in this probe state.
-      if (!candidateRoots.has(digest(item)) || !complete(item)) continue;
-      return item;
-    }
-    return undefined;
-  };
-  return (items, roots, preferredRoots) => {
-    // A repeated route can expose several authenticated values for one collection: each logical row leaves its
-    // intermediate value/root in the chronological trace, while only the final row owns the transaction output.
-    // Recover from the end so the SDK materializes the last-write continuation run rather than a valid prefix.
-    if (preferredRoots.size > 0) {
-      const stored = newestRooted(items, preferredRoots);
-      if (stored) return stored;
-    }
-    return newestRooted(items, roots);
-  };
-}
-
-export function selectAuthenticatedCollectionValue(
-  items: readonly Uint8Array[],
-  roots: ReadonlySet<string>,
-  preferredRoots: ReadonlySet<string>,
-  valueType: string | undefined,
-  structs: StateLayout['structs'],
-): Uint8Array | undefined {
-  return authenticatedCollectionValueSelector(valueType, structs)(items, roots, preferredRoots);
-}
-
-/** Select a pre-handler witness only when its full bytes match an authenticated stored-entry root. */
-export function selectAuthenticatedPreValueWitness(
-  items: readonly Uint8Array[], storedRoots: ReadonlySet<string>,
-  valueType: string | undefined, structs: StateLayout['structs'],
-): Uint8Array | undefined {
-  if (storedRoots.size === 0) return undefined;
-  return authenticatedCollectionValueSelector(valueType, structs)(items, storedRoots, storedRoots);
-}
 
 /** Floor integer square root, matching the Solidity helper's result for a non-negative input. */
 function integerSqrt(value: bigint): bigint | undefined {
@@ -1960,146 +1169,6 @@ export function evalComputedKey(
     return undefined;
   };
   return encode(evalValue(label));
-}
-
-/**
- * Decode an inline (≤60-byte) vmap struct tail so coalesced field writes can keep the untouched
- * members (`field:c(map:m(id:k))`) without a discovery probe. Chunked tails stay unpinned.
- */
-function decodeInlineVmapValue(
-  value: Uint8Array | undefined,
-  present: boolean,
-  valueType: string,
-  chunkable: boolean,
-  structs: StateLayout['structs'],
-): StateValue | undefined {
-  try {
-    if (!present) return getDefaultStateValue(valueType, structs);
-    if (value === undefined) return undefined;
-    let raw = value;
-    if (chunkable) {
-      if (raw.length < 4) return undefined;
-      const len = raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24);
-      if (len > VALUE_INLINE_LIMIT) return undefined;
-      if (raw.length !== 4 + len) return undefined;
-      raw = raw.slice(4);
-    }
-    if (raw.length === 0) return getDefaultStateValue(valueType, structs);
-    return decodePushdataValue(raw, 0, valueType, structs).value;
-  } catch {
-    return undefined;
-  }
-}
-
-function decodeInlineVmapStruct(
-  value: Uint8Array | undefined,
-  present: boolean,
-  valueType: string,
-  chunkable: boolean,
-  structs: StateLayout['structs'],
-): Record<string, unknown> | undefined {
-  const decoded = decodeInlineVmapValue(value, present, valueType, chunkable, structs);
-  return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
-    ? decoded as Record<string, unknown> : undefined;
-}
-
-/** Replace `field:f(map:collection(...))` with `lit:N` from the current (or default) struct. */
-function substPreservedStructFields(
-  expr: string,
-  collection: string,
-  fieldValue: (name: string) => bigint | undefined,
-): string | undefined {
-  const mapTok = `(map:${collection}(`;
-  let out = '';
-  let i = 0;
-  while (i < expr.length) {
-    const start = expr.indexOf('field:', i);
-    if (start < 0) {
-      out += expr.slice(i);
-      break;
-    }
-    out += expr.slice(i, start);
-    const nameStart = start + 'field:'.length;
-    const mapAt = expr.indexOf(mapTok, nameStart);
-    const name = mapAt < 0 ? '' : expr.slice(nameStart, mapAt);
-    if (mapAt < 0 || !/^[A-Za-z_]\w*$/.test(name)) {
-      out += 'field:';
-      i = nameStart;
-      continue;
-    }
-    let depth = 0;
-    let j = mapAt;
-    for (; j < expr.length; j += 1) {
-      if (expr[j] === '(') depth += 1;
-      else if (expr[j] === ')') {
-        depth -= 1;
-        if (depth === 0) {
-          j += 1;
-          break;
-        }
-      }
-    }
-    if (depth !== 0) return undefined;
-    const fv = fieldValue(name);
-    if (fv === undefined) return undefined;
-    out += `lit:${fv.toString()}`;
-    i = j;
-  }
-  return out;
-}
-
-/**
- * Parse NFT capability from a token category byte array (32 bytes = no cap, 33+ bytes = cap byte at [32]).
- */
-function parseNftCapability(catBytes: Uint8Array): 'none' | 'mutable' | 'minting' {
-  if (catBytes.length <= 32) return 'none';
-  if (catBytes[32] === 0x01) return 'mutable';
-  if (catBytes[32] === 0x02) return 'minting';
-  throw new Error(`Unknown NFT capability byte: 0x${catBytes[32].toString(16).padStart(2, '0')}`);
-}
-
-/** Compiler value-chunk identity scan's terminal `DROP, EQUALVERIFY, 2DROP` count check. */
-export function isValueChunkIdentityCountPin(
-  instructions: ReadonlyArray<{ opcode: number }>,
-  ip: number,
-): boolean {
-  const opcode = instructions[ip]?.opcode;
-  return (opcode === Op.OP_EQUALVERIFY
-    && instructions[ip - 1]?.opcode === Op.OP_DROP
-    && instructions[ip + 1]?.opcode === Op.OP_2DROP)
-    || (opcode === Op.OP_2DROP
-      && instructions[ip - 1]?.opcode === Op.OP_EQUALVERIFY
-      && instructions[ip - 2]?.opcode === Op.OP_DROP);
-}
-
-function fingerprintBytecode(bytes: Uint8Array, cache: WeakMap<Uint8Array, string>): string {
-  const cached = cache.get(bytes);
-  if (cached !== undefined) return cached;
-  const fingerprint = binToHex(hash256Sync(bytes));
-  cache.set(bytes, fingerprint);
-  return fingerprint;
-}
-
-/** Content-sensitive tx identity without serializing multi-megabyte unlocking scripts on every probe. */
-export function fingerprintLibauthTransaction(
-  transaction: Parameters<typeof encodeTransaction>[0],
-  bytecodeCache: WeakMap<Uint8Array, string>,
-): string {
-  const inputs = transaction.inputs.map((input) => [
-    binToHex(input.outpointTransactionHash),
-    String(input.outpointIndex),
-    String(input.sequenceNumber),
-    fingerprintBytecode(input.unlockingBytecode, bytecodeCache),
-  ].join(':'));
-  const outputs = transaction.outputs.map((output) => [
-    output.valueSatoshis.toString(),
-    fingerprintBytecode(output.lockingBytecode, bytecodeCache),
-    output.token?.category === undefined ? '' : binToHex(output.token.category),
-    output.token?.amount?.toString() ?? '',
-    output.token?.nft?.capability ?? '',
-    output.token?.nft?.commitment === undefined ? '' : binToHex(output.token.nft.commitment),
-  ].join(':'));
-  return `${transaction.version}|${transaction.locktime}|${inputs.join(',')}|${outputs.join(',')}`;
 }
 
 const MAX_PROJECTED_PROBE_STATES = 262_144;
@@ -2405,11 +1474,6 @@ const softStateScope = (provider: NetworkProvider | undefined): SoftStateScope =
   return scope;
 };
 
-/** Corpus simulation is an explicit MockNetworkProvider capability; every other provider is strict. */
-function legacyStatefulSimulationEnabled(provider: NetworkProvider | undefined): boolean {
-  return (provider as { statefulSimulation?: string } | undefined)?.statefulSimulation === 'legacy-mistswap-v1';
-}
-
 /** Clear mock bento soft totals (test reset / new provider). */
 export function clearSoftBentoTotals(): void {
   softBentoTotalsByToken.clear();
@@ -2469,81 +1533,6 @@ export function takeSoftStateSnapshot(): SoftStateSnapshot {
   };
 }
 
-/** Every compiler encoding of a `msg.sender` / `_msgSender()` mapping key. */
-export function isMsgSenderKeySource(source: {
-  kind?: string;
-  expressionLabel?: string;
-  senderOp?: string;
-} | undefined): boolean {
-  if (!source) return false;
-  if (source.kind === 'msgSender' || source.senderOp === 'msg.sender') return true;
-  const label = source.expressionLabel ?? '';
-  return label === 'nullop:msg.sender'
-    || label === 'sender:msg.sender'
-    || label === 'call:_msgSender()'
-    || /(?:^|[._])msg\.sender(?:$|[._(])|_msgSender\(/.test(label);
-}
-
-/** nLocktime timestamp mode starts at 500_000_000; height mode is below that. */
-const UNIX_LOCKTIME_THRESHOLD = 500_000_000;
-
-/**
- * Default nLocktime for Solidity-compat `block.timestamp` / `tx.time` CLTV. Ported contracts
- * lower `block.timestamp` to locktime, so every stateful tx (including publish) must carry
- * the provider tip or `job.timestamp` stays 0 and later 24h requires never pass.
- */
-export function providerUnixLocktime(provider: { getBlockTime?: () => number } | undefined): number | undefined {
-  const timestamp = provider?.getBlockTime?.();
-  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined;
-  const truncated = Math.trunc(timestamp);
-  if (truncated < UNIX_LOCKTIME_THRESHOLD) return undefined;
-  // Inclusion is exclusive (`tip > nLocktime`). Stamp one second behind the tip so a unix
-  // locktime stays in timestamp mode and the tx is final without changing CLTV's `>=`.
-  return truncated > UNIX_LOCKTIME_THRESHOLD ? truncated - 1 : truncated;
-}
-
-/**
- * Map `__internal__externalCallSelector` / `__internal__externalCallSelectorN` onto an ABI slot.
- * A lone unsuffixed param is the unique `needsSelectorVerification` slot, which is not always slot 0
- * (closeJob: slot 0 is conditional `__raw__` transfer, slot 1 is `publishJobEvent`).
- */
-export function groupIndexForExternalCallSlot(params: {
-  slot: number;
-  externalCalls: ReadonlyArray<{ callsiteId?: number; occurrence?: string }> | undefined;
-  groupByCallsite: ReadonlyMap<number, number> | undefined;
-  compactGroups: readonly number[];
-}): number | undefined {
-  const call = params.externalCalls?.[params.slot];
-  // A published callsite is slot-stable. Compact child arrays skip omitted conditionals, so
-  // `compactGroups[slot]` would bind a later call onto an earlier unused slot
-  // (`__raw__` transfer). Only treat a *missing* map entry as omitted when the ABI says the
-  // callsite is conditional; a required (`once`) call still falls back positionally.
-  if (call?.callsiteId !== undefined) {
-    const mapped = params.groupByCallsite?.get(call.callsiteId);
-    if (mapped !== undefined) return mapped;
-    if (call.occurrence && call.occurrence !== 'once') return undefined;
-  }
-  return params.compactGroups[params.slot];
-}
-
-/**
- * Map an external-return witness name onto the corresponding external-call ABI slot. Return witness suffixes
- * are compact ordinals among returning calls, while master/selector suffixes address the full call-slot list.
- * For example, calls `[returns, void, returns]` use return witnesses `Idx0` and `Idx1`, which map to slots 0 and 2.
- */
-export function externalReturnParamSlot(
-  paramName: string,
-  externalCalls: ReadonlyArray<{ hasReturnValues?: boolean }> | undefined,
-): number | undefined {
-  const match = paramName.match(/^__internal__externalReturnOutputIdx(\d*)$/);
-  if (!match) return undefined;
-  const returnOrdinal = match[1] === '' ? 0 : Number(match[1]);
-  if (!externalCalls) return returnOrdinal;
-  return externalCalls
-    .map((call, slot) => ({ call, slot }))
-    .filter(({ call }) => call.hasReturnValues)[returnOrdinal]?.slot;
-}
-
 /**
  * These witnesses describe the assembled transaction, not the route which requested it. Route builders
  * may carry provisional values from an isolated probe, but composition can omit conditional calls, fuse groups,
@@ -2556,117 +1545,6 @@ export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boo
     || /^__internal__extcallMasterIdx\d*$/.test(paramName)
     || /^__internal__extcallAnchorIdx\d*$/.test(paramName);
 }
-
-/** Sentinels for a vmap-batch ABI slot when this handler has no planned sorted batch. */
-export function vmapBatchWitnessFallback(paramName: string): Uint8Array | bigint | undefined {
-  if (!paramName.startsWith('__internal__vmapBatch')) return undefined;
-  if (/^__internal__vmapBatchRank_\d+$/.test(paramName)) return 0n;
-  if (paramName.startsWith('__internal__vmapBatchRows_')) return new Uint8Array();
-  if (/^__internal__vmapBatchSlot_\d+$/.test(paramName)) return new Uint8Array(32);
-  if (/^__internal__vmapBatchNext_\d+$/.test(paramName)) return new Uint8Array(32);
-  if (/^__internal__vmapBatchProof_\d+$/.test(paramName)) return -1n;
-  // -1 means an active UPDATE with no separate predecessor output; -2 means no transition.
-  if (/^__internal__vmapBatchPredOut_\d+$/.test(paramName)) return -2n;
-  if (paramName === '__internal__vmapBatchTrailingCount') return 0n;
-  return undefined;
-}
-
-export function selectorParamSlot(
-  paramName: string,
-  externalCalls: ReadonlyArray<{
-    needsSelectorVerification?: boolean;
-    selectorArrayVar?: string;
-  }> | undefined,
-): number {
-  const match = paramName.match(/^__internal__externalCallSelector(\d*)$/);
-  if (!match) return 0;
-  if (match[1] !== '') return Number(match[1]);
-  const explicit = (externalCalls ?? [])
-    .map((call, index) => ({ call, index }))
-    .filter(({ call }) => call.needsSelectorVerification === true && !call.selectorArrayVar);
-  if (explicit.length === 1) return explicit[0].index;
-  const implicit = (externalCalls ?? [])
-    .map((call, index) => ({ call, index }))
-    .filter(({ call }) => call.needsSelectorVerification !== false && !call.selectorArrayVar);
-  return implicit.length === 1 ? implicit[0].index : 0;
-}
-
-type PhysicalExternalCallInputGroup = {
-  masterUtxo: Pick<Utxo, 'txid' | 'vout'>;
-  sharedGroupIndex?: number;
-};
-
-/** Resolve the one physical input owner for logical callsites consuming the same stateful master UTXO. */
-export function physicalExternalCallGroupIndexByMasterOutpoint(
-  groups: readonly PhysicalExternalCallInputGroup[],
-  masterUtxo: Pick<Utxo, 'txid' | 'vout'>,
-): number {
-  const existing = groups.findIndex((group) => (
-    group.masterUtxo.txid.toLowerCase() === masterUtxo.txid.toLowerCase()
-    && group.masterUtxo.vout === masterUtxo.vout
-  ));
-  return existing < 0 ? -1 : (groups[existing].sharedGroupIndex ?? existing);
-}
-
-type PhysicalSelectorGroup = {
-  sharedGroupIndex?: number;
-  delegateCallGroupIndex?: number;
-  functionName: string;
-  externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
-};
-
-/** Bytes argument for a baked `__forward(bytes)` proxy: its implementation selector. */
-const isFunctionSelectorHex = (value: string | undefined): value is string => (
-  !!value && /^[0-9a-fA-F]{8}$/i.test(value)
-);
-
-export function selectProxyForwardInput(
-  logicalSelectorHex: string | undefined,
-  functionArgs: readonly FunctionArgument[] = [],
-): Uint8Array {
-  const arg = functionArgs[0];
-  const argHex = arg instanceof Uint8Array && arg.length === 4 ? binToHex(arg) : undefined;
-  // A shared proxy master is created by the first nested call (often a view) and later retargeted
-  // to the state-writing handler. Prefer that 4-byte functionArgs selector over a stale logical name.
-  if (argHex) return arg as Uint8Array;
-  if (isFunctionSelectorHex(logicalSelectorHex)) return hexToBin(logicalSelectorHex);
-  const got = logicalSelectorHex
-    ?? (arg instanceof Uint8Array ? `${arg.length} bytes` : typeof arg);
-  throw new Error(`Proxy __forward requires a 4-byte implementation selector; got ${got}`);
-}
-
-/** Input index of the co-spent implementation master immediately after a nested proxy state prefix. */
-export function nestedProxyImplementationInputIndex(
-  proxyMasterIndex: number,
-  proxyDataNftCount: number,
-): number {
-  if (!Number.isSafeInteger(proxyMasterIndex) || proxyMasterIndex < 0) {
-    throw new Error('Proxy master index must be a non-negative safe integer');
-  }
-  if (!Number.isSafeInteger(proxyDataNftCount) || proxyDataNftCount < 0) {
-    throw new Error('Proxy data NFT count must be a non-negative safe integer');
-  }
-  return proxyMasterIndex + 1 + proxyDataNftCount;
-}
-
-/** Resolve the selector actually present on a composed co-spend, following shared masters and proxy delegates. */
-export function physicalExternalCallSelectorHex(
-  groups: readonly PhysicalSelectorGroup[],
-  delegateGroups: readonly PhysicalSelectorGroup[],
-  groupIndex: number | undefined,
-): string | undefined {
-  if (groupIndex === undefined) return undefined;
-  const logical = groups[groupIndex];
-  if (!logical) return undefined;
-  const physical = groups[logical.sharedGroupIndex ?? groupIndex] ?? logical;
-  const delegate = physical.delegateCallGroupIndex === undefined
-    ? undefined : delegateGroups[physical.delegateCallGroupIndex];
-  const selected = delegate ?? physical;
-  return selected.externalContract.inner.artifact.abi
-    .find((candidate) => candidate.name === selected.functionName)?.selector;
-}
-
-const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),schema=\[([^\]]*)\]\}$/;
 
 /**
  * One direct call-frame planning row: the handler ABI, its visible arguments and the callsite identity.
@@ -2689,50 +1567,6 @@ export interface RouteExpressionKeyRow {
   /** Exact root-to-row source occurrence transported by the compiled graph. */
   producerPath?: ValueChunkProducerPathDisposition;
   handler: AbiFunction;
-}
-
-/**
- * Resolve the exact source occurrences represented by one compiler-published call edge.
- *
- * Loop cardinality is authoritative only when every array-element argument source names a
- * public array argument and all named arrays have the same runtime length. This is the same
- * source-level proof consumed by the graph worklist; an opaque or inconsistent shape stays
- * unavailable instead of being collapsed to a guessed occurrence zero.
- */
-export function externalCallReachedOccurrenceIndices(
-  call: {
-    occurrence?: 'once' | 'conditional' | 'loop';
-    argSources?: readonly unknown[];
-    minimumOccurrences?: number;
-    maximumOccurrences?: number;
-  },
-  functionArgs: readonly FunctionArgument[],
-): readonly number[] | undefined {
-  if ((call.occurrence ?? 'once') !== 'loop') return Object.freeze([0]);
-  const parameterIndices = new Set<number>();
-  const visit = (value: unknown, seen = new Set<object>()): void => {
-    if (!value || typeof value !== 'object' || seen.has(value as object)) return;
-    seen.add(value as object);
-    const source = value as { kind?: string; paramIndex?: number };
-    if (source.kind === 'arrayElement' && Number.isSafeInteger(source.paramIndex)
-      && source.paramIndex! >= 0) parameterIndices.add(source.paramIndex!);
-    for (const child of Object.values(value)) {
-      if (Array.isArray(child)) child.forEach((item) => visit(item, seen));
-      else visit(child, seen);
-    }
-  };
-  visit(call.argSources);
-  if (parameterIndices.size === 0) return undefined;
-  const lengths = [...parameterIndices].map((parameterIndex) => {
-    const value = functionArgs[parameterIndex];
-    return Array.isArray(value) ? value.length : undefined;
-  });
-  if (lengths.some((length) => length === undefined)
-    || !lengths.every((length) => length === lengths[0])) return undefined;
-  const count = lengths[0]!;
-  if ((call.minimumOccurrences !== undefined && count < call.minimumOccurrences)
-    || (call.maximumOccurrences !== undefined && count > call.maximumOccurrences)) return undefined;
-  return Object.freeze(Array.from({ length: count }, (_, occurrenceIndex) => occurrenceIndex));
 }
 
 const MAX_EXTERNAL_CALL_ITERATIONS = 10_000;
@@ -2796,358 +1630,6 @@ export function evaluateExternalCallAffineIterationDomain<T extends object>(
     counter += step;
   }
   throw new Error('External call iteration domain did not terminate');
-}
-
-/** One producer result has no implicit copy for each later consumer-loop iteration. */
-export function producerResultOccurrenceIndex(call: { callsiteId?: number; occurrence?: string }): number {
-  if (call.occurrence === 'loop') {
-    throw new Error(`Producer callsite ${call.callsiteId ?? 'unknown'} has no per-occurrence identity`);
-  }
-  return 0;
-}
-
-export function repeatedExternalResultNeedsOccurrenceIdentity(
-  call: { callsiteId?: number; hasReturnValues?: boolean; occurrence?: string; resultArrayOutput?: number },
-  consumers: readonly { producerCallsiteId: number }[] | undefined,
-  rows: readonly { sourceIteration: number; occurrenceIndex: number }[],
-): boolean {
-  if (call.occurrence !== 'loop' || !call.hasReturnValues) return false;
-  return rows.some((row) => row.sourceIteration !== row.occurrenceIndex)
-    || (consumers?.some((consumer) => consumer.producerCallsiteId === call.callsiteId) ?? false);
-}
-
-/** Legacy callsites without published IDs are only identical by object identity. */
-export function externalCallMetadataIdentityMatches(
-  left: { callsiteId?: number }, right: { callsiteId?: number },
-): boolean {
-  return left === right || (left.callsiteId !== undefined && left.callsiteId === right.callsiteId);
-}
-
-/** Apply only compiler-published field updates to an ABI value, preserving the caller's object. */
-export function applyAbiArgumentFieldUpdates<T>(
-  original: T,
-  updates: readonly {
-    parameter: string; fieldPath: readonly string[]; source: 'blockTimestamp';
-  }[] | undefined,
-  parameter: string,
-  context: { blockTimestamp?: bigint },
-): T {
-  let value: unknown = original;
-  for (const update of updates ?? []) {
-    if (update.parameter !== parameter || update.source !== 'blockTimestamp'
-      || context.blockTimestamp === undefined || update.fieldPath.length === 0) continue;
-    const replace = (current: unknown, path: readonly string[]): unknown => {
-      if (current === null || typeof current !== 'object' || Array.isArray(current)) return current;
-      const [field, ...rest] = path;
-      if (!Object.hasOwn(current, field)) return current;
-      const member = (current as Record<string, unknown>)[field];
-      const next = rest.length === 0 ? context.blockTimestamp : replace(member, rest);
-      return next === member ? current : { ...current, [field]: next };
-    };
-    value = replace(value, update.fieldPath);
-  }
-  return value as T;
-}
-
-function sameExternalPayloadValue(left: unknown, right: unknown): boolean {
-  if (left instanceof Uint8Array && right instanceof Uint8Array) return binsAreEqual(left, right);
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length && left.every((item, index) => sameExternalPayloadValue(item, right[index]));
-  }
-  if (left && right && typeof left === 'object' && typeof right === 'object') {
-    const keys = Object.keys(left);
-    return keys.length === Object.keys(right).length && keys.every((key) =>
-      sameExternalPayloadValue((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
-  }
-  return left === right;
-}
-
-export function assertExternalCallRowPayload(
-  callsiteId: number, occurrenceIndex: number,
-  existing: { args: readonly unknown[]; targetLockingBytecode: string; sourceEffectOrdinal?: number },
-  reached: { args: readonly unknown[]; targetLockingBytecode: string; sourceEffectOrdinal?: number },
-): void {
-  if (!sameExternalPayloadValue(existing.args, reached.args)
-    || existing.targetLockingBytecode.toLowerCase() !== reached.targetLockingBytecode.toLowerCase()
-    || existing.sourceEffectOrdinal !== reached.sourceEffectOrdinal) {
-    throw new Error(`External callsite ${callsiteId} occurrence ${occurrenceIndex} reuses a row with different target, arguments, or effect identity`);
-  }
-}
-
-export function assertPreparedExternalCallRowReconciliation(
-  callsiteId: number, occurrenceIndex: number,
-  existing: {
-    parent?: number; sourceCallsiteId?: number; occurrenceIndex?: number; sourceLogicalIndex?: number;
-    producerPathKey?: string; args: readonly unknown[]; targetLockingBytecode: string;
-    sourceEffectOrdinal?: number; contract: object;
-  },
-  reached: { args: readonly unknown[]; targetLockingBytecode: string; sourceEffectOrdinal?: number },
-  expected: { parent: number; producerPathKey: string },
-  physical: { contract: object; lockingBytecode: string; hasMaster: boolean },
-): void {
-  if (existing.parent !== expected.parent || existing.sourceCallsiteId !== callsiteId
-    || existing.occurrenceIndex !== occurrenceIndex || existing.sourceLogicalIndex !== undefined
-    || existing.producerPathKey !== expected.producerPathKey || existing.contract !== physical.contract
-    || !physical.hasMaster
-    || existing.targetLockingBytecode.toLowerCase() !== physical.lockingBytecode.toLowerCase()) {
-    throw new Error(`External callsite ${callsiteId} occurrence ${occurrenceIndex} has a different stable identity or physical owner`);
-  }
-  assertExternalCallRowPayload(callsiteId, occurrenceIndex, existing, reached);
-}
-
-/**
- * Encode the earlier same-key array pushes of a repeated route. The route executes only its final
- * matching handler body; the compiler-provided leading-push argument replays earlier rows against the same
- * authenticated collection entry before that final push.
- */
-
-export function encodeLeadingRouteArrayPushes(params: {
-  rowArguments: readonly RouteExpressionKeyRow[];
-  collection: string;
-  valueType: string;
-  structs: Artifact['structs'];
-  /** Evaluate the compiler-authenticated element recipe in this row's exact ABI/state environment. */
-  resolveElement?: (
-    row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
-  ) => Uint8Array | undefined;
-}): Uint8Array | undefined {
-  return foldLeadingRouteArrayPushes(params)?.leading;
-}
-
-/** Apply every selected-route push to an authenticated pre-state array, including the terminal row. */
-export function encodeCompleteRouteArrayPushes(
-  params: Parameters<typeof foldLeadingRouteArrayPushes>[0] & { initialValue?: Uint8Array },
-): Uint8Array | undefined {
-  const folded = foldCompleteRouteArrayPushes(params);
-  if (!folded) return undefined;
-  return params.initialValue === undefined
-    ? folded.complete : concatenateEncodedArrays(params.initialValue, folded.complete);
-}
-
-/** `AbiDecodeAtNode{data=id:rowArgs,index=N,schema=[...]}` → argument index and handler arity. */
-export function parseRowArgsDecodeLabel(label: string | undefined): {
-  argumentIndex: number;
-  schemaArity: number;
-} | undefined {
-  const decoded = label?.match(ROW_ARGS_DECODE_LABEL);
-  if (!decoded) return undefined;
-  return {
-    argumentIndex: Number(decoded[1]),
-    schemaArity: decoded[2] === '' ? 0 : decoded[2].split(',').length,
-  };
-}
-
-export function visibleHandlerInputs<T extends { name: string }>(inputs: readonly T[]): T[] {
-  return inputs.filter((input) => !input.name.startsWith('__internal__'));
-}
-
-function canonicalAbiFunctionSignature(fn: AbiFunction): string {
-  return `${fn.name}(${visibleHandlerInputs(fn.inputs).map((input) => input.type).join(',')})`;
-}
-
-/** Canonical eight-character form of a four-byte function selector, or `undefined` for anything else. */
-function canonicalPreparedSelector(selector: string): string | undefined {
-  const normalized = selector.replace(/^0x/i, '').toLowerCase();
-  return /^[0-9a-f]{8}$/.test(normalized) ? normalized : undefined;
-}
-
-/**
- * Resolve the exact ABI entry point one prepared child invocation executes.
- *
- * Overloads share a name, so the first ABI entry matching a name can name a different dispatch target than the
- * caller meant while still yielding a plausible four-byte selector. Prepared producer identity must never come
- * from a name alone, so authority is taken only from:
- *
- * 1. the selector the compiler published for this callsite, matched together with the function name exactly as
- *    the compiled graph resolves it, or
- * 2. a name whose matching entries all agree on one selector, which makes the name itself exact.
- *
- * A published selector is authoritative when present, so a malformed one, or one no artifact advertises,
- * yields `undefined` rather than falling back to a name: the planner would refuse that pair, and answering it
- * with a different entry would transport authority for the wrong dispatch target. Anything else - no published
- * selector with two distinct overload selectors under one name, or an undeclared name - also yields
- * `undefined`, leaving the caller without authority rather than guessing. The legacy name-based selection still
- * sizes layouts and returns; only this identity is withheld.
- */
-export function resolvePreparedProducerEntry(
-  artifacts: readonly Artifact[],
-  name: string,
-  compilerSelector?: string,
-): AbiFunction | undefined {
-  if (compilerSelector !== undefined) {
-    const normalized = canonicalPreparedSelector(compilerSelector);
-    if (normalized === undefined) return undefined;
-    for (const artifact of artifacts) {
-      const exact = artifact.abi.find((candidate) => candidate.name === name
-        && candidate.selector?.toLowerCase() === normalized);
-      if (exact) return exact;
-    }
-    return undefined;
-  }
-  for (const artifact of artifacts) {
-    const candidates = artifact.abi.filter((candidate) => candidate.name === name);
-    if (candidates.length === 0) continue;
-    const selectors = new Set(candidates.map((candidate) => candidate.selector?.toLowerCase() ?? ''));
-    if (selectors.size === 1) return candidates[0];
-  }
-  return undefined;
-}
-
-/** Prefer source-level arguments only when they exactly cover the function's visible ABI. */
-export function selectVisibleCallArguments<T>(
-  inputs: readonly { name: string }[],
-  logicalArguments: readonly T[] | undefined,
-  fallbackArguments: readonly T[],
-): readonly T[] {
-  return logicalArguments?.length === visibleHandlerInputs(inputs).length
-    ? logicalArguments : fallbackArguments;
-}
-
-export interface DirectMappingReadPlan {
-  collection: string;
-  keyArgumentIndices: readonly number[];
-  keyTypes: readonly string[];
-}
-
-const canonicalIntegerAbiType = (type: string): string | undefined => {
-  if (type === 'uint') return 'uint256';
-  if (type === 'int') return 'int256';
-  return /^(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|bigint)$/.test(type)
-    ? type : undefined;
-};
-
-/** Resolve a direct mapping-return shortcut from compiler proof, never source names. */
-export function directMappingReadPlan(
-  artifact: Pick<Artifact, 'abi' | 'stateLayout'>,
-  functionName: string,
-): DirectMappingReadPlan | undefined {
-  const functions = artifact.abi.filter((candidate) => candidate.name === functionName);
-  if (functions.length !== 1) return undefined;
-  const [fn] = functions;
-  const proof = fn?.directMappingReturn;
-  if (!fn || !proof || fn.writesState !== false || fn.outputs?.length !== 1) return undefined;
-  const access = fn.entryAccesses;
-  if (access?.length !== 1 || access[0].collection !== proof.collection
-    || access[0].operations.length !== 1 || access[0].operations[0] !== 'read') {
-    return undefined;
-  }
-  if (proof.keyParams.length < 1 || proof.keyParams.length > 2
-    || access[0].keyParams.length !== proof.keyParams.length
-    || access[0].keyParams.some((name, index) => name !== proof.keyParams[index])) return undefined;
-  const collection = artifact.stateLayout?.collections?.find((candidate) => candidate.name === proof.collection);
-  if (!collection || collection.kind !== 'mapping') return undefined;
-  const keyTypes = collection.keyTypes ?? [collection.keyType];
-  if (keyTypes.length !== proof.keyParams.length) return undefined;
-  const outputIntegerType = canonicalIntegerAbiType(fn.outputs[0].type);
-  const valueIntegerType = canonicalIntegerAbiType(collection.valueType);
-  const exactStructType = fn.outputs[0].type === collection.valueType
-    && artifact.stateLayout?.structs?.some((struct) => struct.name === collection.valueType) === true;
-  if (outputIntegerType === undefined || valueIntegerType === undefined
-    ? !exactStructType : outputIntegerType !== valueIntegerType) return undefined;
-  const visibleInputs = visibleHandlerInputs(fn.inputs);
-  const keyArgumentIndices = proof.keyParams.map((name) => visibleInputs.findIndex((input) => input.name === name));
-  if (keyArgumentIndices.some((index) => index < 0) || new Set(keyArgumentIndices).size !== keyArgumentIndices.length) {
-    return undefined;
-  }
-  if (keyArgumentIndices.some((argumentIndex, index) => {
-    const inputType = canonicalIntegerAbiType(visibleInputs[argumentIndex]!.type)
-      ?? visibleInputs[argumentIndex]!.type;
-    const keyType = canonicalIntegerAbiType(keyTypes[index]!) ?? keyTypes[index];
-    return inputType !== keyType;
-  })) return undefined;
-  return { collection: collection.name, keyArgumentIndices, keyTypes };
-}
-
-/** Resolve a fixed entry access by its compiler-owned physical slot, including pre-slotIndex artifacts. */
-function entryAccessAt(fn: Pick<AbiFunction, 'entryAccesses'> | undefined, slotIndex: number): EntryAccessAbi | undefined {
-  return fn?.entryAccesses?.find((access, denseIndex) => (access.slotIndex ?? denseIndex) === slotIndex);
-}
-
-/**
- * Repeating an identical absolute counter-loop write is observationally idempotent: every row proves the same
- * old-to-new entry transition, so the rows may share one physical journal settlement. Relative updates (`+`/`-`),
- * differing arguments, and handlers with any other owner-local state remain row-scoped because replaying one
- * transition would not represent their sequential semantics.
- */
-export function canShareIdempotentCounterLoopSettlement(params: {
-  rows: readonly RouteExpressionKeyRow[];
-  structs: Artifact['structs'];
-  dataNftCount: number;
-}): boolean {
-  if (params.rows.length < 2) return false;
-  const identities = params.rows.map((row): string | undefined => {
-    const visible = visibleHandlerInputs(row.handler.inputs);
-    if (visible.length !== row.args.length) return undefined;
-    const encoded = visible.map((input, index) => (
-      encodeFunctionArgument(row.args[index], input.type, params.structs)
-    ));
-    if (encoded.some((value) => !(value instanceof Uint8Array))) return undefined;
-    return `${row.handler.selector ?? row.handler.name}:`
-      + encoded.map((value) => binToHex(value as Uint8Array)).join(':');
-  });
-  const identity = identities[0];
-  return identity !== undefined && identities.every((candidate) => candidate === identity)
-    && params.rows.every((row) => {
-      const loops = row.handler.sortedUpsertLoopInfo ?? [];
-      const requiredNfts = row.handler.requiredNftIndices
-        ?? Array.from({ length: params.dataNftCount }, (_unused, index) => index);
-      return loops.length > 0
-        && loops.every((loop) => (
-          (loop.op === 'delete' || (loop.op === 'set'
-            && loop.mutation === undefined
-            && loop.valueRuntimeExpression !== true
-            && loop.valueRuntimeLocal === undefined
-            && (loop.valueArrayParam !== undefined
-              || loop.valueScalarParam !== undefined
-              || loop.valueConst !== undefined)))
-          && loop.varyingArrayParam.startsWith('__internal__vmapCounterPerm_')
-        ))
-        && requiredNfts.length === 0
-        && (row.handler.entryAccesses?.length ?? 0) === 0
-        && (row.handler.dynamicWrites?.length ?? 0) === 0
-        && (row.handler.sortedInsertLoopInfo?.length ?? 0) === 0
-        && (row.handler.sortedInsertLoops?.length ?? 0) === 0
-        && (row.handler.entryLoopWrites?.length ?? 0) === 0
-        && row.handler.usesMsgSender !== true;
-    });
-}
-
-/**
- * Select the route row that owns an expression-keyed entry slot.
- * Later rows decode the same `rowArgs` label shape; matching is by collection + handler arity,
- * then an optional `_rN` hint, then the handler's own expression label.
- */
-export function matchingRouteRowsForExpressionKey(params: {
-  collection: string;
-  schemaArity: number;
-  expressionLabel?: string;
-  rowArguments: readonly RouteExpressionKeyRow[];
-  rowIndexHint?: number;
-}): RouteExpressionKeyRow | undefined {
-  const matching = params.rowArguments.filter((row) => {
-    const visible = visibleHandlerInputs(row.handler.inputs);
-    return visible.length === params.schemaArity
-      && (row.handler.entryAccesses ?? []).some((candidate) => candidate.collection === params.collection);
-  });
-  if (matching.length === 0) return undefined;
-  if (matching.length === 1) return matching[0];
-  if (params.rowIndexHint !== undefined) {
-    const hinted = params.rowArguments[params.rowIndexHint];
-    if (hinted && matching.includes(hinted)) return hinted;
-  }
-  if (params.expressionLabel) {
-    const byLabel = matching.filter((row) => (row.handler.entryAccesses ?? []).some((candidate) => (
-      candidate.collection === params.collection
-      && (candidate.keySources ?? []).some((source) => source.expressionLabel === params.expressionLabel)
-    )));
-    if (byLabel.length === 1) return byLabel[0];
-    if (params.rowIndexHint !== undefined && byLabel[params.rowIndexHint]) {
-      return byLabel[params.rowIndexHint];
-    }
-  }
-  throw new Error(
-    `Batch expression key for '${params.collection}' matches multiple active rows`,
-  );
 }
 
 /**
@@ -3229,9 +1711,6 @@ function unresolvableLabelLocals(
   }
   return names;
 }
-
-/** Current builder-pass id; a stall diagnostic reports it so the stall's own plans can be isolated. */
-export const peekBuilderBuildId = peekBuildId;
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // Backing for inner / categoryId. When constructed from an ADDRESS the category is unknown until the first
@@ -10418,11 +8897,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const delegateExternalGroupByCallsite = lowLevelNestedCaches.delegateExternalGroupByCallsite;
     const routeValueChunkProducerEpochByPhysicalGroup =
       lowLevelNestedCaches.routeValueChunkProducerEpochByPhysicalGroup;
-    const lateTransitiveGroupIndices = lowLevelNestedCaches.lateTransitiveGroupIndices;
     const nestedDelegateProxyGroupByLowLevel = lowLevelNestedCaches.nestedDelegateProxyGroupByLowLevel;
     const selectActiveRootDelegateGroup = lowLevelNestedCaches.selectActiveRootDelegateGroup;
     let preparedAtomicNodes = lowLevelNestedCaches.preparedAtomicNodes;
-    const preparedAtomicNodeByExternalGroup = lowLevelNestedCaches.preparedAtomicNodeByExternalGroup;
     const latestPreparedAtomicNodeByPhysicalGroup =
       lowLevelNestedCaches.latestPreparedAtomicNodeByPhysicalGroup;
     // Materialization initializes/replaces the node list after cache creation. Resolve the parent here,
@@ -10546,7 +9023,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   preparedChildProducerPath,
                   selectProxyForwardInput,
                   resolvePreparedProducerEntry,
-                  externalReturnsForCallsites,
                   externalCallReachedOccurrenceIndices: (...a: any[]) => (
                     externalCallReachedOccurrenceIndices as any
                   )(...a),
@@ -10582,7 +9058,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   allGroupEcSlots,
                   allGroupParentIndices,
                   routeValueChunkProducerEpochByPhysicalGroup,
-                  preparedAtomicNodeByExternalGroup,
                   latestPreparedAtomicNodeByPhysicalGroup,
                   nestedSortedListCache,
                   valueChunkWriteStagingSession,
@@ -10824,7 +9299,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           allGroupEcSlots,
           delegateExternalGroupIndices,
           delegateExternalGroupByCallsite,
-          lateTransitiveGroupIndices,
           pendingDelegateInputFills,
           pendingAnchorFills,
           pendingExternalCallInputFills,
@@ -11849,18 +10323,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         entryAbiFunction,
         abiFunction,
         externalCallUtxoGroups,
-        preparedAtomicNodes,
-        preparedAtomicNodeByExternalGroup,
       },
     );
     // return-emit-complete (size-guarded end marker for materializeCreateBuilderReturnEmit)
 
-    finishCreateBuilderAtomicPromotionImpl({
-      builder,
+    refuseRepeatedOwnerCallsImpl({
       preparedAtomicNodes,
       functionName,
     });
-    // atomic-promotion-complete (size-guarded end marker for finishCreateBuilderAtomicPromotion)
+    // repeated-owner-refusal-complete (size-guarded end marker for refuseRepeatedOwnerCalls)
 
     timing('complete');
     // DS-6: a node targets share sits at the first one's slot; where the probe refuses that, another target ran.

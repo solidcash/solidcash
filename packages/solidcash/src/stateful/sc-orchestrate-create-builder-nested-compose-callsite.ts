@@ -25,9 +25,6 @@ import {
 import {
   finishCreateBuilderNestedCompose as finishCreateBuilderNestedComposeImpl,
 } from './sc-finish-create-builder-nested-compose.js';
-import {
-  canonicalValueChunkProducerPathContext,
-} from './ValueChunkProducerIdentity.js';
 
 export type OrchestrateCreateBuilderNestedComposeCallsiteHost = {
   readonly categoryId: string;
@@ -50,7 +47,6 @@ export type OrchestrateCreateBuilderNestedComposeCallsiteHost = {
   describeValueChunkWrites: (...args: any[]) => any;
   selectProxyForwardInput: (...args: any[]) => any;
   resolvePreparedProducerEntry: (...args: any[]) => any;
-  externalReturnsForCallsites: (...args: any[]) => any;
   externalCallReachedOccurrenceIndices: (...args: any[]) => any;
   planExternalCallOccurrences: (...args: any[]) => Promise<any>;
   [key: string]: any;
@@ -101,7 +97,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     allGroupEcSlots: any[];
     allGroupParentIndices: any[];
     routeValueChunkProducerEpochByPhysicalGroup: WeakMap<any, number>;
-    preparedAtomicNodeByExternalGroup: Map<number, number>;
     latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
     nestedSortedListCache: Map<string, any>;
     valueChunkWriteStagingSession: any;
@@ -116,7 +111,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     preparedAtomicNodes, rootProducerPath, externalCallUtxoGroups,
     lowLevelCallUtxoGroups, groupProxyMasterIndices, nestedDelegateProxyGroupByLowLevel,
     timingEnabled, functionName, routeValueChunkProducerEpochByPhysicalGroup,
-    preparedAtomicNodeByExternalGroup, latestPreparedAtomicNodeByPhysicalGroup,
+    latestPreparedAtomicNodeByPhysicalGroup,
     nestedSortedListCache, valueChunkWriteStagingSession,
     publicSelfAddress, nestedProxyReadCache, memoizeGraphPlanningProducerResult,
   } = params;
@@ -130,7 +125,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   const nestedAddressUtxos = host.nestedAddressUtxos;
   const selectProxyForwardInput = host.selectProxyForwardInput;
   const resolvePreparedProducerEntry = host.resolvePreparedProducerEntry;
-  const externalReturnsForCallsites = host.externalReturnsForCallsites;
   const externalCallReachedOccurrenceIndices = host.externalCallReachedOccurrenceIndices;
   const describeValueChunkWrites = host.describeValueChunkWrites;
   const concatBytes = host.concatBytes ?? ((...a: any[]) => a[0]);
@@ -185,7 +179,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   }
   const {
     nestedSources,
-    resolvedTargetLockingBytecode,
     proxyCallee: resolvedProxyCallee,
     callee: resolvedCallee,
     resolvedRawFunctionName,
@@ -202,7 +195,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   const plannedRoute = await planCreateBuilderNestedComposeRouteImpl(
     {
       resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
-      externalReturnsForCallsites,
       selectProxyForwardInput,
       resolvePreparedProducerEntry,
       externalCallReachedOccurrenceIndices: (...a: any[]) => (
@@ -221,8 +213,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       delegateFn,
       onChainState,
       delegateSelfAddress,
-      publishedNestedExternalCalls,
-      preparedAtomicNodes,
       proxyCallee,
       callee,
       nestedArgs,
@@ -240,9 +230,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       callInfoContract: callInfo.contract,
     },
   );
-  const calleeRouteArtifact = plannedRoute.calleeRouteArtifact;
-  const resolveGraphNestedReturns = plannedRoute.resolveGraphNestedReturns;
-  const resolveGraphNestedArgs = plannedRoute.resolveGraphNestedArgs;
   let childState = plannedRoute.childState;
   const childLayout = plannedRoute.childLayout;
   const childRequired = plannedRoute.childRequired;
@@ -357,7 +344,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   let latestRouteValueChunkProducerBinding: {
     claims: readonly any[];
     stateOwner: { categoryId: string; lockingBytecode: string };
-    productions: NonNullable<any['valueChunkProductions']>;
   } | undefined;
   const publishRouteValueChunkProducerBinding = (
     binding: typeof latestRouteValueChunkProducerBinding,
@@ -372,23 +358,10 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       alias.valueChunkStateOwner = binding?.stateOwner;
     }
   };
-  const valueChunkProductionsForPath = (
-    producerPath: any | undefined,
-  ): NonNullable<any['valueChunkProductions']> => {
-    const producerPathKey = producerPath?.status === 'complete'
-      ? canonicalValueChunkProducerPathContext(producerPath.context) : undefined;
-    if (!producerPathKey) return [];
-    return latestRouteValueChunkProducerBinding?.productions.filter(
-      (production: any) => canonicalValueChunkProducerPathContext({
-        version: 1, sourcePath: production.claim.producer.sourcePath,
-      }) === producerPathKey,
-    ) ?? [];
-  };
   let refreshChunkableRouteWitnesses: ((
     rowArguments: readonly any[] | undefined,
     finalVisibleArgs: readonly FunctionArgument[],
     stagingSession?: any,
-    resultUpdate?: { producerPath: any; results: ReadonlyMap<number, FunctionArgument> },
   ) => { internalArgs: Record<string, FunctionArgument>; payloadBytes: number }) | undefined;
   if (timingEnabled) console.error('nested-callsite-layout', {
     callsiteId: nested.callsiteId, sharedGroupIndex, childWritesState,
@@ -451,7 +424,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         refreshChunkableRouteWitnesses,
       },
       publishRouteValueChunkProducerBinding,
-      valueChunkProductionsForPath,
       nestedSortedListCache,
       nestedAddressUtxos,
       delegateCallerIdentity,
@@ -520,7 +492,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   {
     const finished = finishCreateBuilderNestedComposeImpl(
       {
-        resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
         describeValueChunkWrites,
         preparedChildProducerPath: (...a: any[]) => (host.preparedChildProducerPath as any)(...a),
       },
@@ -532,24 +503,14 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         childExternalGroupIndex,
         childCompilerInternalArgs,
         childFunctionName,
-        nestedSources,
         directInvocationRows,
-        resolveGraphNestedReturns,
-        resolveGraphNestedArgs,
         graphNestedArgs,
-        delegateVisibleArgs,
-        delegateVisibleInputs,
-        callInfoContract: callInfo.contract,
-        onChainState,
         proxyCallee,
         callee,
-        refreshChunkableRouteWitnesses,
-        valueChunkProductionsForPath,
         publishRouteValueChunkProducerBinding,
         latestRouteValueChunkProducerBinding,
         routeValueChunkProducerEpochByPhysicalGroup,
         preparedAtomicNodes,
-        preparedAtomicNodeByExternalGroup,
         latestPreparedAtomicNodeByPhysicalGroup,
         externalCallUtxoGroups,
         lowLevelCallUtxoGroups,
@@ -562,12 +523,8 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
           allGroupEcSlots,
           allGroupParentIndices,
         },
-        delegateSelfAddress,
-        resolvedTargetLockingBytecode,
         resolvedRawFunctionName,
         producerSelector,
-        calleeRouteArtifact,
-        delegateCallerIdentity,
       },
     );
     routeValueChunkProducerAliases = finished.routeValueChunkProducerAliases;

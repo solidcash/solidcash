@@ -7,7 +7,6 @@ import { type AbiFunction, type EventDefinitionAbi, type StateValue } from '@sol
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { RuntimeCallMetadata } from './runtime-call-metadata.js';
 import { autoWireLowLevelCalls, type AutoWireLowLevelCallsHost } from './sc-auto-wire-low-level-calls.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
 import type {
@@ -358,9 +357,6 @@ export async function applyOverrides(
   // container's units (a state write, an event) was derived from 0 and would not match the sent call. In each
   // case, re-derive only when new context has been added and no manual .setState() was called.
   const vmErrored = !!(builder as any).__vmErrored;
-  const transparentAtomicPromotion = ((builder as StatefulTransactionBuilder & {
-    __preparedAtomicCalls?: readonly RuntimeCallMetadata[];
-  }).__preparedAtomicCalls?.length ?? 0) > 0;
   const depositUnseen = host.containerDepositAmount > 0n || host.tokenContainerDeposits.length > 0;
   const shouldReDerive = (!derived || vmErrored || depositUnseen) && host.stateOverrides.length === 0;
   if (shouldReDerive) {
@@ -458,11 +454,6 @@ export async function applyOverrides(
           })),
         });
       }
-      // Atomic graph composition deliberately begins with placeholder return values, so a caller whose state
-      // update depends on a callee result cannot derive its chunks in the first owner-local probe. The composer
-      // builds those probes without a local fee tail, evaluates the complete graph, and independently refuses
-      // a stable/final assembly containing any unresolved chunk. Standalone sends retain this fail-closed gate.
-      if (transparentAtomicPromotion) continue;
       const derivationError = (builder as any).__derivationError;
       // A covenant OP_VERIFY is the function rejecting (e.g. registerUser pubkey length).
       // Do not wrap that as a chunk-layout construction failure — revertedWith cannot match.
@@ -485,7 +476,7 @@ export async function applyOverrides(
   // silently building a transaction with dummy amounts the covenant would reject.
   const expectedSatoshiTransfers = (builder as any).__expectedTransferCount ?? 0;
   const expectedFtTransfers = (builder as any).__expectedFtTransferCount ?? 0;
-  if (!transparentAtomicPromotion && expectedSatoshiTransfers > 0 && effectiveTransfers.length === 0
+  if (expectedSatoshiTransfers > 0 && effectiveTransfers.length === 0
       && !(builder as any).__derivedTransfers) {
     const derivationError = (builder as any).__derivationError as Error | undefined;
     // A covenant OP_VERIFY is a revert, not a missing transfer slot. Surface it so
@@ -500,7 +491,7 @@ export async function applyOverrides(
       + detail + ' Use .transfer() to provide transfer outputs manually.',
     );
   }
-  if (!transparentAtomicPromotion && expectedFtTransfers > 0 && host.tokenContainerTransfers.length === 0
+  if (expectedFtTransfers > 0 && host.tokenContainerTransfers.length === 0
       && !(builder as any).__derivedTokenContainerTransfers) {
     const derivationError = (builder as any).__derivationError;
     const detail = derivationError ? ` Reason: ${derivationError.message}` : '';
@@ -511,7 +502,7 @@ export async function applyOverrides(
     );
   }
   const expectedNftTransfers = (builder as any).__expectedNftTransferCount ?? 0;
-  if (!transparentAtomicPromotion && expectedNftTransfers > 0 && host.tokenContainerTransferNfts.length === 0
+  if (expectedNftTransfers > 0 && host.tokenContainerTransferNfts.length === 0
       && !(builder as any).__derivedTokenContainerTransferNfts) {
     const derivationError = (builder as any).__derivationError;
     const detail = derivationError ? ` Reason: ${derivationError.message}` : '';

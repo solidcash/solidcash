@@ -1446,8 +1446,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
     const input = deployAbi.inputs[finalArgs.length];
     if (input.name === '__internal__dynamicChunkInputBase'
       || input.name === '__internal__dynamicChunkOutputBase'
-      || input.name === '__internal__valueChunkOutputBase'
-      || input.name === '__internal__activeVerifierIndex') {
+      || input.name === '__internal__valueChunkOutputBase') {
       finalArgs = [...finalArgs, -1n];
     } else if (runtimeLoopPermutation(input.name) !== undefined) {
       finalArgs = [...finalArgs, runtimeLoopPermutation(input.name)!];

@@ -32,7 +32,6 @@ function fixture(): {
     internalArgNames: ['__internal__valueChunkOutputBase'],
     valueChunkOutputBase: 5,
     valueChunkWrites: [write(5, '11'.repeat(32)), write(10, '22'.repeat(32))],
-    continuationResourceClaims: [{ bandOffset: 5, chunkCount: 2 }, { bandOffset: 10, chunkCount: 2 }],
     internalArgs: { __internal__valueChunkOutputBase: 5n },
     refreshInternalArgs: refresh,
   } as unknown as ExternalCallUtxoGroup;
@@ -56,7 +55,6 @@ describe('sparse continuation suffix rebinding', () => {
     rebindLateValueSuffixAfterInsertion(host, builder, 3);
     expect(carrier.valueChunkOutputBase).toBe(6);
     expect(carrier.valueChunkWrites?.map((write) => write.outputBase)).toEqual([6, 11]);
-    expect(carrier.continuationResourceClaims?.map((claim) => claim.bandOffset)).toEqual([6, 11]);
     expect(refresh).toHaveBeenCalledWith(
       { __internal__valueChunkOutputBase: 6n },
       expect.objectContaining({ shiftPredOut: false }),
@@ -68,7 +66,6 @@ describe('sparse continuation suffix rebinding', () => {
     rebindLateValueSuffixAfterInsertion(host, builder, 8);
     expect(carrier.valueChunkOutputBase).toBe(5);
     expect(carrier.valueChunkWrites?.map((write) => write.outputBase)).toEqual([5, 11]);
-    expect(carrier.continuationResourceClaims?.map((claim) => claim.bandOffset)).toEqual([5, 11]);
     expect(refresh).not.toHaveBeenCalled();
   });
 });

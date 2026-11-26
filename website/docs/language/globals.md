@@ -102,6 +102,9 @@ contract's satoshi container in this transaction's inputs, and `this.outState.ba
 outputs. For any other `address`, `addr.balance` sums the values of this transaction's inputs locked to `addr`; it
 is not a chain-wide balance. A state variable named `balance` hides the built-in `this.balance`.
 
+An ordinary direct call compiled with a `this.balance` slot co-spends the container when a coin is available.
+The SDK recreates the coin at the same value when the call only reads the balance. An empty container reads as zero.
+
 
 ### tx.version
 ```solidity

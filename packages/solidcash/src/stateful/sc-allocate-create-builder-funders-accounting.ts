@@ -214,14 +214,13 @@ export async function allocateCreateBuilderFunders(
     ).length;
     // Dense placement puts a loaded container UTXO at its published offset. A funder
     // reserved for that same slot stays unconsumed and is appended past the balanced
-    // block. An empty slot still needs the pad: an inactive route, and trailing
-    // geometry whose container was not loaded into the slot.
+    // block. An empty slot still needs a pad when the layout can leave it inactive,
+    // including a balance read before the first deposit.
     const inactiveSatoshiContainer = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
       ?.messageBusActiveSatoshiContainer === false;
     const containerOccupiesPublishedSlot = builder.hasLoadedSatoshiContainer();
-    if ((trailingGeometryNeedsReturnSlot || inactiveSatoshiContainer)
-      && !containerOccupiesPublishedSlot
-      && effectiveBlockLayout.slots.some((slot) => slot.kind === 'satoshiContainer')) {
+    if (!containerOccupiesPublishedSlot && effectiveBlockLayout.slots.some((slot) => slot.kind === 'satoshiContainer'
+      && (slot.conditional || trailingGeometryNeedsReturnSlot || inactiveSatoshiContainer))) {
       neededFunders += 1;
     }
     // A delegated sorted INSERT consumes fewer predecessor inputs than the entry outputs it creates. Legacy

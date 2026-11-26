@@ -37,7 +37,8 @@
   traced the bus and its preflight are gone (docs/compiler-diagnostics.md lists the live ones).
 - The bus's feature switches `SOLIDC_OWNER_ALT_ANCHOR` and `SOLIDC_HANDLER_BAND_MODEL`, the `ownerAltAnchor` and
   `handlerBandModel` options and the `@solidcash/solidc` exports `resolveSolidcFeatureFlags`,
-  `solidcFeatureIdentityBits` and `SolidcFeatureFlags` are removed; a strict-env run now refuses the two switches.
+  `solidcFeatureIdentityBits` and `SolidcFeatureFlags` are removed; passing either option is refused
+  (`REMOVED_COMPILER_OPTION`) and a strict-env run refuses the two switches.
 
 ## 0.52.1
 

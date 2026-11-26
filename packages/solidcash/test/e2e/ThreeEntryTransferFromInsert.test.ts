@@ -11,6 +11,10 @@ import { addressToLockScript } from '../../src/utils.js';
  * "starts with the proof slot and points at some later entry" swapped the owner UPDATE into the NEW's
  * coordinate. The next probe then saw an update where it expected NEW, never revealed the node, and the final
  * spend failed the entry comparison.
+ *
+ * The spender is the identity the caller presents as msg.sender: a direct contract's execution lock, which its
+ * `getAddress()` string resolves to through the deployment registry. The CREATE lock decoded from that string is
+ * another key, presented only by the removed bus's graph context, so an allowance named by it is absent here.
  */
 
 const TOKEN = `
@@ -65,10 +69,10 @@ describe('three-entry transferFrom insert', () => {
     const caller = await getContractFactory(callerArtifact, owner).deploy();
     const ownerIdentity = addressToLockScript(owner.getAddress());
     const recipientIdentity = addressToLockScript(recipient.getAddress());
-    const callerIdentity = addressToLockScript(await caller.getAddress());
+    const callerIdentity = addressToLockScript(caller.address);
 
     await (token as any).mint(ownerIdentity, 100n).send();
-    await (token as any).approve(callerIdentity, 100n).send();
+    await (token as any).approve(await caller.getAddress(), 100n).send();
     // The recipient holds no entry yet: its balance write is a cold INSERT in the same batch as the allowance
     // and owner-balance UPDATEs.
     await (caller as any).pull(

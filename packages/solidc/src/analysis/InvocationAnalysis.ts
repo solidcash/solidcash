@@ -69,15 +69,15 @@ export function walkInvocationAst(
   visit(value);
   if (value instanceof TryCatchNode) {
     // BCH script failure aborts evaluation, so catches are not executable paths. Keep every footprint and
-    // admission survey aligned with code generation by walking only the operation and successful try body.
+    // effect survey aligned with code generation by walking only the operation and successful try body.
     walkInvocationAst(value.expression, visit, seen, options);
     walkInvocationAst(value.tryBlock, visit, seen, options);
     return;
   }
   if (options.pruneLiteralDeadControlFlow && value instanceof BranchNode
     && value.condition instanceof BoolLiteralNode) {
-    // Auto-selection asks whether a graph edge can execute. Keep normal analysis conservative; only this
-    // explicit opt-in ignores the arm that a literal condition makes unreachable.
+    // Normal analysis stays conservative; only this explicit opt-in ignores the arm that a literal condition
+    // makes unreachable.
     const active = value.condition.value ? value.ifBlock : value.elseBlock;
     if (active) walkInvocationAst(active, visit, seen, options);
     return;
@@ -283,7 +283,7 @@ export function analyseFunctionFootprint(
         const bareReadName = bareRead?.constructor.name === 'IdentifierNode' ? bareRead.name : undefined;
         if (kind === 'StateAccessNode' && resourceName) directReads.add(`state:${resourceName}`);
         // Before SymbolTableTraversal, Solidity-compatible `x` and `x = value` state syntax is represented as
-        // ordinary identifiers/assignments. Keep footprint admission representation-independent by recognizing
+        // ordinary identifiers/assignments. Keep the footprint representation-independent by recognizing
         // names from the caller-supplied contract state namespace, with the same local-shadow guard used by bare
         // collection analysis. Explicit `this.x` already arrives as StateAccess/StateAssign and needs no context.
         else if (node instanceof AssignNode && node.identifier instanceof IdentifierNode
@@ -319,8 +319,7 @@ export function analyseFunctionFootprint(
         else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode'
           || isPreSemanticAddressValueTransfer(node)) {
           // Solidity `to.transfer(1)` / `to.send(1)` parse as `to.transfer` / `to.send` FunctionCalls until
-          // SymbolTableTraversal rewrites them. Without this, the compiler-generated route never clones the handler as a
-          // satoshi-transfer effect and later inlines the rewrite with no transfer slots.
+          // SymbolTableTraversal rewrites them. Without this, the footprint misses their satoshi-transfer effect.
           directEffects.add('value');
         } else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
           directEffects.add('external-call');
@@ -364,7 +363,7 @@ export function collectionResourceName(name: string, keys: Node[] | undefined): 
 }
 
 /** Build one deterministic resolved call graph for diagnostics, recursion
- * preflight, splitting, and later route eligibility. */
+ * preflight and splitting. */
 export function analyseContractInvocations(contract: ContractNode): InvocationAnalysis {
   const cached = contractInvocationAnalysisCache.get(contract);
   if (cached) return cached;

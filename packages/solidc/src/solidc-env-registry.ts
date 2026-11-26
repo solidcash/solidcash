@@ -64,7 +64,7 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDCASH_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDC_NO_OPTIMISE', class: 'instrumented' },
-  // production SOLIDC env hot-set production cache / binder identity knobs
+  // production SOLIDC env hot-set: compile cache identity knobs
   {
     name: 'SOLIDC_COMPILE_CACHE',
     class: 'feature',

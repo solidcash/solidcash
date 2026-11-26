@@ -207,20 +207,6 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
 }
 
 /**
- * Cheap-admission fail-fast: returning free/library helpers whose source already has an uncovered path
- * (OZ Address.verifyCallResultFromTarget's `_revert` arm) throw here instead of after journal/memory
- * lowering. Public-only rungs prune those helpers first, so they do not refuse. Helpers that only become
- * covered after later lowering are not cheap-admission; the full EnsureFinalRequire pass still runs.
- */
-export function rejectFreeFunctionMissingReturns(ast: SourceFileNode): void {
-  const neverReturn = collectNeverReturnNames(ast.freeFunctions ?? []);
-  for (const fn of ast.freeFunctions ?? []) {
-    if (fn.isAbstract || !fn.body || fn.returnTypes.length === 0) continue;
-    if (!allPathsReturn(fn.body.statements, neverReturn)) throw new MissingReturnError(fn);
-  }
-}
-
-/**
  * Whether a function with return types can still fall off its end, judged the way this pass judges it once the
  * program is lowered. Inline assembly does not count as terminating here: LowerInlineAssembly turns a Yul `revert`
  * into `require(false)` before this pass runs, and that is no terminator to it. NamedReturnTransformation's

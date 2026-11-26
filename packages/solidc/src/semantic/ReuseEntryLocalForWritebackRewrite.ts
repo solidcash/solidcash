@@ -33,7 +33,7 @@ import { cloneNode } from '../ast/clone.js';
  * Each successful fold replaces the field-write run (or the journal's already-coalesced `__mefw` snapshot write)
  * with one whole-struct write sourced from the already-taken local, eliding exactly one entry re-read. The result
  * is byte-identical to the hand-written whole-struct write-back, so the unit test pins `elidedReads === 1` plus
- * byte-identity, never an absolute handler size.
+ * byte-identity, never an absolute function size.
  */
 export type WritebackMapping = { keyCount: number; struct: StructType };
 

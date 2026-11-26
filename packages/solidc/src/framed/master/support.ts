@@ -229,8 +229,8 @@ export function stripFrameParameters(
     contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
   ];
   // The positions each function loses, so an internal call to it drops the arguments those positions took. A call
-  // writes the sender category itself only in a compiler-generated route; any other call leaves it to the hidden
-  // sender context, so its arguments line up with the parameters that are not the category's.
+  // that leaves the sender category to the hidden sender context lines up with the parameters that are not the
+  // category's; one that passes every parameter lines up with all of them.
   const stripped = new Map<FunctionDefinitionNode, ReadonlyMap<number, Set<number>>>();
   for (const fn of functions) {
     if (!fn) continue;

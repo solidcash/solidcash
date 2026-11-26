@@ -9,8 +9,8 @@ import { ArrayType, IntType } from '@solidcash/utils';
 const PREFIX = '__internal__vmapCounterPerm_';
 
 /**
- * Preserve the deliberately narrow direct-compile lowering independently of journal row-loop admission. It
- * supports only `for (int i = 0; i < n; i++) m[i] = f(i)`: its physical counter remains unchanged while the one
+ * The deliberately narrow direct-compile lowering, used unless a looped payment or emit needs LowerVMapCounterLoops.
+ * It supports only `for (int i = 0; i < n; i++) m[i] = f(i)`: its physical counter remains unchanged while the one
  * mapping key/value pair is evaluated through an SDK-supplied slot-order permutation.
  */
 export default class LowerLegacyVMapCounterLoops extends AstTraversal {

@@ -91,8 +91,6 @@ export type SolidcDiagnosticCode =
   | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
   // A call through a collection entry its function writes before the call where the call cannot read the written entry.
   | 'ENTRY_TARGET_WRITTEN_BEFORE_CALL'
-  // A route handler whose call the route checks before the handler's body runs writes that call's target first.
-  | 'ROUTE_TARGET_WRITTEN_BEFORE_CALL'
   // A framed master's call whose target the function read at its top and then wrote before the call.
   | 'FRAMED_TARGET_WRITTEN_BEFORE_CALL'
   // A constructor's call, in a genesis body, through a target the constructor read at its top and then wrote.
@@ -107,9 +105,6 @@ export type SolidcDiagnosticCode =
   | 'CALL_VALUE_UNBOUND'
   // F1: an entry reads a contract-caller msg.sender but its call digest is not in scope where the caller edge binds.
   | 'CALLER_EDGE_DIGEST_UNAVAILABLE'
-  // A route entry whose looped call only the route binds, where the route does not serve that entry.
-  | 'ROUTE_ONLY_ENTRY_UNSERVED'
-  // A route verifier that reaches a function-pointer target reading block.*, whose pool helper it cannot carry.
   // Frozen JOURNAL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'JOURNAL_LAYOUT'
   | 'JOURNAL_UNBOUNDED_KEY'
@@ -146,11 +141,8 @@ export class UnpublishableLoopGuardError extends SolidcDiagnosticError {
 /**
  * X92. Say so when a Line/Column is a position in COMPILER-GENERATED source.
  *
- * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot
- * reach: a diagnostic raised during SEMANTIC ANALYSIS of the merged AST, on a node the route parse built.
- * Measured on `SushiMakerKashi.sol` (169 lines) during generated graph-route analysis:
- * `Undefined reference to symbol __internal_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
- * `address private immutable sushi;`. The position is INSIDE the file, so nothing signals it is wrong.
+ * A diagnostic raised during SEMANTIC ANALYSIS on a node a generated parse built carries a position in that
+ * generated text. The position can fall INSIDE the user's file, so nothing else signals it is wrong.
  */
 export function generatedSourceCaveat(location?: Location): string {
   const origin = generatedOriginOf(location);
@@ -171,7 +163,7 @@ export function generatedSourceCaveat(location?: Location): string {
  * asserts "line N is real in file F on disk"; a generated position is in a string no file holds, so labelling it
  * would be a SPECIFIC FALSE label naming a real file - worse than none.
  *
- * Measured over mistswap + solidity-by-example + eacc + a bus-mode solidity-by-example pass, 7394 diagnostics:
+ * Measured over mistswap + solidity-by-example + eacc + a since-removed message-bus pass, 7394 diagnostics:
  * hard-error positions naming a file too short to hold the line went 21 -> 4, and no diagnostic anywhere names a
  * file that does not exist. WHAT THE STAMP DOES NOT REACH, so the next reader does not have to re-measure it:
  *  - The 4 that remain are ANTLR error-listener SYNTAX errors. Their Location is built by the listener during

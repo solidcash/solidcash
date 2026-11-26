@@ -274,7 +274,7 @@ import { CALL_BATCH_ROW_SHIFT, isCallBatchFrameCandidate } from './CallBatch.js'
 
 export { getMaxPushdataEncodedSizeForType };
 
-/** Deterministic evaluation-order numbering shared by entry writes and external graph calls. */
+/** Deterministic evaluation-order numbering shared by entry writes and external calls. */
 class SourceEffectOrderTraversal extends AstTraversal {
   constructor(
     private next: number,
@@ -2214,9 +2214,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const overloads = this.functionDefinitions.get(ifaceFunc.name) ?? [];
         // At least one overload must match the signature...
         const hasMatch = overloads.some((func) => {
-          // Admission and final codegen revisit a lowered AST whose entry points can carry journal/value
-          // witnesses. Those operands are authenticated compiler frame data, not additions to the source ABI or
-          // a reason for an otherwise exact interface implementation to disappear.
+          // A lowered AST's entry points can carry journal/value witnesses. Those operands are authenticated
+          // compiler frame data, not additions to the source ABI or a reason for an otherwise exact interface
+          // implementation to disappear.
           const sourceParameters = func.parameters.filter((parameter) =>
             !parameter.name.startsWith('__internal__'));
           if (sourceParameters.length !== ifaceFunc.parameters.length) return false;
@@ -2398,8 +2398,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
       // Compiler-generated source's unused locals identify nothing the user can fix.
-      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
-        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedSourceWarnings?: boolean })
+        .__suppressGeneratedSourceWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -2466,7 +2466,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     const symbol = Symbol.variable(node);
-    // Synthesized route/handler parameters are consumed by code generation rather than source identifiers.
+    // Synthesized compiler-owned parameters are consumed by code generation rather than source identifiers.
     // Treat that compiler-owned use as a reference so every journal-aware function does not emit a warning for
     // the access carrier and each fixed segment slot.
     if (compilerOwnedParameter) symbol.references.push({ name: node.name } as IdentifierNode);
@@ -3216,8 +3216,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
-  // Expand a finite pure-helper closure at the original deployment site. Compiler-owned routes then consume
-  // an explicit expression recipe and need not reproduce the user's private/internal helper definitions.
+  // Expand a finite pure-helper closure at the original deployment site, so the deployment's values are explicit
+  // expressions that need not reproduce the user's private/internal helper definitions.
   private inlineDeploymentHelperExpression(
     expression: ExpressionNode, helpers: readonly FunctionDefinitionNode[],
   ): ExpressionNode | null {
@@ -3549,7 +3549,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     deployNode.foldedCollectionEntries = undefined;
     deployNode.deployedEntryNftCount = 0;
     // An implicit or implemented empty constructor is a complete zero-write transition. Mark it explicitly:
-    // journal proof mode must distinguish this sound default genesis from a constructor that was never surveyed.
+    // a child's genesis derivation must distinguish this sound default genesis from a constructor never surveyed.
     if (!ctor || statements.length === 0) {
       deployNode.ctorFoldFailed = false;
       deployNode.constructorStateFoldComplete = true;
@@ -3845,31 +3845,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     return folded !== false && folded.returnValue === undefined;
   }
 
-  /**
-   * Apply the canonical constructor + same-transaction call folder to a deployment proof clone.
-   *
-   * This intentionally contains no source-shape discovery: callers decide which finite, straight-line call
-   * occurrence they are proving, while this method remains the single authority for the state transition.
-   * Production semantic lowering invokes the same constructor/call folders below. Returning false means that
-   * the complete post-call genesis is not representable and admission must remain closed.
-   */
-  public tryFoldChildInitializationProof(
-    deployNode: InstantiationNode, callee: FunctionDefinitionNode, parentArgs: ExpressionNode[],
-  ): boolean {
-    const statements = (callee.body as BlockNode | undefined)?.statements ?? [];
-    // Deploy folding does not execute child-side guards. Compiler admission may therefore retain only the
-    // syntactic final-require placeholder required by an externally visible void function, never a predicate
-    // whose failure would change whether the source call succeeds.
-    if (statements.some((statement) => statement instanceof RequireNode
-      && (!(statement.expression instanceof BoolLiteralNode) || statement.expression.value !== true))) return false;
-    this.tryFoldChildConstructor(deployNode);
-    if (deployNode.constructorStateFoldComplete !== true) return false;
-    const folded = this.tryFoldDeployCall(deployNode, callee, parentArgs);
-    if (!folded || folded.returnValue) return false;
-    deployNode.hasFoldedChildCall = true;
-    return true;
-  }
-
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
     Object.defineProperty(node, 'hasContractInstantiation', {
@@ -3945,8 +3920,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Some expression visitors replace a source node with a resolved ExternalFunctionCallNode at their parent
     // boundary. In particular, a returning interface call used directly as a local ArrayAssign RHS can be
     // installed after the integrated survey has observed the child traversal. Recover only on the negative
-    // path, after resolution, so every executable call receives a stable slot before graph/layout metadata is
-    // frozen. This also prevents later lowering from relying on a speculative clone to make the call visible.
+    // path, after resolution, so every executable call receives a stable slot before call/layout metadata is
+    // frozen.
     if (!bodySurvey.hasExternalFunctionCall) {
       const seen = new WeakSet<object>();
       const hasResolvedExternalCall = (value: unknown): boolean => {
@@ -3963,10 +3938,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       };
       bodySurvey.hasExternalFunctionCall = hasResolvedExternalCall(node.body);
     }
-    // Late route retries can revisit an already-lowered transfer-only raw call. Its call option is a
-    // plain metadata object rather than an AST child, so the inherited visitor does not necessarily rediscover
-    // the value effect. The lowering marker is compiler-authenticated and survives cloning; recover that fact
-    // before transfer ordinals and the block layout are allocated.
+    // An already-lowered transfer-only raw call keeps its call option as a plain metadata object rather than an
+    // AST child, so the inherited visitor does not necessarily rediscover the value effect. The lowering marker is
+    // compiler-authenticated and survives cloning; recover that fact before transfer ordinals and the block layout
+    // are allocated.
     if (!bodySurvey.hasValueTransfer) {
       const seen = new WeakSet<object>();
       const hasTransferOnlyRaw = (value: unknown): boolean => {
@@ -4121,9 +4096,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Assign one common source-effect domain before entry accesses and graph callsites are collected separately.
-    // The ordinal describes evaluation order, not physical slot order; later batching must retain each source row's
-    // own value. It is metadata only and does not authorize control-flow reachability.
+    // Assign one common source-effect domain before entry accesses and external callsites are collected separately.
+    // The ordinal describes evaluation order, not physical slot order; later batching must retain each source
+    // occurrence's own value. It is metadata only and does not authorize control-flow reachability.
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
     if (this.collectionMap.size > 0) {
       this.collectLocalKeyDefs(node.body);
@@ -4297,7 +4272,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (!info.operations.includes('read') && !info.operations.includes('write')) continue;
           // Counter-loop structural RMWs materialize the old value from their authenticated typed vector and
           // restrict the new value to the inline tail. They neither execute emitChunkableValueRead nor publish
-          // chunk outputs, so the ordinary per-slot blob/leading witnesses would be dead ABI and dead route code.
+          // chunk outputs, so the ordinary per-slot blob/leading witnesses would be dead ABI and dead code.
           const runtimeTypedOld = info.inLoop && node.parameters.some((parameter) =>
             parameter.name.startsWith('__internal__vmapCounterOld_')
             && parameter.name.endsWith(`_${info.collection}`));
@@ -4521,10 +4496,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // witnesses (leftCallArgumentPositions); where the caller takes none it keeps its selector check. A call with
         // `{value:}` reads it as well: nothing else binds its method through a one-method interface, and no record of
         // one run answers two callers.
-        // The exploit this closes exists for every ungrouped single-interface void call a direct entry makes, a
-        // route build's included: a route binds the rows it runs, but an ordinary call spends the direct entry,
-        // which binds its calls where it runs. A framed body binds its calls by their frames. Grouped slots are already
-        // removed above, and this block only runs off-route, so it reaches only direct calls.
+        // The exploit this closes exists for every ungrouped single-interface void call a direct entry makes: the
+        // direct entry binds its calls where it runs. A framed body binds its calls by their frames. Grouped slots
+        // are already removed above, so this block reaches only direct calls.
         const directConventionVoidBinding = this.compilerOptions.composition !== 'framed';
         if (directConventionVoidBinding && node.isEntryPoint) {
           for (const slot of externalCallSlots) {
@@ -4656,8 +4630,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         // alongside `car.method()`) must not OP_ROLL-consume it. Same rationale as the token-container key params.
         for (const slot of externalCallSlots) {
           // Inlining may replace the executable receiver with a generated local while the authenticated callsite
-          // metadata continues to name its constructor origin. Graph verification consumes that origin inside
-          // the handler OP_INVOKE, after the generated local's initializer. Count the metadata use for liveness:
+          // metadata continues to name its constructor origin. The call verification consumes that origin after
+          // the generated local's initializer. Count the metadata use for liveness:
           // otherwise final-use lowering rolls the sole constructor capture into that initializer and the later
           // identity check has no receiver. This is idempotent when the body also references the parameter.
           if (slot.addressSource?.kind === 'constructorArg' && slot.addressSource.paramName) {
@@ -4667,8 +4641,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             node.opRolls.delete(slot.addressParam);
             // Inlined low-level-call helpers use a compiler-owned alias (`__extaddr_ll_token`) for their
             // receiver. The epilogue authenticates the original value, not the helper-local copy, because the
-            // latter may have been cleared by the inlined helper's own cleanup. Keep that underlying value alive
-            // just as graph-route verification already does when resolving this spelling.
+            // latter may have been cleared by the inlined helper's own cleanup. Keep that underlying value alive.
             if (slot.addressParam.startsWith('__extaddr_ll_')) {
               node.opRolls.delete(slot.addressParam.slice('__extaddr_ll_'.length));
             }
@@ -4976,12 +4949,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(returnOutputIdxParam);
     }
 
-    // B-side (approach B, single-interface method binding): an ordinary void entry of a stateful contract, a
-    // route build's direct entry included, attests the method it ran via a void call record so a
-    // single-function-interface caller can bind the co-spent method. It needs the carrier output index its caller pins
-    // the record at. Lifecycle and unsafe entries keep their own covenant settlement, and the multi-call candidate path
-    // below injects this witness itself. A delegate entry answers the call its proxy forwarded, so it pins that call's
-    // record in the proxy's category. A library's (a split facet is one) keeps its settlement.
+    // B-side (approach B, single-interface method binding): an ordinary void entry of a stateful contract attests the
+    // method it ran via a void call record so a single-function-interface caller can bind the co-spent method. It
+    // needs the carrier output index its caller pins the record at. Lifecycle and unsafe entries keep their own
+    // covenant settlement, and the multi-call candidate path below injects this witness itself. A delegate entry
+    // answers the call its proxy forwarded, so it pins that call's record in the proxy's category. A library's (a
+    // split facet is one) keeps its settlement.
     const voidRecordLifecycleOrUnsafe = node.modifiers.some((modifier) =>
       modifier === FunctionModifier.UPGRADE || modifier === FunctionModifier.DEPLOY
       || modifier === FunctionModifier.SELFDESTRUCT || modifier === FunctionModifier.SPLIT
@@ -4992,8 +4965,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // the stack through to the epilogue; adding the void record's own settlement there collides with it (its
     // returnOutputIdx pick is thrown off). Such entries keep their pre-fix-B settlement, so no void record is
     // injected. All three pieces (this witness, the reserved returnEvent slot, and the GTT settlement) derive from
-    // this injection, so gating it here keeps them consistent. A journal direct participant's frame is the V5 proof
-    // profile: its verifier binds the selector, so the record has no reader there and the profile admits no witness.
+    // this injection, so gating it here keeps them consistent.
     const readsExternalStorage = (node.externalReads?.length ?? 0) > 0;
     // An entry that delegatecalls settles no record of its own: its delegate's answers the call.
     const delegatecalls = describeFunctionLowLevelCallsites(node).some((site) => site.callMode === 'delegatecall');
@@ -5455,8 +5427,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Dynamic storage inputs are a runtime transaction band, not necessarily the suffix of the function's
-    // maximum block layout. Compact delegate and composed route layouts therefore supply the exact absolute first
-    // chunk coordinate. It is propagated over the named-call closure before this traversal, so internal helpers
+    // maximum block layout, so a function that touches dynamic state takes the exact absolute first chunk
+    // coordinate. It is propagated over the named-call closure before this traversal, so internal helpers
     // and generated OP_INVOKE handlers share one authenticated physical value.
     if (node.usesDynamicChunkInputBase
       && !node.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkInputBase')) {
@@ -5587,8 +5559,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
-      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
-        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedSourceWarnings?: boolean })
+        .__suppressGeneratedSourceWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -5604,8 +5576,8 @@ export default class SymbolTableTraversal extends AstTraversal {
    * In a framed compile the caller's site holds the record's `value` to the amount its code computes, the validator
    * holds the callee's frame value to the record (V5), and the value rule charges the caller's containers and credits
    * the callee's (V7). A direct call whose value rides its record (bindDirectCallValues) takes it from the caller's
-   * container with no transfer. The route convention pays a call value as a transfer, and every convention
-   * pays a raw call's value and an empty-calldata value call that way, since those are sends.
+   * container with no transfer. Any other direct call pays its value as a transfer, and every convention pays a
+   * raw call's value and an empty-calldata value call that way, since those are sends.
    */
   private recordCarriesCallValue(node: Node | undefined): boolean {
     if (!(node instanceof ExternalFunctionCallNode) || node.rawValueTransferOnly || node.interfaceName === '__raw__'
@@ -5795,7 +5767,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * Runtime-loop transfer outputs are verified by the lowered handler, but their satoshi container belongs to
+   * Runtime-loop transfer outputs are verified by the lowered function, but their satoshi container belongs to
    * the physical entry point which invokes it. Follow resolved internal calls so the entry reserves that shared
    * input/output slot even when the marked transfer lives in a callee.
    */
@@ -7173,7 +7145,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!node.arrayPush || node.arrayPop || node.arrayIndex || node.sourceEffectOrdinal === undefined
       || !(node.collection?.innermostValueType instanceof ArrayType) || !this.currentFunction?.body) return undefined;
     const elementType = node.collection.innermostValueType.elementType.toString();
-    // Entry collection can operate on a lowered clone while `currentFunction.body` retains the source handler
+    // Entry collection can operate on a lowered clone while `currentFunction.body` retains the source function
     // instance. Join them only by the already-assigned effect identity and exact collection/mutation shape.
     const matching: MappingAssignNode[] = [];
     const locate = (candidate: Node, seen = new Set<Node>()): void => {
@@ -8453,7 +8425,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // `__rh_tokenA = path[i]`) and tuple destructures. A computed target SEAL could not hoist has such a loop-
   // dependent leaf; a target with none returns undefined (not a per-iteration loop, left to fail closed downstream).
   // Build a fresh `__internal__loopTargets<n>[loopIdx]` witness-array access (the SDK fills the param with the
-  // route's co-spend targets). Returns the access + its array identifier (back-linked to the fresh symbol during
+  // loop's co-spend targets). Returns the access + its array identifier (back-linked to the fresh symbol during
   // witness-param synthesis). `witnessName` lets a caller build a SECOND access on the SAME witness (a loop-body
   // local receiver reuses one witness for both the call target and its neutralized initializer).
   private buildLoopWitnessAccess(loopIdx: ExpressionNode, witnessName: string, loc: Node['location']):
@@ -8473,8 +8445,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private viewReturnCounter = 0;
 
   // These fields point outside the lexical body currently being rewritten. Following one while replacing a
-  // call would mutate a callee (or a compiler-owned handler clone) while appending the corresponding witness
-  // parameter to the caller. Keep this transform function-local, like the other invocation-AST surveys.
+  // call would mutate a callee while appending the corresponding witness parameter to the caller. Keep this
+  // transform function-local, like the other invocation-AST surveys.
   private static readonly VIEW_RETURN_BACKREF_KEYS = new Set([
     'resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
     'stateVariable', 'collection', 'sourceCallNode',
@@ -10829,11 +10801,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             unresolvedProducerAlias = true;
             // `serializedProgramLocals` is a NAME set shared with the pure helper currently being serialized, so
             // this refusal can come from an unrelated helper local that merely shares a name. Name the construct:
-            // a refusal that reports only the handler cannot distinguish the two cases.
+            // a refusal that reports only the function cannot distinguish the two cases.
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
-              console.error('route-producer-alias', JSON.stringify({
-                handler: this.currentFunction?.name,
+              console.error('producer-alias', JSON.stringify({
+                function: this.currentFunction?.name,
                 local: expression.name,
                 preservedLocal,
                 helperLocals: serializedProgramLocals === undefined ? 0 : serializedProgramLocals.size,
@@ -10990,7 +10962,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (resolvedInitializer === expression.expression) return inner;
             return serializeExpression(resolvedInitializer, new Set()) ?? inner;
           })();
-          // The front end forwards a read of an entry field to the whole-entry value the handler wrote for it: a
+          // The front end forwards a read of an entry field to the whole-entry value the function wrote for it: a
           // partially written entry is rebuilt as `T(.., thisField, ..)`, where an argument that references the
           // rebuild itself (a self-referential "unchanged" placeholder) denotes the entry's value BEFORE that
           // statement. `observedStruct` is the struct this read names - the read's own annotation when present,
@@ -11232,9 +11204,10 @@ export default class SymbolTableTraversal extends AstTraversal {
             ...(elementType && { type: elementType }) };
         }
         if (expression instanceof TupleIndexOpNode) {
-          // An admitted atomic raw call cannot expose a catchable failure: a failing callee aborts the graph.
-          // Its source-level `(success, returndata)` view is therefore `(true, authenticatedReturndata)`, while
-          // the published producer schema intentionally contains only that returndata value.
+          // A raw call co-spends its callee, so it cannot expose a catchable failure: a failing callee fails the
+          // whole transaction. Its source-level `(success, returndata)` view is therefore
+          // `(true, authenticatedReturndata)`, while the published producer schema intentionally contains only that
+          // returndata value.
           const opaqueRawSlot = expression.tuple instanceof ExternalFunctionCallNode
             && expression.tuple.opaqueReturn
             && expression.tuple.callInfo?.externalCallSlotIndex !== undefined
@@ -14100,8 +14073,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.symbolTable.unusedSymbols();
     this.markUnreadOpaqueReturns(unusedSymbols, node);
     for (const unused of unusedSymbols) {
-      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
-        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedSourceWarnings?: boolean })
+        .__suppressGeneratedSourceWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -16143,8 +16116,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * region the creator binds is exactly the values `create` reads.
    */
   private injectGenesisCallParameter(node: FunctionDefinitionNode): void {
-    // On by default (A7); `genesisCalls: false` is the switch. A framed compile and a route compile emit no
-    // record-sound master, whatever their route admits.
+    // On by default (A7); `genesisCalls: false` is the switch. A framed compile emits no record-sound master.
     if (this.compilerOptions.genesisCalls === false || this.compilerOptions.composition === 'framed') return;
     // Nothing of B6.4 to B6.7 is emitted in a master that is not record-sound: such an entry cannot answer a
     // constructor, so it takes no genesis parameter. Code generation decides the same from the same facts.
@@ -16171,10 +16143,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * Whether a caller takes the arguments its calls leave to their callees as witnesses (leftCallArgumentPositions):
-   * every direct entry, a route build's (its bound compile included) and a journal direct participant's, since a
-   * spender may spend it whatever route the build also has, and the deployer program's `create`, whose constructor
-   * calls digest their tagged records with them (deployer.ts fills them). A framed body binds its calls by their
-   * frames (callSiteCheckScript).
+   * every direct entry, and the deployer program's `create`, whose constructor calls digest their tagged records with
+   * them (deployer.ts fills them). A framed body binds its calls by their frames (callSiteCheckScript).
    */
   private takesLeftCallArguments(): boolean {
     return this.compilerOptions.composition !== 'framed';
@@ -16216,8 +16186,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * inputs, so they cannot both accept one run. The entry takes the index as a witness it does not check, since a
    * record naming another input is accepted by no caller. It precedes `__internal__returnOutputIdx`, after the genesis
    * call where the entry takes one, so the record witness keeps its depth and every push after it its place. A framed
-   * body binds its caller by its frame, and a journal direct participant's V5 profile admits no witness: they take none,
-   * and a caller that names its reader refuses their records.
+   * body binds its caller by its frame: it takes none, and a caller that names its reader refuses its records.
    */
   private injectCallRecordReaderParameter(node: FunctionDefinitionNode): void {
     if (this.compilerOptions.composition === 'framed') return;
@@ -16799,8 +16768,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.tryBlock.symbolTable.unusedSymbols();
     this.markUnreadOpaqueReturns(unusedSymbols, node.tryBlock);
     for (const unused of unusedSymbols) {
-      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
-        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedSourceWarnings?: boolean })
+        .__suppressGeneratedSourceWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -19089,8 +19058,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
 
         // Typed `I(cat).fn.call()` is the documented SolidCash invoke spelling, not a low-level
-        // payload `addr.call(bytes)`. Keep it on the regular/static graph modes the journal loop already
-        // lowers; `CALL` is the opaque raw-calldata mode.
+        // payload `addr.call(bytes)`. Keep it on the regular/static call modes; `CALL` is the opaque raw-calldata
+        // mode.
         const callMode = node.methodName === 'staticcall'
           ? ExternalCallMode.STATICCALL
           : node.methodName === 'delegatecall'
@@ -19606,7 +19575,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.data = this.visit(node.data) as ExpressionNode;
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
-    return this.lowerReturningRawCallToGraphEdge(node) ?? node;
+    return this.lowerReturningRawCallToExternalCall(node) ?? node;
   }
 
   visitLowLevelCallStatement(node: LowLevelCallStatementNode): Node {
@@ -19663,19 +19632,19 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * Normalize a returning raw call exposed by helper inlining to the same authenticated graph edge as the
+   * Normalize a returning raw call exposed by helper inlining to the same authenticated external call as the
    * equivalent source-level `(bool, bytes) = target.call(payload)` expression.
    *
    * Source-level expression calls are normally converted to `ExternalFunctionCallNode('__raw__', ...)` while
    * resolving their member call. A helper such as OpenZeppelin Address.functionCall is parsed and cloned before
    * that resolution, so its inlined `LowLevelCallNode` used to miss the conversion and publish a legacy
-   * `lowLevelCalls[]` row instead. Besides making equivalent programs depend on their helper boundary, that row
-   * carries no decoded selector/argument edge for atomic composition. Keep one representation in graph mode.
+   * `lowLevelCalls[]` row instead, making equivalent programs depend on their helper boundary. Keep one
+   * representation.
    *
    * The accepted call-option shape mirrors visitMethodCall: a regular call may carry `{value: ...}` and an
    * optional inert gas hint. Salt, delegatecall, and every other low-level shape retain their fail-closed path.
    */
-  private lowerReturningRawCallToGraphEdge(node: LowLevelCallNode): ExternalFunctionCallNode | undefined {
+  private lowerReturningRawCallToExternalCall(node: LowLevelCallNode): ExternalFunctionCallNode | undefined {
     // A payload naming a function that declares a result is lowered too: only the raw external call reads its
     // callee's record, where the low-level form would answer with no result read. A framed body lowers such a call
     // to a typed call of its own.
@@ -19917,8 +19886,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * F1: this entry is a callee that reads a contract-caller msg.sender, so it must bind which contract called it.
-   * A direct, non-framed, non-route stateful entry whose body uses msg.sender; the route binds its callers
-   * through the route instead, and framed through its call records.
+   * A direct (non-framed) stateful entry whose body uses msg.sender; framed binds its callers through its call
+   * records instead.
    */
   private entryRequiresCallerEdge(node: FunctionDefinitionNode): boolean {
     return this.isStatefulContract && node.isEntryPoint && node.usesMsgSender === true && node.name !== '__construct'

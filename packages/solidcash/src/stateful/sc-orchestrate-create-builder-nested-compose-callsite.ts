@@ -97,6 +97,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     allGroupEcSlots: any[];
     allGroupParentIndices: any[];
     routeValueChunkProducerEpochByPhysicalGroup: WeakMap<any, number>;
+    preparedAtomicNodeByExternalGroup: Map<number, number>;
     latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
     nestedSortedListCache: Map<string, any>;
     valueChunkWriteStagingSession: any;
@@ -111,7 +112,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     preparedAtomicNodes, rootProducerPath, externalCallUtxoGroups,
     lowLevelCallUtxoGroups, groupProxyMasterIndices, nestedDelegateProxyGroupByLowLevel,
     timingEnabled, functionName, routeValueChunkProducerEpochByPhysicalGroup,
-    latestPreparedAtomicNodeByPhysicalGroup,
+    preparedAtomicNodeByExternalGroup, latestPreparedAtomicNodeByPhysicalGroup,
     nestedSortedListCache, valueChunkWriteStagingSession,
     publicSelfAddress, nestedProxyReadCache, memoizeGraphPlanningProducerResult,
   } = params;
@@ -510,6 +511,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         latestRouteValueChunkProducerBinding,
         routeValueChunkProducerEpochByPhysicalGroup,
         preparedAtomicNodes,
+        preparedAtomicNodeByExternalGroup,
         latestPreparedAtomicNodeByPhysicalGroup,
         externalCallUtxoGroups,
         lowLevelCallUtxoGroups,

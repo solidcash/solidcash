@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 import {
   canMaterializeRepairedValueChunk,
@@ -15,7 +15,6 @@ import {
   isRepairableNftOutput,
   isScidPlaceholderCommitment,
   recordComputedOutputConvergenceState,
-  recordComputedOutputRepairTransition,
 } from '../../src/stateful/computed-output-repair.js';
 
 describe('computed-output repair convergence', () => {
@@ -31,30 +30,16 @@ describe('computed-output repair convergence', () => {
 
   it('scales its finite pass budget beyond 32 independently repaired coordinates', () => {
     const limit = computedOutputRepairPassLimit(1, 40);
-    const claims = new Map<string, string>();
     const states = new Set<string>();
     for (let outputIndex = 0; outputIndex < 40; outputIndex++) {
       recordComputedOutputConvergenceState(states, `state-${outputIndex}`);
-      recordComputedOutputRepairTransition(
-        claims, 0, `${outputIndex}:commitment`, `value-${outputIndex}`,
-      );
     }
     recordComputedOutputConvergenceState(states, 'valid-final-state');
-    expect(claims.size).toBe(40);
     expect(states.size).toBe(41);
     expect(limit).toBe(121);
   });
 
-  it('rejects repeated writer-coordinate claims and coupled state cycles', () => {
-    const claims = new Map<string, string>();
-    recordComputedOutputRepairTransition(claims, 3, '12:commitment', 'b');
-    expect(() => recordComputedOutputRepairTransition(
-      claims, 3, '12:commitment', 'c',
-    )).toThrow(/conflicting value/);
-    expect(() => recordComputedOutputRepairTransition(
-      claims, 4, '12:commitment', 'b',
-    )).toThrow(/conflicting input/);
-
+  it('rejects coupled state cycles', () => {
     const states = new Set<string>();
     recordComputedOutputConvergenceState(states, 'A');
     recordComputedOutputConvergenceState(states, 'B');
@@ -73,27 +58,17 @@ describe('computed-output repair convergence', () => {
     const passLimit = computedOutputRepairPassLimit(2, 3);
     expect(passLimit).toBe(10);
     const states = new Set<string>();
-    const claims = new Map<string, string>();
     const fingerprints: string[] = [];
     for (let pass = 0; pass < passLimit; pass += 1) {
       const commitment = Uint8Array.from({ length: 8 + pass }, (_unused, index) => (pass + index) & 0xff);
       const fingerprint = computedOutputConvergenceFingerprint(commitment);
       fingerprints.push(fingerprint);
       recordComputedOutputConvergenceState(states, fingerprint);
-      // Distinct coordinates per pass: same-coordinate lengthening is a conflicting claim (below).
-      recordComputedOutputRepairTransition(claims, 0, `${pass}:commitment`, binToHex(commitment));
     }
     expect(states.size).toBe(passLimit);
-    expect(claims.size).toBe(passLimit);
     // Oscillation back to the first (shorter) commitment is a normalized-state cycle.
     expect(() => recordComputedOutputConvergenceState(states, fingerprints[0]))
       .toThrow(/convergence cycle in the normalized transaction state/);
-    // Lengthening the same coordinate with a longer value is a conflicting authenticated claim.
-    const lengtheningClaims = new Map<string, string>();
-    recordComputedOutputRepairTransition(lengtheningClaims, 1, '7:commitment', 'aa'.repeat(8));
-    expect(() => recordComputedOutputRepairTransition(
-      lengtheningClaims, 1, '7:commitment', 'aa'.repeat(16),
-    )).toThrow(/conflicting value/);
     // STB fails closed with this named exhaustion string when sweeps hit the pass budget.
     expect(`Computed-output repair convergence exhausted after ${passLimit} passes.`)
       .toMatch(/^Computed-output repair convergence exhausted after \d+ passes\.$/);

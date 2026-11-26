@@ -19,28 +19,6 @@ export function computedOutputRepairPassLimit(inputCount: number, outputCount: n
   return Math.max(1, claims + 1);
 }
 
-/**
- * Record an authenticated field transition and reject any return to a value already seen at that coordinate.
- * The caller may discover coordinates in any order; this tracks cycles per exact output field.
- */
-export function recordComputedOutputRepairTransition(
-  history: Map<string, string>,
-  inputIndex: number,
-  coordinate: string,
-  proposed: string,
-): void {
-  const prior = history.get(coordinate);
-  const claim = `${inputIndex}:${proposed}`;
-  if (prior !== undefined) {
-    throw new Error(
-      `Computed-output repair repeated authenticated claim ${coordinate}`
-      + `${prior === claim
-        ? '' : ' with a conflicting value or conflicting input'}.`,
-    );
-  }
-  history.set(coordinate, claim);
-}
-
 /** Reject repeated normalized transaction states, including coupled multi-coordinate cycles. */
 export function recordComputedOutputConvergenceState(
   history: Set<string>, fingerprint: string,

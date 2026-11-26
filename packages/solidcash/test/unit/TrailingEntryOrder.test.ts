@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  orderedActiveTrailingEntryCollections,
-  orderedTrailingEntryCollections,
-} from '../../src/stateful/StatefulContract.js';
+import { orderedTrailingEntryCollections } from '../../src/stateful/StatefulContract.js';
 
 describe('trailing entry output order', () => {
   it('preserves the effective physical ABI batch order ahead of runtime discoveries', () => {
@@ -26,18 +23,5 @@ describe('trailing entry output order', () => {
       ['events', 'events'],
       ['records', 'events'],
     )).toEqual(['events', 'records']);
-  });
-
-  it('does not allocate inactive union batches for a concrete routed envelope', () => {
-    expect(orderedActiveTrailingEntryCollections(
-      [
-        { collection: 'inactiveBefore' },
-        { collection: 'activeSecond' },
-        { collection: 'activeFirst' },
-        { collection: 'inactiveAfter' },
-      ],
-      ['activeFirst'],
-      ['activeSecond', 'runtimeOnly'],
-    )).toEqual(['activeSecond', 'activeFirst', 'runtimeOnly']);
   });
 });

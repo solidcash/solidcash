@@ -67,20 +67,6 @@ export function orderedTrailingEntryCollections(
   return collections;
 }
 
-/** The route ABI is a union; only collections reached by this envelope own physical slots. */
-export function orderedActiveTrailingEntryCollections(
-  sortedBatches: readonly { collection: string }[] | undefined,
-  ...activeCollections: readonly Iterable<string>[]
-): string[] {
-  const sources = activeCollections.map((source) => [...source]);
-  const active = new Set<string>();
-  for (const source of sources) for (const collection of source) active.add(collection);
-  return orderedTrailingEntryCollections(
-    sortedBatches?.filter((batch) => active.has(batch.collection)),
-    ...sources,
-  );
-}
-
 /** A placeholder recipient for a runtime loop's transfer until the trace names the real one. */
 const RUNTIME_TRANSFER_PLACEHOLDER = encodeLockingBytecodeP2pkh(new Uint8Array(20));
 

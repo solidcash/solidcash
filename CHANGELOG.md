@@ -33,7 +33,8 @@
   and `finalized transaction refused by its covenant and ...`.
 - Refusal codes named after the bus are renamed: `KERNEL_LAYOUT`, `KERNEL_UNBOUNDED_KEY` and `KERNEL_INTERNAL_DEFECT`
   become `JOURNAL_LAYOUT`, `JOURNAL_UNBOUNDED_KEY` and `JOURNAL_INTERNAL_DEFECT`, and
-  `MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE` becomes `DELEGATE_CONTEXT_UNPRESERVABLE`.
+  `MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE` becomes `DELEGATE_CONTEXT_UNPRESERVABLE`. `ROUTE_TARGET_WRITTEN_BEFORE_CALL`
+  and `ROUTE_ONLY_ENTRY_UNSERVED`, which only message-bus routes raised, leave `SolidcDiagnosticCode`.
 - The trace switches `SOLIDC_DEBUG_ROUTE`, `SOLIDC_DEBUG_ROUTE_CONCISE`, `SOLIDC_DEBUG_ROUTE_ENTRY_PLAN`,
   `SOLIDC_DEBUG_ROUTE_FULL_OPS` and `SOLIDC_DEBUG_ROUTE_VERBOSE` are renamed `SOLIDC_DEBUG_TRACE*`; the switches that
   traced the bus and its preflight are gone (docs/compiler-diagnostics.md lists the live ones).

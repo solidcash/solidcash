@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString as compileStringRaw } from '../src/index.js';
+import { compileString as compileStringRaw, DeploySaltError } from '../src/index.js';
 import { compileString } from './direct-compile.js';
 
 // The deploying transaction funds the child it creates (`new C{value: v}`), so the child's own balance at
@@ -7,7 +7,8 @@ import { compileString } from './direct-compile.js';
 // spellings, which is the only blocker of `test/libsolidity/semanticTests/saltedCreate/salted_create_with_value.sol`
 // (its `getBalance()` returns `address(this).balance * 1000 + x`, and the upstream oracle expects the deploy
 // values: `f(), 10 ether -> 3007, 3008, 3009` for `{value: 3}` with constructor args 7, 8, 9). The mapping is the
-// balance twin of the `msg.value` fold, and a read of any OTHER address's balance still fails closed.
+// balance twin of the `msg.value` fold, and a read of any OTHER address's balance still fails closed. A production
+// compile refuses that fixture's salted deployer `new` (DeploySaltError); the fold cases use `__legacyDeployFold`.
 const CORPUS_FIXTURE = `contract B
 {
     uint x;
@@ -47,11 +48,13 @@ describe('folded callee that reads the child\'s own balance', () => {
     compileString(callee(body) + caller(value, arg), OPTS).contractName;
   const refusal = /Cannot call 'read\(\)' on 'b' in the transaction that deploys it/;
 
-  it('compiles the corpus fixture with the conformance sweep options', () => {
-    // Exactly the options the solc-corpus conformance sweep passes for unmodified upstream sources.
-    const artifact = compileStringRaw(CORPUS_FIXTURE, { evmCompat: true, enforceFinalRequire: false });
-    expect(artifact.abi.map((entry) => entry.name)).toContain('f');
-    expect(artifact.bytecode.replace(/\s+/g, '').length).toBeGreaterThan(0);
+  it('refuses the corpus fixture\'s salted `new` under the conformance sweep options', () => {
+    // Exactly the options the solc-corpus conformance sweep passes for unmodified upstream sources. Only the removed
+    // message bus compiled it.
+    expect(() => compileStringRaw(CORPUS_FIXTURE, { evmCompat: true, enforceFinalRequire: false }))
+      .toThrow(expect.objectContaining({
+        name: DeploySaltError.name, message: expect.stringContaining('`salt` is not available on a deployer `new`'),
+      }));
   });
 
   it('folds the child own-balance read in both spellings', () => {

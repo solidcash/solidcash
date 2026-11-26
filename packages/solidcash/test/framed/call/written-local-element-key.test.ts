@@ -18,11 +18,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * A proxied root entry that writes a sorted mapping at a key held in a local array, written from a field of a
  * dynamic state array's struct element before an internal helper reads it back in a loop (Solidity-compatible).
  *
- * The compiler publishes the key as the element the local holds after its write, a ternary on the index:
- * `ternary(binop:==(lit:0,lit:0),field:helper(field:parts(map:posts(id:id_))),cast:address(lit:0))`. The hop
- * resolves an entry's mapping key from that label (`evalComputedKey`); it took the default arm, the empty
- * `address(0)`, because it compared nothing and read no struct element, so it declared a node the body does not
- * write and the body's own key check refused the frame at the write. The key is now the helper's lock: the entry
+ * The compiler publishes the key as the element the local holds after its write, the post's helper:
+ * `field:helper(field:parts(map:posts(id:id_)))`, from which the hop resolves the entry's mapping key
+ * (`evalComputedKey`). A message-bus build published a ternary on the index instead, whose default arm, the empty
+ * `address(0)`, the hop once took, declaring a node the body does not write. The key is the helper's lock: the entry
  * settles and the helper's flag reads false.
  */
 
@@ -180,7 +179,7 @@ describe('a mapping key held in a local array written from a state array\'s stru
     const artifact = compileStringMulti(SOURCE, OPTIONS as never).Desk!;
     const drop = artifact.abi.find((entry) => entry.name === 'drop')!;
     expect(drop.entryAccesses?.map((access) => access.keyParams)).toStrictEqual([[
-      'id_', 'ternary(binop:==(lit:0,lit:0),field:helper(field:parts(map:posts(id:id_))),cast:address(lit:0))',
+      'id_', 'field:helper(field:parts(map:posts(id:id_)))',
     ]]);
   });
 

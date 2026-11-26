@@ -28,8 +28,8 @@ export type LoadCreateBuilderSatoshiContainerResult = {
 };
 
 /**
- * When the active function transfers satoshis (or reserves a satoshiContainer
- * layout slot), fetch the on-chain satoshi-container UTXO and build its lock.
+ * Load the container used by the active function's transfers or layout slot.
+ * A slot reserved only to read the balance may be empty before the first deposit.
  */
 export async function loadCreateBuilderSatoshiContainer(
   host: LoadCreateBuilderSatoshiContainerHost,
@@ -42,8 +42,8 @@ export async function loadCreateBuilderSatoshiContainer(
   const transferCount = abiFunction?.transferCount ?? 0;
   const selectedContainer = (abiFunction as MessageBusRuntimeAbiFunction | undefined)
     ?.messageBusActiveSatoshiContainer;
-  const needsSatoshiContainer = selectedContainer ?? (transferCount > 0
-    || abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer') === true);
+  const containerSlot = abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'satoshiContainer');
+  const needsSatoshiContainer = selectedContainer ?? (transferCount > 0 || containerSlot !== undefined);
   let satoshiContainerUtxo: UnlockableUtxo | undefined;
   let satoshiContainerLockingBytecode: Uint8Array | undefined;
 
@@ -55,6 +55,7 @@ export async function loadCreateBuilderSatoshiContainer(
     const containerUtxo = containerUtxos.filter((u) => !u.token)
       .sort((left, right) => (left.satoshis > right.satoshis ? -1 : left.satoshis < right.satoshis ? 1 : 0))[0];
     if (!containerUtxo) {
+      if (containerSlot?.conditional === true) return { satoshiContainerUtxo, satoshiContainerLockingBytecode };
       throw new Error(
         'Satoshi container UTXO not found. Deploy the contract with initialBalance or '
         + `fund the satoshi container at ${satoshiContainerAddress}`,

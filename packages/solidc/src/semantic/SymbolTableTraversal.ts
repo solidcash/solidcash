@@ -21323,6 +21323,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       || this.sendsDeployerValue(node.body)
       || (node.externalCalls ?? []).some((slot) => slot.callValueInRecord === true)) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
+    } else if (this.compilerOptions.composition !== 'framed'
+      && !contract.functions.some((fn) => fn.messageBusRoute)
+      && !node.genesisMode && node.name !== '__construct'
+      && !node.modifiers.some((modifier) => [
+        FunctionModifier.UNSAFE, FunctionModifier.SELFDESTRUCT, FunctionModifier.UPGRADE,
+        FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE,
+      ].includes(modifier))
+      && !node.lowLevelCalls?.some((call) => call.callMode === 'delegatecall')
+      && bodyHolds(node.body, (read) => read instanceof StateAccessNode
+        && read.name === 'balance' && read.stateVariable === undefined)) {
+      // An ordinary direct balance read may co-spend a funded container or observe zero before its first deposit.
+      slots.push({ kind: 'satoshiContainer', offset: offset++, ...(!singleSatoshiContainer && { conditional: true }) });
     }
 
     // Token containers (input+output - placed before output-only slots so input

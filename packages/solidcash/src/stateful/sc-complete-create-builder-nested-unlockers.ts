@@ -76,7 +76,6 @@ export async function completeCreateBuilderNestedUnlockers(
     allGroupEcSlots: Array<ExternalCallAbi | { hasReturnValues?: boolean; requiredDataNftIndices: number[] }>;
     delegateExternalGroupIndices: Map<number, number[]>;
     delegateExternalGroupByCallsite: Map<number, Map<number, number>>;
-    lateTransitiveGroupIndices: Set<number>;
     [key: string]: any;
   },
 ): Promise<void> {
@@ -85,7 +84,6 @@ export async function completeCreateBuilderNestedUnlockers(
     physicalReturnIndexForGroup, nestedMasterIndices,
     relocatedPredOutBase, allGroupParentIndices, allGroupEcSlots,
     delegateExternalGroupIndices, delegateExternalGroupByCallsite,
-    lateTransitiveGroupIndices,
   } = params;
   const resolveNestedIdentityAnchorBands = host.resolveNestedIdentityAnchorBands;
   const nestedFullState = host.nestedFullState;
@@ -106,8 +104,7 @@ export async function completeCreateBuilderNestedUnlockers(
     );
     if (placed !== undefined) child.returnOutputIndex = placed;
   }
-  for (const groupIdx of new Set([
-    ...delegateExternalGroupIndices.values()].flat().concat([...lateTransitiveGroupIndices]))) {
+  for (const groupIdx of new Set([...delegateExternalGroupIndices.values()].flat())) {
     const child = externalCallUtxoGroups[groupIdx];
     child.returnOutputIndex = physicalReturnIndexForGroup.get(
       logicalReturnGroupIndex(externalCallUtxoGroups, groupIdx),

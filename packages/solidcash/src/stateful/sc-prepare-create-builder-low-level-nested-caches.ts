@@ -62,7 +62,6 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
   delegateExternalGroupIndices: Map<number, number[]>;
   delegateExternalGroupByCallsite: Map<number, Map<number, number>>;
   routeValueChunkProducerEpochByPhysicalGroup: WeakMap<ExternalCallUtxoGroup, number>;
-  lateTransitiveGroupIndices: Set<number>;
   nestedDelegateProxyGroupByLowLevel: Map<number, number>;
   selectActiveRootDelegateGroup: () => number | undefined;
   preparedAtomicNodes: any[] | undefined;
@@ -282,7 +281,6 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
   const delegateExternalGroupByCallsite = new Map<number, Map<number, number>>();
   /** Latest logical writer allowed to publish producer metadata onto one shared physical call owner. */
   const routeValueChunkProducerEpochByPhysicalGroup = new WeakMap<ExternalCallUtxoGroup, number>();
-  const lateTransitiveGroupIndices = new Set<number>();
   const nestedDelegateProxyGroupByLowLevel = new Map<number, number>();
   const selectActiveRootDelegateGroup = (): number | undefined => {
     if (!physicalAbiFunction?.delegateForwarding) return undefined;
@@ -373,7 +371,6 @@ return {
   delegateExternalGroupIndices,
   delegateExternalGroupByCallsite,
   routeValueChunkProducerEpochByPhysicalGroup,
-  lateTransitiveGroupIndices,
   nestedDelegateProxyGroupByLowLevel,
   selectActiveRootDelegateGroup,
   preparedAtomicNodes,

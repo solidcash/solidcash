@@ -507,10 +507,6 @@ import type { FixedEffectEntryResolver } from './fixed-effect-entries.js';
 import { runtimeEntryAliasOwners } from './sorted-batch-activity.js';
 export { runtimeEntryAliasOwners };
 export { uniqueParticipantIndexForTarget } from './physical-external-call.js';
-export {
-  assertAcyclicExternalCallPath,
-  visitExpandingExternalCallGroups,
-} from './external-call-graph-frontier.js';
 import { buildStatefulFunctionCall as buildStatefulFunctionCallImpl } from './sc-build-stateful-function-call.js';
 import { ExternalCallReachUndecidedError } from './external-call-iteration-domain.js';
 import { decodeScriptNumber } from './trace-commitment-helpers.js';
@@ -10418,7 +10414,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const delegateExternalGroupByCallsite = lowLevelNestedCaches.delegateExternalGroupByCallsite;
     const routeValueChunkProducerEpochByPhysicalGroup =
       lowLevelNestedCaches.routeValueChunkProducerEpochByPhysicalGroup;
-    const lateTransitiveGroupIndices = lowLevelNestedCaches.lateTransitiveGroupIndices;
     const nestedDelegateProxyGroupByLowLevel = lowLevelNestedCaches.nestedDelegateProxyGroupByLowLevel;
     const selectActiveRootDelegateGroup = lowLevelNestedCaches.selectActiveRootDelegateGroup;
     let preparedAtomicNodes = lowLevelNestedCaches.preparedAtomicNodes;
@@ -10824,7 +10819,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           allGroupEcSlots,
           delegateExternalGroupIndices,
           delegateExternalGroupByCallsite,
-          lateTransitiveGroupIndices,
           pendingDelegateInputFills,
           pendingAnchorFills,
           pendingExternalCallInputFills,

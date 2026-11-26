@@ -2,14 +2,22 @@
 
 ## Unreleased
 
+### Fixed
+
+- Framed compiles refuse an `upgrade`, `deploy`, `split` or `merge` entry with no trusted-key signature check, and a
+  `selfdestruct` entry with no `require`, as direct compiles do. 0.52.1 compiled them framed, so anyone could spend
+  them.
+
 ### Removed
 
 - The message bus and its kernel are gone from the compiler and the SDK. The compiler options `messageBus`,
   `messageBusKernel`, `messageBusGraphContext`, `messageBusHandlers`, `messageBusHandlersByContract`,
   `messageBusByContract`, `messageBusRootEnvelope`, `messageBusProxyForwardEnvelope`, `messageBusEntryPoolCapacity`
-  and `messageBusDirectParticipant` no longer exist, an artifact publishes no `messageBus` field and no ABI entry
-  publishes `batchInvocations`. The SDK drops `StatefulContract.batch(...)`, message-bus composition and the
-  `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry points.
+  and `messageBusDirectParticipant` no longer exist: a compile that passes any of them, whatever its value, is refused
+  (`REMOVED_COMPILER_OPTION`). An artifact publishes no `messageBus` field and no ABI entry publishes
+  `batchInvocations`. The SDK drops `StatefulContract.batch(...)`, message-bus composition and the
+  `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry points, and refuses an artifact a 0.52
+  message-bus build produced (`MessageBusArtifactError`): recompile it.
 - A contract whose default compile took a message-bus route (an external-call graph) now compiles to the direct build,
   the bytes 0.52.1 emitted for it under `messageBus: false`: recompile and redeploy it. A function that repeats calls
   to one state owner outside the callee's multi-call entry is refused (`REPEATED_CALL_UNSUPPORTED`, formerly

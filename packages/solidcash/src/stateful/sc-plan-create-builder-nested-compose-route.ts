@@ -243,9 +243,8 @@ export async function planCreateBuilderNestedComposeRoute(
     occurrenceIndex: number,
   ): ValueChunkProducerPathDisposition => deriveValueChunkProducerChildPath({
     parent: rootProducerPath,
-    // This loop walks calls published by the co-spent delegate implementation. Its executable
-    // locking bytecode and selected ABI selector are already fixed independently of whether the
-    // finished graph later needs transparent atomic promotion.
+    // This loop walks calls published by the co-spent delegate implementation, whose executable
+    // locking bytecode and selected ABI selector are already fixed.
     parentExecutionLockingBytecode: callInfoContract.inner.lockingBytecode,
     parentSelector: delegateFn?.selector,
     sourceCallsiteId: nested.callsiteId,

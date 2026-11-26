@@ -340,8 +340,8 @@ import {
   materializeCreateBuilderReturnEmit as materializeCreateBuilderReturnEmitImpl,
 } from './sc-materialize-create-builder-return-emit.js';
 import {
-  finishCreateBuilderAtomicPromotion as finishCreateBuilderAtomicPromotionImpl,
-} from './sc-finish-create-builder-atomic-promotion.js';
+  refuseRepeatedOwnerCalls as refuseRepeatedOwnerCallsImpl,
+} from './sc-refuse-repeated-owner-calls.js';
 import {
   destroyStatefulContract as destroyStatefulContractImpl, refuseOrdinarySelfdestructCall,
 } from './sc-destroy.js';
@@ -627,7 +627,6 @@ export async function memoizeGraphPlanningProducerResult(
   return pending;
 }
 
-/** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
 export { materializeInternalFunctionArgument } from './entry-journal-planning.js';
 
 
@@ -11844,11 +11843,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     // return-emit-complete (size-guarded end marker for materializeCreateBuilderReturnEmit)
 
-    finishCreateBuilderAtomicPromotionImpl({
+    refuseRepeatedOwnerCallsImpl({
       preparedAtomicNodes,
       functionName,
     });
-    // atomic-promotion-complete (size-guarded end marker for finishCreateBuilderAtomicPromotion)
+    // repeated-owner-refusal-complete (size-guarded end marker for refuseRepeatedOwnerCalls)
 
     timing('complete');
     // DS-6: a node targets share sits at the first one's slot; where the probe refuses that, another target ran.

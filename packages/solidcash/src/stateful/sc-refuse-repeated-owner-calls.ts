@@ -9,7 +9,7 @@ import { isDirectConventionArtifact } from './sc-expand-resolve-create-builder-e
  * Two writes to one owner cannot both consume its one master UTXO, and collapsing them into the first call's
  * block can discard the later call's entry layout. Refuse a prepared call tree that reaches an owner twice.
  */
-export function finishCreateBuilderAtomicPromotion(params: {
+export function refuseRepeatedOwnerCalls(params: {
   preparedAtomicNodes: any[] | undefined;
   functionName: string;
 }): void {

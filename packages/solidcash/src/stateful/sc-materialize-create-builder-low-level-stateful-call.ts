@@ -68,7 +68,7 @@ export function publishPreparedDelegateOwnerFrame(
 
 /**
  * Materialize one stateful LLC into lowLevelCallUtxoGroups. For delegatecall,
- * optionally promote the journal forwarding frame and filter active nested
+ * optionally promote the forwarding frame and filter active nested
  * external calls. Host continues with nested-compose for each nested call.
  */
 export async function materializeCreateBuilderLowLevelStatefulCall(

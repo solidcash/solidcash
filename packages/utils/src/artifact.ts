@@ -245,8 +245,6 @@ export interface RuntimeLoopEventAbi {
    * event covenant, the rest at its continuation covenant. The record count is learned from the trace.
    */
   chunked?: true;
-  /** A compiler-generated route handler's top-level emits, settled on its runtime effect stream instead of event windows. */
-  stream?: true;
 }
 
 export interface RuntimeLoopIterationDomainAbi {

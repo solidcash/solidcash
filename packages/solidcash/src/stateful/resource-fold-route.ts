@@ -671,18 +671,6 @@ export function evaluateFoldActivation(
   return false;
 }
 
-export type FoldActivationEnvResolveOptions = {
-  participantIndex?: number;
-  nestedScopeId?: number;
-};
-
-/** Direct compilation selects no route rows, so every row resolves to an empty activation environment. */
-export function createFoldRowActivationEnvResolver(
-  _options?: FoldActivationEnvResolveOptions & { useActiveSettlement?: boolean },
-): (row: RouteExpressionKeyRow, rowIndex?: number) => FoldActivationEnvironment {
-  return () => ({});
-}
-
 function routeRowCollectionKey(
   row: RouteExpressionKeyRow,
   access: NonNullable<RouteExpressionKeyRow['handler']['entryAccesses']>[number],
@@ -739,10 +727,6 @@ type FoldParams = {
     row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
   ) => Uint8Array | undefined;
   activationEnv?: FoldActivationEnvironment;
-  resolveRowActivationEnv?: (
-    row: RouteExpressionKeyRow,
-    rowIndex?: number,
-  ) => FoldActivationEnvironment;
   isActive?: (step: ChunkablePushFoldStep) => boolean;
 };
 
@@ -806,11 +790,7 @@ export function buildChunkablePushFoldPlan(params: FoldParams & { minimumRows?: 
 function activeFoldIndexes(built: ChunkablePushFold, params: FoldParams): number[] {
   return built.plan.steps.flatMap((step, index) => {
     if (params.isActive !== undefined) return params.isActive(step) === false ? [] : [index];
-    const row = built.rows[index];
-    const env = row !== undefined && params.resolveRowActivationEnv !== undefined
-      ? params.resolveRowActivationEnv(row, index)
-      : params.activationEnv;
-    return evaluateFoldActivation(step.activation, env) ? [index] : [];
+    return evaluateFoldActivation(step.activation, params.activationEnv) ? [index] : [];
   });
 }
 

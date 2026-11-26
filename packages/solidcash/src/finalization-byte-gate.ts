@@ -231,27 +231,7 @@ export interface FinalizedByteGateOptions {
    * refusal and can neither create nor suppress one. `inputSubjectsOfBuilder` reads it off a builder.
    */
   inputSubjects?: readonly (FinalizedByteSubject | undefined)[];
-  /**
-   * PredOut preflight claims: compose-discovered PredOut physical claims threaded into the finalized-tx layout assert.
-   * Without these, PredOut checks stay compose-path-only.
-   */
-  predOutClaimsByParticipant?: ReadonlyMap<number, ReadonlyArray<{
-    witnessName: string;
-    physicalLocalOffset: number;
-    concreteLocalSlot?: number;
-  }>>;
 }
-
-/**
- * Destination profile proven by a successful exact finalization preflight. Kept outside TransactionBuilder's
- * public options so relay/consensus policy cannot become another application-controlled construction switch.
- * The final send still reassesses its current bytes; the receipt carries only which destination rules apply.
- */
-export const finalizedByteGateReceipts = new WeakMap<TransactionBuilder, FinalizedByteGateOptions>();
-
-export const finalizedByteGateReceiptOf = (
-  builder: TransactionBuilder,
-): FinalizedByteGateOptions | undefined => finalizedByteGateReceipts.get(builder);
 
 /**
  * Make the finalized-byte gate judge the same profile as its destination provider.

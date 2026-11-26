@@ -61,7 +61,6 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   constructor(
     private enforceFinalRequire: boolean = true,
     private allowUnsafeOperations: boolean = false,
-    private lifecycleAuthorization: boolean = true,
     /** A framed body's bare return ends only its frame, whose tail still runs. */
     private framed: boolean = false,
   ) {
@@ -138,9 +137,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     checkUnauthenticatedSelfdestruct(node, this.allowUnsafeOperations);
 
     // An upgrade swaps in caller-supplied bytecode and a deploy emits a child from caller-supplied arguments;
-    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover. The check
-    // is off without `lifecycleAuthorization` (the framed composition).
-    checkLifecycleAuthorization(node, this.allowUnsafeOperations, this.lifecycleAuthorization);
+    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover.
+    checkLifecycleAuthorization(node, this.allowUnsafeOperations);
 
     const visibility = node.visibility;
     const hasReturnTypes = node.returnTypes.length > 0;
@@ -196,12 +194,11 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
       // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
       // path is only a warning by default). The selfdestruct statement itself does not authorize the destruction.
-      // Without `lifecycleAuthorization` the selfdestruct statement is terminal.
       ensureFinalStatementIsRequire(
         node.body.statements,
         this.enforceFinalRequire || (isSelfdestruct && !this.allowUnsafeOperations),
         returnsEndPath,
-        !isSelfdestruct || !this.lifecycleAuthorization,
+        !isSelfdestruct,
       );
     }
 
@@ -302,8 +299,7 @@ function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUns
  * permissionless takeover or topology manipulation. Require an unconditional trusted-key check by default; the
  * explicit unsafe compiler option retains a warning-only escape (mirroring selfdestruct).
  */
-function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: boolean, enabled: boolean): void {
-  if (!enabled) return;
+function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: boolean): void {
   const isUpgrade = node.modifiers.includes(FunctionModifier.UPGRADE);
   const isDeploy = node.modifiers.includes(FunctionModifier.DEPLOY);
   const isSplit = node.modifiers.includes(FunctionModifier.SPLIT);

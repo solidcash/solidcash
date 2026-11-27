@@ -103,8 +103,7 @@ A stateful contract compiles under one of two composition conventions, selected 
 - **`direct`** (the default) composes several contracts into one transaction with the fewest UTXOs. Its
   `msg.sender` is **not authenticated**: for an external call the emitted check takes the locking bytecode of the
   only co-spent minting token of the category the caller supplies, and never proves that contract made the call
-  (audit finding F1); a nested kernel row binds the caller slot by block offset, `require(sourceOffset < ownerSize)`
-  (F10). The same convention exposes satoshi and token containers, mapping-entry NFTs, and shared keccak,
+  (audit finding F1). The same convention exposes satoshi and token containers, mapping-entry NFTs, and shared keccak,
   ecrecover, and library side-cars to any spend that co-spends a minting NFT of the contract category or that
   reaches the side-car's public lock. Those holes do not need `msg.sender`. Do not treat `msg.sender` as an
   authorization check under this convention - use a signature (`checkSig`) or a framed contract instead.

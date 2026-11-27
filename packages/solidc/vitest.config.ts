@@ -14,9 +14,9 @@ export default defineConfig({
     // Compiler modules are several megabytes after ANTLR generation. Reusing each worker's
     // module graph avoids re-transforming and re-evaluating it for every test file.
     isolate: false,
-    // Compilation is CPU- and memory-heavy; kernel recurrence workers retain large generated AST and bytecode
-    // graphs. A fixed cap keeps the clean beta gate below the host's memory-pressure cliff and makes its timeout
-    // budget independent of the number of logical cores exposed by CI.
+    // Compilation is CPU- and memory-heavy; workers retain large generated AST and bytecode graphs. A fixed cap
+    // keeps the suite below the host's memory-pressure cliff and makes its timeout budget independent of the
+    // number of logical cores exposed by CI.
     maxWorkers: 3,
     // Root Vitest projects require projects with distinct worker budgets to run in distinct groups. Running
     // the compiler after the lighter packages also prevents both pools from contending for memory at once.

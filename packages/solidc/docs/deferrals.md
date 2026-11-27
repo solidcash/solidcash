@@ -1858,6 +1858,10 @@ internal vector".
 
 ## Event payloads larger than one 128-byte NFT commitment (2026-08-07)
 
+**Status 2026-11-27:** with the message bus removed, the kernel-route and legacy-route parts below are history, and
+the `Kernel*` tests they cite are gone. Still deferred for framed frames, runtime counter-loop events and nested or
+delegate callees.
+
 **RESOLVED for direct stateful calls (2026-10-13) and for kernel route handlers whose emits all stream (2026-10-13,
 runtime effect stream, narrow emits too since 2026-10-14, see below); STILL DEFERRED on legacy routes, other kernel
 handler shapes, framed frames, runtime counter-loop events and nested / delegate callees.** Before, an event whose
@@ -2086,6 +2090,8 @@ Stage 3 (2026-10-14, the atomic verifier's operation cost):
   these follow-ups; BCHN is excluded by the user's instruction.
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
+
+**Moot 2026-11-27:** the message bus was removed, and this route with it.
 
 **ROOT CAUSE FINALIZED (2026-10-15): the split regression and a zero-trip state-array loop resolver gap are
 fixed; the original `add` preflight OP_VERIFY is re-exposed and traced to the split root's
@@ -2925,6 +2931,8 @@ native delegates and routes; record a DECISIONS row superseding large-contract-s
 
 ## A streamed route handler reached on the plain call path (closed locally, 2026-10-14)
 
+**Moot 2026-11-27:** the message bus was removed, and streamed route handlers with it.
+
 **What:** since stage 1 (ff51608b8), a kernel handler whose emits all sit at top level streams its records through
 the trailing band and publishes `runtimeLoopEvents: [{ eventSignatures, stream: true }]` instead of `emits`. Compose
 places those records (graph.ts, compose-event-helpers.ts). The plain path previously built routed callee rows from
@@ -3283,6 +3291,8 @@ run the solc corpus negatives and the `.sol` fixtures once.
 
 ## `OP_RETURN` outputs in framed and the message bus (2026-11-03)
 
+**Status 2026-11-27:** the message bus was removed; the deferral below is framed's alone.
+
 The user's rule (2026-11-03): no `OP_RETURN` output signals anything or fills a slot; a filler is an event-like
 output anyone may sweep after 144 blocks. Asked which shipped uses to remove: "bus is going to be retired so we leave
 it be. fillers should not use OP_RETURN, use the same 144 blocks maturing event-like outputs to stay consistent.
@@ -3301,6 +3311,8 @@ framed will be retired after tre too, so leave op_returns for it in place. but m
 **Revisit if:** framed outlives TRE's release, or BCHN's single-`OP_RETURN` relay rule bites a framed transaction.
 
 ## A message-bus handler whose entry calls an internal function reading a constructor parameter (2026-11-04)
+
+**Moot 2026-11-27:** the message bus was removed; no direct or framed compile builds a handler.
 
 **What:** a stateful contract compiled with `messageBus: true` fails to compile when a public entry calls an internal
 function that reads a constructor parameter: "Expected variable '<parameter>' does not exist on the stack". It fails

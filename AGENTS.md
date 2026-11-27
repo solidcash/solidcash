@@ -70,7 +70,7 @@ Do not force-add emitted sidecars or silence the guard. Keep diagnostic switches
 `docs/compiler-diagnostics.md`; a switch that alters bytecode or SDK settlement is an experiment, not a
 production measurement. Remove one-off probes keyed to a contract/function name, literal output index, or
 address prefix once the investigation ends; retained probes must describe a reusable type, effect, flow, or VM
-boundary. Kernel/compiler/SDK behavior must likewise be selected by type, effect, flow, ABI schema, or authenticated
+boundary. Compiler/SDK behavior must likewise be selected by type, effect, flow, ABI schema, or authenticated
 metadata, never an application, contract, collection, event, or function name. Historical name-based compatibility
 is debt: keep it explicitly fenced to legacy artifacts and do not copy or widen it.
 

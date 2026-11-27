@@ -49,7 +49,7 @@ const ID = 1n;
 const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 
 const SOURCE = [
-  'pragma solidcash ^0.52.0;',
+  'pragma solidcash ^0.53.0;',
   'interface ISettler { function settle(address ledger, int id, int stage) returns (int); }',
   'interface ILedger {',
   '  function open(int id); function advance(int id) returns (int); function restage(int id) returns (int);',

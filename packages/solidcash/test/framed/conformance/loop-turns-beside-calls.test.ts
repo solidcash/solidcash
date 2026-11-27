@@ -38,7 +38,7 @@ const JOURNAL_CATEGORY = category(0x13);
 const JOURNAL_ADDRESS = validatorAddress(hexToBin(JOURNAL_CATEGORY), VALIDATOR_PROGRAM);
 
 const SOURCE = [
-  'pragma solidcash ^0.52.0;',
+  'pragma solidcash ^0.53.0;',
   'struct Note { uint8 kind; bytes who; }',
   'interface IJournal { function publish(int id, Note note); }',
   'contract Journal { int public notes; function publish(int id, Note note) { require(this.notes == 0); } }',

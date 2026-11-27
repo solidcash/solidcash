@@ -215,7 +215,7 @@ The factory's trailing overrides object supports:
 
 With a `NetworkProvider` runner instead of a `Signer`, pass `fundingUtxo`, `funder` and `changeAddress` yourself;
 that deployment gets no logical CREATE address, so `target` is the physical address. `validatorCount` and
-`functionSplit` belong to the framed convention, which is experimental in 0.52.0 (see
+`functionSplit` belong to the framed convention, which is experimental in 0.53.0 (see
 [Framed Composition](/docs/guides/framed-composition)).
 
 `StatefulContract.deploy(artifact, constructorArgs, options)` takes the same options except the signer defaults:

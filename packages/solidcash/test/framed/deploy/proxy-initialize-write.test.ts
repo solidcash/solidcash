@@ -40,7 +40,7 @@ const SHARED_STATE = ' address public implementation;'
   + ' uint public initialized;'
   + ' int public version;';
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ` contract Impl {${SHARED_STATE}`
   + '   function initialize(address expected) {'
   + '     require(msg.sender == expected);'
@@ -197,7 +197,7 @@ describe('a proxied initialize that writes state', () => {
   });
 
   it('refuses a proxy whose record does not declare the implementation\'s fields', async () => {
-    const mismatched = 'pragma solidcash ^0.52.0;'
+    const mismatched = 'pragma solidcash ^0.53.0;'
       + ' contract Impl { int public version;'
       + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; } }'
       + ' contract Proxy { address implementation;'
@@ -220,7 +220,7 @@ describe('a proxied initialize that writes state', () => {
   });
 
   it('refuses a proxy whose delegatecall target is a filled constant rather than a value the contract holds', () => {
-    const literal = 'pragma solidcash ^0.52.0;'
+    const literal = 'pragma solidcash ^0.53.0;'
       + ' contract Proxy {'
       + `   fallback(bytes input) external { address(0x${'ab'.repeat(35)}).delegatecall(input); require(true); }`
       + ' }';

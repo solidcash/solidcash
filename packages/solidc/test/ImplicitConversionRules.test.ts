@@ -72,7 +72,7 @@ describe('implicit conversions in a .sol unit', () => {
   it('keeps native conversions outside .sol units', () => {
     expect(() => sol('uint256[10] a; uint256[18] b; function f() external { a = b; }', '/main.scash'))
       .not.toThrow();
-    expect(() => compileString('pragma solidcash ^0.52.0;\n'
+    expect(() => compileString('pragma solidcash ^0.53.0;\n'
       + 'contract C { function f() { uint8 x = 200 + 100; require(x == 300); } }')).not.toThrow();
   });
 });

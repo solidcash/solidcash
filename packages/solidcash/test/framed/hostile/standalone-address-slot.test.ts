@@ -32,7 +32,7 @@ const FOREIGN = validatorAddress(seededCategory('hostile other contract'), VALID
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const MASTER_VALUE = 20_000n;
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Sample {'
   + '   function ping() { require(true); }'
   + ' }';

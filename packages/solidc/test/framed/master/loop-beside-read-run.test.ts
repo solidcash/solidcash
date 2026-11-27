@@ -36,7 +36,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const EMPTY = new Uint8Array(0);
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' interface IOther { function ping(); } contract Other { function ping() { require(true); } }'
   + ' contract Ledger {'
   + '   bytes public tag;'

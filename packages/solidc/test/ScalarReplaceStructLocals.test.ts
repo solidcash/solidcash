@@ -6,7 +6,7 @@ const bytecode = (source: string, options: Record<string, unknown> = {}): string
   compileString(source, options).bytecode;
 
 const withStruct = (init: string, use: string, extra = ''): string => `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 struct Pair { bigint a; bigint b; }
 contract C(pubkey pk) {
     function f(sig s, bigint x) {
@@ -19,7 +19,7 @@ contract C(pubkey pk) {
 `;
 
 const scalars = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 contract C(pubkey pk) {
     function f(sig s, bigint x) {
         require(checkSig(s, pk));
@@ -66,7 +66,7 @@ describe('ScalarReplaceStructLocals', () => {
 
   it('leaves a local alone when it is initialised by a call rather than a construction', () => {
     const source = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 struct Pair { bigint a; bigint b; }
 function mk(bigint a, bigint b) pure returns (Pair memory) { return Pair(a, b); }
 contract C(pubkey pk) {
@@ -136,7 +136,7 @@ contract P(address impl) {
 
   it('does not touch a struct with a nested struct or array field', () => {
     const source = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 struct Inner { bigint v; }
 struct Outer { Inner i; bigint w; }
 contract C(pubkey pk) {

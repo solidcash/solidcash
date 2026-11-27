@@ -13,7 +13,7 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const SOURCE = `pragma solidcash ^0.52.0;
+const SOURCE = `pragma solidcash ^0.53.0;
 contract TimedPayout(pubkey owner, int unlockAt) {
   int paid;
   function deposit() public payable { require(msg.value > 0); this.paid += msg.value; }

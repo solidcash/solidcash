@@ -113,7 +113,7 @@ function chooseKeys(): { readonly readKey: bigint; readonly writeKey: bigint } {
 }
 const KEYS = chooseKeys();
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   int public count;'

@@ -41,7 +41,7 @@ const AMOUNT = 15_000n;
 const DEPOSIT = 20_000n;
 const MASTER_ID = 'master';
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Holder {'
   + '   int public paid;'
   + '   receive() external payable { require(true); }'

@@ -22,7 +22,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * still refuses the reach past its last master rather than deploying a larger one.
  */
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' interface IInner { function note(int a); function tick(int n); }'
   + ' contract Inner {'
   + '   address public implementation;'

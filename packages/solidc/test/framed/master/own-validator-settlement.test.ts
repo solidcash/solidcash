@@ -35,7 +35,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(label('beside validator user').slic
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'

@@ -36,7 +36,7 @@ const MASTER_ID = 'vault-1';
 // The record sits two participants on: the caller, the validator's head, the two facets it binds, then the record.
 const RECORD_INDEX = 4;
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Vault {'
   + '   int public counter;'
   + '   function bump() { this.counter = this.counter + 1; require(this.counter > 0); }'
@@ -175,7 +175,7 @@ const SPLIT_CALLEE = seededAddress('learned split callee');
 const SPLIT_LEDGER = 'ledger-1';
 const SPLIT_CALLEE_MASTER = 'callee-1';
 const SPLIT_RECORD = 'record';
-const SPLIT_SOURCE = 'pragma solidcash ^0.52.0;'
+const SPLIT_SOURCE = 'pragma solidcash ^0.53.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Ledger {'

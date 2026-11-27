@@ -42,7 +42,7 @@ const CALLED_MASTER = 'own-inner';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' interface IOwn { function inner(); }'
   + ' contract Own {'
   + '   event Log(int value);'

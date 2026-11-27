@@ -29,7 +29,7 @@ interface Spend {
   readonly transaction: VmTransaction;
 }
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 const CATEGORY = Uint8Array.from({ length: 32 }, (_, i) => (0x29 + i * 17) & 0xff);
 const EMPTY = new Uint8Array(0);
 const VALUE = 20_000n;

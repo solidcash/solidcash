@@ -62,7 +62,7 @@ const AMOUNT = 100n;
 const ESCROW_ID = 7n;
 
 const SOURCE = [
-  'pragma solidcash ^0.52.0;',
+  'pragma solidcash ^0.53.0;',
   'error ShortBalance(address holder, int balance, int needed);',
   'interface ILedger {',
   '  function isMember(address who) view returns (bool);',

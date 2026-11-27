@@ -8,7 +8,7 @@ import { compileString } from './direct-compile.js';
 // 'elementType'"), then was refused by name (LOW_LEVEL_CALL_IN_LOOP). A loop of one turn is a single call.
 const OPTIONS = { evmCompat: true, primaryContractName: 'R' } as const;
 
-const withCaller = (body: string, state = 'int runs;'): string => `pragma solidcash ^0.52.0;
+const withCaller = (body: string, state = 'int runs;'): string => `pragma solidcash ^0.53.0;
   interface IT { function set(int h, int c) external; }
   contract T { int height; int clock; int calls;
     function set(int h, int c) external { height = h; clock = c; calls = calls + 1; } }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from './direct-compile.js';
 
 // A modifier is inlined into every entry it guards, so one `revert` site is visited once per entry.
-const SOURCE = `pragma solidcash ^0.52.0;
+const SOURCE = `pragma solidcash ^0.53.0;
 error Paused();
 contract Card {
     bool public paused;

@@ -141,7 +141,7 @@ describe('a record keeps the bytes of each value a call leaves as it was', () =>
   });
 
   it('a callee\'s address of 20 zero bytes, written in the caller\'s call and kept by a later one', async () => {
-    const source = 'pragma solidcash ^0.52.0; '
+    const source = 'pragma solidcash ^0.53.0; '
       + 'interface I { function set(bytes b) external returns (bool); function bump() external returns (bool); } '
       + 'contract T { address who; int n; '
       + 'function set(bytes b) external returns (bool) { who = b; n = n + 1; return true; } '

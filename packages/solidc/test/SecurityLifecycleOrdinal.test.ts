@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 
 describe('unsafe(1) value-moving body is refused', () => {
   it('rejects an unsafe(1) body that moves satoshis', () => {

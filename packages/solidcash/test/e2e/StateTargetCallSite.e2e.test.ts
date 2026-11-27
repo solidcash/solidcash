@@ -23,7 +23,7 @@ import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const SOURCE = `pragma solidcash ^0.52.0;
+const SOURCE = `pragma solidcash ^0.53.0;
   interface IOracle { function price() external returns (int); }
   contract Oracle { int reads; function price() external returns (int) { reads = reads + 1; return 7; } }
   contract Hostile { int reads; function price() external returns (int) { reads = reads + 1; return 1000000; } }
@@ -46,7 +46,7 @@ const SOURCE = `pragma solidcash ^0.52.0;
 
 // Calls through function pointers: one whose method a state discriminant selects, one whose receiver a ternary of
 // parameters selects. The function changes the discriminant, or the chosen parameter, after the call.
-const POINTERS = `pragma solidcash ^0.52.0;
+const POINTERS = `pragma solidcash ^0.53.0;
   interface IHandler { function inc() external; function dec() external; }
   contract Handler {
     int counter;
@@ -73,7 +73,7 @@ const POINTERS = `pragma solidcash ^0.52.0;
   }`;
 
 // A call through an interface field of a stored struct, which the function writes before the call.
-const CHAINS = `pragma solidcash ^0.52.0;
+const CHAINS = `pragma solidcash ^0.53.0;
   interface IOracle { function price() external returns (int); }
   contract Oracle { int reads; function price() external returns (int) { reads = reads + 1; return 7; } }
   contract Hostile { int reads; function price() external returns (int) { reads = reads + 1; return 1000000; } }
@@ -87,7 +87,7 @@ const CHAINS = `pragma solidcash ^0.52.0;
   }`;
 
 // A call through a mapping entry, which the function writes before the call.
-const BOOK = `pragma solidcash ^0.52.0;
+const BOOK = `pragma solidcash ^0.53.0;
   interface IOracle { function price() external returns (int); }
   contract Oracle { int reads; function price() external returns (int) { reads = reads + 1; return 7; } }
   contract Hostile { int reads; function price() external returns (int) { reads = reads + 1; return 1000000; } }
@@ -417,7 +417,7 @@ describe('a call through a collection entry its function writes before the call 
 
   it('refuses at compile time a call whose entry the call cannot read after the write', () => {
     // The call reads entry k; the function wrote entry j, which may be the same entry.
-    expect(() => compileString(`pragma solidcash ^0.52.0;
+    expect(() => compileString(`pragma solidcash ^0.53.0;
       interface IOracle { function price() external returns (int); }
       contract Book {
         mapping(int => address) feeds;

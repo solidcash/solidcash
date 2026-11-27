@@ -22,7 +22,7 @@ const BODY = `
     }
 `;
 const PLAIN = `contract Container {${BODY}}`;
-const SINGLE = `pragma solidcash ^0.52.0;
+const SINGLE = `pragma solidcash ^0.53.0;
 pragma satoshicontainer single;
 contract Container {${BODY}}`;
 

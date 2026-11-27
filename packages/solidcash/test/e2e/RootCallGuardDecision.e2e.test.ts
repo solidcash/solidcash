@@ -22,7 +22,7 @@ import type { Utxo } from '../../src/interfaces.js';
 import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const source = (setSelector: string): string => `pragma solidcash ^0.52.0;
+const source = (setSelector: string): string => `pragma solidcash ^0.53.0;
   interface IT { function set(int h, int c) external; }
   interface IU { function get() external returns (int); }
   contract T { int height; int clock; int calls;

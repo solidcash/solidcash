@@ -25,7 +25,7 @@ import { alicePkh, alicePriv, bobPkh, bobPriv } from '../fixture/vars.js';
 
 /** A BchPool-shaped child: contract arguments, one data record, `pragma satoshicontainer single`, and its creator. */
 const POOLS = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 pragma satoshicontainer single;
 contract Pool(uint8 exponent, bytes verifierLock, bytes workerLock) {
     bytes32 recentRoots;
@@ -57,7 +57,7 @@ contract PoolDeployer {
  * reading too).
  */
 const TOKEN_POOL = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 pragma satoshicontainer single;
 pragma tokencontainer single;
 contract TokenPool(uint8 exponent, bytes32 asset, bytes workerLock) {
@@ -82,7 +82,7 @@ contract TokenPool(uint8 exponent, bytes32 asset, bytes workerLock) {
 
 /** A constructor that compares this.category with an argument: only the byte order decides whether it passes. */
 const SELF = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 contract Self {
     int n;
     constructor(bytes32 c) {
@@ -105,7 +105,7 @@ contract TokenPoolDeployer {
 
 /** A payable constructor: its satoshi container row is optional and holds the deploy value. */
 const PAYABLE = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 contract Pay {
     int n;
     constructor() payable { this.n = msg.value; }
@@ -115,7 +115,7 @@ contract Pay {
 
 /** A C whose master can retire: its container locks carry the destroy arm, an option the deployer must take from C. */
 const RETIRING = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 contract Vault {
     int x;
     constructor() payable { this.x = 1; }

@@ -24,7 +24,7 @@ import { alicePub, alicePriv, alicePkh } from '../../solidcash/test/fixture/vars
 import { createTestProvider } from '../../solidcash/test/test-util.js';
 import p2pkhArtifact from '../../solidcash/test/fixture/p2pkh.artifact.js';
 
-const SOURCE = `pragma solidcash ^0.52.0;
+const SOURCE = `pragma solidcash ^0.53.0;
 contract T {
     int n;
     function who(address expected) { require(msg.sender == expected); n = n + 1; }

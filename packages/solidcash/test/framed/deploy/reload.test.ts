@@ -21,7 +21,7 @@ import { CompositionPools } from '../../../src/framed/composer/index.js';
  * left beside it as the control that the restore is what moved it.
  */
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Child {'
   + '   int public total;'
   + '   constructor(int seed) { this.total = seed + 1; }'

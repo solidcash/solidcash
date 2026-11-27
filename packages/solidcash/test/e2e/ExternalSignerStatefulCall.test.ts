@@ -24,7 +24,7 @@ import {
 } from '../fixture/vars.js';
 
 // The owner authenticates by co-spending a coin of their own (tx.origin), so the wallet's coin is in the call.
-const OWNED_COUNTER = `pragma solidcash ^0.52.0;
+const OWNED_COUNTER = `pragma solidcash ^0.53.0;
 event Bumped(int count);
 contract OwnedCounter(bytes20 ownerPkh) {
   int public count;
@@ -32,7 +32,7 @@ contract OwnedCounter(bytes20 ownerPkh) {
   function bump() public ownerCoSpends { this.count = this.count + 1; emit Bumped(this.count); }
 }`;
 
-const SPLIT_MERGE = `pragma solidcash ^0.52.0;
+const SPLIT_MERGE = `pragma solidcash ^0.53.0;
 contract SplitMerge(pubkey admin) {
   bigint counter;
   function fork(bigint n, sig s) split(n) { require(n >= 1); require(checkSig(s, admin)); }

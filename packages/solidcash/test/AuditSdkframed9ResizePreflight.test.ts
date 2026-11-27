@@ -12,7 +12,7 @@ import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPriv } from './fixture/vars.js';
 
 const ADMIN = new SignatureTemplate(sha256(new TextEncoder().encode('resize preflight admin')));
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Pool {'
   + `   pubkey constant ADMIN = pubkey(0x${binToHex(ADMIN.getPublicKey())});`
   + '   int public total;'

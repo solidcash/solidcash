@@ -11,7 +11,7 @@ import { publishedRefusals } from './refused-entry.js';
  * `blockInputSize` differs between them.
  */
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Cache {'
   + '   string public name;'
   + '   mapping(bytes20 => int) public seen;'

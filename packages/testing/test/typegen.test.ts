@@ -264,10 +264,10 @@ describe('TypeChain-compatible generation', () => {
     const artifactsDir = path.join(root, 'artifacts', 'solidcash');
     fs.mkdirSync(contractsDir, { recursive: true });
     fs.writeFileSync(path.join(contractsDir, 'IFoo.scash'),
-      'pragma solidcash ^0.52.0;\ninterface IFoo {\n    public int x;\n}\n');
+      'pragma solidcash ^0.53.0;\ninterface IFoo {\n    public int x;\n}\n');
     fs.writeFileSync(path.join(contractsDir, 'B.scash'),
-      'pragma solidcash ^0.52.0;\ncontract B() {\n    int y;\n    function bump() {\n        this.y = this.y + 1;\n    }\n}\n');
-    fs.writeFileSync(path.join(contractsDir, 'A.scash'), `pragma solidcash ^0.52.0;
+      'pragma solidcash ^0.53.0;\ncontract B() {\n    int y;\n    function bump() {\n        this.y = this.y + 1;\n    }\n}\n');
+    fs.writeFileSync(path.join(contractsDir, 'A.scash'), `pragma solidcash ^0.53.0;
 import "./IFoo.scash";
 import "./B.scash";
 enum Mode { Off, On }
@@ -310,8 +310,8 @@ contract A(address foo, address b) {
     const artifactsDir = path.join(root, 'artifacts', 'solidcash');
     fs.mkdirSync(path.join(contractsDir, 'lib'), { recursive: true });
     fs.writeFileSync(path.join(contractsDir, 'lib', 'IFoo.scash'),
-      'pragma solidcash ^0.52.0;\ninterface IFoo {\n    public int x;\n}\n');
-    const reader = (name: string): string => `pragma solidcash ^0.52.0;
+      'pragma solidcash ^0.53.0;\ninterface IFoo {\n    public int x;\n}\n');
+    const reader = (name: string): string => `pragma solidcash ^0.53.0;
 import "./lib/IFoo.scash";
 contract ${name}(address foo) {
     int seen;

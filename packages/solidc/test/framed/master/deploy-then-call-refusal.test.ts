@@ -18,12 +18,12 @@ const CHILD = 'int public total; function configure(int v) public { total = v; }
 describe('framed deploy-then-call refusal', () => {
   it('names the nonce a plain creation takes its address from, and the CREATE frame for a salted one', () => {
     expect(() => compileString(
-      `pragma solidcash ^0.52.0; contract Child { ${CHILD} }
+      `pragma solidcash ^0.53.0; contract Child { ${CHILD} }
        contract Factory { int made; function make(int v) public { Child c = new Child(); made = made + 1; } }`,
       { composition: 'framed' },
     )).toThrow(/'new Child\(\)' takes its address from the creator's nonce, which a framed master does not hold/u);
     expect(() => compileString(
-      `pragma solidcash ^0.52.0; contract Child { ${CHILD} }
+      `pragma solidcash ^0.53.0; contract Child { ${CHILD} }
        contract Factory { int made; function make(int v) public { Child c = new Child{salt: bytes32(0)}(); made = made + 1; } }`,
       { composition: 'framed' },
     )).toThrow(/contract creation needs the witness `CREATE` checks, which are not emitted yet/u);
@@ -31,7 +31,7 @@ describe('framed deploy-then-call refusal', () => {
 
   it('refuses a creation the body then calls, by the nonce its address comes from, before the call', () => {
     expect(() => compileString(
-      `pragma solidcash ^0.52.0; contract Child { ${CHILD} }
+      `pragma solidcash ^0.53.0; contract Child { ${CHILD} }
        contract Factory { int made; function make(int v) public { Child c = new Child(); c.configure(v); made = made + 1; } }`,
       { composition: 'framed' },
     )).toThrow(/'new Child\(\)' takes its address from the creator's nonce, which a framed master does not hold/u);
@@ -40,7 +40,7 @@ describe('framed deploy-then-call refusal', () => {
   it('refuses the same source on the direct convention, at the call on the child', () => {
     // Only the removed message bus compiled it, folding the call into the child's genesis.
     expect(() => compileString(
-      `pragma solidcash ^0.52.0; contract Child { ${CHILD} }
+      `pragma solidcash ^0.53.0; contract Child { ${CHILD} }
        contract Factory { int made; function make(int v) public { Child c = new Child(); c.configure(v); made = made + 1; } }`,
       { allowUnsafeOperations: true },
     )).toThrow(expect.objectContaining({

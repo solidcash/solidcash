@@ -61,7 +61,7 @@ const USER_ID = 'user';
 
 const CALLEE_ADDRESS = seededAddress(CALLEE_LABEL);
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' interface ICallee { function step(); }'
   + ' contract Callee { function step() { require(true); } }'
   + ' contract Caller { function enter() {'

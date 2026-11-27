@@ -30,7 +30,7 @@ type Spend = {
   transaction: { version: number; locktime: number; inputs: VmInput[]; outputs: VmOutput[] };
 };
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 const EMPTY = new Uint8Array(0);
 const TOKENLESS = Uint8Array.from([0x51]);
 const OUTBASE = 5;

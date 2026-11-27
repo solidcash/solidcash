@@ -24,7 +24,7 @@ import {
  */
 
 const VALIDATOR_PROGRAM = buildValidatorProgram();
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Child {'
   + '   int public total;'
   + '   constructor(int seed) { this.total = seed + 1; }'

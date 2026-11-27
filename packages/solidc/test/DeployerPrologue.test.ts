@@ -21,7 +21,7 @@ type Input = {
   outpointIndex: number; outpointTransactionHash: Uint8Array; sequenceNumber: number; unlockingBytecode: Uint8Array;
 };
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 const EMPTY = new Uint8Array(0);
 const OP_TRUE = Uint8Array.of(0x51);
 const OUTBASE = 5;

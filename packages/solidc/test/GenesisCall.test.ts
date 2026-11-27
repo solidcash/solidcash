@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 const SOURCE = `${P} contract C { int calls; function hit(int amount) { calls = calls + amount; } }`;
 
 describe('B6.5: the genesis call parameter', () => {

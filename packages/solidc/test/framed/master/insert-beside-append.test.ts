@@ -40,7 +40,7 @@ const VALUE_TAIL = new Uint8Array([AMOUNT]);
 const EMPTY = new Uint8Array(0);
 const ZERO_SLOT = new Uint8Array(32);
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   address[] public items;'

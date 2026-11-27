@@ -38,7 +38,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 const DAY = 86_400n;
 
 const SOURCE = [
-  'pragma solidcash ^0.52.0;',
+  'pragma solidcash ^0.53.0;',
   'contract Clock {',
   '  address public implementation;',
   '  int public stamp;',

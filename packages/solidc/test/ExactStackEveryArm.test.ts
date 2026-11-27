@@ -88,7 +88,7 @@ describe('B6.0: an arm starts from an exact stack', () => {
   });
 
   it('emits the check in each defined entry body', () => {
-    const artifact = compileString(`pragma solidcash ^0.52.0;
+    const artifact = compileString(`pragma solidcash ^0.53.0;
 contract C {
     int s;
     function a() { s = s + 1; }
@@ -205,7 +205,7 @@ contract Receiver {
   receive() external payable { x = 777; }
 }`;
   // A fallback that takes its call data, which it rebuilds from its own input after the check.
-  const FORWARDER = `pragma solidcash ^0.52.0;
+  const FORWARDER = `pragma solidcash ^0.53.0;
 contract Forwarder {
     int n;
     function bump() public { n = n + 1; }

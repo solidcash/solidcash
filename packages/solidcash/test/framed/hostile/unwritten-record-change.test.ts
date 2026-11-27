@@ -24,7 +24,7 @@ import {
  */
 
 const PING_ADDRESS = seededAddress('unwritten record change ping');
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' interface IPing { function ping(); }'
   + ' contract Ping { function ping() { require(true); } }'
   + ' contract Ledger {'

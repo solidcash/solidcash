@@ -31,7 +31,7 @@ import { compileAndDeploy, entryName, master, type DeployedContract } from '../s
 const ENTRY = 'ping';
 
 /** Two contracts, so a send on one is disjoint from a send on the other. */
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Alpha { function ping() { require(true); } }'
   + ' contract Beta { function ping() { require(true); } }';
 

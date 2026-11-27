@@ -2,6 +2,28 @@
 title: Migration Notes
 ---
 
+## v0.52 to v0.53
+
+- Change `pragma solidcash ^0.52.0` to `pragma solidcash ^0.53.0`, and move all six packages to 0.53.0 together. A
+  caret range on 0.x pins the minor version, so the 0.53.0 compiler refuses `^0.52.0`.
+- Remove the `messageBus*` options from your compiler configuration: a compile now ignores them, like any unknown
+  option.
+- Recompile every contract, compare its bytecode with what you deployed, and redeploy those that changed. They include
+  every contract whose default 0.52.1 compile took a message-bus route (an external-call graph), which now compiles to
+  the direct build 0.52.1 emitted for it under `messageBus: false`; a framed contract compiled with the `messageBus*`
+  options set; split contracts; and the default proxy, whose address changes, so redeploy proxies too. Other contracts
+  keep their 0.52.1 bytes, apart from the fixes the changelog lists.
+- The SDK refuses an artifact a 0.52 message-bus build produced (`MessageBusArtifactError`): recompile it.
+- `StatefulContract.batch(...)` and the `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry
+  points are gone. Make the calls in their own transactions, or compose them on the experimental framed convention
+  ([framed composition](/docs/guides/framed-composition)).
+- A framed `upgrade`, `deploy`, `split` or `merge` entry now needs a trusted-key signature check, and a framed
+  `selfdestruct` entry a `require`, as on the direct convention.
+- Code that matches diagnostic codes must use the new names: `REPEATED_CALL_UNSUPPORTED` (was `MESSAGE_BUS_REQUIRED`),
+  `JOURNAL_LAYOUT`, `JOURNAL_UNBOUNDED_KEY` and `JOURNAL_INTERNAL_DEFECT` (were `KERNEL_*`), and
+  `DELEGATE_CONTEXT_UNPRESERVABLE`. An SDK preflight refusal reads `BCH-2026 preflight failed at input N: ...`.
+- A shape that compiled only through the bus is refused now; the release notes' known issues list them.
+
 ## v0.52.0 to v0.52.1
 
 - Move all six packages to 0.52.1 together; `pragma solidcash ^0.52.0` stays.

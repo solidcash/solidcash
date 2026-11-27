@@ -16,7 +16,7 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
  * The honest absent-base sentinel is exactly -1 (the SDK publishes `-1n`), so a write that executes can never
  * legitimately carry a lower value. The verifier now refuses it with `-1 GREATERTHANOREQUAL OP_VERIFY`.
  */
-const SOURCE = `pragma solidcash ^0.52.0;
+const SOURCE = `pragma solidcash ^0.53.0;
 contract Dyn() {
   string public name;
   function setName(string n) { this.name = n; require(true); }

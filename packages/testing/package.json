@@ -1,6 +1,6 @@
 {
   "name": "@solidcash/testing",
-  "version": "0.52.1",
+  "version": "0.53.0",
   "description": "SolidCash testing framework - Hardhat-style development environment for Bitcoin Cash contracts",
   "keywords": [
     "bitcoin cash",
@@ -93,10 +93,10 @@
   },
   "dependencies": {
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#ff49a75a5a2c5a60419206636808b37e3354f528",
-    "@solidcash/utils": "^0.52.1",
+    "@solidcash/utils": "^0.53.0",
     "ethers": "^6.17.0",
-    "@solidcash/solidc": "^0.52.1",
-    "@solidcash/solidcash": "^0.52.1",
+    "@solidcash/solidc": "^0.53.0",
+    "@solidcash/solidcash": "^0.53.0",
     "@mem-cash/server": "0.0.11",
     "@mem-cash/server-evm": "0.0.11",
     "@mem-cash/types": "0.0.11"

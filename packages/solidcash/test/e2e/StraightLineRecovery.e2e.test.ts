@@ -29,7 +29,7 @@ import type { Output, Unlocker, Utxo } from '../../src/interfaces.js';
 import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 const compileOptions = (primary: string): never => ({
   deployer: true, genesisCalls: true, primaryContractName: primary,
 }) as never;

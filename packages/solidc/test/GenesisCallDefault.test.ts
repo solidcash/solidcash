@@ -23,7 +23,7 @@ import { alicePub, alicePriv, alicePkh } from '../../solidcash/test/fixture/vars
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../../solidcash/test/test-util.js';
 import p2pkhArtifact from '../../solidcash/test/fixture/p2pkh.artifact.js';
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 
 const COUNTER = `${P}
 contract Counter() {

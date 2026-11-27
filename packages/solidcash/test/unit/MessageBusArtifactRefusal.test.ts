@@ -13,7 +13,7 @@ const legacy = {
   constructorInputs: [],
   abi: [{ name: 'f', inputs: [{ name: 'x', type: 'int' }] }],
   bytecode: 'OP_1',
-  compiler: { name: 'solidc', version: '0.52.1' },
+  compiler: { name: 'solidc', version: '0.53.0' },
   messageBus: { version: 1, selector: '53434231' },
 } as unknown as Artifact;
 

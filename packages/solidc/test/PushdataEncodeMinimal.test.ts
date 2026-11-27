@@ -17,7 +17,7 @@ import { compileString } from '../src/index.js';
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 const bytes = (hex: string): Uint8Array => hexToBin(hex);
 const p2sh32 = (redeem: Uint8Array): Uint8Array => encodeLockingBytecodeP2sh32(hash256(redeem));
 const hex = (value: Uint8Array): string => Buffer.from(value).toString('hex');

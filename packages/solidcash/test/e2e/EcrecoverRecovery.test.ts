@@ -632,7 +632,7 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
       ? ['bytes20', 'bytes20', (name: string): string => name]
       : ['bytes', 'bytes32', (name: string): string => `sha256(${name})`];
     return `
-    pragma solidcash ^0.52.0;
+    pragma solidcash ^0.53.0;
     contract T { ${kept} first; ${kept} second; ${kept} third;
       function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
         ${type} a0; ${type} a1; ${type} a2;

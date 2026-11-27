@@ -8,7 +8,7 @@ import { compileString } from './direct-compile.js';
 // tail must contain no auxiliary kind.
 
 const SOURCE = `
-pragma solidcash ^0.52.0;
+pragma solidcash ^0.53.0;
 
 interface ICounter {
     public int counter;
@@ -89,7 +89,7 @@ describe('block layout: unified auxiliary front band', () => {
 // master + blockSize + 3k, after the block. A recovery outside the loop keeps the fixed band, and the shapes that
 // would read the same region twice are refused.
 describe('block layout: a recovery loop reads its triples after the block', () => {
-  const P = 'pragma solidcash ^0.52.0;';
+  const P = 'pragma solidcash ^0.53.0;';
   const compileT = (body: string, params = 'pubkey owner'): ReturnType<typeof compileString> => compileString(
     `${P} contract T(${params}) { int n; mapping(int => int) m; ${body} }`,
     { primaryContractName: 'T' } as never,

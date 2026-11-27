@@ -2,6 +2,53 @@
 title: Release Notes
 ---
 
+## v0.53.0
+
+SolidCash 0.53.0 removes the message bus and its kernel from the compiler and the SDK. A contract whose default compile
+took a message-bus route now compiles to the direct convention, to the bytes 0.52.1 emitted for it under
+`messageBus: false`, so its address changes: recompile and redeploy it. Framed contracts and the other direct contracts
+keep their 0.52.1 bytes, apart from the fixes below. Please refer to the
+[migration notes](/docs/releases/migration-notes#v052-to-v053). Like 0.52, this is a beta, and it has had no outside
+audit.
+
+- The `messageBus*` compiler options are gone, and a compile ignores them like any unknown option. The SDK drops
+  `StatefulContract.batch(...)` and the `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry
+  points, and refuses an artifact a 0.52 message-bus build produced (`MessageBusArtifactError`).
+- Framed compiles refuse an `upgrade`, `deploy`, `split` or `merge` entry with no trusted-key signature check, and a
+  `selfdestruct` entry with no `require`, as direct compiles do. 0.52.1 compiled them framed, so anyone could spend
+  them.
+- A raw low-level call whose callee is named by its CREATE identity binds the callee's run to its caller, so one callee
+  run can no longer answer two callers. Every direct contract with a raw call to a target other than a literal or
+  `msg.sender` compiles to new bytes, about 7 bytes smaller per call.
+- A direct `to.call{value: v}("")` with an empty payload is a plain send again, and a framed function whose `{value:}`
+  call runs on only some paths compiles.
+- A direct call inside a branch whose arm writes the struct field its predicate reads is published under the predicate
+  as the branch starts, so the SDK no longer leaves the call out.
+- The default proxy, split contracts and the contracts whose helper-use check falls back compile to new bytes. Most of
+  the last are smaller: four of the EACC marketplace's framed contracts shrink by 193 to 235 bytes.
+- Diagnostic codes named after the bus are renamed: `MESSAGE_BUS_REQUIRED` to `REPEATED_CALL_UNSUPPORTED`, `KERNEL_*`
+  to `JOURNAL_*`, and `MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE` to `DELEGATE_CONTEXT_UNPRESERVABLE`. An SDK preflight
+  refusal starts with `BCH-2026 preflight failed at input N`.
+
+Known issues:
+
+- Shapes 0.52.1 compiled only through the bus are refused, as its `messageBus: false` build refused them:
+  - a function that calls one state owner more than once outside the callee's multi-call entry, even in mutually
+    exclusive arms or through repeated low-level calls (`REPEATED_CALL_UNSUPPORTED`): mistswap's Kashi `cook`, which
+    0.52.1 compiled again, `SushiMaker.convert`, Uniswap Router02's `addLiquidityETH`, OpenZeppelin's
+    `SafeERC20.forceApprove`, and the EACC marketplace's `publishJobPost` on the direct convention (the marketplace
+    compiles framed);
+  - a storage-pointer helper that calls one target twice and receives a mapping (Uniswap Router02's `_addLiquidity`);
+  - run-time loops that write a mapping under keys from a locally built array, push under a counter key, or rewrite
+    one fixed-key entry;
+  - a call on a child in the transaction that deploys it, and a deployer `new` with `salt`.
+- A raw value call, `addr.call{value: v}(data)`, to a stateful contract the compiler cannot see as one pays the
+  contract's lock, which nothing spends. Send value to a stateful contract with a typed `{value:}` call.
+- A void call through a one-method interface that reaches a split contract's facet does not build: the facet settles no
+  record for it, and the call fails closed.
+- A function whose native assembly reads stack values it did not push can fail to compile
+  (`StackVariableUnavailableError`), as in 0.52.1.
+
 ## v0.52.1
 
 SolidCash 0.52.1 makes the EACC marketplace port pass on the framed convention, builds low-level calls in loops, and

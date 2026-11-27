@@ -20,7 +20,7 @@ import { keyToSlot } from '../../../src/stateful/SortedList.js';
  * accepted with the record at a real index and refused with the same views declared at `0x8001` or `0x7fff`.
  */
 
-const PRAGMA = 'pragma solidcash ^0.52.0;';
+const PRAGMA = 'pragma solidcash ^0.53.0;';
 /** A negative index as the master reads it, and a positive one past every input and output. */
 const NOWHERE = [0x8001, 0x7fff];
 const EMPTY = new Uint8Array(0);

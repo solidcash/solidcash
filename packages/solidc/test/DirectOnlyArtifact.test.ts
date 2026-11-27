@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const SOURCE = `pragma solidcash ^0.52.0;
+const SOURCE = `pragma solidcash ^0.53.0;
 contract Counter() {
     uint32 count;
     constructor() { this.count = 0; }

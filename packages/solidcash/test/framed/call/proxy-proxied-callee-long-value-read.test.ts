@@ -33,7 +33,7 @@ const ROSTER_PROXY_CATEGORY = 'b2'.repeat(31) + '4d';
 const OUTER_IMPL_CATEGORY = 'c3'.repeat(31) + '3c';
 const OUTER_PROXY_CATEGORY = 'd4'.repeat(31) + '2b';
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' struct Profile { address owner; bytes pubkey; string name; string bio; }'
   + ' interface IRoster { function hasKey(address who); }'
   + ' contract Roster {'

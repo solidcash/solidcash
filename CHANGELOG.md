@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.53.0
 
 ### Fixed
 
@@ -10,7 +10,9 @@
 - A raw low-level call (`addr.call(payload)`) whose callee is named by its CREATE identity binds the callee's run to
   its caller, as a call naming the callee by its lock does. 0.52.1 skipped the reader pin there, so one run of the
   callee could answer two callers (one withdrawal credited twice) and a proxy-backed callee could run another method.
-  Direct contracts with such a call compile to new bytes; a raw call into a proxy-backed CREATE identity fails closed.
+  Any target but a literal or `msg.sender` may be named that way, so every direct contract with such a raw call
+  compiles to new bytes, about 7 bytes smaller per call (mistswap's MasterChef, 26), and a raw call into a
+  proxy-backed CREATE identity fails closed.
 - A direct `to.call{value: v}("")` with a literal empty payload is a plain send again: it pays `to` and answers
   `(true, "")`, as 0.52.1's default build did through the bus. Under `messageBus: false` 0.52.1 co-spent an unbound
   input and answered `abi.encode(true)`, so a send to a wallet could not settle. Contracts with such a call compile to new
@@ -43,7 +45,15 @@
 - A contract whose default compile took a message-bus route (an external-call graph) now compiles to the direct build,
   the bytes 0.52.1 emitted for it under `messageBus: false`, apart from the fixes above: recompile and redeploy it. A
   function that repeats calls to one state owner outside the callee's multi-call entry is refused
-  (`REPEATED_CALL_UNSUPPORTED`, formerly `MESSAGE_BUS_REQUIRED`).
+  (`REPEATED_CALL_UNSUPPORTED`, formerly `MESSAGE_BUS_REQUIRED`), so mistswap's Kashi `cook`, which 0.52.1 compiled
+  through the bus, is refused again.
+- Shapes 0.52.1 compiled only through a message-bus route or its kernel are refused, as its `messageBus: false`
+  build refused them: calls to one state owner in mutually exclusive arms, and repeated low-level calls to one target
+  such as OpenZeppelin's `SafeERC20.forceApprove` (`REPEATED_CALL_UNSUPPORTED`); a storage-pointer helper that calls
+  one target twice and receives a mapping (Uniswap Router02's `_addLiquidity`, an `AssignTypeError`); a run-time loop
+  that writes a mapping under keys from a locally built array, pushes under a counter key, or rewrites one fixed-key
+  entry (`SortedMappingCodegenPendingError` in a direct build); a call on a child in the transaction that deploys it
+  (`DeployedChildCallError`); and a deployer `new` with `salt` (`DeploySaltError`).
 - A split contract's facets carried a message-bus route; they no longer do, so split facets and their roots compile to
   new bytes.
 - The default proxy drops its message-bus distance `__proxyRouteBlockSize`, so every default proxy's bytes and address
@@ -52,10 +62,12 @@
   next item.
 - A contract whose helper-use probe falls back, and so defines every captured helper, no longer defines the five
   journal helpers only the bus invoked, and the helpers defined after them can take other ids. Such contracts compile
-  to new bytes: 9 of the 678 test fixtures under each framed compile (181 to 211 bytes smaller, except Marketplace
-  under `evmCompat`, 31 bytes larger), and of the 4,827 contracts written inline in the tests, 110 framed (107
-  smaller by up to 267 bytes, 3 larger by 44 to 302) and 1 direct (365 bytes smaller). `partial_struct_update` under
-  framed `evmCompat` drops below the 10,000-byte script limit.
+  to new bytes: 9 of the 678 test fixtures under each framed compile (181 to 211 bytes smaller, except the
+  `marketplace.scash` fixture under `evmCompat`, 31 bytes larger), and of the 4,827 contracts written inline in the
+  tests, 110 framed (107 smaller by up to 267 bytes, 3 larger by 44 to 302) and 1 direct (365 bytes smaller).
+  `partial_struct_update` under framed `evmCompat` drops below the 10,000-byte script limit. Of the EACC
+  marketplace's framed contracts, `MarketplaceDataV1`, `Unicrow`, `UnicrowArbitrator` and `UnicrowDispute` are 193 to
+  235 bytes smaller; the others keep their bytes.
 - An SDK preflight refusal no longer starts with `messageBus: `: it reads `BCH-2026 preflight failed at input N: ...`,
   and `finalized transaction refused by its covenant and ...`.
 - Refusal codes named after the bus are renamed: `KERNEL_LAYOUT`, `KERNEL_UNBOUNDED_KEY` and `KERNEL_INTERNAL_DEFECT`

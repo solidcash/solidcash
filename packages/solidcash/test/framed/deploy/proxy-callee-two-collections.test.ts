@@ -33,7 +33,7 @@ const PROBE_ADDRESS = validatorAddress(hexToBin(PROBE_CATEGORY), VALIDATOR_PROGR
 
 /** The callee writes two collections between its two calls. */
 function sourceOf(): string {
-  return 'pragma solidcash ^0.52.0;'
+  return 'pragma solidcash ^0.53.0;'
     + ' struct Note { uint amount; uint fee; uint seen; }'
     + ' struct Book { uint low; uint high; }'
     + ' interface IProbe { function probe(uint x) view returns (uint); }'

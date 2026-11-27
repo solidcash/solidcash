@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const P = 'pragma solidcash ^0.52.0;';
+const P = 'pragma solidcash ^0.53.0;';
 // Direct compiles exercise the source-level covenant-authorization rules; the framed block at the end checks that the
 // framed convention applies the same lifecycle and selfdestruct rules.
 const direct = {} as const;

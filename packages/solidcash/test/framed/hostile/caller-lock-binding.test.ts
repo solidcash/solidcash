@@ -49,7 +49,7 @@ interface Built {
 /** Compiles, deploys, composes and derives the two-contract composition: caller, callee and its validator. */
 function build(): Built {
   const calleeAddress = seededAddress('the called contract');
-  const SOURCE = 'pragma solidcash ^0.52.0;'
+  const SOURCE = 'pragma solidcash ^0.53.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ' contract Caller {'

@@ -19,7 +19,7 @@ import type { Utxo } from '../../src/interfaces.js';
 import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
-const SOURCE = `pragma solidcash ^0.52.0;
+const SOURCE = `pragma solidcash ^0.53.0;
   interface IT { function ping() external returns (bool); }
   contract T { int pings; function ping() external returns (bool) { pings = pings + 1; return true; } }
   contract R { int runs;

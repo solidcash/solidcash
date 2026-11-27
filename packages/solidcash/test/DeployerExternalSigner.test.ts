@@ -16,7 +16,7 @@ import { alicePriv } from './fixture/vars.js';
 // extension. The prep's txid is the child's category, so the wallet signs the prep first; it then signs the creation,
 // before any prep is broadcast, so a wallet that declines leaves nothing on chain.
 describe('a creation through a deployer, signed by an external wallet', () => {
-  const source = `pragma solidcash ^0.52.0;
+  const source = `pragma solidcash ^0.53.0;
 pragma satoshicontainer single;
 contract Pool(uint8 exponent) {
     bytes32 me;

@@ -30,7 +30,7 @@ const CATEGORY = seededCategory('master program');
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]); // OP_1 OP_2, any program the address rule accepts
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 
-const SOURCE = 'pragma solidcash ^0.52.0;'
+const SOURCE = 'pragma solidcash ^0.53.0;'
   + ' contract Frame(address owner, address expected) {'
   + '   function bump() {'
   + '     require(msg.sender == owner);'
@@ -339,7 +339,7 @@ describe('a framed master evaluated in the BCH-2026 virtual machine', () => {
 });
 
 describe('a stateful framed master', () => {
-  const STATEFUL_SOURCE = 'pragma solidcash ^0.52.0;'
+  const STATEFUL_SOURCE = 'pragma solidcash ^0.53.0;'
     + ' contract Vault(address owner) {'
     + '   int public hits;'
     + '   function bump() { require(msg.sender == owner); this.hits = this.hits + 1; }'

@@ -105,7 +105,7 @@ describe('Fallback/Receive ABI metadata', () => {
 
   describe('non-stateful contract fallback/receive', () => {
     const source = `
-      pragma solidcash ^0.52.0;
+      pragma solidcash ^0.53.0;
       contract Simple(bytes20 owner) {
         function transfer(pubkey pk, sig s) {
           require(hash160(pk) == owner);

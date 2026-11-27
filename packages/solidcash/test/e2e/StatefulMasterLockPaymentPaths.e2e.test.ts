@@ -77,7 +77,7 @@ describe('a payment to a stateful master lock, beyond the stateful call path (A8
         maximumInputBytes: 10_000_000, maximumStackItemBytes: 10_000_000, maximumTransactionBytes: 100_000_000,
       },
     });
-    const vault = compileStringMulti(`pragma solidcash ^0.52.0;
+    const vault = compileStringMulti(`pragma solidcash ^0.53.0;
 contract Vault {
   int public count;
   function touch(int by) { this.count = this.count + by; require(true); }
@@ -109,7 +109,7 @@ contract Vault {
         maximumInputBytes: 10_000_000, maximumStackItemBytes: 10_000_000, maximumTransactionBytes: 100_000_000,
       },
     });
-    const vault = compileStringMulti(`pragma solidcash ^0.52.0;
+    const vault = compileStringMulti(`pragma solidcash ^0.53.0;
 contract Vault {
   int public count;
   function touch(int by) { this.count = this.count + by; require(true); }

@@ -25,7 +25,7 @@ import { createFeeFunder, createTestProvider, setupStatefulUtxos, verifyTransact
 
 const TAG = 7n;
 
-const SOURCE = `pragma solidcash ^0.52.0;
+const SOURCE = `pragma solidcash ^0.53.0;
   interface IT { function ping(int tag) external; }
   contract T { int pings;
     function ping(int tag) external { require(tag > 0); pings = pings + 1; } }
@@ -41,7 +41,7 @@ const SOURCE = `pragma solidcash ^0.52.0;
 
 // A caller that keeps no state binds each turn's run by its list alone: its calls may reach coins that are no
 // SolidCash contract, here bare `OP_DROP <n>` locks, two coins of one lock being two runs of one callee.
-const STATELESS_SOURCE = `pragma solidcash ^0.52.0;
+const STATELESS_SOURCE = `pragma solidcash ^0.53.0;
   contract S {
     function relayAll(address[] ts, bytes[] payloads) external {
       for (uint i = 0; i < ts.length; i++) {
@@ -245,7 +245,7 @@ describe('a low-level call loop whose turns each bind a callee run of their own'
 });
 
 // A paying call's loop fills its one payment register pair once: one turn per transaction pays.
-const PAY_SOURCE = `pragma solidcash ^0.52.0;
+const PAY_SOURCE = `pragma solidcash ^0.53.0;
   interface IT { function ping(int tag) external; }
   contract P { int runs;
     function payAll(address t, uint n, uint v) external {

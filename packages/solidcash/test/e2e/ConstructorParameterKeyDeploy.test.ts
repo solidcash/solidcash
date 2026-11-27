@@ -14,7 +14,7 @@ import { createTestProvider } from '../test-util.js';
  *
  * The constructor's ABI names such a key by the parameter's bare name, where a contract parameter's key carries an
  * `id:` expression, so the deployment derivation refused it ("Cannot derive constructor vmap key"). It now resolves
- * the bare name from the constructor's own arguments. Each deploy runs on the mock network with the route off;
+ * the bare name from the constructor's own arguments. Each deploy runs on the mock network;
  * a call that reads the entry back is accepted for the value the constructor wrote and refused for another.
  */
 

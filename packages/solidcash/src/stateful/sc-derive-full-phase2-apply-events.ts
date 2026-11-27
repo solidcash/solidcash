@@ -7,7 +7,6 @@ import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/li
 import type { EmitAbi, FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
-import { extractGraphEventExpectations, graphEventCandidateIndices } from './graph-event-expectations.js';
 import {
   extractCommitmentMapFromTrace,
   isDynamicChunkCommitmentAtIndex,
@@ -182,21 +181,13 @@ export function deriveFullPhase2ApplyEvents(
       : stb.getEventOutputBase() + slot.offset - (firstEventOffset ?? slot.offset);
     return { emitInfo, selectedOrdinal, slot, outputIndex };
   });
-  // Graph handlers search a bounded event window using both commitment and covenant identity. There is no
-  // EQUALVERIFY pin until a candidate matches, so an empty event blocks every later state/value-chunk pin.
-  // Reuse the same compiler-pattern-aware extractor as return probes, restricted to these published slots.
-  const graphExpectations = extractGraphEventExpectations(
-    fullTrace2, new Set(selectedEmits.map((emit) => emit.outputIndex)), transaction2.outputs,
-  );
-  const graphCandidates = graphEventCandidateIndices(fullTrace2);
   for (const { emitInfo, selectedOrdinal, slot, outputIndex } of selectedEmits) {
     const eventCommitMap = extractCommitmentMapFromTrace(
       fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
     );
     const actual = probeBuilder2.outputs[outputIndex]?.token?.nft?.commitment;
-    const mappedCommitment = graphCandidates.has(outputIndex)
-      ? graphExpectations.get(outputIndex)?.commitment : eventCommitMap.get(outputIndex);
-    const fallbackCommitment = mappedCommitment === undefined && !graphCandidates.has(outputIndex)
+    const mappedCommitment = eventCommitMap.get(outputIndex);
+    const fallbackCommitment = mappedCommitment === undefined
       ? host.extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual ?? '')
       : undefined;
     const commitment = mappedCommitment ?? fallbackCommitment;

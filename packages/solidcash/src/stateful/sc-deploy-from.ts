@@ -1204,9 +1204,8 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   if (useBatch) {
     const trailingBase = deployAbi.blockLayout?.trailingBase
       ?? deployAbi.blockLayout?.blockSize ?? 1;
-    // The route path injects the shared trailing-width witness into the source parameters before route
-    // synthesis, so it precedes the per-batch slot witnesses in the ABI. A direct artifact appends it after them.
-    // Insert at the ABI position rather than assuming either order.
+    // Insert the shared trailing-width witness at its ABI position rather than assuming where it falls among the
+    // per-batch slot witnesses.
     const trailingCountIndex = deployAbi.inputs
       .findIndex((input) => input.name === '__internal__vmapBatchTrailingCount');
     // NEW nodes trail the full fixed block when deployDataNft slots authenticate the child data region, and every

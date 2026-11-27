@@ -4,11 +4,11 @@ import { AbiCoder } from 'ethers';
 import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
   decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues,
-  encodeLeadingRouteArrayPushes,
   encodeStructArgument,
   isCanonicalEvmReturnVector, isCanonicalEvmScalarReturnVector,
   selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
+import { foldLeadingRowArrayPushes } from '../../src/stateful/resource-fold.js';
 import {
   selectMaterializedTailReturnEvents,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
@@ -251,9 +251,9 @@ describe('selectMaterializedTailReturnEvents', () => {
   });
 });
 
-describe('encodeLeadingRouteArrayPushes', () => {
-  type RouteRow = Parameters<typeof encodeLeadingRouteArrayPushes>[0]['rowArguments'][number];
-  const row = (key: bigint, count: bigint): RouteRow => ({
+describe('foldLeadingRowArrayPushes', () => {
+  type Row = Parameters<typeof foldLeadingRowArrayPushes>[0]['rowArguments'][number];
+  const row = (key: bigint, count: bigint): Row => ({
     args: [key, [count, true]],
     handler: {
       inputs: [
@@ -274,7 +274,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
     },
   });
   const resolveElement = (definitions: StructDefinitionInfo[]) => (
-    candidate: RouteRow, access: NonNullable<RouteRow['handler']['entryAccesses']>[number], type: string,
+    candidate: Row, access: NonNullable<Row['handler']['entryAccesses']>[number], type: string,
   ): Uint8Array | undefined => {
     const index = access.storedElementSource?.expression.source?.paramIndex;
     return index === undefined ? undefined
@@ -282,13 +282,13 @@ describe('encodeLeadingRouteArrayPushes', () => {
   };
 
   it('encodes only earlier pushes targeting the final row key', () => {
-    const encoded = encodeLeadingRouteArrayPushes({
+    const encoded = foldLeadingRowArrayPushes({
       rowArguments: [row(7n, 2n), row(8n, 3n), row(7n, 4n)],
       collection: 'history',
       valueType: 'Pair[]',
       structs,
       resolveElement: resolveElement(structs),
-    });
+    })?.leading;
     expect(encoded).toBeDefined();
     expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([{
       count: 2n,
@@ -297,16 +297,16 @@ describe('encodeLeadingRouteArrayPushes', () => {
   });
 
   it('does not merge pushes for different keys', () => {
-    expect(encodeLeadingRouteArrayPushes({
+    expect(foldLeadingRowArrayPushes({
       rowArguments: [row(7n, 2n), row(8n, 3n)],
       collection: 'history',
       valueType: 'Pair[]',
       structs,
       resolveElement: resolveElement(structs),
-    })).toBeUndefined();
+    })?.leading).toBeUndefined();
   });
 
-  it('preserves arbitrary timestamp_-named fields in generic route struct encoding', () => {
+  it('preserves arbitrary timestamp_-named fields in generic struct encoding', () => {
     const stampedStructs: StructDefinitionInfo[] = [{
       name: 'Stamped',
       fields: [{ name: 'value', type: 'uint256' }, { name: 'timestamp_', type: 'uint32' }],
@@ -314,7 +314,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
     const encodedRecord = encodePushdataValue({ value: 2n, timestamp_: 0n }, 'Stamped', stampedStructs);
     const stampedRow = (
       record: Uint8Array | bigint[] | { value: bigint; timestamp_: bigint },
-    ): RouteRow => ({
+    ): Row => ({
       args: [7n, record],
       handler: {
         inputs: [
@@ -334,7 +334,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
         }],
       },
     });
-    const encoded = encodeLeadingRouteArrayPushes({
+    const encoded = foldLeadingRowArrayPushes({
       rowArguments: [
         stampedRow(encodedRecord),
         stampedRow([3n, 0n]),
@@ -344,7 +344,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
       valueType: 'Stamped[]',
       structs: stampedStructs,
       resolveElement: resolveElement(stampedStructs),
-    });
+    })?.leading;
     expect(decodePushdataValue(encoded!, 0, 'Stamped[]', stampedStructs).value).toEqual([
       { value: 2n, timestamp_: 0n },
       { value: 3n, timestamp_: 0n },
@@ -362,7 +362,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
     }];
     const payload = new Uint8Array(20).fill(0x31);
     const encodedRows = (type: string, definitions: StructDefinitionInfo[]): Uint8Array | undefined =>
-      encodeLeadingRouteArrayPushes({
+      foldLeadingRowArrayPushes({
         rowArguments: [
           {
             args: [7n, [0n, payload]],
@@ -393,7 +393,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
         ],
         collection: 'history', valueType: `${type}[]`, structs: definitions,
         resolveElement: resolveElement(definitions),
-      });
+      })?.leading;
     const namedValue = decodePushdataValue(encodedRows('Named', named)!, 0, 'Named[]', named).value;
     const renamedValue = decodePushdataValue(encodedRows('Renamed', renamed)!, 0, 'Renamed[]', renamed).value;
     expect(namedValue).toEqual([{ timestamp_: 0n, address_: payload }]);

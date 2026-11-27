@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isCompilerDescribedEventCommitment } from '../../src/stateful/StatefulContract.js';
 
-describe('compiler-described route event discovery', () => {
+describe('compiler-described event discovery', () => {
   it('accepts typed zero only with exact compiler slot and signature ownership', () => {
     const typedZero = '00';
 

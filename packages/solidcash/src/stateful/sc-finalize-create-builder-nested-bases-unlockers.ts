@@ -297,7 +297,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           (slot) => slot.kind === 'blockhashOracle',
         )?.offset;
         if (firstOracleOffset === undefined) {
-          throw new Error('External route batch graph blockhash plan has no physical oracle band');
+          throw new Error('External call blockhash read has no physical oracle band');
         }
         bFinalArgs.push(BigInt(masterInputIndex + firstOracleOffset));
         const firstOracle = group.blockInputs?.[firstOracleOffset];

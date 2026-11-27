@@ -471,29 +471,6 @@ export function deriveFullPhase1ReturnAndEvents(
                       return `${item.length}:${hex.slice(0, 64)}`;
                     }),
                   })),
-                handlerPrefix: progressiveTrace.filter((state) =>
-                  state.instructions.length > 300 && state.instructions.length < 2_000
-                  && state.ip < 64)
-                  .slice(-80).map((state) => ({
-                    ip: state.ip,
-                    count: state.instructions.length,
-                    op: state.instructions[state.ip]?.opcode,
-                    stack: state.stack.slice(-24).map((item) => {
-                      const hex = binToHex(item);
-                      return `${item.length}:${hex.slice(0, 64)}`;
-                    }),
-                  })),
-                handlerRequire: progressiveTrace.filter((state) =>
-                  state.instructions.length === 346 && state.ip >= 240)
-                  .slice(-140).map((state) => ({
-                    ip: state.ip,
-                    count: state.instructions.length,
-                    op: state.instructions[state.ip]?.opcode,
-                    stack: state.stack.slice(-24).map((item) => {
-                      const hex = binToHex(item);
-                      return `${item.length}:${hex.slice(0, 64)}`;
-                    }),
-                  })),
               });
             }
           }

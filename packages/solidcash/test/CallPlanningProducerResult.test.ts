@@ -47,7 +47,7 @@ const evmWord = (value: bigint): Uint8Array => {
   return result;
 };
 
-describe('graph producer-result identities', () => {
+describe('call-planning producer-result identities', () => {
   it('evaluates one unchanged producer callsite once per planning epoch', async () => {
     const context = createCallPlanningProducerResultContext();
     let evaluations = 0;

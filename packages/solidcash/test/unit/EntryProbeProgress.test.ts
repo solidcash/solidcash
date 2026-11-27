@@ -33,7 +33,7 @@ const write = (
   };
 };
 
-describe('progressive route probe progress', () => {
+describe('progressive entry probe progress', () => {
   it('bounds a probe by only its reachable physical entry coordinates', () => {
     const carrier = (txid: string, offsets: number[]): {
       categoryId: string;

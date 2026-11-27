@@ -146,8 +146,8 @@ function zeroTripSharedArrayLoop(
   return Array.isArray(value) && value.length === 0;
 }
 
-/** A direct compile: `route: false` stated, and not framed. Its repeated calls stay in the direct convention. */
-export function isDirectConventionArtifact(artifact: Pick<Artifact, 'compiler' | 'composition'>): boolean {
+/** A direct (not framed) compile: its repeated calls stay in the direct convention. */
+export function isDirectConventionArtifact(artifact: Pick<Artifact, 'composition'>): boolean {
   return artifact.composition?.convention !== 'framed';
 }
 

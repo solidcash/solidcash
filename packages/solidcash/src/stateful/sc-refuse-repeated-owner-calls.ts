@@ -1,7 +1,4 @@
-/**
- * phase-boundary extract: SC _createBuilder extract — refuse a prepared call tree that reaches one state
- * owner more than once.
- */
+/** Refuse a prepared call tree that reaches one state owner more than once. */
 
 import { isDirectConventionArtifact } from './sc-expand-resolve-create-builder-external-calls.js';
 
@@ -49,16 +46,12 @@ export function refuseRepeatedOwnerCalls(params: {
   if (rootArtifact !== undefined && isDirectConventionArtifact(rootArtifact)) {
     throw new Error(`${rootArtifact.contractName}.${functionName}() reaches one state owner more than once `
       + 'through the calls its callees make. A direct compile runs repeated calls only through a callee\'s '
-      + 'multi-call entry, for the calls a caller makes itself, and is never composed on the '
-      + 'route.');
+      + 'multi-call entry, for the calls a caller makes itself.');
   }
-  const directOnly = orderedNodes.map((node) => {
+  const participants = orderedNodes.map((node) => {
     const artifact = node.executionArtifact ?? node.contract.inner.artifact;
     return `${artifact.contractName}.${node.functionName}`;
   });
-  throw new Error(
-    'route: repeated-owner calls require atomic composition, but the prepared graph contains '
-    + `direct-only participant${directOnly.length === 1 ? '' : 's'}: ${directOnly.join(', ')}. `
-    + 'This direct/journal graph lacks the explicit V5 authority or an eligible direct-call shape.',
-  );
+  throw new Error(`${functionName}() reaches one state owner more than once through the calls its callees make `
+    + `(${participants.join(', ')}): one call tree cannot spend an owner's master twice.`);
 }

@@ -238,15 +238,7 @@ export async function completeCreateBuilderNestedUnlockers(
         });
         return -1n;
       }
-      if (['__internal__graphFixedSize',
-        '__internal__graphSelfIdentityInput',
-        '__internal__graphBlockSize', '__internal__graphSettlementBoundary',
-        '__internal__blockhashInputIndex', '__internal__graphEmissions',
-        '__internal__graphCallers', '__internal__graphCompletionPositions',
-        '__internal__graphSettlementTable'].includes(input.name)) {
-        if (['__internal__graphEmissions', '__internal__graphCallers',
-          '__internal__graphCompletionPositions', '__internal__graphSettlementTable']
-          .includes(input.name)) return new Uint8Array();
+      if (input.name === '__internal__graphSelfIdentityInput' || input.name === '__internal__blockhashInputIndex') {
         return -1n;
       }
       if (input.name === '__internal__msgSenderCategory') {

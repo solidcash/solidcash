@@ -3086,7 +3086,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private ecrecoverLoopBandName: string = '(loop_ecrecover_band)';
   private ecrecoverLoopBandActive = false;
   private functionMultiSiteDeploy: boolean = false; // 2+ sites w/ a conditional: function counters
-  private graphRawPayloadEncodeDepth = 0;
 
   // A loop `new C{value:V}()` interleaves its transfer per child; the satoshi container that sources them is
   // conserved (input <= output + counter*V) after the loop's OP_UNTIL. V must be loop-invariant (typically a
@@ -18468,8 +18467,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const staleInvocationMarker = this.stack.find((name) =>
       name === `(__define_caller_depth_${targetFunc.functionId})`
       || name.startsWith(`(__journal_arg_${targetFunc.functionId}_`)
-      || name.startsWith(`(__runtime_context_arg_${targetFunc.functionId}_`)
-      || name === `(__graph_emissions_arg_${targetFunc.functionId})`);
+      || name.startsWith(`(__runtime_context_arg_${targetFunc.functionId}_`));
     if (staleInvocationMarker) {
       throw new Error(`Stale invocation operand '${staleInvocationMarker}' after '${targetFunc.name}'`);
     }
@@ -21861,12 +21859,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   isOpRoll(node: IdentifierNode): boolean {
-    return this.graphRawPayloadEncodeDepth === 0
-      // A pooled collection helper returns its journal values at the common exit.
-      // An earlier read must keep the declared frame slot live even when the
-      // pre-lowering last-use marker still points at that read.
-      && !(this.currentFunction.collectionJournal
-        && (node.name.startsWith('__cj_') || node.name.startsWith('__dcj_')))
+    // A pooled collection helper returns its journal values at the common exit. An earlier read must keep the
+    // declared frame slot live even when the pre-lowering last-use marker still points at that read.
+    return !(this.currentFunction.collectionJournal
+      && (node.name.startsWith('__cj_') || node.name.startsWith('__dcj_')))
       && this.currentFunction.opRolls.get(node.name) === node && this.scopeDepth === 0;
   }
 

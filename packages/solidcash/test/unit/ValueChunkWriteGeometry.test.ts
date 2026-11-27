@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  resolveValueChunkWriteGeometry,
-  retainCompleteObservedValueChunkWriteGeometry,
-} from '../../src/stateful/value-chunk-write-geometry.js';
+import { retainCompleteObservedValueChunkWriteGeometry } from '../../src/stateful/value-chunk-write-geometry.js';
 import { valueChunkWriteResourceIdentity, type ValueChunkWriteDescriptor } from '../../src/stateful/value-chunk-persist.js';
 
 const write = (key: string, outputBase: number, outputCount: number): ValueChunkWriteDescriptor => ({
@@ -12,38 +9,6 @@ const write = (key: string, outputBase: number, outputCount: number): ValueChunk
 });
 
 describe('value-chunk write geometry', () => {
-  it('rebinds an observed resource and keeps an unobserved one in its own band', () => {
-    const unobserved = write('33', 102, 2);
-    const local = write('44', 102, 3);
-    const observed = [0, 1, 2].map((index) => ({
-      offset: 110 + index, resourceIdentity: valueChunkWriteResourceIdentity(local),
-      resourcePart: `chunk:${index}`,
-    }));
-    expect(resolveValueChunkWriteGeometry([unobserved, local], observed))
-      .toEqual([unobserved, { ...local, outputBase: 110, outputCount: 3 }]);
-  });
-
-  it('rejects contradictory resource pins', () => {
-    const resource = write('55', 102, 2);
-    const identity = valueChunkWriteResourceIdentity(resource);
-    expect(() => resolveValueChunkWriteGeometry([resource], [
-      { offset: 110, resourceIdentity: identity, resourcePart: 'chunk:0' },
-      { offset: 112, resourceIdentity: identity, resourcePart: 'chunk:1' },
-    ])).toThrow(/non-contiguous/);
-  });
-
-  it('does not narrow a compiler-owned span from a partial observed prefix', () => {
-    const resource = write('66', 102, 3);
-    const identity = valueChunkWriteResourceIdentity(resource);
-    expect(() => resolveValueChunkWriteGeometry([resource], [
-      { offset: 110, resourceIdentity: identity, resourcePart: 'chunk:0' },
-    ])).toThrow(/incomplete observed output band/);
-    const unresolved = write('77', -1, 0);
-    expect(resolveValueChunkWriteGeometry([unresolved], [
-      { offset: 110, resourceIdentity: valueChunkWriteResourceIdentity(unresolved), resourcePart: 'chunk:0' },
-    ])).toEqual([unresolved]);
-  });
-
   it('retains only complete resource-owned bands across a shared scalar re-description', () => {
     const left = write('88', 6, 1);
     const right = write('99', 7, 2);

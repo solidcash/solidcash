@@ -578,7 +578,7 @@ export {
   memoizeCallPlanningProducerResult,
 } from './call-planning-producer-result.js';
 export { isCompilerDescribedEventCommitment } from './compiler-described-event.js';
-export { deriveChunkableArrayValueChannels, encodeLeadingRouteArrayPushes } from './resource-fold.js';
+export { deriveChunkableArrayValueChannels } from './resource-fold.js';
 export { encodeStructArgument } from './legacy-job-event-wire.js';
 export { selectMappingEntryByKeys, externalCallTargetSourceLockingBytecodeHex } from './mapping-key-lookup.js';
 export { computedStateWriterGroupIndex, chunkableWriterGroupIndex } from './writer-group-selection.js';
@@ -735,7 +735,6 @@ export interface DeployOptions {
    * bytes for it. Costs: a larger script, a different contract address, and the 520-byte cap.
    */
   salt?: Uint8Array;
-  /** Independently spendable, category-branded route verifier covenants minted by genesis. */
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
   /** Fungible token coins the genesis moves whole into their containers, one coin per category. */
   tokenContainers?: Array<{ utxo: Utxo; unlocker: Unlocker }>;
@@ -6188,24 +6187,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           expressionLabel: source?.expressionLabel ?? null,
                         })),
                         accessSlots: { entryAccessSlot: access.slotIndex ?? null, routeSlot: slotIndex },
-                        routeKeys: (entryAbiFunction?.inputs ?? []).map((input, index) => ({ input, index }))
-                          .filter(() => false)
-                          .map(({ input, index }) => ({
-                            name: input.name, type: input.type,
-                            entryArg: entryArgs[index] instanceof Uint8Array
-                              ? `b${(entryArgs[index] as Uint8Array).length}:${binToHex(entryArgs[index] as Uint8Array)}`
-                              : String(entryArgs[index]),
-                            finalArg: finalArgs[index] instanceof Uint8Array
-                              ? `b${(finalArgs[index] as Uint8Array).length}:${binToHex(finalArgs[index] as Uint8Array)}`
-                              : String(finalArgs[index]),
-                          })),
-                        stateCounter: (() => {
-                          const counter = describedState.escrowIdCounter;
-                          return counter === undefined ? 'absent'
-                            : JSON.stringify(counter, (_key, value) => (
-                              value instanceof Uint8Array ? `b${value.length}:${binToHex(value)}`
-                                : typeof value === 'bigint' ? String(value) : value));
-                        })(),
                         entryInputNames: (entryAbiFunction?.inputs ?? []).map((input) => input.name),
                       }));
                     }
@@ -6656,7 +6637,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_TRACE_ENTRY_PLAN === '1') {
-        console.error('route-entry-plan', entryNfts.map((entry) => ({
+        console.error('entry-plan', entryNfts.map((entry) => ({
           slotIndex: entry.slotIndex,
           collection: entry.collection,
           keys: entryAccessForSlot(entry.slotIndex)?.keyParams,
@@ -7278,8 +7259,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             collection: batch.collection, linear: batch.linear === true, slots: batch.slotIndices,
             targetSlots: batch.slotIndices.map((slotIndex) =>
               binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array()).slice(0, 16)),
-            handlerManaged: [],
-            rows: [],
           })),
         }));
       }
@@ -11515,7 +11494,6 @@ export class StatefulFunctionCall {
     const builder = await buildStatefulFunctionCallImpl({
       functionName: this.functionName,
       sequenceOverride: this.sequenceOverride,
-      parentContract: this.parentContract,
       trySplitMergeBuild: () => this._trySplitMergeBuild(),
       applyOverrides: () => this._applyOverrides(),
       recursivePreflightHasSignatures: () => this._recursivePreflightHasSignatures(),

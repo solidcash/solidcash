@@ -57,7 +57,6 @@ export interface DeployContractOptions {
   deployerPrep?: import('./deployer.js').DeployerPrep;
   /** `split: 'func'` bundle. Genesis mints a master pool at each shard lock, and funding counts those pools. */
   functionSplit?: FunctionSplitBundle;
-  /** Number of self-preserved route verifier instances created in the genesis transaction. */
   initialBalance?: bigint;
   initArgs?: DeployOptions['initArgs'];
   /** Internal composition escape: a split/proxy parent owns the one logical transaction nonce. */
@@ -117,9 +116,9 @@ async function normalizeRegisteredAddressArguments<T>(
 /**
  * Select a fresh vout-0 UTXO to fund a token genesis.
  *
- * `identityNftCount` counts the category-branded 1200-satoshi outputs a genesis mints for identity anchors and
- * route verifiers. `additionalSatoshis` is a satoshi floor for anything else the genesis carries that the
- * fixed per-output estimate does not name — a framed genesis's master and validator pools, for instance. Both
+ * `identityNftCount` counts the category-branded 1200-satoshi outputs a genesis mints for identity anchors.
+ * `additionalSatoshis` is a satoshi floor for anything else the genesis carries that the fixed per-output
+ * estimate does not name: a framed genesis's master and validator pools, for instance. Both
  * only size the coin the caller is given; the genesis itself refuses funding it cannot cover.
  */
 export async function selectGenesisFundingUtxo(

@@ -49,8 +49,6 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_CACHE_ID', class: 'observation' },
   { name: 'SOLIDC_DEBUG_ENTRY_OUTPUT', class: 'observation' },
   { name: 'SOLIDC_DEBUG_LOOP', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_OWNER_TOP_HANDLER', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RAW_TARGET', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RECOVERY_CLOSURE', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RECOVERY_PRE', class: 'observation' },

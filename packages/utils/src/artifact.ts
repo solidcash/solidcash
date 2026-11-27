@@ -2104,7 +2104,7 @@ export interface Artifact {
   genesisCalls?: boolean;
   /**
    * True: compiled as record-sound (its code marker says so). False: a record-publishing entry meets an arm that
-   * prevents it, or the contract is a route build.
+   * prevents it.
    */
   recordSound?: boolean;
   /** True for a marked creator: a contract that creates a sender-reading child. */
@@ -2127,7 +2127,7 @@ export interface Artifact {
   // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.
   delegateArtifact?: Artifact;
   /** Compiler-only call graph/resource summary shared by splitting, journal
-   * eligibility, diagnostics, and route planning. No covenant capability
+   * eligibility and diagnostics. No covenant capability
    * is implied by its presence. */
   invocationAnalysis?: InvocationAnalysisArtifact;
   /**

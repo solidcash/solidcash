@@ -349,7 +349,6 @@ export {
   type ChunkableValueWriteGroup,
   type ChunkableValueWriteResource,
 } from './chunkable-value-write-selection.js';
-import { groupChunkableValueWriteResource } from './chunkable-value-write-selection.js';
 
 import {
   chunkableValueWriteAbi,
@@ -566,7 +565,6 @@ import {
   type EnsurePersistedValueChunkInputsHost,
 } from './stb-ensure-persisted-value-chunk-inputs.js';
 import {
-  applyDeferredEcrecoverArgument,
   resolveDeferredEcrecoverArgument as resolveDeferredEcrecoverArgumentImpl,
   type ResolveDeferredEcrecoverArgumentHost,
 } from './stb-resolve-deferred-ecrecover-argument.js';
@@ -3358,8 +3356,8 @@ export class StatefulTransactionBuilder {
         eventOrdinal += 1;
         if (slot.conditional !== true) continue;
         const learnedCommit = String(learned?.commitment ?? '');
-        // `SCID` marks an empty route identity carrier; it is not evidence that a conditional event was
-        // emitted. Generic route-event discovery can echo that provisional marker into `eventOutputs`, so treat
+        // `SCID` marks an empty identity carrier; it is not evidence that a conditional event was
+        // emitted. Generic event discovery can echo that provisional marker into `eventOutputs`, so treat
         // it as unresolved and restore the compiler-owned coordinate to a neutral output.
         const learnedIsDummy = learnedCommit === '' || /^(00)+$/.test(learnedCommit)
           || learnedCommit.toLowerCase() === '53434944';
@@ -3371,13 +3369,6 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /**
-   * Empty-commitment own-category P2SH32 immutables are route auth carriers.
-   * The event pin's empty-commitment skip `DUP`s the zero-amount bool (output 0/1)
-   * instead of `j`, so a true empty carrier is still treated as a serialized event.
-   * Prefix `SCID` so the disjoint-identity check excludes them. Do not touch OP_TRUE
-   * return witnesses (`51`) or any nonempty commitment.
-   */
   /**
    * Cross-call return witnesses are OP_TRUE + none-cap. A later unmatched-mutable
    * clone can overwrite that slot as mutable, and the callee's OUTPUTTOKENCATEGORY
@@ -3412,6 +3403,13 @@ export class StatefulTransactionBuilder {
     }
   }
 
+  /**
+   * Empty-commitment P2SH32 immutables outside event slots and token containers are identity carriers.
+   * The event pin's empty-commitment skip `DUP`s the zero-amount bool (output 0/1)
+   * instead of `j`, so a true empty carrier is still treated as a serialized event.
+   * Prefix `SCID` so the disjoint-identity check excludes them. Do not touch OP_TRUE
+   * return witnesses (`51`) or any nonempty commitment.
+   */
   private _tagEmptyP2sh32ImmutablesAsScid(builder: TransactionBuilder): void {
     const eventDests = new Set(this._emitDestinationIndices());
     // A token container keeps what it holds: an empty immutable NFT on one is a coin's, not an anchor.
@@ -3701,36 +3699,6 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Bind compiler-published compute recipes after their graph operands have been observed. The indices are
-   * logical builtin-call ordinals, not physical side-car offsets (three keccak calls may share one NFT).
-   * A missing recipe member remains unresolved and cannot pass the ordinary composition gate.
-   */
-  applyDeferredComputeRecipes(
-    keccakPreimages: readonly (Uint8Array | null)[],
-    ecrecoverArguments: readonly (Uint8Array | null)[],
-  ): boolean {
-    const keccak = this.deferredKeccakCompute?.preimages ?? [];
-    const recovery = this.deferredEcrecoverCompute?.argBlobs ?? [];
-    if (keccakPreimages.length !== keccak.length || ecrecoverArguments.length !== recovery.length) {
-      throw new Error('route: compute recipe cardinality disagrees with selected side-car calls');
-    }
-    let changed = false;
-    keccakPreimages.forEach((preimage, callIndex) => {
-      if (preimage !== null) {
-        changed = this.rebuildDeferredKeccakPreimage(callIndex, preimage) || changed;
-      }
-    });
-    ecrecoverArguments.forEach((argument, callIndex) => {
-      if (argument !== null) {
-        changed = applyDeferredEcrecoverArgument(
-          this._resolveDeferredEcrecoverArgumentHost(), callIndex, argument,
-        ) || changed;
-      }
-    });
-    return changed;
-  }
-
-  /**
    * Learn one complex keccak preimage from the complete routed execution trace. Direct calls resolve these with
    * a small isolated probe, but a delegate implementation can depend on authenticated proxy state and nested
    * return channels which exist only in the final transaction. The compiler's call-ordinal marker identifies the
@@ -3792,25 +3760,6 @@ export class StatefulTransactionBuilder {
       commitment: this.keccakComputeCommitments[batchIndex],
     });
     return true;
-  }
-
-  /**
-   * How much deferred-compute work is still unlearned, for diagnostics: a stall record that only says "no
-   * progress" cannot distinguish "nothing was ever learned" from "almost everything was learned and one member
-   * stayed unresolved", and those have different causes.
-   */
-  getDeferredComputeRemainingForDiagnostics(): {
-    keccakUnresolved: number; keccakTotal: number;
-    ecrecoverUnresolved: number; ecrecoverTotal: number;
-  } {
-    const keccak = this.deferredKeccakCompute?.preimages ?? [];
-    const ecrecover = this.deferredEcrecoverCompute?.argBlobs ?? [];
-    return {
-      keccakUnresolved: keccak.filter((preimage) => preimage === null).length,
-      keccakTotal: keccak.length,
-      ecrecoverUnresolved: ecrecover.filter((blob) => blob === null).length,
-      ecrecoverTotal: ecrecover.length,
-    };
   }
 
   hasUnresolvedDeferredKeccakPreimages(): boolean {
@@ -4625,67 +4574,6 @@ export class StatefulTransactionBuilder {
     outputIndex: number, chunk: DerivedChunkOutputObservation,
   ): boolean {
     return setDerivedChunkOutputImpl(this._setDerivedChunkOutputHost(), outputIndex, chunk);
-  }
-
-  /**
-   * The trailing-band coordinates both sides use: the compiler's fixed base (`blockLayout.blockSize`), the
-   * published `trailingBase` when the artifact carries one, and the SDK's own chunk base after reserved prefixes.
-   * A disagreement here is the band-base mismatch that makes a covenant walk runtime-effect records.
-   */
-  getTrailingBandCoordinatesForDiagnostics(): {
-    blockSize?: number; trailingBase?: number; chunkBase?: number; eventBase?: number;
-    events: number; transfers: number; loopEntries: number; runtimeEvents: number;
-    eventSlots: number[]; writerCandidates: string[];
-    band?: { start: number; end: number; nNew: number };
-  } {
-    const eventIndex = (offset: number): number => {
-      try {
-        return this.getRuntimeLoopEventOutputIndex(offset);
-      } catch {
-        return -1;
-      }
-    };
-    const band = this.getChunkableValueWriteBand();
-    return {
-      ...(this.blockLayout?.blockSize !== undefined ? { blockSize: this.blockLayout.blockSize } : {}),
-      ...(this.blockLayout?.trailingBase !== undefined
-        ? { trailingBase: this.blockLayout.trailingBase } : {}),
-      chunkBase: this.getChunkOutputBase(),
-      eventBase: this.getEventOutputBase(),
-      // Every family that claims a coordinate inside the trailing run, so the overlap can be laid out directly.
-      events: this.runtimeLoopEventOutputs.length,
-      transfers: this.runtimeLoopTransferOutputs.length,
-      loopEntries: this._trailingLoopEntryOutputCount(),
-      runtimeEvents: this.runtimeLoopTrailingSegments.length,
-      eventSlots: this.runtimeLoopEventOutputs.map((_event, index) => eventIndex(index)),
-      // The writer selector bails out both when NO group yields a chunkable resource and when MORE THAN ONE does
-      // (`executions.size !== 1`), which have completely different fixes. Report the candidate identities so the
-      // two cases are distinguishable from the record alone.
-      writerCandidates: [
-        ...this.lowLevelCallUtxoGroups.map((group, index) => ({
-          group, inputIndex: this.getLowLevelCallMasterInputIndex(index), kind: `llc#${index}`,
-        })),
-        ...this.externalCallUtxoGroups.map((group, index) => ({
-          group, inputIndex: this.getExternalCallMasterInputIndex(index), kind: `ext#${index}`,
-        })),
-      ].flatMap(({ group, inputIndex, kind }) => {
-        if (inputIndex < 0) return [];
-        const resource = groupChunkableValueWriteResource(group as never);
-        if (resource === undefined) return [];
-        return [`${kind}@${inputIndex}:${resource.collection}`
-          + `${resource.resourceIdentity ? `/${resource.resourceIdentity}` : ''}`];
-      }),
-      ...(band ? { band: { start: band.start, end: band.end, nNew: band.nNew } } : {}),
-    };
-  }
-
-  /** Block-layout slots as built, for diagnostics that attribute aggregate coordinates to their owner. */
-  getBlockLayoutSlotsForDiagnostics(): Array<{ offset: number; kind: string; slotIndex?: number }> {
-    return (this.blockLayout?.slots ?? []).map((slot) => ({
-      offset: slot.offset,
-      kind: String(slot.kind),
-      ...(slot.slotIndex !== undefined ? { slotIndex: slot.slotIndex } : {}),
-    }));
   }
 
   getDerivedChunkOutputs(): ReadonlyMap<number, DerivedChunkOutputObservation> {

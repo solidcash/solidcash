@@ -338,8 +338,7 @@ export function describeReturnProbeFailure(
     : undefined;
   if (detail === undefined && site === undefined) return undefined;
   // A bare "failed an OP_VERIFY" (or a compiler-emitted guard with no source line) cannot be attributed without
-  // the instructions that produced it: report the window around the failure and the operands still on the stack,
-  // exactly as the route preflight failure does.
+  // the instructions that produced it: report the window around the failure and the operands still on the stack.
   const windowStart = Math.max(0, last.ip - 6);
   const window = last.instructions.slice(windowStart, last.ip + 1).map((instruction) => {
     const data = instruction.data;

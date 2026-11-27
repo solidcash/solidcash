@@ -69,8 +69,6 @@ export type ResolveKeccakProbeCtx = {
   deferUnresolved?: boolean;
   artifactBytecode?: string;
   ecrecoverPreimages?: Array<Uint8Array | null>;
-  /** Compiler-selected direct parameter preimages decoded from the authenticated route batch. */
-  plannedPreimages?: readonly (Uint8Array | null)[];
 };
 
 const PROBE_FILLER_LOCK = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
@@ -232,12 +230,7 @@ export async function resolveKeccakComputeCoSpends(
   // Direct-parameter preimages come straight from the args; complex/nested args (recorded null by codegen)
   // are resolved by a VM probe of the master (mirrors the stateless resolveKeccakPreimages, but positioned
   // at the block-layout keccakSideCar slots).
-  if (probeCtx?.plannedPreimages && probeCtx.plannedPreimages.length !== keccakCallCount) {
-    throw new Error('keccak recipe count does not match the selected compute calls');
-  }
   const preimages: (Uint8Array | null)[] = Array.from({ length: keccakCallCount }, (_, index) => {
-    const planned = probeCtx?.plannedPreimages?.[index];
-    if (planned instanceof Uint8Array) return planned.slice();
     const p = params[index];
     const value = p ? args[visible.findIndex((x) => x.name === p)] : undefined;
     return value instanceof Uint8Array ? value : null;

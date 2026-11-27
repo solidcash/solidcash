@@ -1033,9 +1033,6 @@ export async function orchestrateCreateBuilderExternalCalls(
       || abiFunction.blockLayout.slots.some((slot) => slot.kind === 'trailing');
     const chunkRunBeforeCallees = chunkRunPrecedesCallees ? iterationEntryInputs.length : 0;
     let externalCallInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount;
-    // route batch reserves the complete oracle row band before its callees. Active reads are sparse; count the
-    // physical width, not the number of resolved oracle UTXOs, when assigning the first participant base.
-    externalCallInputBase += 0;
     externalCallInputBase += chunkRunBeforeCallees;
     const externalCallInputBasePosition = abiFunction?.inputs.findIndex((input) =>
       input.name === '__internal__externalCallInputBase') ?? -1;
@@ -1389,7 +1386,7 @@ export async function orchestrateCreateBuilderExternalCalls(
 
 /**
  * A typed call's `{value:}` that the builder cannot pay: a callee entry whose record digests no value (not payable and
- * reading no msg.value, or compiled with the route), a value below the dust its deposit needs, or a callee whose
+ * reading no msg.value), a value below the dust its deposit needs, or a callee whose
  * own run sends value on, whose deposit and debit are laid out for no call but the root's.
  */
 function assertCallValuePayable(caller: string, callInfo: ExternalCallInfo, value: bigint | undefined): void {

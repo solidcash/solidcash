@@ -323,7 +323,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   if (value instanceof Uint8Array) return value;
                   if (typeof value === 'bigint') return bigIntToVmNumber(value);
                   if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
-                  throw new Error(`External route batch cannot resolve entry key '${name}'`);
+                  throw new Error(`External call batch cannot resolve entry key '${name}'`);
                 });
                 const bSlot = keyToSlotMulti(encodedKeys, bCollection);
                 if (entryDiagnostic) {
@@ -353,10 +353,10 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                       const blockOffset = bBlockLayout.slots.find((candidate) =>
                         candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
                       if (blockOffset === undefined) {
-                        throw new Error(`External route batch entry slot ${routeSlot} has no block offset`);
+                        throw new Error(`External call batch entry slot ${routeSlot} has no block offset`);
                       }
                       const commitment = exact.utxo.token?.nft?.commitment;
-                      if (!commitment) throw new Error(`External route batch entry slot ${routeSlot} has no commitment`);
+                      if (!commitment) throw new Error(`External call batch entry slot ${routeSlot} has no commitment`);
                       ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${routeSlot}`] = bSlot;
                       ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${routeSlot}`] = BigInt(blockOffset);
                       ctx.bCompilerInternalArgs[`__internal__vmapBatchNext_${routeSlot}`] =
@@ -367,7 +367,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                       const blockOffset = bBlockLayout.slots.find((candidate) =>
                         candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
                       if (blockOffset === undefined) {
-                        throw new Error(`External route batch entry slot ${routeSlot} has no block offset`);
+                        throw new Error(`External call batch entry slot ${routeSlot} has no block offset`);
                       }
                       const plan = bList.planInsert(bSlot);
                       const predOutName = `__internal__vmapBatchPredOut_${routeSlot}`;

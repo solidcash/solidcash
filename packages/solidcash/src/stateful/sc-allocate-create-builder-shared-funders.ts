@@ -12,7 +12,6 @@ export type CreateBuilderSharedFunderExternalCall = {
     categoryId: string;
     inner: {
       artifact: {
-        route?: { handlers: ReadonlyArray<{ runtimeLoopEvents?: readonly unknown[] }> };
         abi: ReadonlyArray<{
           name: string;
           blockLayout?: {
@@ -51,11 +50,6 @@ export async function allocateCreateBuilderSharedFunders(
     if (!ci?.externalContract) continue;
     const bArt = ci.externalContract.inner?.artifact;
     if (bArt === undefined) continue;
-    // Lifted route events have no fixed event slots. Retain the full signer snapshot for their trailing
-    // heads and for continuation records learned from the callee's effect-verifier trace.
-    if (bArt.route?.handlers.some((handler) => (handler.runtimeLoopEvents?.length ?? 0) > 0)) {
-      totalBFunders += 1;
-    }
     const bAbiFunc = bArt.abi.find((f) => f.name === (ci.functionName ?? ecSlot.functionName));
     const bLayout = callBatchFrameLayout(bAbiFunc?.blockLayout as FunctionBlockLayout | undefined, ecSlot);
     if (!bLayout) continue;

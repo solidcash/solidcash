@@ -29,7 +29,7 @@ function emptyLiteralPayload(source: ArgSource | undefined): boolean {
 
 /**
  * Refuse, before anything is built, the call of a contract reached through another contract's call whose function
- * makes a low-level call with a payload (`IFoo(x).call(data)`, `call{value:}` or `{gas:}` outside the route, a
+ * makes a low-level call with a payload (`IFoo(x).call(data)`, `call{value:}` or `{gas:}`, a
  * call on a value that is not an address, an inline-assembly call, a statement `addr.call(data);`). Transitive
  * discovery follows a function's typed and `__raw__` calls only, so that callee is never co-spent, and the caller's
  * covenant finds no callee at the input its witness names. A call this run provably does not make (a branch whose

@@ -37,7 +37,7 @@ import { voidRecordUnread, type ExternalCallUtxoGroup } from './external-call-ut
 import {
   anchorRoutedDynamicResourcesAtOwner,
   rebaseRoutedBatchProofOffsets,
-} from './route-resource-selection.js';
+} from './proxy-embedded-block.js';
 import {
   concatenateEncodedArrays,
   deriveChunkableArrayValueChannels,
@@ -595,7 +595,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         candidate.dynamic && candidate.name === name
       ));
       if (!variable) {
-        throw new Error(`Nested route references unknown dynamic state '${name}'`);
+        throw new Error(`Nested call references unknown dynamic state '${name}'`);
       }
       const chunkAddress = getDynamicChunkAddress(
         recordContract, callee.categoryId, variable.name, variable.type,

@@ -21,7 +21,7 @@ import {
 } from './StatefulTransactionBuilder.js';
 import { legacyIsPublishJobEventName } from './legacy-job-event-helpers.js';
 
-/** Minimal runtime ABI narrowing used by writer/chunkable selection. */
+/** The ABI function a group's logical call names, found in its logical (else physical) artifact. */
 export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
   const artifact = group.logicalArtifact
     ?? group.logicalContract?.inner?.artifact

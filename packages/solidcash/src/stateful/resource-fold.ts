@@ -818,7 +818,3 @@ export function foldLeadingRowArrayPushes(
   if (folded.leading === undefined) return undefined;
   return { leading: folded.leading, complete: folded.complete, plan: built.plan };
 }
-
-export function encodeLeadingRouteArrayPushes(params: FoldParams): Uint8Array | undefined {
-  return foldLeadingRowArrayPushes(params)?.leading;
-}

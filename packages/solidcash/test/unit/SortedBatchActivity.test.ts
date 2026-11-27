@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assignSortedBatchProofOwners,
   planActiveSortedBatchMutation,
-  routeCollectionValueWriteIsActive,
   selectSortedBatchTraceCommitment,
   sortedBatchTraceCommitmentsShareNode,
   sortedBatchNoOutputReadSlots,
@@ -99,23 +98,6 @@ describe('active sorted-batch mutation planning', () => {
     }, {
       __internal__vmapBatchPredOut_4: VMAP_BATCH_READ_ONLY_SENTINEL,
     })).toThrow(/slot 4 has no compiler-published entry offset/);
-  });
-
-  it('allocates value continuations only for concrete route writer lanes', () => {
-    const activeOperations = new Map<number, readonly string[]>([
-      [0, ['read']],
-      [2, ['read', 'write']],
-    ]);
-
-    expect(routeCollectionValueWriteIsActive(
-      0, 'accounts', ['read', 'write'], activeOperations, ['records'],
-    )).toBe(false);
-    expect(routeCollectionValueWriteIsActive(
-      1, 'records', ['read', 'write'], activeOperations, ['records'],
-    )).toBe(false);
-    expect(routeCollectionValueWriteIsActive(
-      2, 'records', ['read', 'write'], activeOperations, ['records'],
-    )).toBe(true);
   });
 
   it('retains an authenticated value tail over a later structural batch observation', () => {

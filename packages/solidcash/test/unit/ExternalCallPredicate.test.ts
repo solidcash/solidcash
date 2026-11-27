@@ -19,7 +19,7 @@ import {
 import {
   anchorRoutedDynamicResourcesAtOwner,
   rebaseRoutedBatchProofOffsets,
-} from '../../src/stateful/route-resource-selection.js';
+} from '../../src/stateful/proxy-embedded-block.js';
 import { createTestProvider } from '../test-util.js';
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {

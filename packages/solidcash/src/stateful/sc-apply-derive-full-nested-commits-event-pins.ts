@@ -163,7 +163,7 @@ export function applyDeriveFullNestedCommitsEventPins(params: {
     const nestedEventOutputBase = implInputIndex;
     // `commits` is deliberately first-write-wins for computed value chunks: several disjoint covenant
     // families can inspect the same speculative output coordinate while the routed layout converges.
-    // An event slot is different. An empty route identity carrier can be preservation-checked at
+    // An event slot is different. An empty identity carrier can be preservation-checked at
     // the event's eventual coordinate before the delegate reaches its event covenant; the event check
     // is the later, authoritative write for that coordinate. Reusing the first-write map published the
     // carrier's `SCID` commitment as the event and made the final delegate fail against its real blob.

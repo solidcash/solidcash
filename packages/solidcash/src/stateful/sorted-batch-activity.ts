@@ -174,23 +174,3 @@ export function selectSortedBatchTraceCommitment(existing: string | undefined, c
     && existing.startsWith(candidate)) return existing;
   return candidate;
 }
-
-/**
- * Whether one compiler-published entry lane owns a value continuation.
- *
- * Once runtime activity is available it overrides the declared operations: a declared write that is not active
- * must not allocate output geometry.
- */
-export function routeCollectionValueWriteIsActive(
-  slotIndex: number,
-  collection: string,
-  declaredOperations: readonly string[],
-  activeOperations?: ReadonlyMap<number, readonly string[]>,
-  activeWriteCollections?: readonly string[],
-): boolean {
-  const operations = activeOperations === undefined
-    ? declaredOperations
-    : activeOperations.get(slotIndex) ?? [];
-  return operations.includes('write')
-    && (activeWriteCollections === undefined || activeWriteCollections.includes(collection));
-}

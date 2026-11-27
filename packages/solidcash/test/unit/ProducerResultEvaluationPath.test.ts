@@ -22,7 +22,7 @@ const visitedProducers = async (
   return visited;
 };
 
-describe('graph producer-result evaluation paths', () => {
+describe('producer-result evaluation paths', () => {
   it.each([true, false])('visits only the selected ternary producer when the condition is %s', async (choose) => {
     const condition = literal(choose);
     const selected = producer(2);

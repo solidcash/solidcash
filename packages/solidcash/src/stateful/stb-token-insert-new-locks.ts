@@ -38,6 +38,10 @@ function traceTokenInsertBalanceSnapshot(label: string, master: number, idxs: nu
   console.error('token-insert-bal-snap', { label, master, idxs });
 }
 
+function sameLock(left: Uint8Array | undefined, right: Uint8Array | undefined): boolean {
+  return !!left && !!right && left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
 /** Reassert compiler-described sorted-batch INSERT and UPDATE entry geometry without shifting output tails. */
 export function reassertTokenInsertNewLocks(
   host: TokenInsertNewLocksHost,
@@ -197,6 +201,8 @@ export function reassertTokenInsertNewLocks(
           const inputIsBalances = !!inLock
             && inLock.length === balancesLock.length
             && inLock.every((byte, index) => byte === balancesLock[index]);
+          // An output still continuing its own entry input under another lock is that collection's update.
+          if (!inputIsBalances && sameLock(inLock, outLock)) continue;
           // Candidate INSERT/UPDATE offsets may be funder placeholders after proof dedup; still restore
           // the balances lock when the output was overwritten by a foreign collection.
           if (!inputIsBalances && offset === repair.predecessorOffset) continue;
@@ -306,6 +312,7 @@ export function reassertTokenInsertNewLocks(
             const inputIsBalances = !!inLock
               && inLock.length === balancesLock.length
               && inLock.every((byte, index) => byte === balancesLock[index]);
+            if (!inputIsBalances && sameLock(inLock, outLock)) continue;
             if (!inputIsBalances && !repair.candidateInsertedOffsets.includes(offset)) continue;
             const commitment = resolveRestoredBalancesEntryCommitment({
               planned: repairGroup.batchEntryCommitments?.get(offset)

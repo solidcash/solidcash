@@ -31,9 +31,8 @@ const OPAQUE_RETURN_REFUSAL = "the call to '__raw__' takes the direct path's ret
 /**
  * The P2SH test the framed `.code` extractor emits, with `17` and `23` the P2SH20 and P2SH32 lengths.
  *
- * The framed gate takes this extractor, not the boolean "is a contract" fold the message-bus graph path uses: a
- * target that is no P2SH lock, a plain account or the zero address, answers empty code, as the EVM answers an
- * account without code, and a P2SH contract target answers its script.
+ * The framed gate takes this extractor: a target that is no P2SH lock, a plain account or the zero address, answers
+ * empty code, as the EVM answers an account without code, and a P2SH contract target answers its script.
  */
 const CODE_EXTRACT_TEST = 'OP_SIZE OP_DUP 17 OP_NUMEQUAL OP_SWAP 23 OP_NUMEQUAL OP_BOOLOR OP_NOTIF OP_DROP OP_0 OP_ELSE';
 

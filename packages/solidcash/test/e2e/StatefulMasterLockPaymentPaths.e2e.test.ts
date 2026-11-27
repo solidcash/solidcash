@@ -2,7 +2,7 @@
  * A8 beyond a stateful call: a payment to a stateful master lock is refused wherever the SDK sends it, and recognised
  * for every master form whose lock spends only a coin carrying its minting NFT.
  *
- * - a plain TransactionBuilder send, and a message-bus composition, which never reach the stateful call path;
+ * - a plain TransactionBuilder send, which never reaches the stateful call path;
  * - a framed master, whose prologue requires the minting NFT as a direct master's pin(X) does, and a master compiled
  *   for P2SH20, whose records and container bind the category alone;
  * - a framed contract's address, its validator lock, whose program requires the category's mutable NFT.

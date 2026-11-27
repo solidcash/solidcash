@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { compileString as compileKernelString } from '@solidcash/solidc';
+import { compileString as compileStringRaw } from '@solidcash/solidc';
 import { binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import { Contract } from '../../src/index.js';
@@ -92,7 +92,7 @@ describe('StatefulFunctionCall.staticCall() - with arguments', () => {
 describe('StatefulFunctionCall.staticCall() - exact loop-array returns', () => {
   it('replaces a preseeded one-row parent result with the resolved external value', async () => {
     const options = { forceStateful: true } as const;
-    const artifact = compileKernelString(`pragma solidcash >=0.8.0;
+    const artifact = compileStringRaw(`pragma solidcash >=0.8.0;
       contract ArrayView() {
         function rows() public pure returns (int[] memory) {
           int[] memory result = new int[](1);
@@ -100,7 +100,7 @@ describe('StatefulFunctionCall.staticCall() - exact loop-array returns', () => {
           return result;
         }
       }`, options);
-    const producerArtifact = compileKernelString(`pragma solidcash >=0.8.0;
+    const producerArtifact = compileStringRaw(`pragma solidcash >=0.8.0;
       contract ScalarProducer() {
         function value() public pure returns (int) { return 0; }
       }`, options);

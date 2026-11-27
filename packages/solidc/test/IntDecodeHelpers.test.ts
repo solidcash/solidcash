@@ -4623,7 +4623,7 @@ describe('shared integer helpers', () => {
     expect(artifact.functionBodies![selector!]!.length).toBeGreaterThan(0);
   });
 
-  it('keeps production message-bus outlining at the trace-stable window', () => {
+  it('keeps production-outlined function bodies in the artifact and its delegate', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
 interface IHub { function ping() external; }

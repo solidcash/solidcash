@@ -8,7 +8,7 @@ import {
   TransactionBuilder,
 } from '../../src/index.js';
 import { MockNetworkProvider } from '../../src/network/mock/index.js';
-import * as messageBus from '../../src/finalization-byte-gate.js';
+import * as byteGate from '../../src/finalization-byte-gate.js';
 import { randomUtxo } from '../../src/utils.js';
 import type { Unlocker, Utxo } from '../../src/interfaces.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -163,7 +163,7 @@ const sendError = async (builder: TransactionBuilder): Promise<string> => {
 /** The byte rules' verdict alone, on the limits the provider publishes. */
 const byteRefusal = ({ raw, provider }: Spend): string => {
   try {
-    messageBus.assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(raw)), {
+    byteGate.assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(raw)), {
       consensusLimits: provider.consensusLimits,
     });
     return '';
@@ -300,8 +300,8 @@ contract Variadic() {
     // verdict, so no future caller can reach for it as a way to widen or narrow the rule.
     const { raw } = await bulkSpend(UNDER);
     const transaction = decodeTransactionUnsafe(hexToBin(raw));
-    const bare = messageBus.assessFinalizedTransactionBytes(transaction);
-    const labelled = messageBus.assessFinalizedTransactionBytes(transaction, [
+    const bare = byteGate.assessFinalizedTransactionBytes(transaction);
+    const labelled = byteGate.assessFinalizedTransactionBytes(transaction, [
       { contractName: 'Fabricated', redeemBytes: 99_999 },
     ]);
     expect(bare.admitted).toBe(true);

@@ -5,7 +5,7 @@ import {
   resolveValueChunkResourceLanes,
 } from '../../src/stateful/StatefulContract.js';
 
-describe('kernel value-chunk resource lanes', () => {
+describe('value-chunk resource lanes', () => {
   it('collapses repeated callsites for one exact storage resource', () => {
     const slot = Uint8Array.from({ length: 32 }, (_, index) => index);
     const lane = resolveValueChunkResourceLane([

@@ -31,7 +31,7 @@ const exactWrite: ValueChunkWriteDescriptor = {
 };
 
 describe('value-chunk construction authority', () => {
-  it('does not manufacture a legacy lock for an undescribed generic or kernel value', () => {
+  it('does not manufacture a legacy lock for a value without an exact compiler descriptor', () => {
     expect(chunksFromValue(value, { categoryId, masterLock })).toEqual([]);
     expect(chunksFromValue(value, {
       categoryId,
@@ -52,7 +52,7 @@ describe('value-chunk construction authority', () => {
     expect(chunks.every((chunk) => chunk.categoryId === categoryId)).toBe(true);
   });
 
-  it('retains explicit descriptor-free legacy compatibility behind the legacy convention gate', () => {
+  it('retains descriptor-free legacy compatibility through the explicitly named legacy adapters', () => {
     const expectedLock = legacyJobEventsPersistValueChunkLock(categoryId, value, masterLock);
     const chunks = chunksFromJobEventsValue(value, undefined, categoryId, masterLock);
     expect(expectedLock).toBeDefined();

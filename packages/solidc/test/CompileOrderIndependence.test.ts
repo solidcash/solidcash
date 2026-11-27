@@ -3,9 +3,9 @@ import { compileStringMulti, compileStringSplit } from '../src/index.js';
 
 /**
  * A compile is a function of its own source and options only: two contracts compiled in either order produce the
- * same artifacts. These two generate the same detached message-bus verifier source, and one compiles in Solidity-
- * compat mode, whose casts reverse byte order; a verifier memo keyed without that option handed the program built
- * under one setting to the other contract's compile.
+ * same artifacts. One compiles in Solidity-compat mode, whose casts reverse byte order. Under the removed message bus
+ * the two shared a detached verifier source, and a verifier memo keyed without that option handed the program built
+ * under one setting to the other contract's compile (3777b143e).
  */
 const COMPAT = `
   interface IA { function echo(bytes b) external returns (bytes); }

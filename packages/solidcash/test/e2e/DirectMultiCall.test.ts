@@ -13,7 +13,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 /**
  * Direct multi-call (docs/wip/call-records/DESIGN.md, sections 3, 4 and 7): a direct caller's calls to one callee
  * run in one spend of the callee's master through its multi-call entry, each call reading its own frame's record.
- * Every contract here is a direct compile, and no transaction carries a message-bus input.
+ * Every contract here is a direct compile.
  */
 
 const DIRECT = { forceStateful: true, evmCompat: true, suppressWarnings: true } as const;

@@ -5,7 +5,7 @@ import { compileString, compileStringMulti } from '../src/compiler.js';
 /**
  * Direct calls to a callee a function calls several times (docs/wip/call-records/DESIGN.md, section 4): each call
  * digests the ordinal of its frame in the callee's one multi-call spend, fixed in source order for straight-line
- * calls and counted at run time once a call sits in a loop or a branch. No bus batch is built.
+ * calls and counted at run time once a call sits in a loop or a branch.
  */
 
 const BOOK = `
@@ -76,7 +76,7 @@ const selector = (name: string): string => fn(directArtifacts().Book, name).sele
 const CALL_BATCH = { selector: '53434442' };
 
 describe('direct call ordinals', () => {
-  it('numbers two straight-line calls 0 and 1, digests each under its own, and builds no bus batch', () => {
+  it('numbers two straight-line calls 0 and 1 and digests each under its own', () => {
     const { PairReader, Book } = directArtifacts();
     const sum = calls(PairReader, 'sum');
     expect(sum.map((call) => call.callOrdinal)).toEqual([{ group: 0, ordinal: 0 }, { group: 0, ordinal: 1 }]);

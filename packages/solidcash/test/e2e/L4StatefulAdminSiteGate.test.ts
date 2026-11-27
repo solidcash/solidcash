@@ -17,7 +17,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 /**
  * X163 - THE FOUR STATEFUL LIFECYCLE-ADMIN BROADCAST SITES, and the fifth that is deleted.
  *
- * WHAT THE INHERITED MEASUREMENT COULD NOT SETTLE. `message-bus-gatesite-probe.ts` attributed every broadcast the
+ * WHAT THE INHERITED MEASUREMENT COULD NOT SETTLE. The X126 gate-site probe attributed every broadcast the
  * SDK e2e population makes to its `src/` frame. These four sites saw 14 sends across 11 tests, 13 of which the
  * provider accepted, and the byte rules refused none of them. A previous worker declined to gate them on that,
  * correctly: 0% over 13 net-ok sends is not the evidence 2,316 sends gave for the submit path. At that sample

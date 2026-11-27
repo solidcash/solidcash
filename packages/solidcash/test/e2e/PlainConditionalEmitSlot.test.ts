@@ -15,9 +15,9 @@ import {
 } from '../test-util.js';
 
 /**
- * SEC-10 off the bus. The one-armed conditional emit slot is reserved by `collectEmitStatements` and its
- * covenant verification is wrapped in `OP_IF <blob non-empty>` by `emitEventCovenantVerification` - neither is
- * route-specific, so the same unverified output should exist on an ordinary stateful function.
+ * SEC-10 on a plain stateful function. The one-armed conditional emit's slot is reserved whether or not the branch
+ * runs, and `emitEventCovenantVerification` wraps its covenant verification in `OP_IF <blob non-empty>`, so on the
+ * path that skips the emit only the not-taken binding checks that output.
  */
 const SOURCE = `pragma solidcash >=0.8.0;
 contract CondEmitPlain() {
@@ -53,7 +53,7 @@ const payFeePastBlock = async (
   builder.addInput(utxo, unlocker);
 };
 
-describe('SEC-10 off the bus: plain stateful conditional emit', () => {
+describe('SEC-10: plain stateful conditional emit', () => {
   const artifact = compileString(SOURCE);
 
   it('reserves an event slot for the one-armed emit, and marks it conditional', () => {
@@ -147,7 +147,7 @@ describe('SEC-10 off the bus: plain stateful conditional emit', () => {
   }, 300_000);
 
   /**
-   * The measurement: no bus, no route, no frame. One-armed emit, branch not taken. This WAS forgeable and is
+   * The measurement: a plain direct compile, one-armed emit, branch not taken. This WAS forgeable and is
    * now refused - `emitEventCovenantVerification` binds the reserved slot's commitment to EMPTY on the path
    * that does not reach the emit, which is what both honest not-taken shapes produce.
    */
@@ -156,7 +156,7 @@ describe('SEC-10 off the bus: plain stateful conditional emit', () => {
     expectScriptRejection(outcome, 0);
   }, 300_000);
 
-  it('the forged NFT no longer reads back as a genuine event off the bus either', async () => {
+  it('the forged NFT no longer reads back as a genuine event', async () => {
     const { outcome, events } = await forge(4n);
     expect(outcome).not.toBe('ACCEPTED');
     expect(events).toEqual([]);

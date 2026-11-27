@@ -10,9 +10,8 @@ import { encodeEntryCommitment, keyToSlotMulti } from '../../solidcash/src/state
 import { compileString } from '../src/index.js';
 
 /**
- * ROUTE-SKIP-1 residual. A message-bus handler clone's sorted writes stay on the scalar path because the clone is
- * flagged, not because of its name, so a renamed clone cannot take the batch path's -2 skip. A direct batch writes
- * every row: the inactive-row sentinel -2 is refused on a plain multi-target batch.
+ * ROUTE-SKIP-1 residual. A direct batch writes every row: the inactive-row sentinel -2 is refused on a plain
+ * multi-target batch.
  */
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];

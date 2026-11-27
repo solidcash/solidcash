@@ -5,7 +5,7 @@ import { SplitContractBundle } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';
 
-// BoringMath.to64 narrows uint256 -> uint64 with `require(a <= uint64(-1))`. On the split message-bus path the
+// BoringMath.to64 narrows uint256 -> uint64 with `require(a <= uint64(-1))`. On the split path the
 // compiler used to emit `uint64(-1)` as a runtime cast of the literal -1 (OP_1NEGATE followed by the uint64
 // sign-byte bounds check), so the guard failed for every in-range runtime value. `uint64(-1)` now folds to
 // type(uint64).max (Solidity two's-complement wrapping) during type checking, so the require compares against

@@ -11,23 +11,22 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
  *
  * It is not the dialect. `this.note = tag` is a `StateAssignNode` from the parser; the bare `note = tag` is an
  * `AssignNode` over an `IdentifierNode` until symbol resolution, which runs AFTER these lowerings. So
- * `analyseFunctionFootprint` never records `state:note` for the bare spelling, no `__message_bus_dynamic_<handler>`
- * clone is synthesized, `LowerDynamicStateJournalHelpers` converts nothing, and S2's guard - which fires on a
- * `__dj_` first parameter - never sees the handler. Solidity syntax spelled `this.note` is refused and `.scash`
- * spelled bare is admitted, which is what rules the front end out. The compile-side matrix is pinned in
- * `packages/solidc/test/MixedJournalBoundaryReviewB11.test.ts`.
+ * `analyseFunctionFootprint` never records `state:note` for the bare spelling, `LowerDynamicStateJournalHelpers`
+ * converts nothing, and S2's guard - which fires on a `__dj_` first parameter - never sees the handler. Solidity
+ * syntax spelled `this.note` was refused and `.scash` spelled bare was admitted, which is what ruled the front end
+ * out.
  *
  * This file answers the part that matters: IS THE ADMITTED FORM SOUND. It is. The same handler writes a
  * chunk-backed unbounded `string` and a vmap collection entry, and both legs are physically present and
  * independently authenticated - forging either one, dropping the chunk, or minting a second chunk at the
  * dynamic address all reject at input 0, while the unmutated derivation broadcasts.
  *
- * So the refusal is the over-strict side. It is over-strict because the `this.` spelling reaches the
- * dj-converted clone, whose raw collection accesses genuinely cannot code-generate - NOT because the shape is
- * unsupportable. The measured route to removing the boundary is recorded in the round-12 report: declining the
- * dynamic journal for a helper that also reaches a collection makes the `this.` program compile BYTE-IDENTICAL
- * to the bare one settled here. That is proven for the plain path only; the message-bus clone leg differs and
- * is NOT settled, so the boundary is kept.
+ * So the refusal was the over-strict side. It was over-strict because the `this.` spelling reached the removed
+ * message bus's dj-converted clone, whose raw collection accesses genuinely cannot code-generate - NOT because the
+ * shape is unsupportable. The measured route to removing the boundary is recorded in the round-12 report:
+ * declining the dynamic journal for a helper that also reaches a collection makes the `this.` program compile
+ * BYTE-IDENTICAL to the bare one settled here. That was proven for the plain path only; the message-bus clone leg
+ * differed and was not settled, so the boundary was kept.
  */
 
 const BARE = `pragma solidcash >=0.8.0;

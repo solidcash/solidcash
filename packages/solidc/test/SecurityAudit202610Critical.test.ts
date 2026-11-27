@@ -87,7 +87,7 @@ function redeemUnlock(
     }
     return value;
   }).reverse();
-  // A message-bus build rolls the bottom item up and requires it to be the 4-byte selector.
+  // A selector dispatcher rolls the bottom item up and requires it to be the 4-byte selector.
   // With no other arguments the bottom and the top are the same item, which is why a parameterless
   // entry accepted the selector on top. A stateless body reads its arguments directly.
   if (dispatch && fn.selector) args.unshift(hexToBin(fn.selector));
@@ -123,7 +123,7 @@ function countPushes(unlocking: Uint8Array): number {
 
 const num = (value: bigint): Uint8Array => encodeIntegerValue(value);
 
-function compileBus(members: string, options: Record<string, unknown> = {}): Artifact {
+function compileContract(members: string, options: Record<string, unknown> = {}): Artifact {
   return compileString(`${P} contract C { ${members} }`, { ...options });
 }
 
@@ -140,7 +140,7 @@ function redeemOf(artifact: Artifact): Uint8Array {
 describe('October 2026 critical holes', () => {
   it('KB-2 a crafted lock does not compare equal to another address, and a real identity does', () => {
     const victim = Uint8Array.from({ length: 20 }, () => 0x11);
-    const artifact = compileBus(
+    const artifact = compileContract(
       `function f(address a) { require(a == address(hex"${Buffer.from(victim).toString('hex')}")); }`,
       { evmCompat: true },
     );
@@ -189,7 +189,7 @@ describe('October 2026 critical holes', () => {
 
   it('CRYPTO-1 a bare-lock keccak side-car cannot choose the digest, and the real side-car can', () => {
     const preimage = Uint8Array.from([1, 2, 3, 4]);
-    const artifact = compileBus('function f(bytes a, bytes32 h) { require(keccak256(a) == h); }');
+    const artifact = compileContract('function f(bytes a, bytes32 h) { require(keccak256(a) == h); }');
     const fn = fnOf(artifact, 'f');
     const redeem = redeemOf(artifact);
     const contractLock = p2sh32(redeem);
@@ -289,7 +289,7 @@ describe('October 2026 critical holes', () => {
       witness, chunkA, SHARED_LIBRARY_SALT, sideUtxo(false), sideUtxo(true),
     );
     const pubkey = hexToBin(wallet.signingKey.compressedPublicKey.slice(2));
-    const artifact = compileBus(
+    const artifact = compileContract(
       'function f(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expect) {'
       + ' require(ecrecoverPubKey(h, v, r, s) == expect); }',
     );
@@ -341,7 +341,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-1 a public call cannot drain the satoshi container, and the same call without it succeeds', () => {
-    const artifact = compileBus('int n; function touch() { this.n = this.n + 1; require(true); }');
+    const artifact = compileContract('int n; function touch() { this.n = this.n + 1; require(true); }');
     const honest = scalarSpend(artifact, 'touch', { n: 1n }, { n: 2n });
     expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-1 authorized').toBe(true);
     const drained = withSatoshiDrain(artifact, honest);
@@ -349,7 +349,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-1 a transferring call cannot drain the satoshi container, and the transfer itself succeeds', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function pay(bytes to) { this.transfer(to, 1000); this.n = this.n + 1; require(true); }',
     );
     const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
@@ -362,7 +362,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-1 a full transfer leaves the filler, and a nonzero redirect fails', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function payAll(bytes to) { this.transfer(to, 50000); this.n = this.n + 1; require(true); }',
     );
     const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
@@ -380,7 +380,7 @@ describe('October 2026 critical holes', () => {
 
   it('DX-1 a filler keeps nothing, so a remainder of its value cannot leave the container', () => {
     // The remainder equals the filler's value: a filler counted as kept balance would admit the swap.
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function payMost(bytes to) { this.transfer(to, 49424); this.n = this.n + 1; require(true); }',
     );
     const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
@@ -391,7 +391,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-2 a public call cannot drain a token container, and the same call without it succeeds', () => {
-    const artifact = compileBus('int n; function touch() { this.n = this.n + 1; require(true); }');
+    const artifact = compileContract('int n; function touch() { this.n = this.n + 1; require(true); }');
     const honest = scalarSpend(artifact, 'touch', { n: 1n }, { n: 2n });
     expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-2 authorized').toBe(true);
     const drained = withTokenDrain(artifact, honest);
@@ -399,7 +399,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-2 a public call cannot drain an NFT token container, and keeping it succeeds', () => {
-    const artifact = compileBus('int n; function touch() { this.n = this.n + 1; require(true); }');
+    const artifact = compileContract('int n; function touch() { this.n = this.n + 1; require(true); }');
     const honest = scalarSpend(artifact, 'touch', { n: 1n }, { n: 2n });
     const kept = withNftTokenDrain(artifact, honest, false);
     expect(verdict(kept.sourceOutputs, kept.transaction), 'DX-2 nft container kept').toBe(true);
@@ -408,7 +408,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-2 a full token movement leaves the filler, and a nonzero redirect fails', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function sendAll(bytes32 cat, bytes to) { this.tokens[cat].transfer(to, 1000);'
       + ' this.n = this.n + 1; require(true); }',
     );
@@ -427,7 +427,7 @@ describe('October 2026 critical holes', () => {
 
   it('DS-2 a forged data record at another lock is not the data record, and the real lock is', () => {
     const owner = distinct(20, 0x11);
-    const artifact = compileBus(
+    const artifact = compileContract(
       `bytes20 owner; function go() { require(this.owner == hex"${Buffer.from(owner).toString('hex')}"); require(true); }`,
     );
     const honest = scalarSpend(artifact, 'go', { owner }, { owner }, false);
@@ -439,7 +439,7 @@ describe('October 2026 critical holes', () => {
   it('DS-1 predOut -2 cannot replace a mapping write, and a real update can', () => {
     // A parameter value stays on the stack when predOut=-2 skips the upsert, and the transition then
     // reads the wrong witness. A literal write leaves nothing behind, which is the approve shape.
-    const artifact = compileBus(
+    const artifact = compileContract(
       'mapping(uint => uint) m; function set(uint k) { this.m[k] = 1000; require(true); }',
     );
     const honest = mappingUpdate(artifact, -1n, num(1000n));
@@ -449,7 +449,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DS-4 a non-minimal integer key is rejected, and the minimal encoding of that key is accepted', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'mapping(uint => bool) claimed; function claim(uint k) { require(this.claimed[k] == false);'
       + ' this.claimed[k] = true; require(true); }',
     );
@@ -460,7 +460,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-6 and DS-3 a public call cannot rewrite an unaccessed data record or destroy an unaccessed chunk', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int x; string name; mapping(int => int) m;'
       + ' function set(int k, int v) { this.m[k] = v; require(true); }',
     );
@@ -473,7 +473,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DS-3 a rewritten unaccessed chunk is not that chunk, and the real update is', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int x; string name; mapping(int => int) m;'
       + ' function set(int k, int v) { this.m[k] = v; require(true); }',
     );
@@ -484,7 +484,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DS-3 a mutable output at a P2PKH is not a record, and the real update is', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int x; string name; mapping(int => int) m;'
       + ' function set(int k, int v) { this.m[k] = v; require(true); }',
     );
@@ -495,7 +495,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-6 a dynamic-chunk call cannot rewrite an unaccessed record, and the chunk write can', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'string name; function setName(string s) { this.name = s; require(true); }',
     );
     const honest = scalarSpend(artifact, 'setName', { 'name$len': 0n }, { 'name$len': 0n }, true, { s: EMPTY });
@@ -561,7 +561,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-6 a token-container call cannot rewrite an unaccessed record, and the token read can', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function look(bytes32 cat) { require(this.tokens[cat].tokenAmount >= 0); this.n = this.n; require(true); }',
     );
     const honest = tokenReadSpend(artifact);
@@ -575,7 +575,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DS-5 an unsorted array cannot be claimed twice by omitting its entry, and one real claim succeeds', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int[4] claimed; function claim(int i) { require(this.claimed[i] == 0); this.claimed[i] = 1; require(true); }',
     );
     const honest = arrayClaim(artifact, false);

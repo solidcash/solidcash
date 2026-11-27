@@ -22,7 +22,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * Vite and webpack give without being asked. `@bitauth/libauth` instantiates its WebAssembly crypto behind a
  * module-level `await`; in a single-file esbuild bundle that makes every module initializer async, and esbuild then
  * cannot order an import cycle that contains one: the cycle's initializers await each other and never settle.
- * `dist/stateful/index.js` still fails that way (cycles among the `stateful/` and `message-bus/` modules), so the
+ * `dist/stateful/index.js` still fails that way (cycles among the `stateful/` modules), so the
  * tests that import every entry bundle with `splitting`. `dist/network/mock/index.js` and `dist/index.js` do
  * initialize from a single file, which the tests below pin: their graph used to enter libauth's compiler through the
  * root barrel that `@mem-cash/*` 0.0.9 and older imported, before the awaits that binding depends on had settled,

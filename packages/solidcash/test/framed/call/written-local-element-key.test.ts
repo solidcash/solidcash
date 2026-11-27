@@ -20,9 +20,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  *
  * The compiler publishes the key as the element the local holds after its write, the post's helper:
  * `field:helper(field:parts(map:posts(id:id_)))`, from which the hop resolves the entry's mapping key
- * (`evalComputedKey`). A message-bus build published a ternary on the index instead, whose default arm, the empty
- * `address(0)`, the hop once took, declaring a node the body does not write. The key is the helper's lock: the entry
- * settles and the helper's flag reads false.
+ * (`evalComputedKey`). A build with the removed message bus published a ternary on the index instead, whose default
+ * arm, the empty `address(0)`, the hop once took, declaring a node the body does not write. The key is the helper's
+ * lock: the entry settles and the helper's flag reads false.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */

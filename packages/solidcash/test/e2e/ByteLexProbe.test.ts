@@ -7,8 +7,7 @@ import { createTestProvider } from '../test-util.js';
 import { randomUtxo } from '../../src/utils.js';
 
 // Probe: does int(reverse(x) ++ 0x01) < int(reverse(y) ++ 0x01) yield unsigned big-endian
-// (lexicographic) order at the VM in a NORMAL function? If yes, the 3x failure is specific to the
-// synthesized message-bus batch handler (a fixable compiler-synthesis gap); if no, it is an operation/VM limit.
+// (lexicographic) order at the VM in a normal function?
 // Two-half byte-lexicographic compare: each 16-byte half's int() (17 bytes) fits the int range guard,
 // unlike the whole 32-byte value. High half decides; low half is the tiebreak.
 const SRC = `pragma solidcash >=0.8.0;

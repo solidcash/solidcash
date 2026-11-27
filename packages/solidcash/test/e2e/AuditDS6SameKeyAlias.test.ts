@@ -15,13 +15,12 @@ import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
  * write whose delete sits in a later branch, a switch case or an else-if arm, on the straight line, in a nested block
  * or in an earlier branch or switch arm, keeps its value where that delete does not run; so does a write before an
  * if-converted delete. A loop's writes are cached and flushed once, before that delete: the last value is kept. A
- * cached read-modify-write, in a loop or not, reads the entry once and is flushed there too: the sum is kept. Under
- * the message bus a direct body's read-modify-write is flushed there as well; a cache the body only writes and a
- * route's handler clone keep their flush at the end. A read of the delete's key after the write, in the delete's
- * arm or before its branch, sees the written value where the keys meet: a call whose require the written value fails
- * is refused though the old value passes it. So does a read between the write and an unconditional delete, and one
- * through an internal getter; a read of the key in an invoked function is refused at compile. Unresolved indirect
- * calls there fail closed unless the function type proves the target is pure.
+ * cached read-modify-write, in a loop or not, reads the entry once and is flushed there too: the sum is kept. A read
+ * of the delete's key after the write, in the delete's arm or before its branch, sees the written value where the
+ * keys meet: a call whose require the written value fails is refused though the old value passes it. So does a read
+ * between the write and an unconditional delete, and one through an internal getter; a read of the key in an invoked
+ * function is refused at compile. Unresolved indirect calls there fail closed unless the function type proves the
+ * target is pure.
  */
 
 const WRITE_FIRST_SOURCE = `contract SameKeyWriteFirst {
@@ -743,7 +742,7 @@ describe('a read of the key in a called function after a write before a delete o
         function(int) external view returns (int) read = this.get; return read(k);
       }`, 'this.invoke(k) < 100');
     // The unresolved target can read either the just-written key or a different key. Both refuse before codegen
-    // can publish a route that reads the spent node instead of the pending value.
+    // can emit a read of the spent node instead of the pending value.
     for (const source of [local, expression, nested]) {
       expect(() => compileString(source, { forceStateful: true }))
         .toThrow('an indirect call with unresolved state-read effects after the write of `m[j]` '

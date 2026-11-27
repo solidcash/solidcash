@@ -3,7 +3,7 @@
  *
  * A void entry's record is the digest and the form byte `01`, settled at the same carrier witness a returning
  * entry uses. The `callRecords` option is recorded on the artifact: `'all'` marks void entries as publishing,
- * `'returning'` keeps today's ABI, and a framed or message-bus compile refuses `'all'`.
+ * `'returning'` keeps today's ABI, and a framed compile refuses `'all'`.
  */
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';

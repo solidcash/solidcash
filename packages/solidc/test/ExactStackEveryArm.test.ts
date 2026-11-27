@@ -6,9 +6,8 @@
  * chain, then re-sends it with one push added and with the argument push removed; only the honest one is accepted.
  *
  * Arm kinds and the unlockings the SDK builds for them here: an entry (its arguments and selector), `receive` (no
- * push), `fallback` (its own selector, which the dispatcher takes as the call data it drops), a message-bus route (its
- * two positional items, its arguments and the route selector). A multi-call candidate's standalone run is in
- * ExactStackCallBatch.test.ts, and Deploy<C>'s `create` in DeployerPrologue.test.ts.
+ * push), `fallback` (its own selector, which the dispatcher takes as the call data it drops). A multi-call candidate's
+ * standalone run is in ExactStackCallBatch.test.ts, and Deploy<C>'s `create` in DeployerPrologue.test.ts.
  */
 import { describe, expect, it } from 'vitest';
 import {

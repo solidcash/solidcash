@@ -125,7 +125,7 @@ contract Fixed(address a, address b) {
     }
   });
 
-  it('keeps view witnesses for a keccak256 callee the caller chooses and runs a fixed callee\'s views as calls', () => {
+  it('keeps view witnesses for a keccak256 callee the caller chooses and refuses a fixed callee\'s repeated calls', () => {
     const body = (target: string): string => `pragma solidcash >=0.8.0;
 ${IFACE}
 library L { function pairFor(address x, address y) internal pure returns (address) {
@@ -146,8 +146,8 @@ contract Views(address a, address b) {
     // `chosen[i]` names a callee whose answers the contract can read, and the compile refuses several calls through it.
     expect(inputs('L.pairFor(chosen[i], chosen[i + 1])').filter((name) => name.startsWith('__internal__viewReturn')))
       .toHaveLength(2);
-    // The contract's own addresses: each view is a call on that callee, which runs once per spend, so a direct
-    // compile refuses the pair and a default one leaves it to the message bus.
+    // The contract's own addresses: each view is a call on that callee, which runs once per spend, so the compile
+    // refuses the pair.
     expect(() => compileString(body('own[i]'), { suppressWarnings: true }))
       .toThrow(/REPEATED_CALL_UNSUPPORTED.*repeats calls to the same state owner \(IPair\.r0 -> IPair\.r1\)/);
   });

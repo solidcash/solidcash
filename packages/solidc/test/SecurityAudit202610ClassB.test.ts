@@ -229,7 +229,7 @@ describe('October 2026 class B holes', () => {
       outputCount: 1,
     };
     const published = persistValueChunkLock(categoryId, chunkValue, chunkWrite, openerLock);
-    if (!published) throw new Error('message-bus value chunk published no lock');
+    if (!published) throw new Error('bound-master value chunk published no lock');
     const publishedRedeem = scriptToBytecode(buildValueChunkCovenantScript(
       CATEGORY, computeCollectionHash(valueChunkSignature(collection)), chunkSlot,
       sha256.hash(chunkValue), openerLock,
@@ -475,8 +475,7 @@ describe('October 2026 class B holes', () => {
     const proxyDataLock = p2sh32(proxyDataRedeem);
     const recordRedeem = scriptToBytecode(buildDistDataNftCovenant(CATEGORY, delegateLock));
     const recordLock = p2sh32(recordRedeem);
-    // The delegate redeem defines the body and dispatches on a 4-byte selector even when it publishes no
-    // message-bus route. The selector is the bottom witness item.
+    // The delegate redeem defines the body and dispatches on a 4-byte selector, the bottom witness item.
     const dispatch = fn.selector !== undefined;
     const values: Record<string, Uint8Array> = {};
     for (const entry of fn.inputs) {
@@ -515,7 +514,7 @@ describe('October 2026 class B holes', () => {
       ];
       return verdict(sourceOutputs, transaction);
     };
-    expect(spend(record), `DX-8 authorized bus=${dispatch} redeem=${redeem.length}`).toBe(true);
+    expect(spend(record), `DX-8 authorized dispatch=${dispatch} redeem=${redeem.length}`).toBe(true);
     expect(spend(rewritten), 'DX-8 rewritten implementation record').not.toBe(true);
   });
 
@@ -523,8 +522,8 @@ describe('October 2026 class B holes', () => {
     const P = 'pragma solidcash ^0.52.0;';
     const src = `${P} contract Child() { bigint x; function ping() { require(true); } }`
       + ' contract Factory() { function create() { Child c = new Child(); require(c.length > 0); } }';
-    // The kernel route's witness is a composed batch. This spend is the direct deploy epilogue, which holds
-    // the child-category bound. A direct deploy entry needs the unsafe opt-out when it has no signer.
+    // This spend is the direct deploy epilogue, which holds the child-category bound. A direct deploy entry needs
+    // the unsafe opt-out when it has no signer.
     const options = { forceStateful: true, allowUnsafeOperations: true };
     const factoryArtifact = compileString(src, { ...options, primaryContractName: 'Factory' });
     const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });

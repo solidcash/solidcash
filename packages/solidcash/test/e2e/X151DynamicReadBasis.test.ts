@@ -10,10 +10,11 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * `emitDynamicReadLoop` addresses a chunk-backed read at
  * `blockSize + sum(chunk counts of the reads BEFORE it in this FUNCTION's dynamicReads) + i`, while the
  * physical trailing run is assembled from a footprint the compiler does not replay. X146 closed one way the
- * two can disagree - a partial journal made a graph emission clone's list a strict subset of the route's - and
- * said explicitly that it removed the instance, not the class. This file is the search for another.
+ * two could disagree - on the removed message bus, a partial journal made a graph emission clone's list a strict
+ * subset of its route's - and said explicitly that it removed the instance, not the class. This file is the search
+ * for another.
  *
- * IT NEEDS NO BUS, NO CLONE AND NO JOURNAL, AND IT IS IN ORDINARY CODE. `StatefulContract` co-spends
+ * IT NEEDS NO JOURNAL, AND IT IS IN ORDINARY CODE. `StatefulContract` co-spends
  * read-only chunk runs in `dynamicReads` order and SKIPS every name that is also in `dynamicWrites`, because a
  * read-modify-write var's chunks are consumed by the WRITE path instead - and the write path's inputs come
  * AFTER every read-only run (`StatefulTransactionBuilder`:

@@ -32,14 +32,14 @@ describe('legacy planning heuristics isolation (item 1)', () => {
     expect(legacyIsJobEventsCollection('records')).toBe(false);
   });
 
-  it('alpha-renaming scalar function names changes legacy hints but kernel path ignores them', () => {
+  it('alpha-renaming scalar function names changes legacy hints', () => {
     const resetHints = legacyScalarNameHints('reset');
     const foobarHints = legacyScalarNameHints('foobar');
     expect(resetHints.zero).toBe(true);
     expect(foobarHints.zero).toBe(false);
   });
 
-  it('recognizes a renamed legacy first write from planned inserts without changing kernel behavior', () => {
+  it('recognizes a renamed legacy first write from planned inserts', () => {
     const group = { functionName: 'createRecord', plannedEntryInserts: [{ blockSlot: 1 }] };
     const host = {
       externalCallUtxoGroups: [group],

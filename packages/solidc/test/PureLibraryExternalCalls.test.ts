@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from './direct-compile.js';
 
-describe('pure library calls in kernel route planning', () => {
-  it('keeps a two-key transfer route when mapping arithmetic uses a pure library', () => {
+describe('pure library calls in external call planning', () => {
+  it('keeps pure library arithmetic out of a function\'s external calls', () => {
     const source = `pragma solidity ^0.8.20;
       library Math {
         function add(uint256 a, uint256 b) internal pure returns (uint256) { return a + b; }

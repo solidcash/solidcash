@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 import GenerateTargetTraversal from '../src/generation/GenerateTargetTraversal.js';
 
 // Exercise the emitted offset fragment with the same tracked frame and raw predecessor fields as its callers.
-// Full-contract integration is covered by KernelMixedEntryInsert; this isolates the two distinct chunk formats.
+// CollectionIterationDynamicInsertX102 (SDK e2e) runs it in a full contract, a two-chunk dynamic write beside a new
+// sorted entry; this isolates the two distinct chunk formats.
 type PrefixTraversal = {
   stack: string[];
   output: Script;

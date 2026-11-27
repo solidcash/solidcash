@@ -31,7 +31,7 @@ const write: ValueChunkWriteDescriptor = {
 };
 
 describe('persist value-chunk lock generality', () => {
-  it('fails closed for an unmatched kernel candidate instead of synthesizing a legacy schema lock', () => {
+  it('fails closed for an undescribed candidate instead of synthesizing a legacy schema lock', () => {
     const candidate = persistValueChunkLock(candidateCategory, value, undefined, masterLock);
     const legacy = legacyJobEventsPersistValueChunkLock(candidateCategory, value, masterLock);
 

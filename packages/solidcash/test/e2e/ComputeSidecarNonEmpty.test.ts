@@ -8,7 +8,7 @@ import { StatefulContract } from '../../src/stateful/index.js';
 import { isRepairableNftOutput } from '../../src/stateful/computed-output-repair.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const KERNEL = {
+const OPTIONS = {
   forceStateful: true,
   maximumInputBytes: 1_000_000,
   evmCompat: true,
@@ -21,7 +21,7 @@ const ZEROS_HASH = '290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3
 
 const TOKENLESS_PAD_FAILURE = /BCH-2026 preflight failed|OP_SPLIT|empty|token|side-?car|keccak/i;
 
-describe('kernel compute sidecar non-empty', () => {
+describe('compute sidecar non-empty', () => {
   it('materializes keccak sideband NFTs with commitments long enough for a 32-byte digest split', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`pragma solidity ^0.8.0;
@@ -32,7 +32,7 @@ describe('kernel compute sidecar non-empty', () => {
           counter += 1;
           require(true);
         }
-      }`, KERNEL);
+      }`, OPTIONS);
     expect(artifact.abi.find((entry) => entry.name === 'reveal')?.keccakCompute).toBe(true);
 
     const contract = new Contract(artifact, [], { provider });
@@ -98,7 +98,7 @@ describe('kernel compute sidecar non-empty', () => {
           counter += 1;
           require(true);
         }
-      }`, KERNEL);
+      }`, OPTIONS);
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },

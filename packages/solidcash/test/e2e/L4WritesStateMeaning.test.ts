@@ -12,7 +12,7 @@ import { StatefulContract } from '../../src/stateful/index.js';
  * low-level call, split/merge or covenant-bypass modifier. Every other function is `true`, so `true` is "not
  * provably read-only" - in SDK terms "needs the state machinery" - and that is a strictly weaker claim.
  *
- * THE EVIDENCE THAT MADE IT WORTH SAYING SO, from the L2-F2 recovered population:
+ * THE EVIDENCE THAT MADE IT WORTH SAYING SO, from a measured population:
  *   `Foo.callBar`   publishes true, body is `bar.log();`  -  one external call, NOT ONE ASSIGNMENT
  *   `Attack.attack` publishes true, body is one external call, no assignment
  *   4 more handlers publish the flag ABSENT and are conservatively read as writing; all four belong to
@@ -28,9 +28,9 @@ import { StatefulContract } from '../../src/stateful/index.js';
  * `StatefulContract.readWritesState`.
  *
  * WHAT THIS FILE DOES NOT ESTABLISH. `readWritesState` reports the evidence the ABI publishes; it cannot see a
- * body. A plain `this.x = y` publishes NOTHING an artifact itemizes as a write, so it reads `unattributed` -
- * which is the same reading a bus-mode journal reservation gets. Row 5 is that measurement, stated as a limit
- * rather than hidden. Closing it needs a compiler field; the hunk is handed over, not applied here.
+ * body. A plain `this.x = y` publishes NOTHING an artifact itemizes as a write, so it reads `unattributed`. Row 5
+ * is that measurement, stated as a limit rather than hidden. Closing it needs a compiler field; the hunk is handed
+ * over, not applied here.
  */
 
 const SRC = `

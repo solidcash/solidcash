@@ -82,10 +82,9 @@ if (OUT !== undefined) {
  * CONSTRUCTS - as opposed to broadcasts - would it refuse?
  *
  * A SEPARATE SUBJECT FROM THE SEND SITES, and that is the point. `build()` is reached by every send path in
- * `src/` that broadcasts a prebuilt hex (split, merge, destroy, `_sendRawBuilder`,
- * `sendPreflightedMessageBusTransaction`), by `generateWcTransactionObject`, and by every fixture that constructs
- * bytes to inspect or to hand somewhere else. A refusal there is a refusal to CONSTRUCT, which is a strictly
- * larger claim than a refusal to broadcast.
+ * `src/` that broadcasts a prebuilt hex (split, merge, destroy, `_sendRawBuilder`), by
+ * `generateWcTransactionObject`, and by every fixture that constructs bytes to inspect or to hand somewhere
+ * else. A refusal there is a refusal to CONSTRUCT, which is a strictly larger claim than a refusal to broadcast.
  *
  * A PURE OBSERVER. It ASSESSES - `assessFinalizedTransactionBytes` returns a verdict and never throws - and
  * returns the original hex unchanged. Inert unless `L4_BUILD_OUT` names an output file.

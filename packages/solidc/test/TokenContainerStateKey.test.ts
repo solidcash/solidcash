@@ -1,7 +1,6 @@
 /**
  * A token container keyed by a local bound to an immutable bytes32 state variable: the value is fixed at genesis, so
- * the ABI names the variable and the SDK reads the key from the state a call loads. A mutable variable is refused, and a
- * message-bus route carries the access as the handler states it, reading the key itself.
+ * the ABI names the variable and the SDK reads the key from the state a call loads. A mutable variable is refused.
  */
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';

@@ -5,8 +5,7 @@ import { compileString } from '../direct-compile.js';
  * constraint fixpoint/R19. The collection-journal wrapper check refused ANY `return` in a wrapper that calls a multi-entry
  * journal helper, and the Solidity ERC-20 wrapper is exactly `_transfer(from, to, v); return true;`. That
  * refusal is a thrown Error, so it failed the whole file's multi-contract compile: measured on the F3 corpora
- * it took out UniswapV2ERC20/UniswapV2Pair, UniswapV2Factory and three Unicrow files, five of which carry one
- * of the twelve bus-reachable application contracts.
+ * it took out UniswapV2ERC20/UniswapV2Pair, UniswapV2Factory and three Unicrow files.
  *
  * A TAIL return is not an early return. The write-backs are placed immediately before it, exactly as the
  * final `require` guard is already placed after them, so no path leaves the wrapper before the flush. The
@@ -40,7 +39,7 @@ describe('collection-journal wrapper with a tail return', () => {
         _transfer(from, to, value);
         return true;
       }`), { forceStateful: true });
-    // Two distinct entries are journalled, so the route must reserve two entry slots on `balances`; a
+    // Two distinct entries are journalled, so `transfer` must reserve two entry slots on `balances`; a
     // write-back stranded after the return would leave the second slot with its default value.
     const entries = artifact.abi.find((entry) => entry.name === 'transfer')?.entryAccesses ?? [];
     expect(entries.filter((entry) => entry.collection === 'balances').length).toBe(2);

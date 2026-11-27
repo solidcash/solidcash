@@ -12,8 +12,8 @@ export type PrepareCreateBuilderNestedComposeSharedWriterResult = {
   preserveFirstConditionalWriter: boolean;
   sharedPriorFunctionName: string | undefined;
   sharedPriorFunctionArgs: FunctionArgument[] | undefined;
-  sharedPriorAtomicNodeIndex: number | undefined;
-  sharedPriorAtomicNode: any;
+  sharedPriorCallNodeIndex: number | undefined;
+  sharedPriorCallNode: any;
 };
 
 /**
@@ -33,14 +33,14 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     childFunctionArgs: FunctionArgument[];
     resolvedRawFunctionName: string | undefined;
     externalCallUtxoGroups: ExternalCallUtxoGroup[];
-    latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
-    preparedAtomicNodes: readonly unknown[] | undefined;
+    latestPreparedCallNodeByPhysicalGroup: Map<number, number>;
+    preparedCallNodes: readonly unknown[] | undefined;
   },
 ): PrepareCreateBuilderNestedComposeSharedWriterResult {
   const {
     nested, proxyCallee, callee, sharedGroupIndex, childWritesState, logicalSelector,
     childFunctionName, childFunctionArgs, resolvedRawFunctionName,
-    externalCallUtxoGroups, latestPreparedAtomicNodeByPhysicalGroup, preparedAtomicNodes,
+    externalCallUtxoGroups, latestPreparedCallNodeByPhysicalGroup, preparedCallNodes,
   } = params;
 
   const sharedLogicalArtifact = proxyCallee?.implementation.inner.artifact
@@ -84,10 +84,10 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     ? externalCallUtxoGroups[sharedGroupIndex].functionName : undefined;
   const sharedPriorFunctionArgs = sharedGroupIndex >= 0
     ? externalCallUtxoGroups[sharedGroupIndex].functionArgs : undefined;
-  const sharedPriorAtomicNodeIndex = sharedGroupIndex >= 0
-    ? latestPreparedAtomicNodeByPhysicalGroup.get(sharedGroupIndex) : undefined;
-  const sharedPriorAtomicNode = sharedPriorAtomicNodeIndex === undefined
-    ? undefined : preparedAtomicNodes?.[sharedPriorAtomicNodeIndex];
+  const sharedPriorCallNodeIndex = sharedGroupIndex >= 0
+    ? latestPreparedCallNodeByPhysicalGroup.get(sharedGroupIndex) : undefined;
+  const sharedPriorCallNode = sharedPriorCallNodeIndex === undefined
+    ? undefined : preparedCallNodes?.[sharedPriorCallNodeIndex];
   if (sharedGroupIndex >= 0) {
     if (childWritesState && !preserveFirstConditionalWriter) {
       const primary = externalCallUtxoGroups[sharedGroupIndex];
@@ -104,7 +104,7 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     preserveFirstConditionalWriter,
     sharedPriorFunctionName,
     sharedPriorFunctionArgs,
-    sharedPriorAtomicNodeIndex,
-    sharedPriorAtomicNode,
+    sharedPriorCallNodeIndex,
+    sharedPriorCallNode,
   };
 }

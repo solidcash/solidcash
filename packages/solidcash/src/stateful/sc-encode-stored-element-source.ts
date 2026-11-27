@@ -13,7 +13,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
-import { visibleHandlerInputs } from './route-expression-key.js';
+import { visibleHandlerInputs } from './call-expression-key.js';
 import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
 
 /** Complete incoming bytes, selected by an authenticated collection proof and key slot. */

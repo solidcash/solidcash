@@ -14,7 +14,7 @@ import {
   isSdkResolvedExternalCallTopologyWitness,
   physicalExternalCallGroupIndexByMasterOutpoint,
   physicalExternalCallSelectorHex,
-  createGraphPlanningProducerResultContext,
+  createCallPlanningProducerResultContext,
 } from '../../src/stateful/StatefulContract.js';
 import {
   anchorRoutedDynamicResourcesAtOwner,
@@ -172,7 +172,7 @@ describe('compiler-published external-call predicate evaluation', () => {
       functionArgs: [owner, recipient], artifact, registryOwner: evaluator, state: {},
       callerInputs: [{ type: 'address' }, { type: 'address' }],
       executionSelfAddress: new Uint8Array(35), executionMsgSender: owner,
-      producerCalls: calls, planningContext: createGraphPlanningProducerResultContext(),
+      producerCalls: calls, planningContext: createCallPlanningProducerResultContext(),
     };
 
     await expect(evaluator._planExternalCallOccurrences(calls[0], frame)).resolves.toEqual([]);

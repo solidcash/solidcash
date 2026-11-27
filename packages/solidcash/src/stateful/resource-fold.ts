@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: resource-fold route helpers + encoded array channel utilities
+ * phase-boundary extract: resource-fold helpers + encoded array channel utilities
  * (phase-boundary extract from StatefulContract.ts).
  *
  * The fold plan folds repeated direct-call pushes against one authenticated chunkable key. The
@@ -19,7 +19,7 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import {
   visibleHandlerInputs,
   type RouteExpressionKeyRow,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 
 /** Place a resolved complete array fold in its compiler-published hidden ABI slot by name. */
 export function materializeCompletePushValueWitness(
@@ -501,8 +501,8 @@ export function foldActivationFromExternalCallExpression(
   return undefined;
 }
 
-/** Compare a handler input value to a literal string under a relational op (path-effect activation). */
-export function compareHandlerInputLiteral(
+/** Compare a value to a literal string under a relational op (path-effect activation). */
+export function compareToLiteral(
   actual: unknown,
   op: FoldActivationCompareOp | '==',
   expected: string,
@@ -538,10 +538,10 @@ export type FoldActivationEnvironment = {
   /** Named bool params / recipe ids (legacy string activations). */
   boolParams?: Readonly<Record<string, boolean>>;
   /**
-   * ABI-visible handler inputs by index.
+   * ABI-visible function inputs by index.
    * Bool path uses === true; handlerInputEq compares String/BigInt form to recipe.value.
    */
-  handlerInputs?: readonly unknown[];
+  functionInputs?: readonly unknown[];
   /** Named visible inputs (path-effect activation namedInputEq/Cmp for non-forward identifier sides). */
   namedInputs?: Readonly<Record<string, unknown>>;
   /** Named state field values for path-effect activation stateEq/Cmp (bounded state-side activations). */
@@ -567,14 +567,14 @@ export function evaluateFoldActivation(
     return env.boolParams?.[recipe.name] === recipe.value;
   }
   if (recipe.kind === 'namedInputEq') {
-    return compareHandlerInputLiteral(
+    return compareToLiteral(
       env.namedInputs?.[recipe.name] ?? env.stateValues?.[recipe.name],
       '==',
       recipe.value,
     );
   }
   if (recipe.kind === 'namedInputCmp') {
-    return compareHandlerInputLiteral(
+    return compareToLiteral(
       env.namedInputs?.[recipe.name] ?? env.stateValues?.[recipe.name],
       recipe.op,
       recipe.value,
@@ -591,19 +591,19 @@ export function evaluateFoldActivation(
           return String(right);
         }
       })();
-    return compareHandlerInputLiteral(env.namedInputs?.[recipe.leftName], recipe.op, rightLiteral);
+    return compareToLiteral(env.namedInputs?.[recipe.leftName], recipe.op, rightLiteral);
   }
   if (recipe.kind === 'stateEq') {
-    return compareHandlerInputLiteral(env.stateValues?.[recipe.name], '==', recipe.value);
+    return compareToLiteral(env.stateValues?.[recipe.name], '==', recipe.value);
   }
   if (recipe.kind === 'stateCmp') {
-    return compareHandlerInputLiteral(env.stateValues?.[recipe.name], recipe.op, recipe.value);
+    return compareToLiteral(env.stateValues?.[recipe.name], recipe.op, recipe.value);
   }
   if (recipe.kind === 'callEq') {
-    return compareHandlerInputLiteral(env.callResults?.[recipe.name], '==', recipe.value);
+    return compareToLiteral(env.callResults?.[recipe.name], '==', recipe.value);
   }
   if (recipe.kind === 'callCmp') {
-    return compareHandlerInputLiteral(env.callResults?.[recipe.name], recipe.op, recipe.value);
+    return compareToLiteral(env.callResults?.[recipe.name], recipe.op, recipe.value);
   }
   if (recipe.kind === 'stateCallCmp') {
     const right = env.callResults?.[recipe.callName];
@@ -616,24 +616,24 @@ export function evaluateFoldActivation(
           return String(right);
         }
       })();
-    return compareHandlerInputLiteral(env.stateValues?.[recipe.stateName], recipe.op, rightLiteral);
+    return compareToLiteral(env.stateValues?.[recipe.stateName], recipe.op, rightLiteral);
   }
   if (recipe.kind === 'handlerInput') {
     if (!Number.isInteger(recipe.inputIndex) || recipe.inputIndex < 0) return false;
-    return env.handlerInputs?.[recipe.inputIndex] === true;
+    return env.functionInputs?.[recipe.inputIndex] === true;
   }
   if (recipe.kind === 'handlerInputEq') {
     if (!Number.isInteger(recipe.inputIndex) || recipe.inputIndex < 0) return false;
-    return compareHandlerInputLiteral(
-      env.handlerInputs?.[recipe.inputIndex],
+    return compareToLiteral(
+      env.functionInputs?.[recipe.inputIndex],
       '==',
       recipe.value,
     );
   }
   if (recipe.kind === 'handlerInputCmp') {
     if (!Number.isInteger(recipe.inputIndex) || recipe.inputIndex < 0) return false;
-    return compareHandlerInputLiteral(
-      env.handlerInputs?.[recipe.inputIndex],
+    return compareToLiteral(
+      env.functionInputs?.[recipe.inputIndex],
       recipe.op,
       recipe.value,
     );
@@ -643,7 +643,7 @@ export function evaluateFoldActivation(
       || !Number.isInteger(recipe.rightIndex) || recipe.rightIndex < 0) {
       return false;
     }
-    const right = env.handlerInputs?.[recipe.rightIndex];
+    const right = env.functionInputs?.[recipe.rightIndex];
     if (right === undefined) return false;
     const rightLiteral = typeof right === 'boolean' ? String(right)
       : (() => {
@@ -653,8 +653,8 @@ export function evaluateFoldActivation(
           return String(right);
         }
       })();
-    return compareHandlerInputLiteral(
-      env.handlerInputs?.[recipe.leftIndex],
+    return compareToLiteral(
+      env.functionInputs?.[recipe.leftIndex],
       recipe.op,
       rightLiteral,
     );
@@ -671,7 +671,7 @@ export function evaluateFoldActivation(
   return false;
 }
 
-function routeRowCollectionKey(
+function rowCollectionKey(
   row: RouteExpressionKeyRow,
   access: NonNullable<RouteExpressionKeyRow['handler']['entryAccesses']>[number],
   structs: Artifact['structs'],
@@ -744,7 +744,7 @@ export function buildChunkablePushFoldPlan(params: FoldParams & { minimumRows?: 
       access.collection === params.collection && access.operations?.includes('write')
     ));
     if (accesses.length !== 1) return [];
-    const key = routeRowCollectionKey(row, accesses[0], params.structs);
+    const key = rowCollectionKey(row, accesses[0], params.structs);
     if (key === undefined) return [];
     const recipe = accesses[0].storedElementSource;
     return accesses[0].arrayMutation === 'push' && recipe?.version === 1
@@ -809,7 +809,7 @@ function foldPushPlan(
   return { ...(leading !== undefined && { leading }), complete: encoded };
 }
 
-export function foldLeadingRouteArrayPushes(
+export function foldLeadingRowArrayPushes(
   params: FoldParams,
 ): { leading: Uint8Array; complete: Uint8Array; plan: ChunkablePushFoldPlan } | undefined {
   const built = buildChunkablePushFoldPlan({ ...params, minimumRows: 2 });
@@ -820,5 +820,5 @@ export function foldLeadingRouteArrayPushes(
 }
 
 export function encodeLeadingRouteArrayPushes(params: FoldParams): Uint8Array | undefined {
-  return foldLeadingRouteArrayPushes(params)?.leading;
+  return foldLeadingRowArrayPushes(params)?.leading;
 }

@@ -8,9 +8,9 @@ import {
   type ValueChunkWriteDescriptor,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import {
-  deriveRouteValueChunks,
+  deriveValueChunks,
   extractFailingP2sh32OutputPin,
-} from '../../src/stateful/route-value-chunk-helpers.js';
+} from '../../src/stateful/value-chunk-trace-helpers.js';
 
 type Chunk = Parameters<StatefulTransactionBuilder['setDerivedChunkOutput']>[1];
 
@@ -59,7 +59,7 @@ describe('direct identity-scan value chunk derivation', () => {
       { ip: 0, instructions, controlStack: [], stack: [value, lock, encodeInt(18n)] },
       { ip: 2, instructions, controlStack: [], stack: [value, lock, encodeInt(2n), encodeInt(0n)] },
     ] as AuthenticationProgramStateCommon[];
-    expect(deriveRouteValueChunks(group, 0, trace, stb, observations))
+    expect(deriveValueChunks(group, 0, trace, stb, observations))
       .toEqual({ changed: true, discovered: true });
     expect([...outputs.keys()]).toEqual([7, 8]);
     expect([...outputs.values()].map((chunk) => chunk.commitment)).toEqual([
@@ -67,7 +67,7 @@ describe('direct identity-scan value chunk derivation', () => {
     ]);
     expect([...outputs.values()].every((chunk) => binToHex(chunk.lockingBytecode) === binToHex(lock))).toBe(true);
 
-    expect(deriveRouteValueChunks(group, 0, trace, stb, observations))
+    expect(deriveValueChunks(group, 0, trace, stb, observations))
       .toEqual({ changed: false, discovered: false });
     expect(group.valueChunkOutputBase).toBe(7);
     expect([...outputs.keys()]).toEqual([7, 8]);
@@ -81,7 +81,7 @@ describe('direct identity-scan value chunk derivation', () => {
       { ip: 1, instructions, controlStack: [], stack: [value, lock, Uint8Array.of(0x51)] },
     ] as AuthenticationProgramStateCommon[];
 
-    expect(deriveRouteValueChunks(group, 0, trace, stb, observations))
+    expect(deriveValueChunks(group, 0, trace, stb, observations))
       .toEqual({ changed: true, discovered: true });
     expect([...outputs.keys()]).toEqual([7, 8]);
   });

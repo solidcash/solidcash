@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: progressive route-probe progress helpers
+ * phase-boundary extract: progressive entry-probe progress helpers
  * (phase-boundary extract from StatefulContract.ts).
  */
 
@@ -9,15 +9,15 @@ import {
   type ValueChunkWriteDescriptor,
 } from './value-chunk-persist.js';
 
-export type RouteProbeObservation = {
+export type EntryProbeObservation = {
   identity: string;
   fingerprint: string;
 };
 
-export type RouteProbeObservationHistory = Map<string, string>;
+export type EntryProbeObservationHistory = Map<string, string>;
 
 /** A resource fingerprint excludes relocatable physical geometry. */
-export function routeValueRunFingerprint(chunks: readonly {
+export function valueRunFingerprint(chunks: readonly {
   outputIndex: number; commitment: string; lockingBytecode: Uint8Array;
 }[]): string {
   const ordered = [...chunks].sort((left, right) => left.outputIndex - right.outputIndex);
@@ -35,9 +35,9 @@ export function routeValueRunFingerprint(chunks: readonly {
  * Physical output indices can move while earlier participant slots hydrate, so callers fingerprint value runs
  * relative to their base. Different semantic bytes for one journal resource remain an SDK/compiler disagreement.
  */
-export function recordRouteProbeObservation(
-  observations: RouteProbeObservationHistory,
-  observation: RouteProbeObservation,
+export function recordEntryProbeObservation(
+  observations: EntryProbeObservationHistory,
+  observation: EntryProbeObservation,
 ): 'new' | 'same' | 'changed' {
   const previous = observations.get(observation.identity);
   if (previous === undefined) {
@@ -50,7 +50,7 @@ export function recordRouteProbeObservation(
 }
 
 /** Static convergence budget: each entry may reveal its address and commitment; each value resource its pin/run. */
-export function progressiveRouteProbePassLimit(
+export function progressiveEntryProbePassLimit(
   entrySlotCount: number,
   writes: readonly ValueChunkWriteDescriptor[],
 ): number {
@@ -62,7 +62,7 @@ export function progressiveRouteProbePassLimit(
  * Count only entry coordinates reachable from the participant currently being probed. An unrelated participant
  * cannot reveal a fact in this trace and therefore must not enlarge this participant's convergence budget.
  */
-export function routeProbeRepairableEntryCoordinateCount(
+export function entryProbeRepairableCoordinateCount(
   group: {
     categoryId: string;
     masterUtxo: { txid: string; vout: number };
@@ -90,7 +90,7 @@ export function routeProbeRepairableEntryCoordinateCount(
 }
 
 
-export function routeProbeEntrySlotOffsetForOutput(
+export function entryProbeSlotOffsetForOutput(
   outputIndex: number,
   layouts: Array<{ base: number; slots?: Array<{ kind: string; offset?: number }> }>,
 ): number | undefined {

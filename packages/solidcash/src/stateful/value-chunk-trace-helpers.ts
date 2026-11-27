@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: Route value-chunk pin / extract / derive helpers.
+ * phase-boundary extract: value-chunk pin / extract / derive helpers over a call's trace.
  * (phase-boundary extract from StatefulContract.ts).
  */
 
@@ -20,10 +20,10 @@ import {
 } from './faithful-probe-trace.js';
 import { decodeScriptNumber } from './trace-commitment-helpers.js';
 import {
-  type RouteProbeObservationHistory,
-  recordRouteProbeObservation,
-  routeValueRunFingerprint,
-} from './route-probe-progress.js';
+  type EntryProbeObservationHistory,
+  recordEntryProbeObservation,
+  valueRunFingerprint,
+} from './entry-probe-progress.js';
 import {
   type ExternalCallUtxoGroup,
   StatefulTransactionBuilder,
@@ -64,7 +64,7 @@ import {
   publishIdentityScanValueChunkRange,
 } from './identity-scan-value-chunk-range.js';
 
-type RouteValueChunkProgress = { changed: boolean; discovered: boolean };
+type ValueChunkProgress = { changed: boolean; discovered: boolean };
 
 /** emitSortedValueChunkPin: `DUP / PICK addr / SWAP / OUTPUTBYTECODE` leaves [addr35, idx] on top. */
 export function isValueChunkOutputPin(state: AuthenticationProgramStateCommon): boolean {
@@ -74,7 +74,7 @@ export function isValueChunkOutputPin(state: AuthenticationProgramStateCommon): 
   return isP2sh32LockingBytecode(state.stack[state.stack.length - 2]);
 }
 
-export function extractRouteChunkPin(
+export function extractValueChunkPin(
   trace: AuthenticationProgramStateCommon[],
 ): { outputIndex: number; lockingBytecode: Uint8Array; commitment: string } | undefined {
   const isChunkShaped = isValueChunkProbeFrame;
@@ -232,7 +232,7 @@ function ownerMasterLock(owner: { lockingBytecode: string } | undefined): Uint8A
   return lock.length === 35 ? lock : undefined;
 }
 
-export function extractAllRouteValueChunks(
+export function extractAllValueChunks(
   trace: AuthenticationProgramStateCommon[],
   pin?: { outputIndex: number; commitment: string; lockingBytecode?: Uint8Array },
   fallbackBase = -1,
@@ -410,9 +410,9 @@ function deriveFixedEntryLockPin(
   bOutputBase: number,
   trace: AuthenticationProgramStateCommon[],
   stb: StatefulTransactionBuilder,
-  observations: RouteProbeObservationHistory,
+  observations: EntryProbeObservationHistory,
   fixedIndex = false,
-): RouteValueChunkProgress {
+): ValueChunkProgress {
   // A cold fixed entry may fail its bytecode check before the VM exposes its new commitment. Bind the
   // expected lock to an actual OUTPUTBYTECODE read of a compiler-published entry slot, then probe again.
   for (let i = trace.length - 1; i >= 0; i--) {
@@ -452,7 +452,7 @@ function deriveFixedEntryLockPin(
       fixedIndex, semanticKind: 'entryPin',
     })) {
       const identity = `entry-lock:${group.categoryId}:${entryBlockSlot}`;
-      const discovered = recordRouteProbeObservation(observations, {
+      const discovered = recordEntryProbeObservation(observations, {
         identity, fingerprint: binToHex(expected),
       }) !== 'same';
       return { changed: true, discovered };
@@ -461,11 +461,11 @@ function deriveFixedEntryLockPin(
   return { changed: false, discovered: false };
 }
 
-export function deriveRouteValueChunks(
+export function deriveValueChunks(
   group: ExternalCallUtxoGroup, bOutputBase: number, trace: AuthenticationProgramStateCommon[],
   stb: StatefulTransactionBuilder,
-  observations: RouteProbeObservationHistory,
-): RouteValueChunkProgress {
+  observations: EntryProbeObservationHistory,
+): ValueChunkProgress {
   if (!group.blockLayout) return { changed: false, discovered: false };
   const sharedBand = stb.getChunkableValueWriteBand();
   const explicitBase = group.valueChunkOutputBase !== undefined && group.valueChunkOutputBase >= 0
@@ -489,7 +489,7 @@ export function deriveRouteValueChunks(
       commitment: '00',
     }
     : undefined;
-  const positionalPin = scanPin ? undefined : (extractRouteChunkPin(trace)
+  const positionalPin = scanPin ? undefined : (extractValueChunkPin(trace)
     ?? extractFailingP2sh32OutputPin(trace, pinBand));
   const pin = scanPin ?? positionalPin;
   if (!pin) return deriveFixedEntryLockPin(
@@ -522,7 +522,7 @@ export function deriveRouteValueChunks(
   const valueChunkCategoryId = resourceSelection.status === 'exact'
     ? resourceSelection.write.categoryId
     : group.categoryId;
-  const allChunks = extractAllRouteValueChunks(
+  const allChunks = extractAllValueChunks(
     trace, pin,
     continuationBase,
     usesSharedBand
@@ -633,9 +633,9 @@ export function deriveRouteValueChunks(
     }
   }
   const exactRunObservation = resourceIdentity !== undefined && allChunks.length > 0
-    ? recordRouteProbeObservation(observations, {
+    ? recordEntryProbeObservation(observations, {
       identity: `value-run:${resourceIdentity}`,
-      fingerprint: routeValueRunFingerprint(allChunks),
+      fingerprint: valueRunFingerprint(allChunks),
     })
     : undefined;
 
@@ -706,8 +706,8 @@ export function deriveRouteValueChunks(
       const identity = selection.status === 'exact'
         ? `value-run:${valueChunkWriteResourceIdentity(selection.write)}`
         : `value-coordinate:${group.categoryId}:${pin.outputIndex}`;
-      const fingerprint = routeValueRunFingerprint(allChunks.length > 0 ? allChunks : [pin]);
-      discovered = recordRouteProbeObservation(
+      const fingerprint = valueRunFingerprint(allChunks.length > 0 ? allChunks : [pin]);
+      discovered = recordEntryProbeObservation(
         observations, { identity, fingerprint },
       ) !== 'same';
     }

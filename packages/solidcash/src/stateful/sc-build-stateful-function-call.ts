@@ -670,7 +670,7 @@ export async function buildStatefulFunctionCall(
               const state = raw as { ip?: number; instructions?: Array<{ opcode: number }> };
               return state.instructions?.[state.ip ?? -1]?.opcode === Op.OP_OUTPUTBYTECODE;
             }) as { stack?: Uint8Array[] } | undefined;
-            const handlerSnapshots = Array.from({ length: 8 }, (_, offset) => ip - 7 + offset)
+            const terminalSnapshots = Array.from({ length: 8 }, (_, offset) => ip - 7 + offset)
               .flatMap((wantedIp) => {
                 const state = [...trace].reverse().find((raw) => {
                   const candidate = raw as { ip?: number; instructions?: Array<{ opcode: number }> };
@@ -705,7 +705,7 @@ export async function buildStatefulFunctionCall(
                 bytes: item.length,
                 hex: binToHex(item).slice(0, 160),
               })),
-              handlerSnapshots,
+              terminalSnapshots,
               nearby: terminal?.instructions?.slice(Math.max(0, ip - 24), ip + 2)
                 .map((instruction, offset) => ({
                   ip: Math.max(0, ip - 24) + offset,
@@ -750,7 +750,7 @@ export async function buildStatefulFunctionCall(
               console.error('handler-boundary', JSON.stringify({
                 error: terminal?.error,
                 ip,
-                snapshots: handlerSnapshots,
+                snapshots: terminalSnapshots,
                 frames: [...frames.entries()].sort(([left], [right]) => right - left).slice(0, 24),
               }));
             } else {

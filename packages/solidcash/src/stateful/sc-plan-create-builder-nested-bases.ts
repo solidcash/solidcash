@@ -10,7 +10,7 @@ import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 
 export type PlanCreateBuilderNestedBasesResult = {
   nestedInputBase: number;
-  projectedRouteBlockSize: number;
+  projectedBlockSize: number;
   nestedOutputBase: number;
   nestedMasterIndices: number[];
   nestedOutputBases: number[];
@@ -30,7 +30,7 @@ export function planCreateBuilderNestedBases(params: {
   allLowLevelInputCount: number;
   hasNestedDelegate: boolean;
   delegatedDynamicSuffix: boolean;
-  legacyRouteTrailingBase: number | undefined;
+  legacyProxyTrailingBase: number | undefined;
   iterationEntryInputs: readonly UnlockableUtxo[];
   insertLoopPredecessors: readonly unknown[];
   delegatedDynamicWriteChunkCount: number;
@@ -46,7 +46,7 @@ export function planCreateBuilderNestedBases(params: {
   externalOutStateUtxoGroups: readonly {
     dataNftUtxos: readonly unknown[]; blockhashCoSpendUtxos?: readonly unknown[]; keccakInputs?: readonly unknown[];
   }[];
-  legacyRouteDelegateFn: AbiFunction | undefined;
+  legacyProxyDelegateFn: AbiFunction | undefined;
   returnEmitOutputIndex: number;
   functionName: string;
   allGroupEcSlots: readonly { hasReturnValues?: boolean }[];
@@ -54,22 +54,22 @@ export function planCreateBuilderNestedBases(params: {
 }): PlanCreateBuilderNestedBasesResult {
   const {
     directCallDelegateLayout, lowLevelCallInputBase, allLowLevelInputCount,
-    hasNestedDelegate, delegatedDynamicSuffix, legacyRouteTrailingBase,
+    hasNestedDelegate, delegatedDynamicSuffix, legacyProxyTrailingBase,
     iterationEntryInputs, insertLoopPredecessors, delegatedDynamicWriteChunkCount,
     requiredNftIndices, delegateInputCount, externalReadUtxos, outStateInputCount,
     delegatedLoopOutputSurplus, delegatedLoopOutputCount, abiFunction, lowLevelCallUtxoGroups,
-    externalCallUtxoGroups, externalOutStateUtxoGroups, legacyRouteDelegateFn,
+    externalCallUtxoGroups, externalOutStateUtxoGroups, legacyProxyDelegateFn,
     returnEmitOutputIndex, functionName, allGroupEcSlots, timing,
   } = params;
 
   let nestedInputBase = directCallDelegateLayout
     ? lowLevelCallInputBase + allLowLevelInputCount
-    : hasNestedDelegate && delegatedDynamicSuffix && legacyRouteTrailingBase !== undefined
+    : hasNestedDelegate && delegatedDynamicSuffix && legacyProxyTrailingBase !== undefined
       // Legacy proxy composition still puts the implementation immediately after the proxy state band, but
       // its fixed block can contain output-only slots. `_buildInputs` pads those slots, then places sorted-loop
       // predecessor proofs before nested callees. Mirror that physical geometry when publishing the callees'
       // hidden absolute input indices.
-      ? lowLevelCallInputBase + legacyRouteTrailingBase
+      ? lowLevelCallInputBase + legacyProxyTrailingBase
         + iterationEntryInputs.length + insertLoopPredecessors.length
         + delegatedDynamicWriteChunkCount
       : hasNestedDelegate
@@ -79,13 +79,13 @@ export function planCreateBuilderNestedBases(params: {
   // A sorted INSERT consumes one predecessor but emits the rewritten predecessor plus a new node. The
   // transaction builder balances that output-only expansion with a funder before nested callees; publish the
   // same physical shift in every nested master/output witness assembled below.
-  // legacyRouteTrailingBase already covers the impl returnEvent output-only input pad that _buildInputs
+  // legacyProxyTrailingBase already covers the impl returnEvent output-only input pad that _buildInputs
   // inserts before upsert HEAD when proxy __forward lacks a returnEvent slot.
   nestedInputBase += delegatedLoopOutputSurplus;
   // Delegate implementation output-only slots are projected into the caller's balanced block below. Nested
   // outputs begin after that expanded block, not after only the caller's original state slots. Compute the same
   // maximum offset here so hidden absolute-output witnesses can be finalized before the builder is created.
-  let projectedRouteBlockSize = directCallDelegateLayout?.blockSize
+  let projectedBlockSize = directCallDelegateLayout?.blockSize
     ?? abiFunction?.blockLayout?.blockSize ?? 0;
   for (const delegate of lowLevelCallUtxoGroups) {
     if (delegate.callMode !== 'delegatecall') continue;
@@ -100,7 +100,7 @@ export function planCreateBuilderNestedBases(params: {
         || slot.kind === 'returnEvent')) continue;
     const existingCallSlot = abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'lowLevelCall');
     const callOffset = existingCallSlot?.offset ?? (abiFunction?.blockLayout?.blockSize ?? 1);
-    projectedRouteBlockSize = Math.max(projectedRouteBlockSize, callOffset + 1);
+    projectedBlockSize = Math.max(projectedBlockSize, callOffset + 1);
     const delegateOnly = delegate.externalContract.inner.artifact.delegateOnly === true;
     const dataSlots = (delegateFn?.blockLayout?.slots ?? []).filter((slot) => slot.kind === 'dataNft');
     for (const slot of extras) {
@@ -108,7 +108,7 @@ export function planCreateBuilderNestedBases(params: {
       // to `delegateEventSlots`, so it does not independently extend the builder's effective block size.
       if (slot.kind === 'returnEvent') continue;
       const below = delegateOnly ? dataSlots.filter((dataSlot) => dataSlot.offset < slot.offset).length : 0;
-      projectedRouteBlockSize = Math.max(projectedRouteBlockSize, callOffset + slot.offset - below + 1);
+      projectedBlockSize = Math.max(projectedBlockSize, callOffset + slot.offset - below + 1);
     }
   }
   timing?.('projected-route-size');
@@ -121,7 +121,7 @@ export function planCreateBuilderNestedBases(params: {
     + (returnEmitOutputIndex >= 0 ? 1 : 0);
   let nestedOutputBase = Math.max(
     packedNestedOutputBase,
-    projectedRouteBlockSize,
+    projectedBlockSize,
   ) + delegatedLoopOutputCount + delegatedLoopOutputSurplus
     // RMW write chunks occupy impl+trailing outputs (burned, recreated at the suffix).
     // Without them here, nested output bases sit early once the dynamic collection has chunks.
@@ -170,7 +170,7 @@ export function planCreateBuilderNestedBases(params: {
   // the nested tail. Nested view implementations also have outputs, but those are
   // the tail returns themselves — counting them here shifted return witnesses onto the empty output
   // after the real 0x51 / tag-string returns.
-  const delegatedCallerReturnCount = (legacyRouteDelegateFn?.outputs?.length ?? 0) > 0 ? 1 : 0;
+  const delegatedCallerReturnCount = (legacyProxyDelegateFn?.outputs?.length ?? 0) > 0 ? 1 : 0;
   const externalGroupOutputCount = externalCallUtxoGroups.reduce(
     (sum, g) => g.sharedGroupIndex === undefined ? sum + calleeOutputSpan(g) : sum, 0,
   );
@@ -193,7 +193,7 @@ export function planCreateBuilderNestedBases(params: {
   // Without this, nested tail returns land one slot early.
   if (insertLoopPredecessors.length > 0 && !directCallDelegateLayout
     && !(abiFunction?.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')
-    && (legacyRouteDelegateFn?.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')) {
+    && (legacyProxyDelegateFn?.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')) {
     delegateReturnOutputBase += 1;
   }
   // A no-return writer already places the nested implementation inside the forwarded fixed block,
@@ -201,15 +201,15 @@ export function planCreateBuilderNestedBases(params: {
   // lands tail witnesses on the empty output after the real 0x51 / tag-string
   // returns. A returning writer keeps the +1 when its own return channel and
   // in-block token returns re-pack the tail.
-  if ((legacyRouteDelegateFn?.outputs?.length ?? 0) === 0
+  if ((legacyProxyDelegateFn?.outputs?.length ?? 0) === 0
     && delegatedDynamicWriteChunkCount > 0 && associatedDelegateGroups.size > 0) {
     delegateReturnOutputBase -= 1;
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_RETURN === '1') {
     console.error('delegate-return-base', {
-      functionName: legacyRouteDelegateFn?.name ?? functionName,
-      entryOutputs: legacyRouteDelegateFn?.outputs?.length ?? 0,
+      functionName: legacyProxyDelegateFn?.name ?? functionName,
+      entryOutputs: legacyProxyDelegateFn?.outputs?.length ?? 0,
       externalOutputStart, externalGroupOutputCount, delegateImplOutputCount,
       delegatedCallerReturnCount, delegatedLoopOutputCount, delegatedDynamicWriteChunkCount,
       delegateReturnOutputBase,
@@ -287,7 +287,7 @@ export function planCreateBuilderNestedBases(params: {
 
   return {
     nestedInputBase,
-    projectedRouteBlockSize,
+    projectedBlockSize,
     nestedOutputBase,
     nestedMasterIndices,
     nestedOutputBases,

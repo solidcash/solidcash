@@ -34,7 +34,7 @@ export interface FinalizeBuildDerivedSuffixHost {
 export function finalizeBuildDerivedSuffix(
   host: FinalizeBuildDerivedSuffixHost,
   builder: TransactionBuilder,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
   for (const vco of host.lateValueChunkOutputs) {
     const chunkOutput = { ...vco };
@@ -87,7 +87,7 @@ export function finalizeBuildDerivedSuffix(
   // the trailer. Late value-chunks / derived pins can displace or reorder them — pin the
   // authenticated commitments back onto that window in declaration order.
   host.reassertReverseSuffixDynamicChunks(builder);
-  debugAtomicOutputStage('derived-output-repairs');
+  debugStatefulOutputStage('derived-output-repairs');
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_CHUNK_SCAN === '1' && host.externalCallEntryOutputsByIndex.size > 0) {
     console.error('derived-entry-outputs', [...host.externalCallEntryOutputsByIndex.entries()].map(

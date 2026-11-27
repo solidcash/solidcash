@@ -208,7 +208,7 @@ export {
   type DirectMappingReadPlan,
   directMappingReadPlan,
   resolveRouteRowExpressionKey,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 
 
 /**

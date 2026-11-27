@@ -5,14 +5,14 @@ import { encodeFunctionArgument } from '../Argument.js';
 import { mappingKeySlotCandidates } from './mapping-key-lookup.js';
 import {
   resolveRouteRowExpressionKey, visibleHandlerInputs, type RouteExpressionKeyRow,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 import type { StoredValueIncomingEntry } from './sc-encode-stored-element-source.js';
 
 type Collection = NonNullable<NonNullable<Artifact['stateLayout']>['collections']>[number];
 export type StoredValueMutationRow = { row: RouteExpressionKeyRow; access: EntryAccessAbi };
 
 /** Fold exact whole-entry recipes over the prior row's bytes, never over a pending state overlay. */
-export function foldRouteStoredValues(options: {
+export function foldStoredValues(options: {
   writes: readonly StoredValueMutationRow[];
   collection: Collection;
   targetSlot: Uint8Array;

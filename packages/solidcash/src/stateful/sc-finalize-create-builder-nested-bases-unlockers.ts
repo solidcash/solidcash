@@ -17,7 +17,7 @@ import { directCallBatchUnlocker } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './internal-function-args.js';
 import { externalReturnParamSlot } from './physical-external-call.js';
-import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
+import { argumentsForPhysicalAbiFrame } from './call-expression-key.js';
 import type { selectorParamSlot } from './physical-external-call.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
@@ -135,13 +135,13 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     const bAbiInputs = bAbiFunc?.inputs ?? [];
     const selfIdentityBand = usesOrdinarySelfIdentity(bAbiFunc)
       ? await host.ensureOrdinarySelfIdentityBand(group.externalContract, bAbiFunc!) : undefined;
-    const routeArgs = argumentsForPhysicalAbiFrame({
+    const frameArgs = argumentsForPhysicalAbiFrame({
       abiFunction: bAbiFunc,
       physicalFunctionArgs: group.functionArgs,
       logicalFunctionName: group.logicalFunctionName ?? group.functionName,
       logicalFunctionArgs: group.logicalFunctionArgs,
     });
-    const userArgCount = routeArgs.length;
+    const userArgCount = frameArgs.length;
     const callerLock = group.callerIdentity?.lockingBytecode.toLowerCase();
     const rootPhysicalLock = binToHex(host.physicalRootLockingBytecode).toLowerCase();
     const needsRootCallerAnchor = meta.parentGroupIndex < 0
@@ -156,7 +156,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       }
     }
 
-    let bFinalArgs = [...routeArgs];
+    let bFinalArgs = [...frameArgs];
     let bReturningSlotIdx = 0;
 
     // Pre-compute child group indices for transitive param resolution
@@ -432,7 +432,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     }
 
     // Create master unlocker
-    const hasResolvedHiddenArgs = bFinalArgs.length !== routeArgs.length;
+    const hasResolvedHiddenArgs = bFinalArgs.length !== frameArgs.length;
     let bMasterUnlocker = hasResolvedHiddenArgs && bAbiFunc
       ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...bFinalArgs)
       : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);

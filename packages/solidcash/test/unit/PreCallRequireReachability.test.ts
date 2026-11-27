@@ -51,7 +51,7 @@ describe('delegate pre-call require reachability', () => {
     }, {
       callInfo, callMode: 'delegatecall', lowLevelCallUtxoGroups: [],
       groupProxyMasterIndices: [], abiFunction: undefined, physicalAbiFunction: undefined,
-      functionName: 'refund', args: [7n], callIndex: 0, preparedAtomicNodes: [],
+      functionName: 'refund', args: [7n], callIndex: 0, preparedCallNodes: [],
       rootProducerPath: { status: 'unavailable' },
       publicSelfAddress: Uint8Array.of(0x51), authenticatedSelfAddress: Uint8Array.of(0x51),
       incomingCallerAddress: caller, onChainState: { state: {} },

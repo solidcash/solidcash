@@ -55,8 +55,8 @@ ReturnType<typeof resolveCreateBuilderNestedComposeCallee> {
     onChainState: { state },
     delegateSelfAddress: new Uint8Array(),
     publishedNestedExternalCalls: [edge],
-    preparedAtomicNodes: undefined,
-    graphPlanningResults: undefined,
+    preparedCallNodes: undefined,
+    callPlanningResults: undefined,
   });
 }
 

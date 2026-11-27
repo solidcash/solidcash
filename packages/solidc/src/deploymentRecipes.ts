@@ -136,7 +136,7 @@ const cloneEquivalentDefinition = (left: object, right: object): boolean => {
 
 const exactHelperSignature = (
   call: FunctionCallNode, candidate: FunctionDefinitionNode,
-  handlerInputTypes?: ReadonlyMap<string, string>,
+  functionInputTypes?: ReadonlyMap<string, string>,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
 ): boolean => candidate.name === call.identifier.name
@@ -153,7 +153,7 @@ const exactHelperSignature = (
     const typedArgument = argument instanceof IdentifierNode
       ? definitionType : argument.type ?? definitionType;
     const argumentType = aliasedType
-      ?? (argument instanceof IdentifierNode ? handlerInputTypes?.get(argument.name) : undefined)
+      ?? (argument instanceof IdentifierNode ? functionInputTypes?.get(argument.name) : undefined)
       ?? (typedArgument ? abiTypeString(typedArgument) : undefined)
       // An unresolved pure hash intrinsic takes its result type from the algorithm.
       ?? (argument instanceof FunctionCallNode && !argument.resolvedFunction
@@ -165,14 +165,14 @@ const exactHelperSignature = (
 /** Resolve only semantic identity or a unique exact argument-type signature; never guess by name and arity. */
 const resolvedRecipeHelper = (
   call: FunctionCallNode, helperFunctions: readonly FunctionDefinitionNode[],
-  handlerInputTypes?: ReadonlyMap<string, string>,
+  functionInputTypes?: ReadonlyMap<string, string>,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
 ): FunctionDefinitionNode | undefined => {
   const namedCandidates = helperFunctions.filter((candidate) =>
     candidate.name === call.identifier.name && candidate.parameters.length === call.parameters.length);
   const exactCandidates = namedCandidates.filter((candidate) => exactHelperSignature(
-    call, candidate, handlerInputTypes, aliases, aliasDefinitions,
+    call, candidate, functionInputTypes, aliases, aliasDefinitions,
   ));
   // Prefer a unique typed signature over an early symbol-table link. Same-arity overloads are not finalized until
   // type checking, so a pre-semantic link can still name the traversal-order candidate rather than the overload
@@ -262,9 +262,9 @@ const recipeType = (expression: ExpressionNode): string | undefined => {
 /** Serialize the deliberately small, pure expression language shared by child constructor args and CREATE2 salt. */
 export function childDeploymentValueRecipe(
   expression: ExpressionNode,
-  handlerInputs: ReadonlyMap<string, number>,
+  functionInputs: ReadonlyMap<string, number>,
   nested = false,
-  handlerInputTypes?: ReadonlyMap<string, string>,
+  functionInputTypes?: ReadonlyMap<string, string>,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
   expectedType?: Type,
@@ -275,7 +275,7 @@ export function childDeploymentValueRecipe(
   if (expression instanceof FieldAccessNode || expression instanceof ArrayAccessNode
     || expression instanceof TupleIndexOpNode || expression instanceof MappingAccessNode) {
     const resolve = (value: ExpressionNode): ChildDeploymentValueRecipe | undefined => childDeploymentValueRecipe(
-      value, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      value, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     );
     const project = (
@@ -315,7 +315,7 @@ export function childDeploymentValueRecipe(
         const resultType = physicalRecipeType(selectedType);
         if (!materializableGenesisLeafType.test(resultType)) return undefined;
         const keys = value.keys.map((key, index) => bindRecipe(
-          key, physicalRecipeType(collection.allKeyTypes[index]), handlerInputs, handlerInputTypes ?? new Map(),
+          key, physicalRecipeType(collection.allKeyTypes[index]), functionInputs, functionInputTypes ?? new Map(),
           aliases, aliasDefinitions!, helperFunctions, collection.allKeyTypes[index],
         ));
         return keys.every((key) => key !== undefined) ? {
@@ -363,8 +363,8 @@ export function childDeploymentValueRecipe(
       if (namedDefinition && (!linkedDefinition
         || cloneEquivalentDefinition(linkedDefinition, namedDefinition))) return aliases.get(namedDefinition);
     }
-    const inputIndex = handlerInputs.get(expression.name);
-    const resultType = recipeType(expression) ?? handlerInputTypes?.get(expression.name);
+    const inputIndex = functionInputs.get(expression.name);
+    const resultType = recipeType(expression) ?? functionInputTypes?.get(expression.name);
     return inputIndex === undefined ? undefined : {
       kind: 'handlerInput', inputIndex, ...(nested && resultType && { resultType }),
     };
@@ -404,7 +404,7 @@ export function childDeploymentValueRecipe(
     const resultType = declaredType ?? (expression instanceof BytesConcatNode ? 'bytes' : 'string');
     if (expression.parameters.length === 0) return undefined;
     const operands = expression.parameters.map((parameter) => childDeploymentValueRecipe(
-      parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      parameter, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     ));
     const operandTypeSupported = expression instanceof BytesConcatNode
@@ -416,7 +416,7 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof AbiEncodePackedNode) {
     const operands = expression.parameters.map((parameter) => childDeploymentValueRecipe(
-      parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      parameter, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     ));
     // For byte/string operands, packed ABI encoding is exactly their unframed concatenation. Numeric and
@@ -429,7 +429,7 @@ export function childDeploymentValueRecipe(
   if (expression instanceof FunctionCallNode && pureHashFunctions.has(expression.identifier.name)
     && !expression.resolvedFunction && expression.parameters.length === 1) {
     const operand = childDeploymentValueRecipe(
-      expression.parameters[0], handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.parameters[0], functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     );
     const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : undefined)
@@ -448,7 +448,7 @@ export function childDeploymentValueRecipe(
       || !materializableGenesisType(arrayType, structStack)) return undefined;
     const elements = expression.elements.map((elementExpression) => {
       let element = childDeploymentValueRecipe(
-        elementExpression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+        elementExpression, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
         arrayType.elementType, structStack, helperFunctions, helperStack,
       );
       const targetType = physicalRecipeType(arrayType.elementType);
@@ -474,7 +474,7 @@ export function childDeploymentValueRecipe(
       const fieldType = structType.fields[index].type;
       if (!materializableGenesisType(fieldType, nestedStructStack)) return undefined;
       let element = childDeploymentValueRecipe(
-        parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+        parameter, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
         fieldType, nestedStructStack, helperFunctions, helperStack,
       );
       const targetType = physicalRecipeType(fieldType);
@@ -492,7 +492,7 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof FunctionCallNode) {
     const helper = resolvedRecipeHelper(
-      expression, helperFunctions, handlerInputTypes, aliases, aliasDefinitions,
+      expression, helperFunctions, functionInputTypes, aliases, aliasDefinitions,
     );
     if (!helper) return undefined;
     // A view helper is replayable only when every statement below reduces to the same closed recipe language.
@@ -510,7 +510,7 @@ export function childDeploymentValueRecipe(
     nestedHelperStack.add(helper);
     for (const [index, parameter] of helper.parameters.entries()) {
       const argument = childDeploymentValueRecipe(
-        expression.parameters[index], handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+        expression.parameters[index], functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
         parameter.type, structStack, helperFunctions, nestedHelperStack,
       );
       if (!argument) return undefined;
@@ -521,7 +521,7 @@ export function childDeploymentValueRecipe(
       const last = index === statements.length - 1;
       if (statement instanceof VariableDefinitionNode && statement.expression && !last) {
         let value = childDeploymentValueRecipe(
-          statement.expression, handlerInputs, true, handlerInputTypes, helperAliases, helperDefinitions,
+          statement.expression, functionInputs, true, functionInputTypes, helperAliases, helperDefinitions,
           statement.type, structStack, helperFunctions, nestedHelperStack,
         );
         const targetType = physicalRecipeType(statement.type);
@@ -536,7 +536,7 @@ export function childDeploymentValueRecipe(
       }
       if (last && statement instanceof ReturnNode && statement.expressions.length === 1) {
         let value = childDeploymentValueRecipe(
-          statement.expressions[0], handlerInputs, true, handlerInputTypes, helperAliases, helperDefinitions,
+          statement.expressions[0], functionInputs, true, functionInputTypes, helperAliases, helperDefinitions,
           helper.returnTypes[0], structStack, helperFunctions, nestedHelperStack,
         );
         const targetType = physicalRecipeType(helper.returnTypes[0]);
@@ -552,17 +552,17 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof TernaryOpNode) {
     const condition = childDeploymentValueRecipe(
-      expression.condition, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.condition, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       PrimitiveType.BOOL, structStack, helperFunctions, helperStack,
     );
     const resultValueType = expectedType ?? expression.type;
     if (!resultValueType || !materializableGenesisType(resultValueType, structStack)) return undefined;
     const ifTrue = childDeploymentValueRecipe(
-      expression.ifTrue, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.ifTrue, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       resultValueType, structStack, helperFunctions, helperStack,
     );
     const ifFalse = childDeploymentValueRecipe(
-      expression.ifFalse, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.ifFalse, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       resultValueType, structStack, helperFunctions, helperStack,
     );
     const resultType = physicalRecipeType(resultValueType);
@@ -572,7 +572,7 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof CastNode) {
     const operand = childDeploymentValueRecipe(
-      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.expression, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     );
     return operand && declaredType && materializableCastType.test(declaredType)
@@ -580,7 +580,7 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof UnaryOpNode && unaryOperators.has(expression.operator)) {
     const operand = childDeploymentValueRecipe(
-      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.expression, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     );
     const resultType = declaredType ?? (expression.operator === UnaryOperator.NOT ? 'bool' : operand?.resultType);
@@ -596,11 +596,11 @@ export function childDeploymentValueRecipe(
   // A Yul word builtin (BinaryOpNode.yulBuiltin) has EVM semantics no recipe operator states.
   if (expression instanceof BinaryOpNode && binaryOperators.has(expression.operator) && !expression.yulBuiltin) {
     const left = childDeploymentValueRecipe(
-      expression.left, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.left, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     );
     const right = childDeploymentValueRecipe(
-      expression.right, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.right, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     );
     const booleanResult = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE,
@@ -659,8 +659,8 @@ export interface ChildDeploymentRecipeAnalysis {
 /** Publish the finite collection subset whose constructor effects have an exact parent-row replay. */
 export function childDeploymentGenesisEntries(
   entries: InstantiationNode['foldedCollectionEntries'],
-  handlerInputs: ReadonlyMap<string, number>,
-  handlerInputTypes: ReadonlyMap<string, string>,
+  functionInputs: ReadonlyMap<string, number>,
+  functionInputTypes: ReadonlyMap<string, string>,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
   /** The child's declared collections: sorted ones without a constructor write mint their empty HEAD. */
@@ -684,10 +684,10 @@ export function childDeploymentGenesisEntries(
     const valueType = arrayType ? arrayType.elementType : mappingType!.valueType;
     if (!materializableGenesisType(keyType) || !materializableGenesisType(valueType)) return undefined;
     const key = childDeploymentValueRecipe(
-      entry.key, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, keyType,
+      entry.key, functionInputs, true, functionInputTypes, aliases, aliasDefinitions, keyType,
     );
     const value = childDeploymentValueRecipe(
-      entry.value, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      entry.value, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
       valueType,
     );
     if (!key || !materializableGenesisLeafType.test(key.resultType ?? '') || !value) return undefined;
@@ -724,15 +724,15 @@ const definitionOf = (identifier: IdentifierNode): object | undefined => identif
 const bindRecipe = (
   expression: ExpressionNode,
   targetType: string,
-  handlerInputs: ReadonlyMap<string, number>,
-  handlerInputTypes: ReadonlyMap<string, string>,
+  functionInputs: ReadonlyMap<string, number>,
+  functionInputTypes: ReadonlyMap<string, string>,
   aliases: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions: ReadonlyMap<string, object>,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
   expectedType?: Type,
 ): ChildDeploymentValueRecipe | undefined => {
   let recipe = childDeploymentValueRecipe(
-    expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+    expression, functionInputs, true, functionInputTypes, aliases, aliasDefinitions,
     expectedType, new Set(), helperFunctions,
   );
   if (!recipe) return undefined;
@@ -771,8 +771,8 @@ export function analyzeFixedBchEffectRecipes(
   collections: readonly CollectionNode[] = [],
 ): WeakMap<FixedBchEffectNode, FixedBchEffectRecipeAnalysis> {
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
-  const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+  const functionInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
+  const functionInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
   const initialAliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
     parameter,
     { kind: 'handlerInput', inputIndex, resultType: physicalRecipeType(parameter.type) } as ChildDeploymentValueRecipe,
@@ -940,7 +940,7 @@ export function analyzeFixedBchEffectRecipes(
       }
       if (selected) selected.type = leaf.type;
       return [projectionToken(definition, leaf.path), selected && bindRecipe(
-        selected, physicalRecipeType(leaf.type), handlerInputs, handlerInputTypes,
+        selected, physicalRecipeType(leaf.type), functionInputs, functionInputTypes,
         environment.aliases, environment.definitions, helperFunctions, leaf.type,
       )] as const;
     });
@@ -966,7 +966,7 @@ export function analyzeFixedBchEffectRecipes(
       return { kind: 'logicalCaller', resultType: 'address' };
     }
     const resolved = childDeploymentValueRecipe(
-      expression, handlerInputs, true, handlerInputTypes, environment.aliases, environment.definitions,
+      expression, functionInputs, true, functionInputTypes, environment.aliases, environment.definitions,
       undefined, new Set(), helperFunctions,
     );
     // A transaction signature commits the transaction containing the transfer output. Reusing it to derive that
@@ -1242,7 +1242,7 @@ export function analyzeFixedBchEffectRecipes(
         const key = statement as object;
         const bound = !unsafe && statement.expression
           ? bindRecipe(
-            statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes,
+            statement.expression, abiTypeString(statement.type), functionInputs, functionInputTypes,
             environment.aliases, environment.definitions, helperFunctions, statement.type,
           ) : undefined;
         bindProjections(key, statement.type, !unsafe ? statement.expression : undefined, environment);
@@ -1257,7 +1257,7 @@ export function analyzeFixedBchEffectRecipes(
         snapshotEffects(statement.expression, environment, continuationActivation, continuationSupported, unsafe);
         const bound = !unsafe && key && targetType
           ? bindRecipe(
-            statement.expression, abiTypeString(targetType as never), handlerInputs, handlerInputTypes,
+            statement.expression, abiTypeString(targetType as never), functionInputs, functionInputTypes,
             environment.aliases, environment.definitions, helperFunctions, targetType as Type,
           ) : undefined;
         if (key && targetType) bindProjections(
@@ -1274,7 +1274,7 @@ export function analyzeFixedBchEffectRecipes(
         environment.definitions.set(`this.${statement.name}`, key);
         const targetType = statement.stateVariable?.type;
         const bound = !unsafe && targetType ? bindRecipe(
-          statement.expression, physicalRecipeType(targetType), handlerInputs, handlerInputTypes,
+          statement.expression, physicalRecipeType(targetType), functionInputs, functionInputTypes,
           environment.aliases, environment.definitions, helperFunctions, targetType,
         ) : !unsafe ? recipe(statement.expression, environment) : undefined;
         if (bound) environment.aliases.set(key, bound);
@@ -1520,8 +1520,8 @@ export function analyzeChildDeploymentRecipes(
   helperFunctions: readonly FunctionDefinitionNode[] = [],
 ): WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis> {
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
-  const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+  const functionInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
+  const functionInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
   let aliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
     parameter,
     { kind: 'handlerInput', inputIndex, resultType: abiTypeString(parameter.type) } as ChildDeploymentValueRecipe,
@@ -1584,18 +1584,18 @@ export function analyzeChildDeploymentRecipes(
         ? declaredParameters : value.referencedContract?.constructorDef?.parameters ?? [];
       const constructorArgs = value.parameters.map((parameter, index) => (unsafe ? undefined
         : childDeploymentValueRecipe(
-          parameter, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          parameter, functionInputs, false, functionInputTypes, siteAliases, siteAliasDefinitions,
           constructorParameters[index]?.type, new Set(), helperFunctions,
         )));
       const salt = value.callOptions?.salt && !unsafe
         ? childDeploymentValueRecipe(
-          value.callOptions.salt, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          value.callOptions.salt, functionInputs, false, functionInputTypes, siteAliases, siteAliasDefinitions,
           undefined, new Set(), helperFunctions,
         )
         : undefined;
       const callValue = value.callOptions?.value && !unsafe
         ? childDeploymentValueRecipe(
-          value.callOptions.value, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          value.callOptions.value, functionInputs, false, functionInputTypes, siteAliases, siteAliasDefinitions,
           undefined, new Set(), helperFunctions,
         )
         : undefined;
@@ -1658,7 +1658,7 @@ export function analyzeChildDeploymentRecipes(
         const key = statement as object;
         if (!statementUnsafe && statement.expression) {
           const recipe = bindRecipe(
-            statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes, aliases,
+            statement.expression, abiTypeString(statement.type), functionInputs, functionInputTypes, aliases,
             aliasDefinitions, helperFunctions, statement.type,
           );
           if (recipe) aliases.set(key, recipe); else aliases.delete(key);
@@ -1676,7 +1676,7 @@ export function analyzeChildDeploymentRecipes(
         if (key && !statementUnsafe) {
           const targetType = abiTypeString((key as { type?: unknown }).type as never);
           const recipe = bindRecipe(
-            statement.expression, targetType, handlerInputs, handlerInputTypes, aliases, aliasDefinitions,
+            statement.expression, targetType, functionInputs, functionInputTypes, aliases, aliasDefinitions,
             helperFunctions, (key as { type?: Type }).type,
           );
           if (recipe) aliases.set(key, recipe); else aliases.delete(key);
@@ -1696,7 +1696,7 @@ export function analyzeChildDeploymentRecipes(
         const incomingAliases = new Map(aliases);
         const incomingDefinitions = new Map(aliasDefinitions);
         const condition = !statementUnsafe ? childDeploymentValueRecipe(
-          statement.condition, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+          statement.condition, functionInputs, true, functionInputTypes, incomingAliases, incomingDefinitions,
           undefined, new Set(), helperFunctions,
         ) : undefined;
         const branchSupported = condition?.resultType === 'bool'
@@ -1733,12 +1733,12 @@ export function analyzeChildDeploymentRecipes(
         const incomingAliases = new Map(aliases);
         const incomingDefinitions = new Map(aliasDefinitions);
         const discriminant = !statementUnsafe ? childDeploymentValueRecipe(
-          statement.expression, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+          statement.expression, functionInputs, true, functionInputTypes, incomingAliases, incomingDefinitions,
           undefined, new Set(), helperFunctions,
         ) : undefined;
         const matches = statement.cases.map((arm) => {
           const armValue = !statementUnsafe ? childDeploymentValueRecipe(
-            arm.value, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+            arm.value, functionInputs, true, functionInputTypes, incomingAliases, incomingDefinitions,
             undefined, new Set(), helperFunctions,
           ) : undefined;
           return discriminant && armValue ? {
@@ -1807,8 +1807,8 @@ export function analyzeChildDeploymentRecipes(
 export function childDeploymentGenesisState(
   foldedState: ReadonlyMap<string, ExpressionNode> | undefined,
   variables: readonly { name: string; type: Type; nftIndex?: number; fieldIndex?: number }[],
-  handlerInputs: ReadonlyMap<string, number>,
-  handlerInputTypes?: ReadonlyMap<string, string>,
+  functionInputs: ReadonlyMap<string, number>,
+  functionInputTypes?: ReadonlyMap<string, string>,
   allowUnpackedLayout = false,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
@@ -1834,7 +1834,7 @@ export function childDeploymentGenesisState(
       return undefined;
     }
     const value = childDeploymentValueRecipe(
-      expression, handlerInputs, false, handlerInputTypes, aliases, aliasDefinitions, variable.type,
+      expression, functionInputs, false, functionInputTypes, aliases, aliasDefinitions, variable.type,
       new Set(), helperFunctions,
     );
     if (!value) {

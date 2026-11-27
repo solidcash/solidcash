@@ -41,9 +41,9 @@ export type ResolveCreateBuilderNestedComposeCalleeResult =
     resolvedRawFunctionName: string | undefined;
     nestedFunctionName: string;
     nestedArgs: FunctionArgument[];
-    graphNestedArgs: FunctionArgument[];
+    callTreeNestedArgs: FunctionArgument[];
     nestedExpressionReturns: Map<string, FunctionArgument> | undefined;
-    graphExpressionReturns: Map<string, FunctionArgument> | undefined;
+    callTreeExpressionReturns: Map<string, FunctionArgument> | undefined;
   };
 
 function usesEmptyArrayElement(
@@ -145,8 +145,8 @@ export async function resolveCreateBuilderNestedComposeCallee(
     onChainState: { state: Record<string, unknown> };
     delegateSelfAddress: FunctionArgument;
     publishedNestedExternalCalls: readonly ExternalCallAbi[];
-    preparedAtomicNodes: unknown[] | undefined;
-    graphPlanningResults: unknown;
+    preparedCallNodes: unknown[] | undefined;
+    callPlanningResults: unknown;
   },
 ): Promise<ResolveCreateBuilderNestedComposeCalleeResult> {
   const {
@@ -158,8 +158,8 @@ export async function resolveCreateBuilderNestedComposeCallee(
     onChainState,
     delegateSelfAddress,
     publishedNestedExternalCalls,
-    preparedAtomicNodes,
-    graphPlanningResults,
+    preparedCallNodes,
+    callPlanningResults,
   } = params;
 
   const nestedSources = nested.rawArgSources ?? nested.argSources;
@@ -276,8 +276,8 @@ export async function resolveCreateBuilderNestedComposeCallee(
       delegateVisibleInputs,
       delegateSelfAddress,
       publishedNestedExternalCalls,
-      preparedAtomicNodes !== undefined,
-      graphPlanningResults,
+      preparedCallNodes !== undefined,
+      callPlanningResults,
     )
     : undefined;
   const nestedArgs = nestedExpressionReturns
@@ -304,7 +304,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
     );
   }
   const nestedFunctionName = resolvedRawFunctionName ?? nested.functionName;
-  const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
+  const callTreeExpressionReturns = preparedCallNodes && needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
       returnSources,
       [...delegateVisibleArgs],
@@ -312,13 +312,13 @@ export async function resolveCreateBuilderNestedComposeCallee(
       delegateVisibleInputs, delegateSelfAddress,
       publishedNestedExternalCalls,
       true,
-      graphPlanningResults,
+      callPlanningResults,
     )
     : nestedExpressionReturns;
-  const graphNestedArgs = preparedAtomicNodes
+  const callTreeNestedArgs = preparedCallNodes
     ? host.resolveExternalArgs(
       nestedSources, [...delegateVisibleArgs], callInfoContract.inner.artifact, onChainState.state,
-      delegateVisibleInputs, graphExpressionReturns, 0, false, delegateSelfAddress,
+      delegateVisibleInputs, callTreeExpressionReturns, 0, false, delegateSelfAddress,
     ) ?? nestedArgs
     : nestedArgs;
 
@@ -331,8 +331,8 @@ export async function resolveCreateBuilderNestedComposeCallee(
     resolvedRawFunctionName,
     nestedFunctionName,
     nestedArgs,
-    graphNestedArgs,
+    callTreeNestedArgs,
     nestedExpressionReturns,
-    graphExpressionReturns,
+    callTreeExpressionReturns,
   };
 }

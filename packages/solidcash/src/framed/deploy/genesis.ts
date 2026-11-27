@@ -87,7 +87,7 @@ import { encodeFunctionArgument, encodeFunctionArguments, type FunctionArgument 
 import { createVirtualMachineBch2026ForProvider, createDerivationVirtualMachineForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { evaluateExternalExpression } from '../../stateful/sc-evaluate-external-expression.js';
-import { evalComputedKey } from '../../stateful/route-expression-key.js';
+import { evalComputedKey } from '../../stateful/call-expression-key.js';
 import { bytesToSlotValue, headSentinelCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import {
   layOutChunkRun, planChunkRun, type ChunkRecordPlacement, type ChunkRunPlan,

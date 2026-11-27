@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: SC _createBuilder extract — nested-compose route plan + state/NFT + selectedFn.
+ * phase-boundary extract: SC _createBuilder extract - nested-compose call plan + state/NFT + selectedFn.
  */
 
 import type { AbiFunction, ExternalCallAbi, StateLayout } from '@solidcash/utils';
@@ -9,13 +9,13 @@ import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
 import type { OnChainState } from './StateReader.js';
-import type { RouteExpressionKeyRow } from './route-expression-key.js';
+import type { RouteExpressionKeyRow } from './call-expression-key.js';
 import {
   deriveValueChunkProducerChildPath,
   type ValueChunkProducerPathDisposition,
 } from './ValueChunkProducerIdentity.js';
 
-export type PlanCreateBuilderNestedComposeRouteHost = {
+export type PlanCreateBuilderNestedComposeCallHost = {
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
   selectProxyForwardInput: (...args: any[]) => FunctionArgument;
   resolvePreparedProducerEntry: (...args: any[]) => { selector?: string } | undefined;
@@ -28,7 +28,7 @@ export type PlanCreateBuilderNestedComposeRouteHost = {
   readonly timingEnabled: boolean;
 };
 
-export type PlanCreateBuilderNestedComposeRouteResult = {
+export type PlanCreateBuilderNestedComposeCallResult = {
   childState: OnChainState & { masterUtxo: NonNullable<OnChainState['masterUtxo']> };
   childLayout: StateLayout;
   nestedAbiFn: AbiFunction | undefined;
@@ -51,12 +51,12 @@ export type PlanCreateBuilderNestedComposeRouteResult = {
 };
 
 /**
- * Plan the nested-compose route, load callee/proxy state and data NFTs,
+ * Plan the nested-compose call, load callee/proxy state and data NFTs,
  * select the physical handler, and build direct-invocation producer rows.
  * Mutates nestedIndices / nestedByCallsite / lowLevelCallUtxoGroups bags in place.
  */
-export async function planCreateBuilderNestedComposeRoute(
-  host: PlanCreateBuilderNestedComposeRouteHost,
+export async function planCreateBuilderNestedComposeCall(
+  host: PlanCreateBuilderNestedComposeCallHost,
   params: {
     nested: ExternalCallAbi;
     nestedSources: readonly any[] | undefined;
@@ -69,8 +69,8 @@ export async function planCreateBuilderNestedComposeRoute(
     proxyCallee: any | undefined;
     callee: any;
     nestedArgs: FunctionArgument[];
-    graphNestedArgs: FunctionArgument[];
-    graphExpressionReturns: Map<string, FunctionArgument> | undefined;
+    callTreeNestedArgs: FunctionArgument[];
+    callTreeExpressionReturns: Map<string, FunctionArgument> | undefined;
     resolvedRawFunctionName: string | undefined;
     delegateCallerIdentity: unknown;
     rootProducerPath: ValueChunkProducerPathDisposition;
@@ -81,12 +81,12 @@ export async function planCreateBuilderNestedComposeRoute(
     groupProxyMasterIndices: number[];
     nestedDelegateProxyGroupByLowLevel: Map<number, number>;
   },
-): Promise<PlanCreateBuilderNestedComposeRouteResult> {
+): Promise<PlanCreateBuilderNestedComposeCallResult> {
   const {
     nested, nestedSources, delegateVisibleArgs, delegateVisibleInputs, delegateFn,
     callInfoContract, onChainState, delegateSelfAddress,
-    proxyCallee, callee, nestedArgs, graphNestedArgs,
-    graphExpressionReturns, resolvedRawFunctionName,
+    proxyCallee, callee, nestedArgs, callTreeNestedArgs,
+    callTreeExpressionReturns, resolvedRawFunctionName,
     rootProducerPath, nestedIndices, nestedByCallsite, externalCallUtxoGroups,
     lowLevelCallUtxoGroups, groupProxyMasterIndices, nestedDelegateProxyGroupByLowLevel,
   } = params;
@@ -258,7 +258,7 @@ export async function planCreateBuilderNestedComposeRoute(
       state: onChainState.state,
       callerInputs: delegateVisibleInputs,
       executionSelfAddress: delegateSelfAddress,
-      externalReturns: graphExpressionReturns,
+      externalReturns: callTreeExpressionReturns,
     }) : undefined;
   const directOccurrenceIndices = affineOccurrences === undefined
     ? host.externalCallReachedOccurrenceIndices(nested, delegateVisibleArgs)
@@ -267,14 +267,14 @@ export async function planCreateBuilderNestedComposeRoute(
   selectedFn && producerSelector
     ? directOccurrenceIndices?.map((occurrenceIndex, rowIndex): RouteExpressionKeyRow => {
       const occurrenceArgs = affineOccurrences?.[rowIndex]?.args ?? (occurrenceIndex === 0
-        ? graphNestedArgs
+        ? callTreeNestedArgs
         : host.resolveExternalArgs(
           nestedSources,
           delegateVisibleArgs,
           callInfoContract.inner.artifact,
           onChainState.state,
           delegateVisibleInputs,
-          graphExpressionReturns,
+          callTreeExpressionReturns,
           occurrenceIndex,
           false,
           delegateSelfAddress,

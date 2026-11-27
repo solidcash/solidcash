@@ -38,7 +38,7 @@ export function materializeLateBuildChunkFrame(
   appendDelegateGroupOutputs: (groupIndex: number) => void,
   deferredCalleeDynamicChunks: readonly Output[],
   debugOwnMutableOutputs: (label: string) => void,
-  debugAtomicOutputStage: (label: string) => void,
+  debugStatefulOutputStage: (label: string) => void,
 ): void {
   const appendValueChunks = (): void => {
     appendValueChunksImpl(host.valueDynamicHost, builder);
@@ -65,13 +65,13 @@ export function materializeLateBuildChunkFrame(
     associatedDelegateOutputs,
     appendDelegateGroupOutputs,
     debugOwnMutableOutputs,
-    debugAtomicOutputStage,
+    debugStatefulOutputStage,
   );
 
-  repairNestedCalleeOutputs(host.nestedCalleeHost, builder, debugAtomicOutputStage);
+  repairNestedCalleeOutputs(host.nestedCalleeHost, builder, debugStatefulOutputStage);
 
   // Ahead of the root's run, which a delegate's suffix convention keeps last.
   for (const output of deferredCalleeDynamicChunks) builder.addOutput(output);
   if (deferDynamicChunks) appendDynamicChunks();
-  debugAtomicOutputStage('deferred-dynamic-chunks');
+  debugStatefulOutputStage('deferred-dynamic-chunks');
 }

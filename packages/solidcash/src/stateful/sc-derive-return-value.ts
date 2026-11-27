@@ -41,7 +41,7 @@ import {
   selectReturnAbiPlan,
   type ReturnAbiCandidate,
 } from './return-abi-plan.js';
-import { directMappingReadPlan } from './route-expression-key.js';
+import { directMappingReadPlan } from './call-expression-key.js';
 import { legacyStatefulSimulationEnabled } from './soft-state-overlays.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';

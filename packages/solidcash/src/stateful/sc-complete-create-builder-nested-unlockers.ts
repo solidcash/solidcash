@@ -17,7 +17,7 @@ import {
   participantGroupForTarget,
   selectorParamSlot,
 } from './physical-external-call.js';
-import { selectVisibleCallArguments } from './route-expression-key.js';
+import { selectVisibleCallArguments } from './call-expression-key.js';
 import { callNamesNoReader } from './call-record.js';
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
@@ -31,17 +31,17 @@ import { computedStateWriterGroupIndex } from './writer-group-selection.js';
 import { resolveOrdinarySelfIdentity, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   callerIdentityAnchorBand,
-  isRoutePushValueWitnessName,
+  isPushValueWitnessName,
   resolveDelegatePushValueWitness,
   rootOwnsCallerSubject,
 } from './sc-fix-create-builder-delegate-unlockers.js';
 
 /** Resolve compiler-published fold witnesses while completing an ordinary nested callee unlocker. */
-export function resolveNestedRoutePushValueWitness(
+export function resolveNestedPushValueWitness(
   name: string,
   groupArgs: Readonly<Record<string, FunctionArgument>> | undefined,
 ): FunctionArgument | undefined {
-  if (!isRoutePushValueWitnessName(name)) return undefined;
+  if (!isPushValueWitnessName(name)) return undefined;
   return resolveDelegatePushValueWitness(name, groupArgs, undefined);
 }
 
@@ -229,8 +229,8 @@ export async function completeCreateBuilderNestedUnlockers(
       if (input.name === '__internal__dynamicChunkOutputBase') {
         return child.internalArgs?.[input.name] ?? -1n;
       }
-      const routePushValue = resolveNestedRoutePushValueWitness(input.name, child.internalArgs);
-      if (routePushValue !== undefined) return routePushValue;
+      const foldedPushValue = resolveNestedPushValueWitness(input.name, child.internalArgs);
+      if (foldedPushValue !== undefined) return foldedPushValue;
       if (usesOrdinarySelfIdentity(childFn)
         && input.name === '__internal__graphSelfIdentityInput') {
         if (childSelfIdentityBand !== undefined) childAnchorFillPositions.push({

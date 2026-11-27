@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isRoutePushValueWitnessName,
+  isPushValueWitnessName,
   resolveDelegatePushValueWitness,
 } from '../../src/stateful/sc-fix-create-builder-delegate-unlockers.js';
-import { materializeCompletePushValueWitness } from '../../src/stateful/resource-fold-route.js';
-import { resolveNestedRoutePushValueWitness } from '../../src/stateful/sc-complete-create-builder-nested-unlockers.js';
+import { materializeCompletePushValueWitness } from '../../src/stateful/resource-fold.js';
+import { resolveNestedPushValueWitness } from '../../src/stateful/sc-complete-create-builder-nested-unlockers.js';
 
 describe('route push-value witnesses', () => {
   it('recognizes both halves of a compiler-published fold', () => {
-    expect(isRoutePushValueWitnessName('__internal__leadingPushValue_0')).toBe(true);
-    expect(isRoutePushValueWitnessName('__internal__completePushValue_12')).toBe(true);
-    expect(isRoutePushValueWitnessName('__internal__valueWitness_0')).toBe(false);
+    expect(isPushValueWitnessName('__internal__leadingPushValue_0')).toBe(true);
+    expect(isPushValueWitnessName('__internal__completePushValue_12')).toBe(true);
+    expect(isPushValueWitnessName('__internal__valueWitness_0')).toBe(false);
   });
 
   it('retains a materialized complete fold by ABI name across other hidden arguments', () => {
@@ -31,15 +31,15 @@ describe('route push-value witnesses', () => {
 
   it('retains both fold halves while completing a nested callee unlocker', () => {
     const complete = Uint8Array.of(7, 8, 9);
-    expect(resolveNestedRoutePushValueWitness(
+    expect(resolveNestedPushValueWitness(
       '__internal__completePushValue_3',
       { __internal__completePushValue_3: complete },
     )).toEqual(complete);
-    expect(resolveNestedRoutePushValueWitness(
+    expect(resolveNestedPushValueWitness(
       '__internal__leadingPushValue_3',
       undefined,
     )).toEqual(new Uint8Array());
-    expect(resolveNestedRoutePushValueWitness(
+    expect(resolveNestedPushValueWitness(
       '__internal__valueWitness_3',
       undefined,
     )).toBeUndefined();

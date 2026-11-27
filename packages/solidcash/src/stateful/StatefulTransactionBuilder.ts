@@ -601,7 +601,7 @@ export {
   shouldReassertLegacyDelegateLoopEntries,
   shouldAppendUnsegmentedLoopEntries,
 } from './stb-materialize-trailing-frame-and-pending.js';
-export { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
+export { argumentsForPhysicalAbiFrame } from './call-expression-key.js';
 import { type CreateBuildDebugStagesHost } from './stb-create-build-debug-stages.js';
 import { type CreateBuildSessionPreludeHost } from './stb-create-build-session-prelude.js';
 import {

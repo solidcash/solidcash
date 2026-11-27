@@ -560,7 +560,7 @@ function hasScopedDeployerValue(body: Node | undefined): boolean {
 }
 
 /** Physical stack depth below a context-threaded define body's invocation frame. */
-const DEFINE_CALLER_DEPTH = '__internal__graphHandlerCallerDepth';
+const DEFINE_CALLER_DEPTH = '__internal__defineCallerDepth';
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -996,13 +996,13 @@ const framedReceiveSite = (evmCompat: boolean): MasterCallSite => ({
  * the contract - receives the value as this operand, exactly as a body that reads `msg.sender` receives it as a
  * hidden context. The name is internal and never reaches the ABI.
  */
-const FRAMED_SELF_CONTEXT = '__internal__handlerSelf';
+const FRAMED_SELF_CONTEXT = '__internal__defineSelf';
 /** The hidden operand a framed subroutine that reads `tx.origin` receives it through. */
-const FRAMED_ORIGIN_CONTEXT = '__internal__handlerOrigin';
+const FRAMED_ORIGIN_CONTEXT = '__internal__defineOrigin';
 /** The hidden operand a framed subroutine that reads `msg.value` receives it through. */
-const FRAMED_VALUE_CONTEXT = '__internal__handlerValue';
+const FRAMED_VALUE_CONTEXT = '__internal__defineValue';
 /** The hidden operand an invoked subroutine that reads `msg.sig` receives it through. */
-const FRAMED_SELECTOR_CONTEXT = '__internal__handlerSelector';
+const FRAMED_SELECTOR_CONTEXT = '__internal__defineSelector';
 
 /** True when a body reads the contract's own locking bytecode, `address(this)`. */
 function functionReadsOwnAddress(fn: FunctionDefinitionNode): boolean {
@@ -6821,7 +6821,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X139. `visitUserFunctionCall` PICKs the callee's context off the CALLER's frame, so EVERY invoker of a
     // function that holds a journal context must hold it too.
     //
-    // WHY WIDENING HERE CANNOT SILENCE A CHECK. `invokesJournalHandler` in `visitFunctionDefinition` scans the
+    // WHY WIDENING HERE CANNOT SILENCE A CHECK. `invokesJournalContextHolder` in `visitFunctionDefinition` scans the
     // SAME AST call edges this fixpoint walks. An edge C -> D with D admitted and C not is therefore either a
     // hard `Missing journal context` throw, or an edge codegen never turns into an OP_INVOKE. There is no third
     // case in which C compiled while reading a stale slot, so no shape loses a guard by being admitted.
@@ -9458,14 +9458,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const candidateJournalSlots = node.functionId === undefined
       ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
-    const invokesJournalHandler = node.body
+    const invokesJournalContextHolder = node.body
       ? [...this.collectInvokedFunctionIds(node.body)].some((id) => this.journalSlotsByFunctionId.has(id))
       : false;
     // Direct scalar writes retain the established lowering. A hidden context is
     // needed only by an emitted handler definition or a physical wrapper which
     // invokes one; this avoids adding pre-state reads to constructors and avoids
     // changing bytecode for unrelated direct writers.
-    const activeJournalSlots = this.isDefineSubTraversal || invokesJournalHandler
+    const activeJournalSlots = this.isDefineSubTraversal || invokesJournalContextHolder
       ? candidateJournalSlots : [];
     if (this.isDefineSubTraversal && activeJournalSlots.length > 0) {
       node.journalContextArity = Math.max(
@@ -9960,7 +9960,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(FRAMED_SELF_CONTEXT, true);
     }
     if (this.isDefineSubTraversal && node.usesMsgSender) {
-      this.pushToStack('__internal__handlerMsgSender', true);
+      this.pushToStack('__internal__defineMsgSender', true);
     }
     if (this.isDefineSubTraversal && runtimeLoopEntryInputCountRequired) {
       // A second runtime mapping loop starts after the exact input width consumed by its predecessors.
@@ -9988,8 +9988,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // happens when the body also writes scalar state - leaves the frame one item deeper than
         // the caller actually pushes, and every subsequent read is off by one (observed as an OP_SPLIT on an
         // empty item). The caller pushes each context value exactly once, so the frame must too.
-        if (this.contractUsesMsgSig) this.pushToStack('__internal__handlerMsgSig', true);
-        if (this.contractUsesMsgData) this.pushToStack('__internal__handlerMsgData', true);
+        if (this.contractUsesMsgSig) this.pushToStack('__internal__defineMsgSig', true);
+        if (this.contractUsesMsgData) this.pushToStack('__internal__defineMsgData', true);
         for (const sv of activeJournalSlots) {
           const key = `${sv.nftIndex}:${sv.fieldIndex}`;
           const stackName = `__internal__state_write_${sv.name}`;
@@ -18187,7 +18187,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Capture the physical boundary before adding any invocation operands. Callee epilogues use it to avoid
       // classifying the caller's live frame as untracked temporary data.
       this.emit(Op.OP_DEPTH, locationData);
-      this.pushToStack(`(__graph_handler_caller_depth_${targetFunc.functionId})`);
+      this.pushToStack(`(__define_caller_depth_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     // Pass copies of the context rather than moving the caller's slots. A moved
@@ -18223,25 +18223,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if ((targetJournalSlots.length > 0)
       && this.contractUsesMsgData) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (this.stack.includes('__internal__handlerMsgData')) {
-        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), contextLoc);
+      if (this.stack.includes('__internal__defineMsgData')) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__defineMsgData'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else {
         this.emitMsgData(contextLoc);
       }
-      this.pushToStack(`(__handler_msg_data_${targetFunc.functionId})`);
+      this.pushToStack(`(__define_msg_data_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if ((targetJournalSlots.length > 0)
       && this.contractUsesMsgSig) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (this.stack.includes('__internal__handlerMsgSig')) {
-        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSig'))), contextLoc);
+      if (this.stack.includes('__internal__defineMsgSig')) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__defineMsgSig'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else {
         this.emitMsgSig(contextLoc);
       }
-      this.pushToStack(`(__handler_msg_sig_${targetFunc.functionId})`);
+      this.pushToStack(`(__define_msg_sig_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if (targetFunc.usesMsgSender) {
@@ -18250,13 +18250,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // An external self-call is a message call to the contract, so the callee's `msg.sender` is the
         // contract's own address, not the sender this frame carries.
         this.emitCallerSelfContext(contextLoc);
-      } else if (this.stack.includes('__internal__handlerMsgSender')) {
-        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), contextLoc);
+      } else if (this.stack.includes('__internal__defineMsgSender')) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__defineMsgSender'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else {
         this.emitMsgSender(contextLoc);
       }
-      this.pushToStack(`(__handler_msg_sender_${targetFunc.functionId})`);
+      this.pushToStack(`(__define_msg_sender_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if (this.framedMaster && this.framedSelfContextCarrierNames().has(targetFunc.name)) {
@@ -18264,12 +18264,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // entry body reads the frame's `self`.
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       this.emitCallerSelfContext(contextLoc);
-      this.pushToStack(`(__handler_self_${targetFunc.functionId})`);
+      this.pushToStack(`(__define_self_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if (this.framedMaster && this.framedOriginCarrierNames().has(targetFunc.name)) {
       this.emitTxOrigin({ location: node.location, positionHint: PositionHint.START });
-      this.pushToStack(`(__handler_origin_${targetFunc.functionId})`);
+      this.pushToStack(`(__define_origin_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if (this.framedMaster && this.framedValueCarrierNames().has(targetFunc.name)) {
@@ -18277,7 +18277,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (node.fromThisCall) this.emit(encodeInt(0n), contextLoc);
       else this.emitMsgValue(contextLoc);
-      this.pushToStack(`(__handler_value_${targetFunc.functionId})`);
+      this.pushToStack(`(__define_value_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if (this.takesCallerSelector(targetFunc)) {
@@ -18285,7 +18285,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (node.fromThisCall && targetFunc.functionSelector) this.emit(targetFunc.functionSelector, contextLoc);
       else this.emitMsgSig(contextLoc);
-      this.pushToStack(`(__handler_selector_${targetFunc.functionId})`);
+      this.pushToStack(`(__define_selector_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     // Recovery resources have a finer identity than a block base: a shared helper can be called from several
@@ -18466,7 +18466,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs + hiddenContextCount);
     const staleInvocationMarker = this.stack.find((name) =>
-      name === `(__graph_handler_caller_depth_${targetFunc.functionId})`
+      name === `(__define_caller_depth_${targetFunc.functionId})`
       || name.startsWith(`(__journal_arg_${targetFunc.functionId}_`)
       || name.startsWith(`(__runtime_context_arg_${targetFunc.functionId}_`)
       || name === `(__graph_emissions_arg_${targetFunc.functionId})`);
@@ -56495,7 +56495,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Whether an invoked body of `fn` takes its caller's `msg.sig` as a hidden operand. A direct build skips a body
-   * that takes it as `__internal__handlerMsgSig` already, and a function value: an indirect OP_INVOKE pushes no
+   * that takes it as `__internal__defineMsgSig` already, and a function value: an indirect OP_INVOKE pushes no
    * hidden operand.
    */
   private takesCallerSelector(fn: FunctionDefinitionNode): boolean {
@@ -56620,7 +56620,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitMsgSig(locationData: SingleLocationData): void {
     const selectorSlot = this.stack.includes(FRAMED_SELECTOR_CONTEXT) ? FRAMED_SELECTOR_CONTEXT
-      : this.stack.includes('__internal__handlerMsgSig') ? '__internal__handlerMsgSig' : undefined;
+      : this.stack.includes('__internal__defineMsgSig') ? '__internal__defineMsgSig' : undefined;
     if (selectorSlot !== undefined) {
       this.emit(encodeInt(BigInt(this.getStackIndex(selectorSlot))), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -56675,8 +56675,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitFramedCallData(locationData);
       return;
     }
-    if (this.stack.includes('__internal__handlerMsgData')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), locationData);
+    if (this.stack.includes('__internal__defineMsgData')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__defineMsgData'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }
@@ -56772,7 +56772,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private msgSenderSlotName(): string | undefined {
     if (this.stack.includes(SENDER_FRAME_SLOT)) return SENDER_FRAME_SLOT;
-    return this.stack.includes('__internal__handlerMsgSender') ? '__internal__handlerMsgSender' : undefined;
+    return this.stack.includes('__internal__defineMsgSender') ? '__internal__defineMsgSender' : undefined;
   }
 
   /** The stack item this body's `tx.origin` reads, or undefined when its frame carries none. */

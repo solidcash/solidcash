@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { evalComputedKey } from '../../src/stateful/route-expression-key.js';
+import { evalComputedKey } from '../../src/stateful/call-expression-key.js';
 
 /**
  * A mapping key that reads a local array element written before the read. The compiler publishes the element as a

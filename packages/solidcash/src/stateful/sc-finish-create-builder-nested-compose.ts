@@ -14,9 +14,9 @@ export type FinishCreateBuilderNestedComposeHost = {
 };
 
 export type FinishCreateBuilderNestedComposeBags = {
-  routeValueChunkProducerAliases: ExternalCallUtxoGroup[];
-  routeValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
-  routeValueChunkProducerEpoch: number | undefined;
+  childValueChunkProducerAliases: ExternalCallUtxoGroup[];
+  childValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
+  childValueChunkProducerEpoch: number | undefined;
   allGroupEcSlots: Array<ExternalCallAbi | {
     hasReturnValues?: boolean;
     requiredDataNftIndices: number[];
@@ -41,12 +41,12 @@ export function finishCreateBuilderNestedCompose(
     childFunctionName: string;
     directInvocationRows: readonly any[] | undefined;
     proxyCallee: any | undefined;
-    publishRouteValueChunkProducerBinding: (binding: any) => void;
-    latestRouteValueChunkProducerBinding: any;
-    routeValueChunkProducerEpochByPhysicalGroup: WeakMap<ExternalCallUtxoGroup, number>;
-    preparedAtomicNodes: any[] | undefined;
-    preparedAtomicNodeByExternalGroup: Map<number, number>;
-    latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
+    publishChildValueChunkProducerBinding: (binding: any) => void;
+    latestChildValueChunkProducerBinding: any;
+    valueChunkProducerEpochByPhysicalGroup: WeakMap<ExternalCallUtxoGroup, number>;
+    preparedCallNodes: any[] | undefined;
+    preparedCallNodeByExternalGroup: Map<number, number>;
+    latestPreparedCallNodeByPhysicalGroup: Map<number, number>;
     externalCallUtxoGroups: ExternalCallUtxoGroup[];
     lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
     delegateGroupIndex: number;
@@ -58,19 +58,19 @@ export function finishCreateBuilderNestedCompose(
   const {
     nested, selectedFn, sharedGroupIndex, delegateCallGroupIndex, childExternalGroupIndex,
     childCompilerInternalArgs, directInvocationRows, proxyCallee,
-    publishRouteValueChunkProducerBinding,
-    latestRouteValueChunkProducerBinding, routeValueChunkProducerEpochByPhysicalGroup,
-    preparedAtomicNodes, preparedAtomicNodeByExternalGroup, latestPreparedAtomicNodeByPhysicalGroup,
+    publishChildValueChunkProducerBinding,
+    latestChildValueChunkProducerBinding, valueChunkProducerEpochByPhysicalGroup,
+    preparedCallNodes, preparedCallNodeByExternalGroup, latestPreparedCallNodeByPhysicalGroup,
     externalCallUtxoGroups, lowLevelCallUtxoGroups, delegateGroupIndex, timingEnabled, bags,
   } = params;
   const callee = params.callee as any;
   const resolvedRawFunctionName = params.resolvedRawFunctionName as string | undefined;
   const producerSelector = params.producerSelector as string | undefined;
-  const graphNestedArgs = params.graphNestedArgs as FunctionArgument[] | undefined;
+  const callTreeNestedArgs = params.callTreeNestedArgs as FunctionArgument[] | undefined;
 
-  let routeValueChunkProducerAliases = bags.routeValueChunkProducerAliases;
-  let routeValueChunkProducerPhysicalGroup = bags.routeValueChunkProducerPhysicalGroup;
-  let routeValueChunkProducerEpoch = bags.routeValueChunkProducerEpoch;
+  let childValueChunkProducerAliases = bags.childValueChunkProducerAliases;
+  let childValueChunkProducerPhysicalGroup = bags.childValueChunkProducerPhysicalGroup;
+  let childValueChunkProducerEpoch = bags.childValueChunkProducerEpoch;
   let allGroupEcSlots = bags.allGroupEcSlots;
   let allGroupParentIndices = bags.allGroupParentIndices;
 
@@ -83,19 +83,19 @@ export function finishCreateBuilderNestedCompose(
     ? externalCallUtxoGroups[sharedGroupIndex] : childGroup;
   const executionValueChunkGroup = delegateCallGroupIndex === undefined
     ? undefined : lowLevelCallUtxoGroups[delegateCallGroupIndex];
-  routeValueChunkProducerPhysicalGroup = physicalValueChunkGroup;
-  routeValueChunkProducerEpoch = (
-    routeValueChunkProducerEpochByPhysicalGroup.get(physicalValueChunkGroup) ?? 0
+  childValueChunkProducerPhysicalGroup = physicalValueChunkGroup;
+  childValueChunkProducerEpoch = (
+    valueChunkProducerEpochByPhysicalGroup.get(physicalValueChunkGroup) ?? 0
   ) + 1;
-  routeValueChunkProducerEpochByPhysicalGroup.set(
-    physicalValueChunkGroup, routeValueChunkProducerEpoch,
+  valueChunkProducerEpochByPhysicalGroup.set(
+    physicalValueChunkGroup, childValueChunkProducerEpoch,
   );
-  routeValueChunkProducerAliases = [...new Set([
+  childValueChunkProducerAliases = [...new Set([
     childGroup, physicalValueChunkGroup, executionValueChunkGroup,
   ].filter((group): group is ExternalCallUtxoGroup => group !== undefined))];
-  publishRouteValueChunkProducerBinding(latestRouteValueChunkProducerBinding);
-  if (preparedAtomicNodes) {
-    preparedAtomicNodeByExternalGroup.set(childExternalGroupIndex, preparedAtomicNodes.length);
+  publishChildValueChunkProducerBinding(latestChildValueChunkProducerBinding);
+  if (preparedCallNodes) {
+    preparedCallNodeByExternalGroup.set(childExternalGroupIndex, preparedCallNodes.length);
     if (directInvocationRows?.length) {
       const rowsWithProducerPaths = directInvocationRows.map((row: any) => ({
         row,
@@ -107,7 +107,7 @@ export function finishCreateBuilderNestedCompose(
         }),
       }));
       for (const { row, producerPath } of rowsWithProducerPaths) {
-        preparedAtomicNodes.push({
+        preparedCallNodes.push({
           contract: callee,
           functionName: row.handler.name,
           selector: row.selector,
@@ -123,11 +123,11 @@ export function finishCreateBuilderNestedCompose(
         });
       }
     } else {
-      preparedAtomicNodes.push({
+      preparedCallNodes.push({
         contract: callee,
         functionName: resolvedRawFunctionName ?? nested.functionName,
         ...(producerSelector !== undefined && { selector: producerSelector }),
-        args: graphNestedArgs,
+        args: callTreeNestedArgs,
         ...(proxyCallee && { executionArtifact: proxyCallee.implementation.inner.artifact }),
         parent: 0,
         ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
@@ -145,9 +145,9 @@ export function finishCreateBuilderNestedCompose(
         }),
       });
     }
-    latestPreparedAtomicNodeByPhysicalGroup.set(
+    latestPreparedCallNodeByPhysicalGroup.set(
       sharedGroupIndex >= 0 ? sharedGroupIndex : childExternalGroupIndex,
-      preparedAtomicNodes.length - 1,
+      preparedCallNodes.length - 1,
     );
   }
   allGroupEcSlots = [...allGroupEcSlots, nested];
@@ -171,9 +171,9 @@ export function finishCreateBuilderNestedCompose(
   });
 
   return {
-    routeValueChunkProducerAliases,
-    routeValueChunkProducerPhysicalGroup,
-    routeValueChunkProducerEpoch,
+    childValueChunkProducerAliases,
+    childValueChunkProducerPhysicalGroup,
+    childValueChunkProducerEpoch,
     allGroupEcSlots,
     allGroupParentIndices,
   };

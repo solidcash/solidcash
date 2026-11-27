@@ -77,7 +77,7 @@ export function materializeTrailingFrameAndPending(
   associatedDelegateOutputs: ReadonlySet<number>,
   appendDelegateGroupOutputs: (groupIndex: number) => void,
   debugOwnMutableOutputs: (stage: string) => void,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
 // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
 // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
@@ -173,7 +173,7 @@ export function materializeTrailingFrameAndPending(
       builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
     }
   }
-  debugAtomicOutputStage('balanced-trailing-frame');
+  debugStatefulOutputStage('balanced-trailing-frame');
 
   if (host.directCallDelegateBlock) {
     host.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
@@ -182,7 +182,7 @@ export function materializeTrailingFrameAndPending(
       }
     });
   }
-  debugAtomicOutputStage('compiler-delegate-executor');
+  debugStatefulOutputStage('compiler-delegate-executor');
 
   // Append any extra outputs buffered via addOutput()
   for (const output of host.pendingOutputs) {

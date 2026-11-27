@@ -529,7 +529,7 @@ async function calleeEntrySlot(
   args: readonly FunctionArgument[], sender: Uint8Array, refuse: (what: string) => never,
 ): Promise<Uint8Array> {
   const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
-  const { evalComputedKey } = await import('./route-expression-key.js');
+  const { evalComputedKey } = await import('./call-expression-key.js');
   const { keyToSlotMulti } = await import('./SortedList.js');
   const visible = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
   const keys = access.keyParams.map((param, keyIndex) => {
@@ -864,7 +864,7 @@ export async function planConstructorCalleeBlock(
   } = await import('./covenant-helpers.js');
   const { eventContinuationLockingBytecode } = await import('./event-chunks.js');
   const { SortedList, bytesToSlotValue, decodeEntryCommitment } = await import('./SortedList.js');
-  const { evalComputedKey } = await import('./route-expression-key.js');
+  const { evalComputedKey } = await import('./call-expression-key.js');
   const spent = options.spent ?? new Set<string>();
   const provider = contract.provider;
   const categoryId = callee.contract.categoryId;

@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: route expression-key / visible-args / direct-mapping helpers
+ * phase-boundary extract: call expression-key / visible-args / direct-mapping helpers
  * (phase-boundary extract from StatefulContract.ts).
  */
 

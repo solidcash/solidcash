@@ -94,7 +94,7 @@ import { FramedProxyDeployError } from '../proxy/errors.js';
 import { functionSplitFor } from '../deploy/split-registry.js';
 import { requireFunctionSplitShard } from '../deploy/entry-pool.js';
 import { decodeAuthenticatedProducerResultVector } from '../../stateful/external-return-encoding.js';
-import { evalComputedKey } from '../../stateful/route-expression-key.js';
+import { evalComputedKey } from '../../stateful/call-expression-key.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { FramedCallRecordError, readEntryNode } from '../call/entry-records.js';
 import { framedTokenAccesses, framedTokenContainerUnlockingBytecode } from '../call/token-containers.js';

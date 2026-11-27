@@ -8,8 +8,8 @@ import {
   resolveCreateBuilderNestedComposeCallee as resolveCreateBuilderNestedComposeCalleeImpl,
 } from './sc-resolve-create-builder-nested-compose-callee.js';
 import {
-  planCreateBuilderNestedComposeRoute as planCreateBuilderNestedComposeRouteImpl,
-} from './sc-plan-create-builder-nested-compose-route.js';
+  planCreateBuilderNestedComposeCall as planCreateBuilderNestedComposeCallImpl,
+} from './sc-plan-create-builder-nested-compose-call.js';
 import {
   precomputeCreateBuilderNestedComposeReturns as precomputeCreateBuilderNestedComposeReturnsImpl,
 } from './sc-precompute-create-builder-nested-compose-returns.js';
@@ -56,11 +56,11 @@ export type OrchestrateCreateBuilderNestedComposeCallsiteResult = {
   skipped: boolean;
   allGroupEcSlots: any[];
   allGroupParentIndices: any[];
-  routeValueChunkProducerAliases: any;
-  routeValueChunkProducerPhysicalGroup: any;
-  routeValueChunkProducerEpoch: any;
-  latestRouteValueChunkProducerBinding: any;
-  refreshChunkableRouteWitnesses: any;
+  childValueChunkProducerAliases: any;
+  childValueChunkProducerPhysicalGroup: any;
+  childValueChunkProducerEpoch: any;
+  latestChildValueChunkProducerBinding: any;
+  refreshChunkableChildWitnesses: any;
   nestedIndices: number[];
   nestedByCallsite: Map<number, number>;
 };
@@ -81,10 +81,10 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     delegateVisibleInputs: readonly { name: string }[];
     delegateSelfAddress: Uint8Array;
     delegateCallerIdentity: { categoryId: string; lockingBytecode: string };
-    graphPlanningResults: any;
+    callPlanningResults: any;
     callInfo: any;
     onChainState: any;
-    preparedAtomicNodes: any[] | undefined;
+    preparedCallNodes: any[] | undefined;
     rootProducerPath: any;
     nestedIndices: number[];
     nestedByCallsite: Map<number, number>;
@@ -96,9 +96,9 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     functionName: string;
     allGroupEcSlots: any[];
     allGroupParentIndices: any[];
-    routeValueChunkProducerEpochByPhysicalGroup: WeakMap<any, number>;
-    preparedAtomicNodeByExternalGroup: Map<number, number>;
-    latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
+    valueChunkProducerEpochByPhysicalGroup: WeakMap<any, number>;
+    preparedCallNodeByExternalGroup: Map<number, number>;
+    latestPreparedCallNodeByPhysicalGroup: Map<number, number>;
     nestedSortedListCache: Map<string, any>;
     valueChunkWriteStagingSession: any;
     sharedFunderPool: UnlockableUtxo[] | undefined;
@@ -108,11 +108,11 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   const {
     nested, delegateGroupIndex, delegateFn, publishedNestedExternalCalls,
     delegateVisibleArgs, delegateVisibleInputs, delegateSelfAddress,
-    delegateCallerIdentity, graphPlanningResults, callInfo, onChainState,
-    preparedAtomicNodes, rootProducerPath, externalCallUtxoGroups,
+    delegateCallerIdentity, callPlanningResults, callInfo, onChainState,
+    preparedCallNodes, rootProducerPath, externalCallUtxoGroups,
     lowLevelCallUtxoGroups, groupProxyMasterIndices, nestedDelegateProxyGroupByLowLevel,
-    timingEnabled, functionName, routeValueChunkProducerEpochByPhysicalGroup,
-    preparedAtomicNodeByExternalGroup, latestPreparedAtomicNodeByPhysicalGroup,
+    timingEnabled, functionName, valueChunkProducerEpochByPhysicalGroup,
+    preparedCallNodeByExternalGroup, latestPreparedCallNodeByPhysicalGroup,
     nestedSortedListCache, valueChunkWriteStagingSession,
     publicSelfAddress, nestedProxyReadCache,
   } = params;
@@ -160,8 +160,8 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       onChainState,
       delegateSelfAddress,
       publishedNestedExternalCalls,
-      preparedAtomicNodes,
-      graphPlanningResults,
+      preparedCallNodes,
+      callPlanningResults,
     },
   );
   if (nestedCalleeResolved.skip) {
@@ -169,11 +169,11 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       skipped: true,
       allGroupEcSlots,
       allGroupParentIndices,
-      routeValueChunkProducerAliases: params.routeValueChunkProducerAliases,
-      routeValueChunkProducerPhysicalGroup: params.routeValueChunkProducerPhysicalGroup,
-      routeValueChunkProducerEpoch: params.routeValueChunkProducerEpoch,
-      latestRouteValueChunkProducerBinding: params.latestRouteValueChunkProducerBinding,
-      refreshChunkableRouteWitnesses: params.refreshChunkableRouteWitnesses,
+      childValueChunkProducerAliases: params.childValueChunkProducerAliases,
+      childValueChunkProducerPhysicalGroup: params.childValueChunkProducerPhysicalGroup,
+      childValueChunkProducerEpoch: params.childValueChunkProducerEpoch,
+      latestChildValueChunkProducerBinding: params.latestChildValueChunkProducerBinding,
+      refreshChunkableChildWitnesses: params.refreshChunkableChildWitnesses,
       nestedIndices,
       nestedByCallsite,
     };
@@ -184,8 +184,8 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     callee: resolvedCallee,
     resolvedRawFunctionName,
     nestedArgs,
-    graphNestedArgs,
-    graphExpressionReturns,
+    callTreeNestedArgs,
+    callTreeExpressionReturns,
   } = nestedCalleeResolved;
   const proxyCallee = resolvedProxyCallee as undefined | {
     proxy: any;
@@ -193,7 +193,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     forward: (name: string, args: FunctionArgument[]) => any;
   };
   const callee = resolvedCallee as any;
-  const plannedRoute = await planCreateBuilderNestedComposeRouteImpl(
+  const plannedCall = await planCreateBuilderNestedComposeCallImpl(
     {
       resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
       selectProxyForwardInput,
@@ -217,8 +217,8 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       proxyCallee,
       callee,
       nestedArgs,
-      graphNestedArgs,
-      graphExpressionReturns,
+      callTreeNestedArgs,
+      callTreeExpressionReturns,
       resolvedRawFunctionName,
       delegateCallerIdentity,
       rootProducerPath,
@@ -231,23 +231,23 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       callInfoContract: callInfo.contract,
     },
   );
-  let childState = plannedRoute.childState;
-  const childLayout = plannedRoute.childLayout;
-  const childRequired = plannedRoute.childRequired;
-  const childData = plannedRoute.childData;
-  const childExternalGroupIndex = plannedRoute.childExternalGroupIndex;
-  const childFunctionName = plannedRoute.childFunctionName;
-  const childFunctionArgs = plannedRoute.childFunctionArgs;
-  const delegateCallGroupIndex = plannedRoute.delegateCallGroupIndex;
-  const sharedPriorDelegateFunctionName = plannedRoute.sharedPriorDelegateFunctionName;
-  const sharedPriorDelegateFunctionArgs = plannedRoute.sharedPriorDelegateFunctionArgs;
-  let childWritesState = plannedRoute.childWritesState;
-  const proxyImplementationState = plannedRoute.proxyImplementationState;
-  const sharedGroupIndex = plannedRoute.sharedGroupIndex;
-  const proxyTargetFn = plannedRoute.proxyTargetFn;
-  let selectedFn = plannedRoute.selectedFn as AbiFunction | undefined;
-  const producerSelector = plannedRoute.producerSelector;
-  const directInvocationRows = plannedRoute.directInvocationRows;
+  let childState = plannedCall.childState;
+  const childLayout = plannedCall.childLayout;
+  const childRequired = plannedCall.childRequired;
+  const childData = plannedCall.childData;
+  const childExternalGroupIndex = plannedCall.childExternalGroupIndex;
+  const childFunctionName = plannedCall.childFunctionName;
+  const childFunctionArgs = plannedCall.childFunctionArgs;
+  const delegateCallGroupIndex = plannedCall.delegateCallGroupIndex;
+  const sharedPriorDelegateFunctionName = plannedCall.sharedPriorDelegateFunctionName;
+  const sharedPriorDelegateFunctionArgs = plannedCall.sharedPriorDelegateFunctionArgs;
+  let childWritesState = plannedCall.childWritesState;
+  const proxyImplementationState = plannedCall.proxyImplementationState;
+  const sharedGroupIndex = plannedCall.sharedGroupIndex;
+  const proxyTargetFn = plannedCall.proxyTargetFn;
+  let selectedFn = plannedCall.selectedFn as AbiFunction | undefined;
+  const producerSelector = plannedCall.producerSelector;
+  const directInvocationRows = plannedCall.directInvocationRows;
   const logicalSelector = proxyTargetFn?.selector ?? selectedFn?.selector;
   if (!proxyCallee) {
     childWritesState ||= selectedFn?.writesState === true;
@@ -276,7 +276,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       delegateVisibleArgs,
       delegateVisibleInputs,
       childWritesState,
-      graphPlanningResults,
+      callPlanningResults,
       publicSelfAddress,
       childFunctionName,
       childFunctionArgs,
@@ -295,7 +295,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     preserveFirstConditionalWriter,
     sharedPriorFunctionName,
     sharedPriorFunctionArgs,
-    sharedPriorAtomicNode: sharedPriorAtomicNodeRaw,
+    sharedPriorCallNode: sharedPriorCallNodeRaw,
   } = prepareCreateBuilderNestedComposeSharedWriterImpl({
     nested,
     proxyCallee,
@@ -307,10 +307,10 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     childFunctionArgs,
     resolvedRawFunctionName,
     externalCallUtxoGroups,
-    latestPreparedAtomicNodeByPhysicalGroup,
-    preparedAtomicNodes,
+    latestPreparedCallNodeByPhysicalGroup,
+    preparedCallNodes,
   });
-  const sharedPriorAtomicNode = sharedPriorAtomicNodeRaw as any | undefined;
+  const sharedPriorCallNode = sharedPriorCallNodeRaw as any | undefined;
   let childBlockInputs: UnlockableUtxo[] | undefined;
   const childCompilerInternalArgs: Record<string, FunctionArgument> = {};
   /** Rebuilt chunk payloads for the callee's chunkable vmap values, by route entry slot. */
@@ -337,27 +337,27 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   }> = [];
   const selectedLayout = selectedFn?.blockLayout;
   const routePlanningArgs = proxyTargetFn ? nestedArgs : childFunctionArgs;
-  let routeValueChunkProducerAliases: ExternalCallUtxoGroup[] = [];
-  let routeValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
-  let routeValueChunkProducerEpoch: number | undefined;
-  let latestRouteValueChunkProducerBinding: {
+  let childValueChunkProducerAliases: ExternalCallUtxoGroup[] = [];
+  let childValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
+  let childValueChunkProducerEpoch: number | undefined;
+  let latestChildValueChunkProducerBinding: {
     claims: readonly any[];
     stateOwner: { categoryId: string; lockingBytecode: string };
   } | undefined;
-  const publishRouteValueChunkProducerBinding = (
-    binding: typeof latestRouteValueChunkProducerBinding,
+  const publishChildValueChunkProducerBinding = (
+    binding: typeof latestChildValueChunkProducerBinding,
   ): void => {
-    latestRouteValueChunkProducerBinding = binding;
-    if (routeValueChunkProducerPhysicalGroup && routeValueChunkProducerEpoch !== undefined
-  && routeValueChunkProducerEpochByPhysicalGroup.get(
-    routeValueChunkProducerPhysicalGroup,
-  ) !== routeValueChunkProducerEpoch) return;
-    for (const alias of routeValueChunkProducerAliases) {
+    latestChildValueChunkProducerBinding = binding;
+    if (childValueChunkProducerPhysicalGroup && childValueChunkProducerEpoch !== undefined
+  && valueChunkProducerEpochByPhysicalGroup.get(
+    childValueChunkProducerPhysicalGroup,
+  ) !== childValueChunkProducerEpoch) return;
+    for (const alias of childValueChunkProducerAliases) {
       alias.valueChunkProducerClaims = binding?.claims;
       alias.valueChunkStateOwner = binding?.stateOwner;
     }
   };
-  let refreshChunkableRouteWitnesses: ((
+  let refreshChunkableChildWitnesses: ((
     rowArguments: readonly any[] | undefined,
     finalVisibleArgs: readonly FunctionArgument[],
     stagingSession?: any,
@@ -417,16 +417,16 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         childBatchEntryLockingBytecodes,
         childBatchEntryCommitments,
         childPlannedEntryInserts,
-        routeValueChunkProducerAliases,
-        routeValueChunkProducerPhysicalGroup,
-        routeValueChunkProducerEpoch,
-        refreshChunkableRouteWitnesses,
+        childValueChunkProducerAliases,
+        childValueChunkProducerPhysicalGroup,
+        childValueChunkProducerEpoch,
+        refreshChunkableChildWitnesses,
       },
-      publishRouteValueChunkProducerBinding,
+      publishChildValueChunkProducerBinding,
       nestedSortedListCache,
       nestedAddressUtxos,
       delegateCallerIdentity,
-      sharedPriorAtomicNode,
+      sharedPriorCallNode,
       sharedPriorFunctionName,
       sharedPriorFunctionArgs,
       sharedPriorDelegateFunctionName,
@@ -439,12 +439,12 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
   );
   childBlockInputs = assembledSlots.bags.childBlockInputs;
   childValueChunkSlots = assembledSlots.bags.childValueChunkSlots;
-  routeValueChunkProducerAliases = assembledSlots.bags.routeValueChunkProducerAliases;
-  routeValueChunkProducerPhysicalGroup = assembledSlots.bags.routeValueChunkProducerPhysicalGroup;
-  routeValueChunkProducerEpoch = assembledSlots.bags.routeValueChunkProducerEpoch;
+  childValueChunkProducerAliases = assembledSlots.bags.childValueChunkProducerAliases;
+  childValueChunkProducerPhysicalGroup = assembledSlots.bags.childValueChunkProducerPhysicalGroup;
+  childValueChunkProducerEpoch = assembledSlots.bags.childValueChunkProducerEpoch;
   // Slot assembly publishes through the callback above. That closure owns the latest binding;
   // copying a pre-assembly bag snapshot back here would discard the freshly derived productions.
-  refreshChunkableRouteWitnesses = assembledSlots.bags.refreshChunkableRouteWitnesses;
+  refreshChunkableChildWitnesses = assembledSlots.bags.refreshChunkableChildWitnesses;
   const childRelativeOutputInternalArgs = assembledSlots.childRelativeOutputInternalArgs;
   publishCreateBuilderNestedComposeGroupImpl({
     nested,
@@ -501,23 +501,23 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         childCompilerInternalArgs,
         childFunctionName,
         directInvocationRows,
-        graphNestedArgs,
+        callTreeNestedArgs,
         proxyCallee,
         callee,
-        publishRouteValueChunkProducerBinding,
-        latestRouteValueChunkProducerBinding,
-        routeValueChunkProducerEpochByPhysicalGroup,
-        preparedAtomicNodes,
-        preparedAtomicNodeByExternalGroup,
-        latestPreparedAtomicNodeByPhysicalGroup,
+        publishChildValueChunkProducerBinding,
+        latestChildValueChunkProducerBinding,
+        valueChunkProducerEpochByPhysicalGroup,
+        preparedCallNodes,
+        preparedCallNodeByExternalGroup,
+        latestPreparedCallNodeByPhysicalGroup,
         externalCallUtxoGroups,
         lowLevelCallUtxoGroups,
         delegateGroupIndex,
         timingEnabled,
         bags: {
-          routeValueChunkProducerAliases,
-          routeValueChunkProducerPhysicalGroup,
-          routeValueChunkProducerEpoch,
+          childValueChunkProducerAliases,
+          childValueChunkProducerPhysicalGroup,
+          childValueChunkProducerEpoch,
           allGroupEcSlots,
           allGroupParentIndices,
         },
@@ -525,9 +525,9 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         producerSelector,
       },
     );
-    routeValueChunkProducerAliases = finished.routeValueChunkProducerAliases;
-    routeValueChunkProducerPhysicalGroup = finished.routeValueChunkProducerPhysicalGroup;
-    routeValueChunkProducerEpoch = finished.routeValueChunkProducerEpoch;
+    childValueChunkProducerAliases = finished.childValueChunkProducerAliases;
+    childValueChunkProducerPhysicalGroup = finished.childValueChunkProducerPhysicalGroup;
+    childValueChunkProducerEpoch = finished.childValueChunkProducerEpoch;
     allGroupEcSlots = finished.allGroupEcSlots;
     allGroupParentIndices = finished.allGroupParentIndices;
   }
@@ -535,11 +535,11 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     skipped: false,
     allGroupEcSlots,
     allGroupParentIndices,
-    routeValueChunkProducerAliases,
-    routeValueChunkProducerPhysicalGroup,
-    routeValueChunkProducerEpoch,
-    latestRouteValueChunkProducerBinding,
-    refreshChunkableRouteWitnesses,
+    childValueChunkProducerAliases,
+    childValueChunkProducerPhysicalGroup,
+    childValueChunkProducerEpoch,
+    latestChildValueChunkProducerBinding,
+    refreshChunkableChildWitnesses,
     nestedIndices,
     nestedByCallsite,
   };

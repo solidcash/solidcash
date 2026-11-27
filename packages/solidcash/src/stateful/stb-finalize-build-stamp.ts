@@ -45,7 +45,7 @@ export interface FinalizeBuildStampHost {
 export function finalizeBuildStamp(
   host: FinalizeBuildStampHost,
   builder: TransactionBuilder,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
 // earlier derived-chunk pass. Re-apply once at the end so OUTPUTBYTECODE pins stay authoritative.
   host.applyDerivedValueChunks(builder);
@@ -55,7 +55,7 @@ export function finalizeBuildStamp(
   // The final output passes above can relocate the balanced input twins which carry dynamic storage chunks.
   // Rebuild the master unlocker against that settled physical input order even when no other witness changed.
   host.syncBuilderUnlockers(builder);
-  debugAtomicOutputStage('final');
+  debugStatefulOutputStage('final');
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1' && (host.blockLayout?.blockSize ?? 0) > 100) {
     console.error('atomic-stateful-output-components', {

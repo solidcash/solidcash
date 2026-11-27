@@ -79,7 +79,7 @@ import { refusePaymentsToStatefulMasters } from './master-lock-payment.js';
 import type { RuntimeEffect } from './runtime-effect-stream-trace.js';
 import type { RuntimeLoopTransferTarget } from './sc-derive-full-phase2-apply-runtime-loop.js';
 import type { RuntimeLoopTransferOutput, TokenContainerInfo } from './external-call-utxo-group.js';
-import { evalComputedKey, keyArguments, visibleHandlerInputs } from './route-expression-key.js';
+import { evalComputedKey, keyArguments, visibleHandlerInputs } from './call-expression-key.js';
 import { vmapCounterPermutationSpec } from './internal-function-args.js';
 import { callRecordDigest } from './call-record.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';

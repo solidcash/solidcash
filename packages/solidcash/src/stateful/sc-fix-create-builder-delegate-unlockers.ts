@@ -68,7 +68,7 @@ export function callerIdentityAnchorBand(
 }
 
 /** Compiler-owned bytes witnesses that fold repeated chunkable array pushes into one value. */
-export function isRoutePushValueWitnessName(name: string): boolean {
+export function isPushValueWitnessName(name: string): boolean {
   return /^__internal__(?:leading|complete)PushValue_\d+$/.test(name);
 }
 
@@ -665,8 +665,8 @@ export async function fixCreateBuilderDelegateUnlockers(
           // delegate, whose entries really are the caller's.
           // A probe-learned witness is persisted on the physical delegate group. It is newer than the
           // route seed (often the empty/default value), so preserve it across later input refreshes.
-          const routeWitness = group.internalArgs?.[inp.name];
-          if (routeWitness !== undefined) return routeWitness;
+          const groupWitness = group.internalArgs?.[inp.name];
+          if (groupWitness !== undefined) return groupWitness;
           if (['SOLIDC_DEBUG_COLLECTION_FETCH', 'SOLIDC_DEBUG_VALUE_WITNESS'].some((name) =>
             debugEnv()?.[name] === '1')) {
             debugLog('delegate-value-witness-fill', {
@@ -677,7 +677,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           }
           return valueWitness;
         }
-        if (isRoutePushValueWitnessName(inp.name)) {
+        if (isPushValueWitnessName(inp.name)) {
           return resolveDelegatePushValueWitness(inp.name, group.internalArgs, activeEntryDelegate);
         }
         const anchorWitness = inp.name.match(/^__internal__extcallAnchorIdx(\d+)$/);

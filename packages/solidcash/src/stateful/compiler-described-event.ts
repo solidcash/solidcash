@@ -1,12 +1,12 @@
 /**
- * phase-boundary extract: compiler-described route event commitment discovery
+ * phase-boundary extract: compiler-described event commitment discovery
  * (phase-boundary extract from StatefulContract.ts).
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { isAuthenticatedEventRepairCommitment } from './StatefulTransactionBuilder.js';
 
-export function isCompilerDescribedRouteEventCommitment(
+export function isCompilerDescribedEventCommitment(
   commitment: string | undefined,
   compilerMetadata: { compilerOwnedEventSlot: boolean; eventSignature?: string },
 ): commitment is string {

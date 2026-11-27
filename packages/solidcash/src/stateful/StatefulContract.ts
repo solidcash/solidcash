@@ -465,7 +465,7 @@ import {
   encodeStoredElementSource as encodeStoredElementSourceImpl,
   encodeStoredValueSource as encodeStoredValueSourceImpl,
 } from './sc-encode-stored-element-source.js';
-import { materializeCompletePushValueWitness } from './resource-fold-route.js';
+import { materializeCompletePushValueWitness } from './resource-fold.js';
 import { resolveExternalArgs as resolveExternalArgsImpl } from './sc-resolve-external-args.js';
 import { sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl } from './sc-send-without-logical-nonce.js';
 import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from './sc-with-external-call.js';
@@ -548,9 +548,9 @@ import { getFramedCallHandleModule, loadFramedCallHandle } from './framed-call-l
 import { calleeBlockExceedsLowLevelBand } from './sc-select-compat-callee-block-calls.js';
 import { refuseMessageBusArtifact } from '../legacy-artifact.js';
 import {
-  createGraphPlanningProducerResultContext,
-  type GraphPlanningProducerResultContext,
-} from './graph-planning-producer-result.js';
+  createCallPlanningProducerResultContext,
+  type CallPlanningProducerResultContext,
+} from './call-planning-producer-result.js';
 import { OWN_STATE_EVIDENCE, LIFECYCLE_MODIFIERS } from './state-effect-reading.js';
 import { p2pkhLockingBytecode } from './legacy-job-event-wire.js';
 import { isP2sh32LockingBytecode, isValueChunkIdentityCountPin } from './faithful-probe-trace.js';
@@ -571,14 +571,14 @@ import {
   resolvePreparedProducerEntry,
   entryAccessAt,
   resolveRouteRowExpressionKey,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 export { externalReturnsForCallsites } from './external-returns-for-callsites.js';
 export {
-  createGraphPlanningProducerResultContext,
-  memoizeGraphPlanningProducerResult,
-} from './graph-planning-producer-result.js';
-export { isCompilerDescribedRouteEventCommitment } from './compiler-described-route-event.js';
-export { deriveChunkableArrayValueChannels, encodeLeadingRouteArrayPushes } from './resource-fold-route.js';
+  createCallPlanningProducerResultContext,
+  memoizeCallPlanningProducerResult,
+} from './call-planning-producer-result.js';
+export { isCompilerDescribedEventCommitment } from './compiler-described-event.js';
+export { deriveChunkableArrayValueChannels, encodeLeadingRouteArrayPushes } from './resource-fold.js';
 export { encodeStructArgument } from './legacy-job-event-wire.js';
 export { selectMappingEntryByKeys, externalCallTargetSourceLockingBytecodeHex } from './mapping-key-lookup.js';
 export { computedStateWriterGroupIndex, chunkableWriterGroupIndex } from './writer-group-selection.js';
@@ -594,7 +594,7 @@ export {
   resolveRouteRowExpressionKey,
   directMappingReadPlan,
   type RouteExpressionKeyRow,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 
 function isFramedArtifact(artifact: Artifact): boolean {
   return artifact.composition?.convention === 'framed';
@@ -8763,22 +8763,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const groupProxyMasterIndices = lowLevelNestedCaches.groupProxyMasterIndices;
     const delegateExternalGroupIndices = lowLevelNestedCaches.delegateExternalGroupIndices;
     const delegateExternalGroupByCallsite = lowLevelNestedCaches.delegateExternalGroupByCallsite;
-    const routeValueChunkProducerEpochByPhysicalGroup =
-      lowLevelNestedCaches.routeValueChunkProducerEpochByPhysicalGroup;
+    const valueChunkProducerEpochByPhysicalGroup =
+      lowLevelNestedCaches.valueChunkProducerEpochByPhysicalGroup;
     const lateTransitiveGroupIndices = lowLevelNestedCaches.lateTransitiveGroupIndices;
     const nestedDelegateProxyGroupByLowLevel = lowLevelNestedCaches.nestedDelegateProxyGroupByLowLevel;
     const selectActiveRootDelegateGroup = lowLevelNestedCaches.selectActiveRootDelegateGroup;
-    let preparedAtomicNodes = lowLevelNestedCaches.preparedAtomicNodes;
-    const preparedAtomicNodeByExternalGroup = lowLevelNestedCaches.preparedAtomicNodeByExternalGroup;
-    const latestPreparedAtomicNodeByPhysicalGroup =
-      lowLevelNestedCaches.latestPreparedAtomicNodeByPhysicalGroup;
+    let preparedCallNodes = lowLevelNestedCaches.preparedCallNodes;
+    const preparedCallNodeByExternalGroup = lowLevelNestedCaches.preparedCallNodeByExternalGroup;
+    const latestPreparedCallNodeByPhysicalGroup =
+      lowLevelNestedCaches.latestPreparedCallNodeByPhysicalGroup;
     // Materialization initializes/replaces the node list after cache creation. Resolve the parent here,
     // from the current list, rather than capturing the cache prelude's initially undefined array.
     const preparedChildProducerPath = (
       parentIndex: number,
       source: Parameters<typeof lowLevelNestedCaches.preparedChildProducerPath>[1],
     ): ValueChunkProducerPathDisposition =>
-      lowLevelNestedCaches.preparedChildProducerPath(preparedAtomicNodes?.[parentIndex], source);
+      lowLevelNestedCaches.preparedChildProducerPath(preparedCallNodes?.[parentIndex], source);
     let nestedFunderIndex = lowLevelNestedCaches.nestedFunderIndex;
     // low-level-nested-caches-complete (size-guarded end marker for prepareCreateBuilderLowLevelNestedCaches)
 
@@ -8843,7 +8843,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               functionName,
               args,
               callIndex: i,
-              preparedAtomicNodes,
+              preparedCallNodes,
               rootProducerPath,
               publicSelfAddress,
               authenticatedSelfAddress,
@@ -8852,7 +8852,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               onChainState,
             },
           );
-          preparedAtomicNodes = materializedLlc.preparedAtomicNodes;
+          preparedCallNodes = materializedLlc.preparedCallNodes;
           if (turn !== undefined) lowLevelCallUtxoGroups[lowLevelCallUtxoGroups.length - 1]!.lowLevelCallTurn = turn;
           // llc-stateful-materialize-complete (size-guarded; nested compose follows for delegatecall)
           if (lowLevelCalls[i].callMode === 'delegatecall') {
@@ -8864,7 +8864,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const delegateVisibleInputs = materializedLlc.delegateVisibleInputs;
             const delegateSelfAddress = materializedLlc.delegateSelfAddress;
             const delegateCallerIdentity = materializedLlc.delegateCallerIdentity!;
-            const graphPlanningResults = materializedLlc.graphPlanningResults;
+            const callPlanningResults = materializedLlc.callPlanningResults;
             let nestedIndices = materializedLlc.nestedIndices;
             const nestedByCallsite = materializedLlc.nestedByCallsite;
             for (const nested of nestedExternalCalls) {
@@ -8911,11 +8911,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   delegateVisibleInputs,
                   delegateSelfAddress,
                   delegateCallerIdentity,
-                  graphPlanningResults,
+                  callPlanningResults,
                   callInfo,
                   // The delegate's calls read the owner's state and the clock its implementation reads.
                   onChainState: { ...onChainState, state: materializedLlc.delegateState },
-                  preparedAtomicNodes,
+                  preparedCallNodes,
                   rootProducerPath,
                   nestedIndices,
                   nestedByCallsite,
@@ -8927,20 +8927,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   functionName,
                   allGroupEcSlots,
                   allGroupParentIndices,
-                  routeValueChunkProducerEpochByPhysicalGroup,
-                  preparedAtomicNodeByExternalGroup,
-                  latestPreparedAtomicNodeByPhysicalGroup,
+                  valueChunkProducerEpochByPhysicalGroup,
+                  preparedCallNodeByExternalGroup,
+                  latestPreparedCallNodeByPhysicalGroup,
                   nestedSortedListCache,
                   valueChunkWriteStagingSession,
                   sharedFunderPool,
                   nestedFunderIndex,
                   publicSelfAddress,
                   nestedProxyReadCache,
-                  routeValueChunkProducerAliases: undefined,
-                  routeValueChunkProducerPhysicalGroup: undefined,
-                  routeValueChunkProducerEpoch: undefined,
-                  latestRouteValueChunkProducerBinding: undefined,
-                  refreshChunkableRouteWitnesses: undefined,
+                  childValueChunkProducerAliases: undefined,
+                  childValueChunkProducerPhysicalGroup: undefined,
+                  childValueChunkProducerEpoch: undefined,
+                  latestChildValueChunkProducerBinding: undefined,
+                  refreshChunkableChildWitnesses: undefined,
                 },
               );
               if (orchestrated.skipped) continue;
@@ -8981,8 +8981,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           {
             externalCallUtxoGroups,
             lowLevelCallUtxoGroups,
-            preparedAtomicNodes,
-            preparedAtomicNodeByExternalGroup,
+            preparedCallNodes,
+            preparedCallNodeByExternalGroup,
             publicSelfAddress,
             bags: {
               allGroupEcSlots,
@@ -9067,19 +9067,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && !nestedDelegateProxyGroupByLowLevel.has(groupIndex))
         .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
       const hasNestedDelegate = delegateInputCount > 0;
-      const legacyRouteDelegate = authenticatedDelegateGroup ?? lowLevelCallUtxoGroups.find(
+      const legacyProxyDelegate = authenticatedDelegateGroup ?? lowLevelCallUtxoGroups.find(
         (group) => group.callMode === 'delegatecall' && group.externalContract,
       );
-      const legacyRouteDelegateFn = (legacyRouteDelegate?.externalContract?.inner.artifact.abi as
-        readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === legacyRouteDelegate?.functionName);
-      const legacyRouteTrailingBase = legacyRouteDelegateFn?.blockLayout?.trailingBase
-        ?? legacyRouteDelegateFn?.blockLayout?.blockSize;
+      const legacyProxyDelegateFn = (legacyProxyDelegate?.externalContract?.inner.artifact.abi as
+        readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === legacyProxyDelegate?.functionName);
+      const legacyProxyTrailingBase = legacyProxyDelegateFn?.blockLayout?.trailingBase
+        ?? legacyProxyDelegateFn?.blockLayout?.blockSize;
       const delegatedLoopCollections = new Set([
-        ...(legacyRouteDelegateFn?.sortedUpsertLoopInfo ?? []).map((info) => info.collection),
-        ...(legacyRouteDelegateFn?.sortedInsertLoopInfo ?? []).map((info) => info.collection),
+        ...(legacyProxyDelegateFn?.sortedUpsertLoopInfo ?? []).map((info) => info.collection),
+        ...(legacyProxyDelegateFn?.sortedInsertLoopInfo ?? []).map((info) => info.collection),
       ]);
-      const delegatedDynamicSuffix = (legacyRouteDelegateFn?.dynamicWrites?.length ?? 0) > 0
-        || (legacyRouteDelegateFn?.dynamicReads?.length ?? 0) > 0 || hasDelegatedDynamicReadChunks
+      const delegatedDynamicSuffix = (legacyProxyDelegateFn?.dynamicWrites?.length ?? 0) > 0
+        || (legacyProxyDelegateFn?.dynamicReads?.length ?? 0) > 0 || hasDelegatedDynamicReadChunks
         || delegatedLoopCollections.size > 0;
       const delegatedLoopOutputCount = [...sortedLoopCommitments.entries()]
         .filter(([collection]) => delegatedLoopCollections.has(collection))
@@ -9101,7 +9101,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         allLowLevelInputCount,
         hasNestedDelegate,
         delegatedDynamicSuffix,
-        legacyRouteTrailingBase,
+        legacyProxyTrailingBase,
         iterationEntryInputs,
         insertLoopPredecessors,
         delegatedDynamicWriteChunkCount,
@@ -9115,7 +9115,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         lowLevelCallUtxoGroups,
         externalCallUtxoGroups,
         externalOutStateUtxoGroups,
-        legacyRouteDelegateFn,
+        legacyProxyDelegateFn,
         returnEmitOutputIndex,
         functionName,
         allGroupEcSlots,
@@ -9790,12 +9790,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           writes: gFn?.dynamicWrites,
         });
       }
-      const routeWrites = [...(gFn?.dynamicWrites ?? [])];
+      const allDynamicWrites = [...(gFn?.dynamicWrites ?? [])];
       const effectiveSelectedWrites = resolveSelectedDynamicWrites(
-        routeWrites, [],
+        allDynamicWrites, [],
       );
       for (const name of effectiveSelectedWrites) activeDynamicWrites.add(name);
-      for (const name of routeWrites) {
+      for (const name of allDynamicWrites) {
         delegateDynamicWrites.add(name);
         if (!dynamicWrites.includes(name)) dynamicWrites.push(name);
       }
@@ -10227,7 +10227,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // return-emit-complete (size-guarded end marker for materializeCreateBuilderReturnEmit)
 
     refuseRepeatedOwnerCallsImpl({
-      preparedAtomicNodes,
+      preparedCallNodes,
       functionName,
     });
     // repeated-owner-refusal-complete (size-guarded end marker for refuseRepeatedOwnerCalls)
@@ -10407,7 +10407,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     executionSelfAddress?: FunctionArgument,
     producerCalls?: readonly ExternalCallAbi[],
     allowProvisional = false,
-    planningContext: GraphPlanningProducerResultContext = createGraphPlanningProducerResultContext(),
+    planningContext: CallPlanningProducerResultContext = createCallPlanningProducerResultContext(),
     consumer?: {
       callsiteId?: number;
       resultConsumers?: readonly ExternalResultConsumerAbi[];

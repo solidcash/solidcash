@@ -13,7 +13,7 @@ import type { Utxo } from '../interfaces.js';
 import {
   canonicalAbiFunctionSignature,
   visibleHandlerInputs,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 
 export function resolveStatefulAbiFunction(
   artifact: Artifact,

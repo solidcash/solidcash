@@ -10,13 +10,13 @@ import { isDirectConventionArtifact } from './sc-expand-resolve-create-builder-e
  * block can discard the later call's entry layout. Refuse a prepared call tree that reaches an owner twice.
  */
 export function refuseRepeatedOwnerCalls(params: {
-  preparedAtomicNodes: any[] | undefined;
+  preparedCallNodes: any[] | undefined;
   functionName: string;
 }): void {
-  const { preparedAtomicNodes, functionName } = params;
-  if (!preparedAtomicNodes?.length) return;
+  const { preparedCallNodes, functionName } = params;
+  if (!preparedCallNodes?.length) return;
   const children = new Map<number, number[]>();
-  preparedAtomicNodes.forEach((node, index) => {
+  preparedCallNodes.forEach((node, index) => {
     if (node.parent === null) return;
     const siblings = children.get(node.parent) ?? [];
     siblings.push(index);
@@ -24,14 +24,14 @@ export function refuseRepeatedOwnerCalls(params: {
   });
   for (const siblings of children.values()) {
     siblings.sort((left, right) => {
-      const a = preparedAtomicNodes[left].callsiteId ?? Number.MAX_SAFE_INTEGER;
-      const b = preparedAtomicNodes[right].callsiteId ?? Number.MAX_SAFE_INTEGER;
+      const a = preparedCallNodes[left].callsiteId ?? Number.MAX_SAFE_INTEGER;
+      const b = preparedCallNodes[right].callsiteId ?? Number.MAX_SAFE_INTEGER;
       return a - b || left - right;
     });
   }
   const orderedNodes: any[] = [];
   const visit = (index: number): void => {
-    const node = preparedAtomicNodes[index];
+    const node = preparedCallNodes[index];
     if (!node) return;
     orderedNodes.push(node);
     for (const child of children.get(index) ?? []) visit(child);
@@ -44,7 +44,7 @@ export function refuseRepeatedOwnerCalls(params: {
     ownerInvocationCounts.set(owner, (ownerInvocationCounts.get(owner) ?? 0) + 1);
   }
   if (![...ownerInvocationCounts.values()].some((count) => count > 1)) return;
-  const rootNode = preparedAtomicNodes[0];
+  const rootNode = preparedCallNodes[0];
   const rootArtifact = rootNode?.executionArtifact ?? rootNode?.contract.inner.artifact;
   if (rootArtifact !== undefined && isDirectConventionArtifact(rootArtifact)) {
     throw new Error(`${rootArtifact.contractName}.${functionName}() reaches one state owner more than once `

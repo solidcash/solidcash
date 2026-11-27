@@ -30,13 +30,13 @@ import {
 import {
   appendEncodedArrayElement,
   concatenateEncodedArrays,
-} from './resource-fold-route.js';
+} from './resource-fold.js';
 import {
-  extractAllRouteValueChunks,
+  extractAllValueChunks,
   extractFailingP2sh32OutputPin,
-  extractRouteChunkPin,
+  extractValueChunkPin,
   lastExtractedComputedValue,
-} from './route-value-chunk-helpers.js';
+} from './value-chunk-trace-helpers.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
@@ -232,8 +232,8 @@ export function applyDeriveFullNestedValueChunkPin(
     }
     : (stb.hasStagedValueChunkOutputs() || stb.getValueChunkRedeemLock())
       ? extractFailingP2sh32OutputPin(nestedTrace)
-      ?? extractRouteChunkPin(nestedTrace)
-      : extractRouteChunkPin(nestedTrace)
+      ?? extractValueChunkPin(nestedTrace)
+      : extractValueChunkPin(nestedTrace)
       ?? extractFailingP2sh32OutputPin(nestedTrace, band);
   const nestedPinExtractedAt = debugTargetsThisDerivation ? Date.now() : 0;
   // Earlier logical aliases have different, valid producer IDs. The terminal physical call and its
@@ -315,7 +315,7 @@ export function applyDeriveFullNestedValueChunkPin(
       legacyValueCandidates.push(witness);
     }
   }
-  const allChunks = extractAllRouteValueChunks(
+  const allChunks = extractAllValueChunks(
     nestedTrace, pin,
     fallbackBase,
     band?.nNew ?? identityPin?.nNew ?? llc.valueChunkOutputCount ?? 0,

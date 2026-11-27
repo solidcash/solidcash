@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: graph-planning producer result memoization
+ * phase-boundary extract: nested-call planning producer result memoization
  * (phase-boundary extract from StatefulContract.ts).
  */
 
@@ -31,19 +31,19 @@ export function functionArgumentListsEqual(left: readonly unknown[], right: read
     && left.every((value, index) => functionArgumentValuesEqual(value, right[index]));
 }
 
-type GraphPlanningProducerResultEntry = {
+type CallPlanningProducerResultEntry = {
   args: readonly unknown[];
   target: unknown;
   provisional: boolean;
   pending: Promise<FunctionArgument | undefined>;
 };
 
-/** One graph-build epoch's speculative producer results, indexed by compiler-stable callsite identity. */
-export interface GraphPlanningProducerResultContext {
-  readonly entries: Map<number, GraphPlanningProducerResultEntry[]>;
+/** One planning epoch's speculative producer results, indexed by compiler-stable callsite identity. */
+export interface CallPlanningProducerResultContext {
+  readonly entries: Map<number, CallPlanningProducerResultEntry[]>;
 }
 
-export function createGraphPlanningProducerResultContext(): GraphPlanningProducerResultContext {
+export function createCallPlanningProducerResultContext(): CallPlanningProducerResultContext {
   return { entries: new Map() };
 }
 
@@ -61,8 +61,8 @@ function snapshotFunctionArgument(value: unknown): unknown {
  * Evaluate one published producer at most once for an unchanged callsite invocation in a planning epoch.
  * Exact results may seed provisional consumers, but provisional fallbacks never satisfy an exact request.
  */
-export async function memoizeGraphPlanningProducerResult(
-  context: GraphPlanningProducerResultContext,
+export async function memoizeCallPlanningProducerResult(
+  context: CallPlanningProducerResultContext,
   callsiteId: number,
   args: readonly FunctionArgument[],
   target: FunctionArgument | undefined,

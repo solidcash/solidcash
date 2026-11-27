@@ -7,7 +7,7 @@ import { resolveExternalArgs, type ResolveExternalArgsHost } from '../../src/sta
 import {
   resolveExternalExpressionReturns, type ResolveExternalExpressionReturnsHost,
 } from '../../src/stateful/sc-resolve-external-expression-returns.js';
-import { createGraphPlanningProducerResultContext } from '../../src/stateful/graph-planning-producer-result.js';
+import { createCallPlanningProducerResultContext } from '../../src/stateful/call-planning-producer-result.js';
 import { registerDeployment } from '../../src/stateful/deployment-registry.js';
 import {
   DeferredTransitiveReturnProbeError,
@@ -55,7 +55,7 @@ function fixture(
       : target ? { addressSource: { kind: 'forward' as const, paramIndex: 0 } } : {}),
     argSources: [], returnTypes: [type], hasReturnValues: true, requiredDataNftIndices: [],
   }];
-  const context = createGraphPlanningProducerResultContext();
+  const context = createCallPlanningProducerResultContext();
   const resolve = async (provisional = true): Promise<FunctionArgument | undefined> => (
     await resolveExternalExpressionReturns(host, sources, target ? [target] : [], owner, {}, [], undefined,
       calls, provisional, context)
@@ -140,7 +140,7 @@ describe('provisional aggregate producer results', () => {
       addressSource: { kind: 'forward', paramIndex: 0 },
       argSources: [], returnTypes: ['uint256'], hasReturnValues: true, requiredDataNftIndices: [],
     }];
-    const context = createGraphPlanningProducerResultContext();
+    const context = createCallPlanningProducerResultContext();
     const resolve = async (target: number): Promise<FunctionArgument | undefined> => (
       await resolveExternalExpressionReturns(host, [{ kind: 'expression', expression }],
         [Uint8Array.of(target)], owner, {}, [], undefined, calls, false, context)

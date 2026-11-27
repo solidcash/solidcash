@@ -9,7 +9,7 @@ import type NetworkProvider from '../network/NetworkProvider.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
-import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
+import { valueChunkOutputWitnessCarrier } from './value-chunk-trace-helpers.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { ownsCapturedValueChunkOutputBase } from './value-chunk-base-writer-select.js';
 import { selectValueChunkOutputBase } from './value-chunk-geometry.js';

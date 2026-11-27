@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: STB build-phase extract — debugAtomicOutputStage + debugOwnMutableOutputs helpers.
+ * phase-boundary extract: STB build-phase extract - debugStatefulOutputStage + debugOwnMutableOutputs helpers.
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -22,7 +22,7 @@ export interface CreateBuildDebugStagesHost {
 }
 
 export interface BuildDebugStages {
-  debugAtomicOutputStage: (stage: string) => void;
+  debugStatefulOutputStage: (stage: string) => void;
   debugOwnMutableOutputs: (stage: string) => void;
 }
 
@@ -35,7 +35,7 @@ export function createBuildDebugStages(
   buildTiming: (stage: string, builder?: TransactionBuilder) => void,
 ): BuildDebugStages {
   let debugOutputFingerprint: string | undefined;
-  const debugAtomicOutputStage = (stage: string): void => {
+  const debugStatefulOutputStage = (stage: string): void => {
     buildTiming(stage, builder);
     const debugOutputIndexRaw = (globalThis as {
       process?: { env?: Record<string, string> };
@@ -124,5 +124,5 @@ export function createBuildDebugStages(
     });
   };
 
-  return { debugAtomicOutputStage, debugOwnMutableOutputs };
+  return { debugStatefulOutputStage, debugOwnMutableOutputs };
 }

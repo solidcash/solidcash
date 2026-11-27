@@ -120,7 +120,7 @@ export function assembleConstructorInputs(
     console.error('stateful-input-assembly', {
       stage,
       count: host.allInputs.length,
-      routeBlockSize: host.blockLayout?.blockSize,
+      blockSize: host.blockLayout?.blockSize,
       trailingCapacity: host.blockLayout?.trailingCapacity,
       preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
       directCallDelegateBlock: host.directCallDelegateBlock,

@@ -12,7 +12,7 @@ import type { FunctionArgument } from '../Argument.js';
 import { defaultInternalFunctionArg } from './internal-function-args.js';
 import { vmapCounterPermutationSpec, type VmapCounterPermutationSpec } from './internal-function-args.js';
 import { bytesToSlotValue, keyToSlotMulti } from './SortedList.js';
-import { visibleHandlerInputs } from './route-expression-key.js';
+import { visibleHandlerInputs } from './call-expression-key.js';
 
 export interface MaterializeCreateBuilderVmapPermutationsHost {
   hydrateExternalPredicateState(...args: any[]): Promise<Record<string, unknown>>;

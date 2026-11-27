@@ -2,12 +2,12 @@ import { binToHex } from '@bitauth/libauth';
 import { computeCollectionHash } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
-  progressiveRouteProbePassLimit,
-  recordRouteProbeObservation,
-  routeProbeEntrySlotOffsetForOutput,
-  routeProbeRepairableEntryCoordinateCount,
-  routeValueRunFingerprint,
-} from '../../src/stateful/route-probe-progress.js';
+  progressiveEntryProbePassLimit,
+  recordEntryProbeObservation,
+  entryProbeSlotOffsetForOutput,
+  entryProbeRepairableCoordinateCount,
+  valueRunFingerprint,
+} from '../../src/stateful/entry-probe-progress.js';
 import {
   valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
@@ -53,10 +53,10 @@ describe('progressive route probe progress', () => {
     const embedded = carrier('2', [1, 2, 3]);
     const unrelated = carrier('3', [1, 2, 3, 4, 5]);
 
-    expect(routeProbeRepairableEntryCoordinateCount(current)).toBe(2);
-    expect(routeProbeRepairableEntryCoordinateCount(current, embedded)).toBe(5);
-    expect(routeProbeRepairableEntryCoordinateCount(current)).not.toBe(
-      routeProbeRepairableEntryCoordinateCount(current, unrelated),
+    expect(entryProbeRepairableCoordinateCount(current)).toBe(2);
+    expect(entryProbeRepairableCoordinateCount(current, embedded)).toBe(5);
+    expect(entryProbeRepairableCoordinateCount(current)).not.toBe(
+      entryProbeRepairableCoordinateCount(current, unrelated),
     );
   });
 
@@ -72,11 +72,11 @@ describe('progressive route probe progress', () => {
       ],
     }];
 
-    expect(routeProbeEntrySlotOffsetForOutput(18, layouts)).toBe(3);
-    expect(routeProbeEntrySlotOffsetForOutput(16, layouts)).toBeUndefined();
-    expect(routeProbeEntrySlotOffsetForOutput(19, layouts)).toBeUndefined();
+    expect(entryProbeSlotOffsetForOutput(18, layouts)).toBe(3);
+    expect(entryProbeSlotOffsetForOutput(16, layouts)).toBeUndefined();
+    expect(entryProbeSlotOffsetForOutput(19, layouts)).toBeUndefined();
     // A trailing commitment may be 64 bytes, but its shape and position do not grant entry ownership.
-    expect(routeProbeEntrySlotOffsetForOutput(23, layouts)).toBeUndefined();
+    expect(entryProbeSlotOffsetForOutput(23, layouts)).toBeUndefined();
   });
 
 
@@ -86,8 +86,8 @@ describe('progressive route probe progress', () => {
 
     expect(valueChunkWriteResourceIdentity(relocated))
       .toBe(valueChunkWriteResourceIdentity(first));
-    expect(progressiveRouteProbePassLimit(2, [first, relocated])).toBe(7);
-    expect(progressiveRouteProbePassLimit(2, [first, write('receipts', 2, 30)])).toBe(9);
+    expect(progressiveEntryProbePassLimit(2, [first, relocated])).toBe(7);
+    expect(progressiveEntryProbePassLimit(2, [first, write('receipts', 2, 30)])).toBe(9);
   });
 
   it('treats relocation as the same resource materialization and rejects semantic changes', () => {
@@ -96,24 +96,24 @@ describe('progressive route probe progress', () => {
       { outputIndex: 63, commitment: '0000aa', lockingBytecode: Uint8Array.of(0xaa) },
       { outputIndex: 64, commitment: '0100bb', lockingBytecode: Uint8Array.of(0xaa) },
     ];
-    const value = { identity: 'value-run:resource-a', fingerprint: routeValueRunFingerprint(chunks) };
+    const value = { identity: 'value-run:resource-a', fingerprint: valueRunFingerprint(chunks) };
     const address = { identity: 'entry-lock:category:12', fingerprint: 'lock' };
 
-    expect(recordRouteProbeObservation(observations, address)).toBe('new');
-    expect(recordRouteProbeObservation(observations, value)).toBe('new');
-    expect(recordRouteProbeObservation(observations, {
+    expect(recordEntryProbeObservation(observations, address)).toBe('new');
+    expect(recordEntryProbeObservation(observations, value)).toBe('new');
+    expect(recordEntryProbeObservation(observations, {
       ...value,
-      fingerprint: routeValueRunFingerprint(chunks.map((chunk) => ({
+      fingerprint: valueRunFingerprint(chunks.map((chunk) => ({
         ...chunk, outputIndex: chunk.outputIndex + 4,
       }))),
     })).toBe('same');
-    expect(recordRouteProbeObservation(observations, {
+    expect(recordEntryProbeObservation(observations, {
       ...value,
-      fingerprint: routeValueRunFingerprint([
+      fingerprint: valueRunFingerprint([
         chunks[0], { ...chunks[1], commitment: '0100cc' },
       ]),
     })).toBe('changed');
-    expect(() => routeValueRunFingerprint([
+    expect(() => valueRunFingerprint([
       chunks[0], { ...chunks[1], outputIndex: 65 },
     ])).toThrow(/contiguous output band/);
   });
@@ -122,13 +122,13 @@ describe('progressive route probe progress', () => {
     const observations = new Map<string, string>();
     const coordinate = { identity: 'value-coordinate:category:12', fingerprint: 'first' };
 
-    expect(recordRouteProbeObservation(observations, coordinate)).toBe('new');
-    expect(recordRouteProbeObservation(observations, {
+    expect(recordEntryProbeObservation(observations, coordinate)).toBe('new');
+    expect(recordEntryProbeObservation(observations, {
       ...coordinate, fingerprint: 'second',
     })).toBe('changed');
-    expect(recordRouteProbeObservation(observations, {
+    expect(recordEntryProbeObservation(observations, {
       ...coordinate, fingerprint: 'second',
     })).toBe('same');
-    expect(progressiveRouteProbePassLimit(0, [])).toBe(3);
+    expect(progressiveEntryProbePassLimit(0, [])).toBe(3);
   });
 });

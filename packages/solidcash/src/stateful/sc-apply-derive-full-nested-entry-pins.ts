@@ -21,7 +21,7 @@ import {
 import {
   extractFailingP2sh32OutputPin,
   lastExtractedComputedValue,
-} from './route-value-chunk-helpers.js';
+} from './value-chunk-trace-helpers.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlot } from './SortedList.js';
 import {
   sameDerivedChunkOutputObservation,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   evaluateFoldActivation,
   foldActivationFromExternalCallExpression,
-} from '../../src/stateful/resource-fold-route.js';
+} from '../../src/stateful/resource-fold.js';
 
 describe('resource-fold', () => {
   it('path-effect activation: foldActivationFromExternalCallExpression maps compiler ECE onto recipes', () => {
@@ -38,11 +38,11 @@ describe('resource-fold', () => {
       right: { kind: 'boolParam' as const, name: 'writeRight' },
     };
     expect(evaluateFoldActivation(andRecipe, {
-      handlerInputs: [true],
+      functionInputs: [true],
       boolParams: { writeRight: true },
     })).toBe(true);
     expect(evaluateFoldActivation(andRecipe, {
-      handlerInputs: [true],
+      functionInputs: [true],
       boolParams: { writeRight: false },
     })).toBe(false);
     expect(evaluateFoldActivation({
@@ -50,7 +50,7 @@ describe('resource-fold', () => {
       left: { kind: 'handlerInput', inputIndex: 0 },
       right: { kind: 'boolParam', name: 'writeRight' },
     }, {
-      handlerInputs: [false],
+      functionInputs: [false],
       boolParams: { writeRight: true },
     })).toBe(true);
   });
@@ -78,19 +78,19 @@ describe('resource-fold', () => {
 
     expect(evaluateFoldActivation(
       { kind: 'handlerInputCmp', inputIndex: 0, op: '!=', value: '3' },
-      { handlerInputs: [4n] },
+      { functionInputs: [4n] },
     )).toBe(true);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputCmp', inputIndex: 0, op: '!=', value: '3' },
-      { handlerInputs: [3n] },
+      { functionInputs: [3n] },
     )).toBe(false);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputCmp', inputIndex: 0, op: '<=', value: '10' },
-      { handlerInputs: [10n] },
+      { functionInputs: [10n] },
     )).toBe(true);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputCmp', inputIndex: 0, op: '>', value: '10' },
-      { handlerInputs: [10n] },
+      { functionInputs: [10n] },
     )).toBe(false);
   });
 
@@ -108,15 +108,15 @@ describe('resource-fold', () => {
     });
     expect(evaluateFoldActivation(
       { kind: 'handlerInputPairCmp', leftIndex: 0, op: '<', rightIndex: 1 },
-      { handlerInputs: [3n, 5n] },
+      { functionInputs: [3n, 5n] },
     )).toBe(true);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputPairCmp', leftIndex: 0, op: '<', rightIndex: 1 },
-      { handlerInputs: [5n, 3n] },
+      { functionInputs: [5n, 3n] },
     )).toBe(false);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputPairCmp', leftIndex: 0, op: '==', rightIndex: 1 },
-      { handlerInputs: [7n, 7n] },
+      { functionInputs: [7n, 7n] },
     )).toBe(true);
   });
 

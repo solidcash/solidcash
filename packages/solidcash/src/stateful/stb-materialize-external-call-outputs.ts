@@ -302,7 +302,7 @@ export function materializeExternalCallOutputs(
         const input = group.blockInputs[si];
         const slot = group.blockLayout.slots[si];
         const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-        const debugRouteOutputs = debugEnv?.SOLIDC_DEBUG_TRACE_CONCISE === '1'
+        const debugCallOutputs = debugEnv?.SOLIDC_DEBUG_TRACE_CONCISE === '1'
           || debugEnv?.SOLIDC_DEBUG_FAILURE_RING === '1';
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_CHUNK_GEOM === '1') {
@@ -310,7 +310,7 @@ export function materializeExternalCallOutputs(
         }
 
         // Matched on the absolute index this iteration is about to fill, across every group: the pin's owning
-        // group is not the group it was probed from. See deriveRouteValueChunks.
+        // group is not the group it was probed from. See deriveValueChunks.
         const derivedChunk = host.derivedChunkOutputs.get(builder.outputs.length);
         const derivedOccupant = host.allInputs[builder.outputs.length];
         const suffixOwnedChunk = host.delegateDynamicChunksAtSuffix && derivedChunk
@@ -341,10 +341,10 @@ export function materializeExternalCallOutputs(
           ?.findIndex((planned) => planned.outputBlockSlot === si) ?? -1;
         const batchPredecessor = group.batchPredecessorOutputs
           ?.find((planned) => planned.outputBlockSlot === si);
-        const routedDynamicResource = group.dynamicChunkResources
+        const groupDynamicResource = group.dynamicChunkResources
           ?.find((resource) => resource.blockSlot === si);
 
-        if (routedDynamicResource && !routedDynamicResource.write) {
+        if (groupDynamicResource && !groupDynamicResource.write) {
           builder.addOutput({
             to: input.unlocker.generateLockingBytecode(),
             amount: input.satoshis,
@@ -534,7 +534,7 @@ export function materializeExternalCallOutputs(
 
         // X13: B's return event belongs to B's OWN block slot, paired with the funding input the block now
         // carries at the same offset. The commitment comes from B's VM trace (setReturnEventOutput).
-        if (slot?.kind === 'returnEvent' && debugRouteOutputs) {
+        if (slot?.kind === 'returnEvent' && debugCallOutputs) {
           console.error('builder-route-return-output', {
             groupIndex, si, absoluteOutput: builder.outputs.length,
             returnEventInBlock: group.returnEventInBlock,

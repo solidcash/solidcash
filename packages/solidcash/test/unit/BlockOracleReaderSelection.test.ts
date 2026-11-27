@@ -79,14 +79,14 @@ describe('root block oracle band selection', () => {
       childFunctionName: 'read', childFunctionArgs: [], nestedArgs: [], routePlanningArgs: [],
       proxyImplementationState: { masterUtxo: master, state: {} }, delegateCallGroupIndex: undefined,
       childExternalGroupIndex: 0, externalCallUtxoGroups: [], lowLevelCallUtxoGroups: [], timingEnabled: false,
-      sharedLogicalArtifact: artifact, publishRouteValueChunkProducerBinding: () => undefined,
+      sharedLogicalArtifact: artifact, publishChildValueChunkProducerBinding: () => undefined,
       valueChunkProductionsForPath: () => [], nestedSortedListCache: new Map(), nestedAddressUtxos: async () => [],
       bags: { childBlockInputs: undefined, childCompilerInternalArgs: {}, childValueWitnesses: new Map(),
         childStoredValues: new Map(), childValueChunkSlots: 0, childBatchTargets: new Map(), childBatchLists: new Map(),
         childBatchPredecessorOutputs: [], childDynamicChunkResources: [], childBatchEntryLockingBytecodes: new Map(),
-        childBatchEntryCommitments: new Map(), childPlannedEntryInserts: [], routeValueChunkProducerAliases: [],
-        routeValueChunkProducerPhysicalGroup: undefined, routeValueChunkProducerEpoch: undefined,
-        refreshChunkableRouteWitnesses: undefined },
+        childBatchEntryCommitments: new Map(), childPlannedEntryInserts: [], childValueChunkProducerAliases: [],
+        childValueChunkProducerPhysicalGroup: undefined, childValueChunkProducerEpoch: undefined,
+        refreshChunkableChildWitnesses: undefined },
     } as unknown as Parameters<typeof assembleCreateBuilderNestedComposeSlots>[1]);
     const first = await invoke();
     expect(first.bags.childBlockInputs?.[1]).toMatchObject(oracle);

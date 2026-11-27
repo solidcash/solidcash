@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import { encodeFunctionArgument } from '../../src/Argument.js';
-import { evalComputedKey as evalRouteComputedKey } from '../../src/stateful/route-expression-key.js';
+import { evalComputedKey as evalRouteComputedKey } from '../../src/stateful/call-expression-key.js';
 import {
   evalComputedKey,
   resolveRouteRowExpressionKey,

@@ -95,7 +95,7 @@ type PreparationParams = Parameters<typeof expandCreateBuilderLateTransitive>[1]
 
 function preparation(groups: ExternalCallUtxoGroup[]): {
   groups: ExternalCallUtxoGroup[];
-  nodes: NonNullable<PreparationParams['preparedAtomicNodes']>;
+  nodes: NonNullable<PreparationParams['preparedCallNodes']>;
   host: ExpandCreateBuilderLateTransitiveHost;
   params: PreparationParams;
   expand: () => ReturnType<typeof expandCreateBuilderLateTransitive>;
@@ -120,8 +120,8 @@ function preparation(groups: ExternalCallUtxoGroup[]): {
   };
   const params = {
     externalCallUtxoGroups: groups, lowLevelCallUtxoGroups: [],
-    preparedAtomicNodes: nodes,
-    preparedAtomicNodeByExternalGroup: new Map(groups.map((_, index) => [index, index + 1])),
+    preparedCallNodes: nodes,
+    preparedCallNodeByExternalGroup: new Map(groups.map((_, index) => [index, index + 1])),
     publicSelfAddress: new Uint8Array([0x51]),
     bags: {
       allGroupEcSlots: groups.map(() => ({ requiredDataNftIndices: [] })),

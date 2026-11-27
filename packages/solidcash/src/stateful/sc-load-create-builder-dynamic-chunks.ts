@@ -15,7 +15,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { vmapCounterPermutationSpec } from './internal-function-args.js';
-import { visibleHandlerInputs } from './route-expression-key.js';
+import { visibleHandlerInputs } from './call-expression-key.js';
 import { type FunctionArgument, eventValueOfSource } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import {

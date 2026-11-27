@@ -60,15 +60,15 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
   groupProxyMasterIndices: number[];
   delegateExternalGroupIndices: Map<number, number[]>;
   delegateExternalGroupByCallsite: Map<number, Map<number, number>>;
-  routeValueChunkProducerEpochByPhysicalGroup: WeakMap<ExternalCallUtxoGroup, number>;
+  valueChunkProducerEpochByPhysicalGroup: WeakMap<ExternalCallUtxoGroup, number>;
   lateTransitiveGroupIndices: Set<number>;
   nestedDelegateProxyGroupByLowLevel: Map<number, number>;
   selectActiveRootDelegateGroup: () => number | undefined;
-  preparedAtomicNodes: any[] | undefined;
-  preparedAtomicNodeByExternalGroup: Map<number, number>;
-  latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
+  preparedCallNodes: any[] | undefined;
+  preparedCallNodeByExternalGroup: Map<number, number>;
+  latestPreparedCallNodeByPhysicalGroup: Map<number, number>;
   preparedChildProducerPath: (
-    parent: PreparedAtomicNode | undefined,
+    parent: PreparedCallNode | undefined,
     source: Pick<Parameters<typeof deriveValueChunkProducerChildPath>[0],
     'sourceCallsiteId' | 'sourceLogicalIndex' | 'occurrenceIndex' | 'sourceEffectOrdinal'>,
   ) => ValueChunkProducerPathDisposition;
@@ -76,7 +76,7 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
 };
 
 /** The forwarded delegate frame (index 0, parent null), a call it makes (parent 0), or a call that call makes. */
-export type PreparedAtomicNode = {
+export type PreparedCallNode = {
   contract: any;
   functionName: string;
   selector?: string;
@@ -297,7 +297,7 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
   const delegateExternalGroupIndices = new Map<number, number[]>();
   const delegateExternalGroupByCallsite = new Map<number, Map<number, number>>();
   /** Latest logical writer allowed to publish producer metadata onto one shared physical call owner. */
-  const routeValueChunkProducerEpochByPhysicalGroup = new WeakMap<ExternalCallUtxoGroup, number>();
+  const valueChunkProducerEpochByPhysicalGroup = new WeakMap<ExternalCallUtxoGroup, number>();
   const lateTransitiveGroupIndices = new Set<number>();
   const nestedDelegateProxyGroupByLowLevel = new Map<number, number>();
   const selectActiveRootDelegateGroup = (): number | undefined => {
@@ -314,13 +314,13 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
       candidateIndexes,
     });
   };
-  let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
+  let preparedCallNodes: PreparedCallNode[] | undefined;
   // The node of the call each external group carries, where the late pass parents the calls that call makes.
-  const preparedAtomicNodeByExternalGroup = new Map<number, number>();
+  const preparedCallNodeByExternalGroup = new Map<number, number>();
   // Reused physical groups point at the latest reached callsite, so a later sequential row is copied wholly from
   // one stable node rather than mixing mutable physical arguments with the selector/path of the first call that
   // happened to allocate the group.
-  const latestPreparedAtomicNodeByPhysicalGroup = new Map<number, number>();
+  const latestPreparedCallNodeByPhysicalGroup = new Map<number, number>();
   const preparedChildProducerPath: PrepareCreateBuilderLowLevelNestedCachesResult['preparedChildProducerPath'] = (
     parent,
     source,
@@ -369,13 +369,13 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
     groupProxyMasterIndices,
     delegateExternalGroupIndices,
     delegateExternalGroupByCallsite,
-    routeValueChunkProducerEpochByPhysicalGroup,
+    valueChunkProducerEpochByPhysicalGroup,
     lateTransitiveGroupIndices,
     nestedDelegateProxyGroupByLowLevel,
     selectActiveRootDelegateGroup,
-    preparedAtomicNodes,
-    preparedAtomicNodeByExternalGroup,
-    latestPreparedAtomicNodeByPhysicalGroup,
+    preparedCallNodes,
+    preparedCallNodeByExternalGroup,
+    latestPreparedCallNodeByPhysicalGroup,
     preparedChildProducerPath,
     nestedFunderIndex,
   };

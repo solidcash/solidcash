@@ -79,7 +79,7 @@ export interface RepairNestedCalleeOutputsHost {
 export function repairNestedCalleeOutputs(
   host: RepairNestedCalleeOutputsHost,
   builder: TransactionBuilder,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
   // A callee's identity anchor is permissionless to spend, so consuming it without recreating it would destroy
   // that contract's logical identity. Recreate each one verbatim, mirroring the input ordering.
@@ -163,7 +163,7 @@ export function repairNestedCalleeOutputs(
   if (host.logicalIdentityUtxo) {
     restoreIdentity(host.logicalIdentityUtxo);
   }
-  debugAtomicOutputStage('identity-anchors');
+  debugStatefulOutputStage('identity-anchors');
 
   // Nested callee entry NFTs can sit outside that callee's published input block.
   // Recreate any
@@ -208,7 +208,7 @@ export function repairNestedCalleeOutputs(
       token: cloneToken(input.token),
     });
   }
-  debugAtomicOutputStage('nested-mutable-recreation');
+  debugStatefulOutputStage('nested-mutable-recreation');
 
   // Nested publishJobEvent emits at implInput+event.offset (delegate output-only
   // slots are implementation-relative). Identity anchors that landed on that
@@ -404,12 +404,12 @@ export function repairNestedCalleeOutputs(
       else builder.outputs[outputIndex] = placed;
     }
   }
-  debugAtomicOutputStage('delegate-events-and-entries');
+  debugStatefulOutputStage('delegate-events-and-entries');
 
   // Nested publishJobEvent pins value chunks at the covenant's trailing base
   // (proxy/master + blockSize), which is below impl+blockSize when the
   // implementation sits after the proxy block. Materialize every recovered
-  // pin; extractRouteChunkPin already rejected non-chunk OUTPUTBYTECODE checks.
+  // pin; extractValueChunkPin already rejected non-chunk OUTPUTBYTECODE checks.
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
     // The balanced route owns its trailing dynamic-resource frame. Replaying the legacy absolute
     // delegate placement would duplicate those chunks beyond the route block.
@@ -474,13 +474,13 @@ export function repairNestedCalleeOutputs(
       else builder.outputs[outputIndex] = placed;
     }
   }
-  debugAtomicOutputStage('delegate-derived-chunk-placement');
+  debugStatefulOutputStage('delegate-derived-chunk-placement');
   host.applyDerivedValueChunks(builder);
-  debugAtomicOutputStage('derived-value-chunk-placement');
+  debugStatefulOutputStage('derived-value-chunk-placement');
   for (const identity of displacedDelegateIdentities) {
     builder.addOutput(identity);
   }
-  debugAtomicOutputStage('displaced-delegate-identities');
+  debugStatefulOutputStage('displaced-delegate-identities');
   for (let index = 0; index < Math.min(host.allInputs.length, builder.outputs.length); index++) {
     const input = host.allInputs[index];
     const output = builder.outputs[index];
@@ -530,5 +530,5 @@ export function repairNestedCalleeOutputs(
       if (candidates[0].token?.nft?.commitment !== sourceHex) candidates[0].token = cloneToken(source.token);
     }
   }
-  debugAtomicOutputStage('nested-state-restoration');
+  debugStatefulOutputStage('nested-state-restoration');
 }

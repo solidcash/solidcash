@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose selectedLayout slot assembly + primary publish.
  */
 
-import { foldRouteStoredValues, type StoredValueMutationRow } from './fold-route-stored-values.js';
+import { foldStoredValues, type StoredValueMutationRow } from './fold-stored-values.js';
 import type { StoredValueIncomingEntry } from './sc-encode-stored-element-source.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
@@ -41,9 +41,9 @@ import {
 import {
   concatenateEncodedArrays,
   deriveChunkableArrayValueChannels,
-  foldLeadingRouteArrayPushes,
-} from './resource-fold-route.js';
-import { entryAccessAt, resolvePreparedProducerEntry, resolveRouteRowExpressionKey } from './route-expression-key.js';
+  foldLeadingRowArrayPushes,
+} from './resource-fold.js';
+import { entryAccessAt, resolvePreparedProducerEntry, resolveRouteRowExpressionKey } from './call-expression-key.js';
 import {
   SortedList, getCachedSortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
 } from './SortedList.js';
@@ -99,10 +99,10 @@ export type AssembleCreateBuilderNestedComposeSlotsBags = {
     blockSlot: number; outputBlockSlot: number;
     commitment?: string; newCommitment?: string;
   }>;
-  routeValueChunkProducerAliases: ExternalCallUtxoGroup[];
-  routeValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
-  routeValueChunkProducerEpoch: number | undefined;
-  refreshChunkableRouteWitnesses: ((...args: any[]) => any) | undefined;
+  childValueChunkProducerAliases: ExternalCallUtxoGroup[];
+  childValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
+  childValueChunkProducerEpoch: number | undefined;
+  refreshChunkableChildWitnesses: ((...args: any[]) => any) | undefined;
 };
 
 /**
@@ -137,7 +137,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
     timingEnabled: boolean;
     bags: AssembleCreateBuilderNestedComposeSlotsBags;
     // Closures / caches from outer nested-compose scope:
-    publishRouteValueChunkProducerBinding: (binding: any) => void;
+    publishChildValueChunkProducerBinding: (binding: any) => void;
     nestedSortedListCache: Map<string, SortedList>;
     nestedAddressUtxos: (address: string) => Promise<Utxo[]>;
     evaluateProxyRead?: (...args: any[]) => Promise<any>;
@@ -154,7 +154,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
     childRequired, childLayout,
     routePlanningArgs, proxyImplementationState, delegateCallGroupIndex,
     childExternalGroupIndex, externalCallUtxoGroups, lowLevelCallUtxoGroups, timingEnabled,
-    bags, publishRouteValueChunkProducerBinding,
+    bags, publishChildValueChunkProducerBinding,
     nestedSortedListCache, nestedAddressUtxos,
   } = params;
   // Outer nested-compose locals (passed through the index signature).
@@ -162,7 +162,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
   const delegateCallerIdentity = params.delegateCallerIdentity as {
     lockingBytecode: string;
   };
-  const sharedPriorAtomicNode = params.sharedPriorAtomicNode as any;
+  const sharedPriorCallNode = params.sharedPriorCallNode as any;
   const sharedPriorFunctionName = params.sharedPriorFunctionName as string | undefined;
   const sharedPriorFunctionArgs = params.sharedPriorFunctionArgs as FunctionArgument[] | undefined;
   const sharedPriorDelegateFunctionName = params.sharedPriorDelegateFunctionName as
@@ -199,14 +199,14 @@ export async function assembleCreateBuilderNestedComposeSlots(
   const childBatchEntryLockingBytecodes = bags.childBatchEntryLockingBytecodes;
   const childBatchEntryCommitments = bags.childBatchEntryCommitments;
   const childPlannedEntryInserts = bags.childPlannedEntryInserts;
-  let routeValueChunkProducerAliases = bags.routeValueChunkProducerAliases;
-  let routeValueChunkProducerPhysicalGroup = bags.routeValueChunkProducerPhysicalGroup;
-  let routeValueChunkProducerEpoch = bags.routeValueChunkProducerEpoch;
-  let refreshChunkableRouteWitnesses = bags.refreshChunkableRouteWitnesses;
+  let childValueChunkProducerAliases = bags.childValueChunkProducerAliases;
+  let childValueChunkProducerPhysicalGroup = bags.childValueChunkProducerPhysicalGroup;
+  let childValueChunkProducerEpoch = bags.childValueChunkProducerEpoch;
+  let refreshChunkableChildWitnesses = bags.refreshChunkableChildWitnesses;
 
   // Host aliases used by the body after host. → host. rewrite
   const markSharedFunder = host.markSharedFunder;
-  const routeDebugEnabled = (): boolean => {
+  const slotDebugEnabled = (): boolean => {
     const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
     return env?.SOLIDC_DEBUG_TRACE_CONCISE === '1'
       || env?.SOLIDC_DEBUG_COLLECTION_FETCH === '1';
@@ -388,7 +388,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-utxos-complete', {
               collection: access.collection, count: addressUtxos.length,
             });
-            if (routeDebugEnabled()) {
+            if (slotDebugEnabled()) {
               console.error('nested-entry-resolution', JSON.stringify({
                 collection: access.collection,
                 address,
@@ -472,7 +472,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   childValueWitnesses.set(slot.slotIndex ?? 0, joined);
                   if (present) childStoredValues.set(slot.slotIndex ?? 0, joined);
                 }
-                if (routeDebugEnabled()) {
+                if (slotDebugEnabled()) {
                   console.error('nested-value-witness', JSON.stringify({
                     collection: access.collection,
                     routeSlot: slot.slotIndex,
@@ -537,7 +537,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   newCommitment: binToHex(insertPlan.newNodeCommitment),
                 });
               }
-              if (routeDebugEnabled()) {
+              if (slotDebugEnabled()) {
                 console.error('nested-entry-pick', JSON.stringify({
                   collection: access.collection,
                   blockSlot: childBlockInputs.length,
@@ -582,15 +582,15 @@ export async function assembleCreateBuilderNestedComposeSlots(
     const insertBase = selectedLayout.trailingBase ?? selectedLayout.blockSize;
     // Materialize the old chunks in the same order as a direct call: read-only variables in ABI order, followed
     // by written variables in state declaration order. Each is a preservation spend, not a write-authorized one.
-    const routeDynamicWrites = selectedFn?.dynamicWrites ?? [];
-    const routeDynamicNames = [
-      ...(selectedFn?.dynamicReads ?? []).filter((name) => !routeDynamicWrites.includes(name)),
+    const calleeDynamicWrites = selectedFn?.dynamicWrites ?? [];
+    const calleeDynamicNames = [
+      ...(selectedFn?.dynamicReads ?? []).filter((name) => !calleeDynamicWrites.includes(name)),
       ...(childLayout.variables ?? [])
-        .filter((variable) => variable.dynamic && routeDynamicWrites.includes(variable.name))
+        .filter((variable) => variable.dynamic && calleeDynamicWrites.includes(variable.name))
         .map((variable) => variable.name),
     ];
     let dynamicChunkOffset = insertBase;
-    for (const name of routeDynamicNames) {
+    for (const name of calleeDynamicNames) {
       const variable = (childLayout.variables ?? []).find((candidate) => (
         candidate.dynamic && candidate.name === name
       ));
@@ -667,42 +667,42 @@ export async function assembleCreateBuilderNestedComposeSlots(
         ? externalCallUtxoGroups[sharedGroupIndex] : undefined;
       const sharedDelegate = delegateCallGroupIndex !== undefined
         ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : undefined;
-      const inheritedRouteInternalArgs = {
+      const inheritedInternalArgs = {
         ...sharedPrimary?.internalArgs,
         ...sharedDelegate?.internalArgs,
       };
-      const priorFunctionName = sharedPriorAtomicNode?.functionName
+      const priorFunctionName = sharedPriorCallNode?.functionName
         ?? sharedPriorDelegateFunctionName ?? sharedPriorFunctionName;
-      const priorFunctionArgs = sharedPriorAtomicNode?.args
+      const priorFunctionArgs = sharedPriorCallNode?.args
         ?? sharedPriorDelegateFunctionArgs ?? sharedPriorFunctionArgs;
       const sequentialRows = priorFunctionName
         && priorFunctionArgs && directInvocationRows?.length
         ? (() => {
-          const priorHandler = sharedPriorAtomicNode
+          const priorAbiFunction = sharedPriorCallNode
             ? resolvePreparedProducerEntry([
-              ...(sharedPriorAtomicNode.executionArtifact
-                ? [sharedPriorAtomicNode.executionArtifact] : []),
+              ...(sharedPriorCallNode.executionArtifact
+                ? [sharedPriorCallNode.executionArtifact] : []),
               sharedLogicalArtifact,
-            ], priorFunctionName, sharedPriorAtomicNode.selector)
+            ], priorFunctionName, sharedPriorCallNode.selector)
             : (sharedLogicalArtifact.abi as readonly AbiFunction[])
               .find((candidate) => candidate.name === priorFunctionName);
-          if (!priorHandler || !selectedFn) return undefined;
+          if (!priorAbiFunction || !selectedFn) return undefined;
           return [{
             args: priorFunctionArgs,
-            handler: priorHandler,
-            selector: sharedPriorAtomicNode?.selector ?? priorHandler.selector,
-            sourceCallsiteId: sharedPriorAtomicNode?.sourceCallsiteId,
-            sourceLogicalIndex: sharedPriorAtomicNode?.sourceLogicalIndex,
-            occurrenceIndex: sharedPriorAtomicNode?.occurrenceIndex,
-            sourceEffectOrdinal: sharedPriorAtomicNode?.sourceEffectOrdinal,
-            producerPath: sharedPriorAtomicNode?.producerPath,
+            handler: priorAbiFunction,
+            selector: sharedPriorCallNode?.selector ?? priorAbiFunction.selector,
+            sourceCallsiteId: sharedPriorCallNode?.sourceCallsiteId,
+            sourceLogicalIndex: sharedPriorCallNode?.sourceLogicalIndex,
+            occurrenceIndex: sharedPriorCallNode?.occurrenceIndex,
+            sourceEffectOrdinal: sharedPriorCallNode?.sourceEffectOrdinal,
+            producerPath: sharedPriorCallNode?.producerPath,
           }, ...directInvocationRows];
         })() : undefined;
       // A direct nested handler is still one authenticated graph row. Keep that exact callsite row
       // available to terminal producer selection; the selector resolver and producer path both fail
       // closed for overloaded or incompletely-coordinated edges.
       const discoveredProducerRows = sequentialRows ?? directInvocationRows;
-      refreshChunkableRouteWitnesses = (
+      refreshChunkableChildWitnesses = (
         rowArguments, finalVisibleArgs,
         refreshStagingSession = new ValueChunkWriteStagingSession(),
       ) => {
@@ -741,9 +741,9 @@ export async function assembleCreateBuilderNestedComposeSlots(
           if (collection.valueType.endsWith('[]')) {
             const leadingName = `__internal__leadingPushValue_${routeSlot}`;
             const completeName = `__internal__completePushValue_${routeSlot}`;
-            const inheritedLeading = inheritedRouteInternalArgs[leadingName];
-            const foldedRoute = effectiveRowArguments
-              ? foldLeadingRouteArrayPushes({
+            const inheritedLeading = inheritedInternalArgs[leadingName];
+            const foldedPushes = effectiveRowArguments
+              ? foldLeadingRowArrayPushes({
                 rowArguments: effectiveRowArguments,
                 collection: access.collection,
                 valueType: collection.valueType,
@@ -753,19 +753,19 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   recipeState,
                 ),
               }) : undefined;
-            const routeLeading = foldedRoute?.leading;
+            const foldedLeading = foldedPushes?.leading;
             const leadingPush = inheritedLeading instanceof Uint8Array
-              && inheritedLeading.length > 0 && routeLeading
-              ? concatenateEncodedArrays(inheritedLeading, routeLeading)
-              : routeLeading ?? (inheritedLeading instanceof Uint8Array
+              && inheritedLeading.length > 0 && foldedLeading
+              ? concatenateEncodedArrays(inheritedLeading, foldedLeading)
+              : foldedLeading ?? (inheritedLeading instanceof Uint8Array
                 ? inheritedLeading : undefined);
             if (leadingPush && leadingPush.length > 0) internalArgs[leadingName] = leadingPush;
-            if (foldedRoute?.complete && foldedRoute.complete.length > 0) {
-              const inheritedComplete = inheritedRouteInternalArgs[completeName];
+            if (foldedPushes?.complete && foldedPushes.complete.length > 0) {
+              const inheritedComplete = inheritedInternalArgs[completeName];
               internalArgs[completeName] = inheritedComplete instanceof Uint8Array
                 && inheritedComplete.length > 0
-                ? concatenateEncodedArrays(inheritedComplete, foldedRoute.complete)
-                : foldedRoute.complete;
+                ? concatenateEncodedArrays(inheritedComplete, foldedPushes.complete)
+                : foldedPushes.complete;
               internalArgs.__internal__completePushValue = internalArgs[completeName];
             }
             const emptyArray = encodePushdataValue([], collection.valueType, structs);
@@ -865,7 +865,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             };
             const targetSlot = childBatchTargets.get(access.slotIndex ?? routeSlot);
             nextValue = writes.length === 1 ? encodeRecipe(writes[0], incomingEntries)
-              : targetSlot ? foldRouteStoredValues({
+              : targetSlot ? foldStoredValues({
                 writes, collection, targetSlot, incomingEntries, artifact: sharedLogicalArtifact,
                 state: childState.state, encode: encodeRecipe,
               }) : undefined;
@@ -876,9 +876,9 @@ export async function assembleCreateBuilderNestedComposeSlots(
           // `leadingPushValue_N` carries prior selected-row mutations, and this
           // derived `nextValue` owns only continuation output/persistence data.
           if (nextValue && nextValue.length > VALUE_INLINE_LIMIT) {
-            const physicalRouteSlot = access.slotIndex ?? routeSlot;
+            const physicalEntrySlot = access.slotIndex ?? routeSlot;
             const blockSlot = selectedLayout.slots.find((slot) =>
-              slot.kind === 'entry' && slot.slotIndex === physicalRouteSlot)?.offset;
+              slot.kind === 'entry' && slot.slotIndex === physicalEntrySlot)?.offset;
             const insert = blockSlot === undefined ? undefined
               : childPlannedEntryInserts.find((planned) => planned.blockSlot === blockSlot);
             const commitment = insert?.newCommitment
@@ -888,7 +888,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               ? hexToBin(commitment) : commitment;
             // A missing entry's input is its predecessor, not the target key. Fixed route geometry
             // may already have consumed the insertion plan; retain the authenticated key selection.
-            const targetKey = childBatchTargets.get(physicalRouteSlot)
+            const targetKey = childBatchTargets.get(physicalEntrySlot)
               ?? (commitmentBytes && commitmentBytes.length >= 32
                 ? decodeEntryCommitment(commitmentBytes).slot : undefined);
             const inserting = targetKey && childBatchLists.get(access.collection)
@@ -900,7 +900,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               collectionHash: binToHex(computeCollectionHash(collection.signature)),
               keySlot: binToHex(targetKey),
               entryAccessSlot: routeSlot,
-              routeSlot: physicalRouteSlot,
+              routeSlot: physicalEntrySlot,
               operation: inserting ? 'insert' : 'update',
               outputBase: -1,
               outputCount: 0,
@@ -969,7 +969,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
           }
           encodedPayloadBytes = Math.max(encodedPayloadBytes, payloadBytes);
         }
-        publishRouteValueChunkProducerBinding(
+        publishChildValueChunkProducerBinding(
           producerStateOwner && producerClaims.length > 0 ? {
             claims: Object.freeze([...producerClaims]),
             stateOwner: Object.freeze({ ...producerStateOwner }),
@@ -977,7 +977,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         );
         return { internalArgs, payloadBytes: encodedPayloadBytes };
       };
-      const refreshed = refreshChunkableRouteWitnesses(
+      const refreshed = refreshChunkableChildWitnesses(
         discoveredProducerRows,
         routePlanningArgs,
         valueChunkWriteStagingSession,
@@ -1336,10 +1336,10 @@ export async function assembleCreateBuilderNestedComposeSlots(
   // Repack bags
   bags.childBlockInputs = childBlockInputs;
   bags.childValueChunkSlots = childValueChunkSlots;
-  bags.routeValueChunkProducerAliases = routeValueChunkProducerAliases;
-  bags.routeValueChunkProducerPhysicalGroup = routeValueChunkProducerPhysicalGroup;
-  bags.routeValueChunkProducerEpoch = routeValueChunkProducerEpoch;
-  bags.refreshChunkableRouteWitnesses = refreshChunkableRouteWitnesses;
+  bags.childValueChunkProducerAliases = childValueChunkProducerAliases;
+  bags.childValueChunkProducerPhysicalGroup = childValueChunkProducerPhysicalGroup;
+  bags.childValueChunkProducerEpoch = childValueChunkProducerEpoch;
+  bags.refreshChunkableChildWitnesses = refreshChunkableChildWitnesses;
 
   return { bags, childRelativeOutputInternalArgs };
 }

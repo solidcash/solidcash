@@ -26,10 +26,10 @@ import {
 import { DeferredTransitiveReturnProbeError } from './sc-discover-create-builder-transitive-external-calls.js';
 import { encodeExternalReturnValues } from './external-return-encoding.js';
 import {
-  createGraphPlanningProducerResultContext,
-  memoizeGraphPlanningProducerResult,
-  type GraphPlanningProducerResultContext,
-} from './graph-planning-producer-result.js';
+  createCallPlanningProducerResultContext,
+  memoizeCallPlanningProducerResult,
+  type CallPlanningProducerResultContext,
+} from './call-planning-producer-result.js';
 import { externalResultUsesEvmWords } from './solidityAbi.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
 import type {
@@ -151,7 +151,7 @@ export async function resolveExternalExpressionReturns(
   executionSelfAddress?: FunctionArgument,
   producerCalls?: readonly ExternalCallAbi[],
   allowProvisional = false,
-  planningContext: GraphPlanningProducerResultContext = createGraphPlanningProducerResultContext(),
+  planningContext: CallPlanningProducerResultContext = createCallPlanningProducerResultContext(),
   consumer?: {
     callsiteId?: number;
     resultConsumers?: readonly ExternalResultConsumerAbi[];
@@ -452,7 +452,7 @@ export async function resolveExternalExpressionReturns(
       const planningBound = producer.interfaceName === '__raw__'
         ? rawTarget : registeredTarget(producer.interfaceName, target);
       const planningTarget = target ?? connectedPlanningCategory(planningBound);
-      return await memoizeGraphPlanningProducerResult(
+      return await memoizeCallPlanningProducerResult(
         planningContext,
         callsiteId,
         values,

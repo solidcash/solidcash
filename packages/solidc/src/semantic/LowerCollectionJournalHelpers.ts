@@ -88,7 +88,7 @@ interface MultiCandidate {
 }
 
 /** The helper name a diagnostic shows: the name without a `_self_alias` suffix. */
-const sourceHandlerName = (name: string): string => name.replace(/_self_alias$/, '');
+const sourceFunctionName = (name: string): string => name.replace(/_self_alias$/, '');
 
 interface ActiveMultiCacheLocal {
   entry: JournalEntry;
@@ -287,16 +287,16 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (reach.via) {
         throwJournalDiagnostic(
           'JOURNAL_LAYOUT',
-          `Handler '${sourceHandlerName(fn.name)}' writes unbounded bytes/string state and also reaches a `
+          `Handler '${sourceFunctionName(fn.name)}' writes unbounded bytes/string state and also reaches a `
           + 'collection entry. The dynamic-storage journal and the collection journal do not share one exit, '
           + 'so this handler cannot flush both; split the unbounded write and the collection access into '
           + 'separate handlers'
           + (reach.via === fn.name ? '' : ` (the collection entry is reached through '${
-            sourceHandlerName(reach.via)}')`),
+            sourceFunctionName(reach.via)}')`),
           {
             gate: 'journal-exit-split',
-            handler: sourceHandlerName(fn.name),
-            via: sourceHandlerName(reach.via),
+            handler: sourceFunctionName(fn.name),
+            via: sourceFunctionName(reach.via),
           },
         );
       }
@@ -455,11 +455,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (hasEarlyReturn) {
         throwJournalDiagnostic(
           'JOURNAL_LAYOUT',
-          `Collection journal helper '${sourceHandlerName(fn.name)}' cannot contain an early return; `
+          `Collection journal helper '${sourceFunctionName(fn.name)}' cannot contain an early return; `
           + 'its journalled entry values are flushed only at the single function exit',
           {
             gate: 'journal-early-return',
-            handler: sourceHandlerName(fn.name),
+            handler: sourceFunctionName(fn.name),
           },
         );
       }

@@ -18,7 +18,7 @@ import {
   assignPhysicalReturnIndices,
   lastCollidingMutableWriterIndex,
 } from './physical-return-layout.js';
-import { visibleHandlerInputs } from './route-expression-key.js';
+import { visibleHandlerInputs } from './call-expression-key.js';
 import { tokenContainerKeyValue } from './sc-load-create-builder-token-containers.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';

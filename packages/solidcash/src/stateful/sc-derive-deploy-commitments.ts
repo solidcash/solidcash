@@ -47,7 +47,7 @@ import {
 } from './covenant-helpers.js';
 import { probeRequireStatement } from './external-return-encoding.js';
 import { reduceProbeTrace } from './faithful-probe-trace.js';
-import { evalComputedKey } from './route-expression-key.js';
+import { evalComputedKey } from './call-expression-key.js';
 import {
   bytesToSlotValue,
   decodeEntryCommitment,

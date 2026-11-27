@@ -14,7 +14,7 @@ import { blockClockState, executingOraclePool } from './block-clock-state.js';
 import { callGuardText } from './call-guard-text.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { createGraphPlanningProducerResultContext } from './graph-planning-producer-result.js';
+import { createCallPlanningProducerResultContext } from './call-planning-producer-result.js';
 import {
   resolvePreparedDelegateExecution,
   resolvePreparedDelegateOwnerFrame,
@@ -51,8 +51,8 @@ export type MaterializeCreateBuilderLowLevelStatefulCallResult = {
   delegateCallerIdentity: { categoryId: string; lockingBytecode: string } | undefined;
   /** The state the delegate's own calls are planned in: the owner's, with the clock the implementation reads. */
   delegateState: Record<string, unknown>;
-  graphPlanningResults: ReturnType<typeof createGraphPlanningProducerResultContext>;
-  preparedAtomicNodes: any[] | undefined;
+  callPlanningResults: ReturnType<typeof createCallPlanningProducerResultContext>;
+  preparedCallNodes: any[] | undefined;
   nestedIndices: number[];
   nestedByCallsite: Map<number, number>;
 };
@@ -83,7 +83,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     functionName: string;
     args: readonly any[];
     callIndex: number;
-    preparedAtomicNodes: any[] | undefined;
+    preparedCallNodes: any[] | undefined;
     rootProducerPath: ValueChunkProducerPathDisposition;
     publicSelfAddress: Uint8Array;
     authenticatedSelfAddress: Uint8Array;
@@ -98,7 +98,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     rootProducerPath, publicSelfAddress, authenticatedSelfAddress, onChainState,
     incomingCallerAddress,
   } = params;
-  let preparedAtomicNodes = params.preparedAtomicNodes;
+  let preparedCallNodes = params.preparedCallNodes;
 
   const bState = callInfo.contract.inner.artifact.delegateOnly
     ? await host.getMasterOnlyState(callInfo.contract)
@@ -161,8 +161,8 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       delegateSelfAddress: new Uint8Array(),
       delegateCallerIdentity: undefined,
       delegateState: onChainState.state,
-      graphPlanningResults: createGraphPlanningProducerResultContext(),
-      preparedAtomicNodes,
+      callPlanningResults: createCallPlanningProducerResultContext(),
+      preparedCallNodes,
       nestedIndices: [],
       nestedByCallsite: new Map(),
     };
@@ -176,7 +176,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   > | undefined;
   const nestedIndices: number[] = [];
   const nestedByCallsite = new Map<number, number>();
-  if (!preparedAtomicNodes && abiFunction) {
+  if (!preparedCallNodes && abiFunction) {
   // A compiler-published forwarding frame is the complete semantic criterion: one unconditional,
   // terminal delegatecall of an untouched bytes parameter to an address-committed target. Resolve
   // that payload back to the exact eligible implementation row. Generated-proxy and user-authored
@@ -219,7 +219,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
         lowLevelCallUtxoGroups[delegateGroupIndex]!, promotedDelegateOwnerFrame,
       );
       delegateFn = promotedDelegateOwnerFrame.abiFunction;
-      preparedAtomicNodes = [{
+      preparedCallNodes = [{
         contract: host.selfContract,
         functionName: promoted.functionName,
         selector: promoted.selector,
@@ -263,7 +263,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   );
   // One compiler function owns one stable callsite namespace. Share producer work across its predicate,
   // argument, graph-seeding, and return-carrier passes for this build epoch.
-  const graphPlanningResults = createGraphPlanningProducerResultContext();
+  const callPlanningResults = createCallPlanningProducerResultContext();
   // The implementation input authenticates code execution, but Solidity-visible calls execute in the
   // proxy/state-owner context. Storage and executor identities remain separately pinned by the delegate block.
   const storedLogical = host.selfContract?._logicalAddress as string | undefined;
@@ -346,7 +346,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       delegateSelfAddress,
       publishedNestedExternalCalls,
       false,
-      graphPlanningResults,
+      callPlanningResults,
       {
         callsiteId: nested.callsiteId,
         resultConsumers: delegateFn?.resultConsumers,
@@ -398,8 +398,8 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     delegateSelfAddress,
     delegateCallerIdentity,
     delegateState,
-    graphPlanningResults,
-    preparedAtomicNodes,
+    callPlanningResults,
+    preparedCallNodes,
     nestedIndices,
     nestedByCallsite,
   };

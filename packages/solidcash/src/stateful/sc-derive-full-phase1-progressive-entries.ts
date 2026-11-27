@@ -21,13 +21,13 @@ import {
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import {
-  progressiveRouteProbePassLimit,
-  routeProbeEntrySlotOffsetForOutput,
-  routeProbeRepairableEntryCoordinateCount,
-  type RouteProbeObservationHistory,
-} from './route-probe-progress.js';
-import { entryAccessAt } from './route-expression-key.js';
-import { deriveRouteValueChunks } from './route-value-chunk-helpers.js';
+  progressiveEntryProbePassLimit,
+  entryProbeSlotOffsetForOutput,
+  entryProbeRepairableCoordinateCount,
+  type EntryProbeObservationHistory,
+} from './entry-probe-progress.js';
+import { entryAccessAt } from './call-expression-key.js';
+import { deriveValueChunks } from './value-chunk-trace-helpers.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
@@ -98,7 +98,7 @@ export function deriveFullPhase1ProgressiveEntries(
     }
     const embeddedDelegate = group.delegateCallGroupIndex === undefined
       ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
-    const repairableEntryCoordinateCount = routeProbeRepairableEntryCoordinateCount(
+    const repairableEntryCoordinateCount = entryProbeRepairableCoordinateCount(
       group, embeddedDelegate,
     );
     // A covenant stops at the first mismatching entry output, so one
@@ -108,12 +108,12 @@ export function deriveFullPhase1ProgressiveEntries(
     // Probe progress is resource-based, not setter-based. A long value is recovered as one complete run;
     // physical output replacement must never extend its own convergence budget.
     const valueChunkWritesForProbe = group.valueChunkWrites ?? describeValueChunkWrites(group);
-    const routeProbeObservations: RouteProbeObservationHistory = new Map();
-    const routeProbeTransactions = new Set<string>();
-    const routeProbePassLimit = progressiveRouteProbePassLimit(
+    const entryProbeObservations: EntryProbeObservationHistory = new Map();
+    const entryProbeTransactions = new Set<string>();
+    const entryProbePassLimit = progressiveEntryProbePassLimit(
       repairableEntryCoordinateCount, valueChunkWritesForProbe,
     );
-    routeProbeTransactions.add(binToHex(encodeTransaction(entryTransaction)));
+    entryProbeTransactions.add(binToHex(encodeTransaction(entryTransaction)));
     // A direct call can write several mapping entries too (for example, allowance + two balances). Its
     // first faithful trace already reveals the first mismatch, so install that observation and rebuild
     // before entering the same progressive loop used by routed calls. Otherwise the accepted transaction
@@ -135,10 +135,10 @@ export function deriveFullPhase1ProgressiveEntries(
           sourceOutputs: generateLibauthSourceOutputs(entryProbe.inputs),
           transaction: entryTransaction,
         });
-        routeProbeTransactions.add(binToHex(encodeTransaction(entryTransaction)));
+        entryProbeTransactions.add(binToHex(encodeTransaction(entryTransaction)));
       }
     }
-    for (let pass = 0; entrySlotCount > 0 && pass < routeProbePassLimit; pass++) {
+    for (let pass = 0; entrySlotCount > 0 && pass < entryProbePassLimit; pass++) {
       const revealed = extractCommitmentMapFromTrace(entryTrace,
         { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -173,7 +173,7 @@ export function deriveFullPhase1ProgressiveEntries(
           && outputIndex === bOutputBase + planned.blockSlot
           && planned.commitment?.toLowerCase() === commitment.toLowerCase()
         ))) continue;
-        const blockSlot = routeProbeEntrySlotOffsetForOutput(outputIndex, [
+        const blockSlot = entryProbeSlotOffsetForOutput(outputIndex, [
           { base: bOutputBase, slots: group.blockLayout.slots },
           { base: delegateImplIndex, slots: delegateImplFn?.blockLayout?.slots },
         ]);
@@ -206,27 +206,27 @@ export function deriveFullPhase1ProgressiveEntries(
           )) progressed = true;
         }
       }
-      const chunkProgress = deriveRouteValueChunks(
-        group, bOutputBase, entryTrace, stb, routeProbeObservations,
+      const chunkProgress = deriveValueChunks(
+        group, bOutputBase, entryTrace, stb, entryProbeObservations,
       );
       if (chunkProgress.changed) progressed = true;
       if (!progressed) break;
       const nextProbe = stb.build();
       const nextTransaction = nextProbe.buildLibauthTransaction();
       const nextFingerprint = binToHex(encodeTransaction(nextTransaction));
-      if (routeProbeTransactions.has(nextFingerprint)) {
+      if (entryProbeTransactions.has(nextFingerprint)) {
         // A repeated physical transaction is a FIXED POINT: this pass applied every observation the trace
         // revealed and the built transaction is unchanged, so further probing cannot reveal anything new.
         // Accepting it is what "converged" means; the previous guard treated convergence as failure and
         // told the caller to supply state manually.
         break;
       }
-      if (pass + 1 === routeProbePassLimit) {
+      if (pass + 1 === entryProbePassLimit) {
         throw new Error(
-          `Route probe convergence exhausted after ${routeProbePassLimit} passes.`,
+          `Route probe convergence exhausted after ${entryProbePassLimit} passes.`,
         );
       }
-      routeProbeTransactions.add(nextFingerprint);
+      entryProbeTransactions.add(nextFingerprint);
       entryTrace = evaluateProbeTrace(host.inner.provider, {
         inputIndex: bMasterIdx,
         sourceOutputs: generateLibauthSourceOutputs(nextProbe.inputs),

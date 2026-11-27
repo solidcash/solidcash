@@ -2,7 +2,7 @@ import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
 import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { evalComputedKey } from '../../src/stateful/StatefulContract.js';
-import { evalComputedKey as evalRouteComputedKey } from '../../src/stateful/route-expression-key.js';
+import { evalComputedKey as evalRouteComputedKey } from '../../src/stateful/call-expression-key.js';
 
 describe('computed entry keys from conditional state reads', () => {
   it.each([true, false])('selects the declared branch of an equality predicate (%s)', (equal) => {

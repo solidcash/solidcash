@@ -18,7 +18,7 @@ import {
 } from './authenticated-collection-value.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
-import { entryAccessAt } from './route-expression-key.js';
+import { entryAccessAt } from './call-expression-key.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentsFromTrace } from './trace-commitment-helpers.js';
 import { commitmentsToState } from './trace-verified-value-helpers.js';

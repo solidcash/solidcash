@@ -1,15 +1,15 @@
 import type { AbiFunction } from '@solidcash/utils';
 
 /**
- * The route-wide union determines physical run order, not which runs this envelope mutates. An explicitly
- * empty per-handler write list is authoritative. Only missing legacy metadata needs the broad fallback.
+ * The call-wide union determines physical run order, not which runs this envelope mutates. An explicitly
+ * empty per-function write list is authoritative. Only missing legacy metadata needs the broad fallback.
  */
 export function resolveSelectedDynamicWrites(
-  routeWrites: readonly string[],
-  selectedHandlers: readonly Pick<AbiFunction, 'dynamicWrites'>[] | undefined,
+  allDynamicWrites: readonly string[],
+  selectedFunctions: readonly Pick<AbiFunction, 'dynamicWrites'>[] | undefined,
 ): readonly string[] {
-  if (selectedHandlers === undefined || selectedHandlers.some((handler) => handler.dynamicWrites === undefined)) {
-    return routeWrites;
+  if (selectedFunctions === undefined || selectedFunctions.some((handler) => handler.dynamicWrites === undefined)) {
+    return allDynamicWrites;
   }
-  return [...new Set(selectedHandlers.flatMap((handler) => handler.dynamicWrites ?? []))];
+  return [...new Set(selectedFunctions.flatMap((handler) => handler.dynamicWrites ?? []))];
 }

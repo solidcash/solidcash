@@ -13,7 +13,7 @@ import {
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { generateLibauthSourceOutputs, scriptToLockingBytecode } from '../utils.js';
-import { isCompilerDescribedRouteEventCommitment } from './compiler-described-route-event.js';
+import { isCompilerDescribedEventCommitment } from './compiler-described-event.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import {
@@ -136,7 +136,7 @@ export function learnFinalizedDelegateEvents(
         const actual = String(builder.outputs[outputIndex]?.token?.nft?.commitment ?? '');
         const commitment = observations.get(outputIndex)
           ?? extractExpectedOutputCommitmentFromTrace(trace, outputIndex, actual);
-        if (!isCompilerDescribedRouteEventCommitment(commitment, {
+        if (!isCompilerDescribedEventCommitment(commitment, {
           compilerOwnedEventSlot: true,
           eventSignature: emit.eventSignature,
         })) continue;

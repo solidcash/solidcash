@@ -822,23 +822,23 @@ export function buildInputs(
     // order previously appended every funder after dynamic chunks, placing an old chunk one index too low on the
     // second read-modify-write. Consume only the funders needed to complete the fixed implementation block here;
     // leave fee/change funders at the tail.
-    const routeDelegateIndex = host.activeDelegateGroupIndex !== undefined
+    const activeDelegateIndex = host.activeDelegateGroupIndex !== undefined
       ? (associatedDelegates.has(host.activeDelegateGroupIndex) ? -1 : host.activeDelegateGroupIndex)
       : host.lowLevelCallUtxoGroups.findIndex((group, index) =>
         group.callMode === 'delegatecall' && !associatedDelegates.has(index));
-    const routeDelegate = routeDelegateIndex >= 0 ? host.lowLevelCallUtxoGroups[routeDelegateIndex] : undefined;
-    const routeDelegateInputIndex = routeDelegate?.masterUtxo
-      ? prefix.findIndex((input) => input.txid.toLowerCase() === routeDelegate.masterUtxo!.txid.toLowerCase()
-        && input.vout === routeDelegate.masterUtxo!.vout)
+    const activeDelegate = activeDelegateIndex >= 0 ? host.lowLevelCallUtxoGroups[activeDelegateIndex] : undefined;
+    const activeDelegateInputIndex = activeDelegate?.masterUtxo
+      ? prefix.findIndex((input) => input.txid.toLowerCase() === activeDelegate.masterUtxo!.txid.toLowerCase()
+        && input.vout === activeDelegate.masterUtxo!.vout)
       : -1;
-    const delegateAbiFunction = routeDelegate?.externalContract?.inner.artifact.abi.find(
-      (fn: AbiFunction) => fn.name === routeDelegate.functionName,
+    const delegateAbiFunction = activeDelegate?.externalContract?.inner.artifact.abi.find(
+      (fn: AbiFunction) => fn.name === activeDelegate.functionName,
     );
     const delegateLayout = delegateAbiFunction?.blockLayout;
     const trailingBase = delegateLayout?.trailingBase ?? delegateLayout?.blockSize
       ?? host.blockLayout?.trailingBase ?? host.blockLayout?.blockSize;
-    const expectedDynamicIndex = routeDelegateInputIndex >= 0 && trailingBase !== undefined
-      ? routeDelegateInputIndex + trailingBase
+    const expectedDynamicIndex = activeDelegateInputIndex >= 0 && trailingBase !== undefined
+      ? activeDelegateInputIndex + trailingBase
       : prefix.length;
     const delegatedLoopOutputCount = host.delegateLoopEntryVars().reduce(
       (sum, variable) => sum + (host.loopEntryCommitments.get(variable.collection) ?? []).length,
@@ -870,7 +870,7 @@ export function buildInputs(
     const fixedPaddingCount = alignmentPaddingCount + surplusPaddingCount;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_INPUTS === '1') {
       console.error('delegate-trailing-input-geometry', {
-        routeDelegateIndex, routeDelegateInputIndex, delegateBlockSize: delegateLayout?.blockSize,
+        activeDelegateIndex, activeDelegateInputIndex, delegateBlockSize: delegateLayout?.blockSize,
         builderBlockSize: host.blockLayout?.blockSize, trailingBase, prefix: prefix.length,
         expectedDynamicIndex, alignmentPaddingCount, surplusPaddingCount, fixedPaddingCount,
         dynamicChunks: host.dynamicChunkInputs.length,

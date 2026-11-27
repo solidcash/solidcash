@@ -10,7 +10,7 @@ import {
   createEntryNftUnlocker,
 } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { entryAccessAt } from './route-expression-key.js';
+import { entryAccessAt } from './call-expression-key.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 

@@ -13,7 +13,7 @@ import { addressMappingKeyCandidates } from './sc-address-mapping-key-candidates
 import {
   canonicalAbiFunctionSignature,
   visibleHandlerInputs,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
 import { decorateStateAccessorResult, indexStateAccessorValue } from './public-result.js';
 import type { DeployFunctionCall, StatefulFunctionCall, TokenContainerAccessor } from './StatefulContract.js';

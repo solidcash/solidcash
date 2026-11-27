@@ -12,7 +12,7 @@ import {
 } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { generateLibauthSourceOutputs, scriptToLockingBytecode } from '../utils.js';
-import { isCompilerDescribedRouteEventCommitment } from './compiler-described-route-event.js';
+import { isCompilerDescribedEventCommitment } from './compiler-described-event.js';
 import { calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   extractEvmScalarReturnCommitment,
@@ -56,7 +56,7 @@ export function deriveFullPhase1ReturnAndEvents(
   bMasterIdx: number,
 ): void {
   const ec = { hasReturnValues };
-  const routeReturnDebugEnabled = (): boolean => {
+  const returnDebugEnabled = (): boolean => {
     const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
     return env?.SOLIDC_DEBUG_TRACE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
   };
@@ -360,7 +360,7 @@ export function deriveFullPhase1ReturnAndEvents(
         for (let ei = 0; ei < eventSlots.length; ei++) {
           const emitInfo = bEmits[ei];
           const commitment = eventCommitments.get(eventOutputBase + eventSlots[ei].offset);
-          if (emitInfo && isCompilerDescribedRouteEventCommitment(commitment, {
+          if (emitInfo && isCompilerDescribedEventCommitment(commitment, {
             compilerOwnedEventSlot: true,
             eventSignature: emitInfo.eventSignature,
           })) {
@@ -411,7 +411,7 @@ export function deriveFullPhase1ReturnAndEvents(
             const commitment = progressiveCommitments.get(
               eventOutputBase + eventSlots[ei].offset,
             );
-            if (isCompilerDescribedRouteEventCommitment(commitment, {
+            if (isCompilerDescribedEventCommitment(commitment, {
               compilerOwnedEventSlot: true,
               eventSignature: emitInfo.eventSignature,
             })) {
@@ -424,7 +424,7 @@ export function deriveFullPhase1ReturnAndEvents(
               eventOutputs[ei] = undefined;
             }
             group.eventOutputs = eventOutputs;
-            if (routeReturnDebugEnabled()) {
+            if (returnDebugEnabled()) {
               console.error('progressive-route-events', {
                 candidate: ei,
                 learned: eventOutputs.map((output, index) => output ? index : undefined)

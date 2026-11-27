@@ -19,7 +19,7 @@ import {
   bytesToSlotValue,
   keyToSlotMulti,
 } from './SortedList.js';
-import { evalComputedKey, visibleHandlerInputs } from './route-expression-key.js';
+import { evalComputedKey, visibleHandlerInputs } from './call-expression-key.js';
 import { vmapCounterPermutationSpec } from './internal-function-args.js';
 
 export type ResolveCreateBuilderUpsertLoopDomainKeysHost = {

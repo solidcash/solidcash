@@ -97,7 +97,7 @@ import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode }
 import {
   decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
 } from '../../stateful/SortedList.js';
-import { evalComputedKey, keyArguments } from '../../stateful/route-expression-key.js';
+import { evalComputedKey, keyArguments } from '../../stateful/call-expression-key.js';
 import { entryRecordReadUnlock } from '../deploy/records.js';
 import type { DraftInput, DraftSourceOutput, DraftToken } from '../composer/draft.js';
 import {

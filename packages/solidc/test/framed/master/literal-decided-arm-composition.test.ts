@@ -3,16 +3,18 @@ import type { Artifact, EntryAccessAbi, ExternalCallExpression } from '@solidcas
 import { compileStringMulti } from '../../../src/compiler.js';
 
 /**
- * The branch a literal argument decides is kept only under the framed convention.
+ * A literal-decided arm and a call site's condition under each convention.
  *
  * `PruneInlinedConstantBranches` drops an arm a literal argument rules out, so an impossible state or collection
- * write never reaches physical-slot discovery; `SymbolTableTraversal` serializes a call site's condition against
- * the statements that dominate it. Both are framed-only: a framed entry publishes the skipped write's access and
- * the condition it runs under (the frame declares the record that write keeps), and reads a branch predicate where
- * the branch begins. The direct convention prunes the same arm and folds a dominating write, as it always has.
+ * write never reaches physical-slot discovery. Only a direct compile prunes it: a framed entry keeps the arm and
+ * publishes the skipped write's access and the condition it runs under (the frame declares the record that write
+ * keeps). `SymbolTableTraversal` serializes a call site's condition against the statements that dominate it. Both
+ * conventions read a branch predicate where the branch begins; a framed value folded from an earlier write keeps the
+ * read field's declared type.
  *
- * Each assertion below is a fact the shipped artifact publishes for the same source compiled both ways; reverting
- * the framed gate (commit 31bfe3cb7) makes the framed artifacts match the direct ones and fails them.
+ * Each assertion below is a fact the shipped artifact publishes for the same source compiled both ways. Reverting the
+ * framed pruning gate (commit 31bfe3cb7) fails the first block; folding an arm's own write into the predicate fails
+ * the `close` rows.
  */
 
 const TOKEN_SOURCE = 'pragma solidity ^0.8.20;'

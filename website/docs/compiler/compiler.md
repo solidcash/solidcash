@@ -250,7 +250,7 @@ these options at their defaults unless you are following the
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `callBatch` | `false` | Publish the callee's multi-call entry so repeated or looped calls to one fixed target run as frames of one spend. |
-| `optimizeForCompilationSpeed` | `false` | Skip speculative admission attempts and compile the conservative shape directly. |
+| `optimizeForCompilationSpeed` | `false` | Compile faster at some cost in bytecode size (lighter helper-body optimisation and outlining). A framed build always compiles this way. |
 | `composition` | `'direct'` | `'framed'` compiles each entry point as a master program that recreates itself, so a contract's state settles once per transaction. The result is published on `artifact.composition`. |
 | `upgradesFrom` | none | Framed proxies: per contract name, the state layout of the implementation it replaces. The compile refuses a layout that would read those records differently. |
 | `split` | see above | `'off'`, `'size'` or `'func'`, for the split entry points. |

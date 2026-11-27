@@ -36,7 +36,7 @@ export interface CompilerOptions {
   framedCreationTargets?: readonly string[];
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
-  /** Skip speculative admission rungs and compile the conservative path directly. */
+  /** Compile faster at some cost in bytecode size: lighter helper-body optimisation and outlining. */
   optimizeForCompilationSpeed?: boolean;
   /**
    * Emit bytecode source maps on the artifact (`debug.sourceMap` and per-body maps). Default true.

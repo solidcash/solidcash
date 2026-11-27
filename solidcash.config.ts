@@ -16,7 +16,7 @@ export default defineConfig({
     // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
     // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
     ecrecover: 'p2pkh',
-    // Skip the old-optimiser cross-check on this large program during development.
+    // Compile this large program faster during development, at some cost in bytecode size.
     optimizeForCompilationSpeed: true,
     suppressWarnings: true,
   },

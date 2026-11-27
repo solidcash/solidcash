@@ -27,11 +27,11 @@
 - The message bus and its kernel are gone from the compiler and the SDK. The compiler options `messageBus`,
   `messageBusKernel`, `messageBusGraphContext`, `messageBusHandlers`, `messageBusHandlersByContract`,
   `messageBusByContract`, `messageBusRootEnvelope`, `messageBusProxyForwardEnvelope`, `messageBusEntryPoolCapacity`
-  and `messageBusDirectParticipant` no longer exist: a compile that passes any of them, whatever its value, is refused
-  (`REMOVED_COMPILER_OPTION`). An artifact publishes no `messageBus` field and no ABI entry publishes
-  `batchInvocations`. The SDK drops `StatefulContract.batch(...)`, message-bus composition and the
-  `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry points, and refuses an artifact a 0.52
-  message-bus build produced (`MessageBusArtifactError`): recompile it. The helpers only the bus used go with it:
+  and `messageBusDirectParticipant` no longer exist: like any unknown option, a compile ignores them. An artifact
+  publishes no `messageBus` field and no ABI entry publishes `batchInvocations`. The SDK drops
+  `StatefulContract.batch(...)`, message-bus composition and the `@solidcash/solidcash/message-bus` and
+  `@solidcash/solidcash/kernel` entry points, and refuses an artifact a 0.52 message-bus build produced
+  (`MessageBusArtifactError`): recompile it. The helpers only the bus used go with it:
   `@solidcash/utils` no longer exports `AbiFunctionReference`, `P2SH_BYTECODE_LIMIT`, `OccurrenceBound`,
   `occurrenceBoundOf`, `occurrenceCountViolation`, `isAddressCommittedProvenance`, `describeProvenance`,
   `ChildDeploymentSiteAbi` or `ConstructedKeyVectorV1Abi` (no ABI entry publishes `constructedKeyVectors`), and
@@ -56,8 +56,8 @@
   traced the bus and its preflight are gone (docs/compiler-diagnostics.md lists the live ones).
 - The bus's feature switches `SOLIDC_OWNER_ALT_ANCHOR` and `SOLIDC_HANDLER_BAND_MODEL`, the `ownerAltAnchor` and
   `handlerBandModel` options and the `@solidcash/solidc` exports `resolveSolidcFeatureFlags`,
-  `solidcFeatureIdentityBits` and `SolidcFeatureFlags` are removed; passing either option is refused
-  (`REMOVED_COMPILER_OPTION`) and a strict-env run refuses the two switches.
+  `solidcFeatureIdentityBits` and `SolidcFeatureFlags` are removed. Like any unknown option or switch they are
+  ignored; a `SOLIDC_STRICT_UNKNOWN_ENV=1` run refuses the switches as unknown.
 - The `@solidcash/solidcash/stateful` exports that served bus composition are removed: the transported continuation
   claims (`TransportedContinuationResourceClaim`, `buildTransportedContinuationResourceClaim`,
   `canonicalTransportedContinuationResourceClaim`, `orderTransportedContinuationResourceClaims`) and the producer

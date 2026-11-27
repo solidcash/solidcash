@@ -16,10 +16,8 @@ export function resolveMaterializedDynamicWriteOutputBase(params: {
   outputs: readonly Output[];
   start?: number;
   end?: number;
-  /** Assembly-only: the selected writer may still have an OTC-derived `00` chunk commitment. */
+  /** Assembly-only: a writer may still have an OTC-derived `00` chunk commitment. */
   allowProvisionalChunks?: boolean;
-  /** Selected writes authorize provisional chunks; canonical preserved route-union chunks still locate the band. */
-  selectedDynamicWrites?: ReadonlySet<string>;
 }): number {
   const { route, stateLayout, contract, categoryId, outputs } = params;
   const start = params.start ?? 0;
@@ -31,12 +29,7 @@ export function resolveMaterializedDynamicWriteOutputBase(params: {
   if (params.allowProvisionalChunks && params.start === undefined) {
     throw new Error(`Dynamic-output route ${route.name} has no owned window for provisional chunks`);
   }
-  const routeWrittenNames = route.dynamicWrites ?? [];
-  if (params.selectedDynamicWrites !== undefined
-    && [...params.selectedDynamicWrites].some((name) => !routeWrittenNames.includes(name))) {
-    throw new Error(`Dynamic-output route ${route.name} omits a selected dynamic writer`);
-  }
-  const writtenNames = routeWrittenNames;
+  const writtenNames = route.dynamicWrites ?? [];
   const writtenVariables = stateLayout.variables.filter((variable) =>
     variable.dynamic && writtenNames.includes(variable.name));
   if (writtenVariables.length !== new Set(writtenNames).size) {
@@ -55,21 +48,11 @@ export function resolveMaterializedDynamicWriteOutputBase(params: {
       }
       return [{ output, index: start + localIndex }];
     });
-    // A route publishes the union of handlers. Even an inactive writer can have real, preserved
-    // pre-state chunks in the trailing band; their canonical run still anchors the route's output
-    // coordinate. An inactive empty writer can instead leave only speculative `00` stubs, which
-    // have no owned run and must not become an output-base witness.
-    if (params.selectedDynamicWrites !== undefined
-      && !params.selectedDynamicWrites.has(variable.name)
-      && matches.length > 0
-      && matches.every(({ output }) => output.token?.nft?.commitment === '00')) continue;
     for (const [chunkIndex, { output, index }] of matches.entries()) {
       const commitment = output.token?.nft?.commitment;
-      // The selected dynamic writer reserves its trailing output run before OTC has supplied the
-      // commitment bytes. `00` is a location candidate only, never a canonical chunk. The final
-      // composition convergence gate refuses unresolved owned placeholders before VM admission.
+      // A dynamic writer reserves its trailing output run before OTC has supplied the commitment bytes.
+      // `00` is a location candidate only, never a canonical chunk.
       if (params.allowProvisionalChunks && commitment === '00'
-        && (params.selectedDynamicWrites === undefined || params.selectedDynamicWrites.has(variable.name))
         && output.token?.nft?.capability === 'mutable' && output.token.amount === 0n) {
         orderedIndices.push(index);
         continue;

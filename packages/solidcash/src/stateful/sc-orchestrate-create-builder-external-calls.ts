@@ -1273,8 +1273,6 @@ export async function orchestrateCreateBuilderExternalCalls(
         selectorParamSlot,
         isComputedBlockhashKey,
         noteBhLocktime: (locktime) => { maxBhLocktime = Math.max(maxBhLocktime, locktime); },
-        extractGraphBlockhashRead: (contract, ...a) => contract._extractGraphBlockhashRead(...a),
-        paramBlockhashN: (contract, ...a) => contract.paramBlockhashN(...a),
       },
       externalCallUtxoGroups,
       groupMetas,

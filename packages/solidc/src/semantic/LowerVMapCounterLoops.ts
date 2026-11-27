@@ -4637,7 +4637,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // branches or with effects/collection reads remain fenced because their reachability/value is not invariant.
       const loopValueDefinitions = new Map<string, ExpressionNode>();
       // A scalar state recurrence must read its pre-loop value, not the value currently being updated by the
-      // physical entry order. These snapshots are materialized in the function prelude before the row loop.
+      // physical entry order. These snapshots are materialized in the function prelude before the loop.
       const affineStateValues = new Map<string, ExpressionNode>();
       const affineStateSnapshots = new Map<string, StateAccessNode>();
       for (const statement of block.statements ?? []) {

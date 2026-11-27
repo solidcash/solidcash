@@ -107,8 +107,8 @@ export function materializeOwnerEventNftOutputs(
 
   const eventSlots = host.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
   const reservedEventSlots = host.blockLayout ? eventSlots.length : eventOutputEntries.length;
-  // A graph route can reserve hundreds of event sites. Index its published offsets once, preserving the
-  // first matching ordinal and the historical offset-order fallback for layouts without slot indices.
+  // Index the layout's published event offsets once, preserving the first matching ordinal and the historical
+  // offset-order fallback for layouts without slot indices.
   const indexedOffsets = new Map<number, number>();
   for (const slot of eventSlots) {
     if (slot.slotIndex !== undefined && !indexedOffsets.has(slot.slotIndex)) {
@@ -197,9 +197,8 @@ export function materializeOwnerEventNftOutputs(
     };
     const eo = eventOutputEntries[eventSlot];
     if (!eo) {
-      // A graph route reserves a fixed event frame. Keep every inactive site as a balanced plain output so a
-      // later participant cannot slide into the gap; the route covenant separately excludes an own-category
-      // NFT here, and the atomic callManifest lists only active immutable event outputs.
+      // The block layout reserves a fixed event frame. Keep every inactive site as a balanced plain output so a
+      // later participant cannot slide into the gap.
       placeEventOutput({ to: Uint8Array.of(0x51), amount: 1000n });
       placeChunks([]);
       continue;

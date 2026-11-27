@@ -139,8 +139,8 @@ export function rebindLateValueSuffixAfterInsertion(
 }
 
 /**
- * Rebind an absolute continuation witness when a participant-owned output is materialized after the route
- * probe selected its append coordinate. The continuation itself is self-describing: a contiguous run of
+ * Rebind an absolute continuation witness when a participant-owned output is materialized after the probe
+ * selected its append coordinate. The continuation itself is self-describing: a contiguous run of
  * mutable P2SH32 outputs in the participant category, with uint16-le indices 0..n-1. Only search forward from
  * the authenticated provisional base, so an older chunk run cannot be mistaken for the new write.
  */

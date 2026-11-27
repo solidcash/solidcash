@@ -84,7 +84,7 @@ export function chunkableWriterGroupIndex(
  * A shared physical participant can execute one state transition while surrounding logical views publish their
  * returns in separate tail outputs. A view after a write must read the projected output state, but only the final
  * read in a dependency chain can be recovered from the participant's final outputs. Earlier reads remain honest
- * pre-state probes; a read between two writes needs a compiler-owned route which preserves that intermediate state.
+ * pre-state probes; a read between two writes is not a candidate, since no output preserves that intermediate state.
  */
 export function projectedExternalReturnCandidates(
   groups: readonly ExternalCallUtxoGroup[],

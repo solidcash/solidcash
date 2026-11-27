@@ -819,15 +819,6 @@ export function foldLeadingRouteArrayPushes(
   return { leading: folded.leading, complete: folded.complete, plan: built.plan };
 }
 
-/** Include the terminal push even when it is the route's only selected mutation. */
-export function foldCompleteRouteArrayPushes(
-  params: FoldParams,
-): { complete: Uint8Array; plan: ChunkablePushFoldPlan } | undefined {
-  const built = buildChunkablePushFoldPlan({ ...params, minimumRows: 1 });
-  if (!built) return undefined;
-  return { complete: foldPushPlan(built, params).complete, plan: built.plan };
-}
-
 export function encodeLeadingRouteArrayPushes(params: FoldParams): Uint8Array | undefined {
   return foldLeadingRouteArrayPushes(params)?.leading;
 }

@@ -31,7 +31,11 @@
   (`REMOVED_COMPILER_OPTION`). An artifact publishes no `messageBus` field and no ABI entry publishes
   `batchInvocations`. The SDK drops `StatefulContract.batch(...)`, message-bus composition and the
   `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry points, and refuses an artifact a 0.52
-  message-bus build produced (`MessageBusArtifactError`): recompile it.
+  message-bus build produced (`MessageBusArtifactError`): recompile it. The helpers only the bus used go with it:
+  `@solidcash/utils` no longer exports `AbiFunctionReference`, `P2SH_BYTECODE_LIMIT`, `OccurrenceBound`,
+  `occurrenceBoundOf`, `occurrenceCountViolation`, `isAddressCommittedProvenance`, `describeProvenance`,
+  `ChildDeploymentSiteAbi` or `ConstructedKeyVectorV1Abi` (no ABI entry publishes `constructedKeyVectors`), and
+  `StatefulTransactionOptions` drops `blockhashCoSpendSlotOrdinals`.
 - A contract whose default compile took a message-bus route (an external-call graph) now compiles to the direct build,
   the bytes 0.52.1 emitted for it under `messageBus: false`, apart from the fixes above: recompile and redeploy it. A
   function that repeats calls to one state owner outside the callee's multi-call entry is refused

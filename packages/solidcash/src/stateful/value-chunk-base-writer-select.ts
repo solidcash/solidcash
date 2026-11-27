@@ -220,9 +220,6 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   delegateBlockInfoOracle?: boolean;  // that reader is the delegated implementation, so its recreate rides its band
   /** Pool coins a function-pointer target finds itself, no block slot places: each is recreated at its own index. */
   unslottedPoolCoSpends?: UnlockableUtxo[];
-  /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph route batch
-   * routes reserve a fixed row band, so active reads are sparse and the inactive slots must remain funders. */
-  blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos?: UnlockableUtxo[]; // keccak256 compute side-cars (one per call) at keccakSideCar slots
   keccakComputeCommitments?: string[];        // parallel: R_i = keccak256(preimage_i) hex, committed to recreation i
   /** Compute resources were declared by the routed delegate ABI, so their 1:1 input/output coordinates are
@@ -308,9 +305,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   delegateReturnEventAfterEvents?: boolean;
   /** Absolute input offset selected by the caller's encoded low-level-call index. */
   lowLevelCallInputBase?: number;
-  /** The first low-level input is a route delegate implementation placed after the balanced root block. */
+  /** The first low-level input is a delegate implementation placed after the balanced root block. */
   directCallDelegateBlock?: boolean;
-  /** Preserve every compiler-published block coordinate, including inactive union-route resource slots. */
+  /** Preserve every compiler-published block coordinate: a missing input fails instead of being compacted away. */
   preserveBlockLayoutWidth?: boolean;
   /** Place runtime mapping-entry outputs before newly written dynamic-storage chunks in the trailing frame. */
   loopEntriesBeforeDynamicChunks?: boolean;
@@ -327,7 +324,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   /** Per-build mutable chunk candidates. Omitted by directly constructed legacy builders. */
   valueChunkWriteStagingSession?: ValueChunkWriteStagingSession;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
-  /** Funding inputs already positioned inside composed participant blocks. These contribute value/change but
+  /** Funding inputs already positioned inside nested participant blocks. These contribute value/change but
    * must never be appended or repositioned by this builder's local block assembly. */
   embeddedFunderUtxos?: UnlockableUtxo[];
   /** Immutable SCID anchor co-spent outside every fixed participant block to authenticate a stable logical

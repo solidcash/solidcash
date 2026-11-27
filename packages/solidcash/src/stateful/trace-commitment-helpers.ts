@@ -10,10 +10,8 @@ import {
   parseChunkCommitment,
   peekPushdataEncodedLength,
   preferZeroPrefixedEventBlob,
-  scriptToBytecode,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { findLastIndex } from '../utils.js';
 import { isP2sh32LockingBytecode } from './faithful-probe-trace.js';
@@ -419,20 +417,12 @@ export function isDynamicChunkCommitmentAtIndex(commitment: string, index: numbe
 }
 
 /**
- * Recover a compiler-produced return commitment which is already on the stack
- * when a progressive probe aborts before reaching its output-comparison
- * opcode. Return commitments are one canonical pushdata value; requiring the
- * complete stack item to be exactly that encoding avoids confusing ordinary
- * Script numbers, hashes, and partially-built state commitments for results.
+ * Recover a compiler-produced return commitment which is already on the stack when a progressive probe aborts
+ * before reaching its output-comparison opcode. The commitment is one outer `bytes` push wrapping exactly one
+ * canonical push; requiring the complete stack item to be exactly that encoding avoids confusing ordinary Script
+ * numbers, hashes, and partially-built state commitments for results.
  */
-export function extractPendingReturnCommitment(
-  fullTrace: AuthenticationProgramStateCommon[], expectedPushes = 1, expectedTypes?: readonly string[],
-): string | undefined {
-  // A route returns one `bytes` value whose payload is the concatenated encoding of each logical
-  // handler result. The return-event commitment therefore wraps that inner result vector in one outer bytes
-  // push; the opcode-count checks below intentionally inspect the unwrapped inner vector.
-  const asRouteReturn = (inner: Uint8Array): string =>
-    binToHex(expectedTypes === undefined ? inner : encodePushdataValue(inner, 'bytes'));
+export function extractPendingReturnCommitment(fullTrace: AuthenticationProgramStateCommon[]): string | undefined {
   const canonicalPushOpcodes = (item: Uint8Array): number[] | undefined => {
     let offset = 0;
     const opcodes: number[] = [];
@@ -456,120 +446,35 @@ export function extractPendingReturnCommitment(
     }
     return opcodes;
   };
-  const matchesExpectedPushes = (item: Uint8Array): boolean => {
-    const opcodes = canonicalPushOpcodes(item);
-    if (opcodes?.length !== expectedPushes) return false;
-    return !expectedTypes?.some((type, index) => type === 'bool'
-      && opcodes[index] !== Op.OP_0 && opcodes[index] !== Op.OP_1);
-  };
+  const isOneCanonicalPush = (item: Uint8Array): boolean => canonicalPushOpcodes(item)?.length === 1;
 
-  // Prefer the completed outer route-return field when it is already live. A progressive route can compute and
-  // frame its result before pausing at a later event/resource comparison. Treating some unrelated scalar still
-  // in the frame as the result (for example, the key of that event) moves fixed-point assembly away from the
-  // authenticated value. The outer bytes frame plus a completely canonical inner result vector is stronger
-  // evidence than the raw-vector fallback below and is independent of the effect which paused execution.
-  if (expectedTypes !== undefined) {
-    for (let traceIndex = fullTrace.length - 1;
-      traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
-      const stack = fullTrace[traceIndex].stack;
-      for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
-        const candidate = stack[stackIndex];
-        // Same cheap whole-buffer push test as `selectEvmScalarReturnCommitment`: only a candidate that is one
-        // complete push can be the framed route return, and everything else must not pay for a decode attempt.
-        if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
-        try {
-          const outer = decodePushdataValue(candidate, 0, 'bytes');
-          if (outer.value instanceof Uint8Array && outer.bytesConsumed === candidate.length
-            && matchesExpectedPushes(outer.value)) return binToHex(candidate);
-        } catch {
-          // Ordinary frame items need not be canonical outer bytes fields.
-        }
-      }
-    }
-  }
+  // Prefer the completed outer return field when it is already live. A progressive probe can compute and frame its
+  // result before pausing at a later event/resource comparison; treating some unrelated scalar still on the stack as
+  // the result (for example, the key of that event) moves fixed-point assembly away from the authenticated value.
   for (let traceIndex = fullTrace.length - 1;
     traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
     const stack = fullTrace[traceIndex].stack;
     for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
       const candidate = stack[stackIndex];
-      if (!matchesExpectedPushes(candidate)) continue;
-      return asRouteReturn(candidate);
-    }
-  }
-
-  // Progressive route execution can expose an aggregate prefix before a later row is evaluated. Use that
-  // authenticated canonical prefix as the next probe seed. Boolean gates are optimistically seeded true: if the
-  // real row is false, the subsequent output comparison exposes and replaces this candidate; if it is true, the
-  // route advances to the next return/event verification instead of aborting while decoding a short placeholder.
-  if (expectedTypes?.length === expectedPushes) {
-    let bestPrefix: { candidate: Uint8Array; pushCount: number } | undefined;
-    for (let traceIndex = fullTrace.length - 1;
-      traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
-      for (const raw of fullTrace[traceIndex].stack) {
-        const candidate = raw;
-        const opcodes = canonicalPushOpcodes(candidate);
-        if (!opcodes || opcodes.length === 0 || opcodes.length >= expectedPushes) continue;
-        if (expectedTypes.slice(0, opcodes.length).some((type, index) => type === 'bool'
-          && opcodes[index] !== Op.OP_0 && opcodes[index] !== Op.OP_1)) continue;
-        const missingTypes = expectedTypes.slice(opcodes.length);
-        if (!missingTypes.every((type) => type === 'bool')) continue;
-        if (!bestPrefix || opcodes.length > bestPrefix.pushCount) {
-          bestPrefix = { candidate, pushCount: opcodes.length };
-        }
+      // Same cheap whole-buffer push test as `selectEvmScalarReturnCommitment`: only a candidate that is one
+      // complete push can be the framed return, and everything else must not pay for a decode attempt.
+      if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
+      try {
+        const outer = decodePushdataValue(candidate, 0, 'bytes');
+        if (outer.value instanceof Uint8Array && outer.bytesConsumed === candidate.length
+          && isOneCanonicalPush(outer.value)) return binToHex(candidate);
+      } catch {
+        // Ordinary stack items need not be canonical outer bytes fields.
       }
     }
-    if (bestPrefix) return asRouteReturn(Uint8Array.from([
-      ...bestPrefix.candidate,
-      ...expectedTypes.slice(bestPrefix.pushCount).map(() => Op.OP_1),
-    ]));
   }
-
-  // Before the first aggregate exists, scalar route results remain as raw frame items. Bootstrap an aggregate
-  // made only of boolean gates and one string result; true is the advancing boolean probe value, while the
-  // string must be uniquely recoverable as the shortest printable UTF-8 item in the live frame.
-  if (expectedTypes?.length === expectedPushes
-    && expectedTypes.filter((type) => type === 'string').length === 1
-    && expectedTypes.every((type) => type === 'bool' || type === 'string')) {
-    const strings = new Map<string, Uint8Array>();
-    for (let traceIndex = fullTrace.length - 1;
-      traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
-      for (const candidate of fullTrace[traceIndex].stack) {
-        if (candidate.length < 2 || candidate.length > 1_024) continue;
-        const decoded = binToUtf8(candidate);
-        if (binToHex(utf8ToBin(decoded)) !== binToHex(candidate)) continue;
-        if (![...decoded].every((character) => {
-          const codePoint = character.codePointAt(0)!;
-          return codePoint >= 0x20 && codePoint !== 0x7f;
-        })) continue;
-        strings.set(binToHex(candidate), candidate);
-      }
-    }
-    const candidate = [...strings.values()].sort((a, b) => a.length - b.length)[0];
-    if (candidate) {
-      return asRouteReturn(scriptToBytecode(expectedTypes.map((type) =>
-        type === 'bool' ? Uint8Array.of(1) : candidate)));
-    }
-  }
-
-  // A route can consume its aggregate return output before reaching the later covenant comparison which frames
-  // that output. At this bootstrap point a string-returning handler has nevertheless left the raw UTF-8 value
-  // in the route frame. Recover only an exact, printable UTF-8 stack item and add its canonical pushdata prefix;
-  // hashes, scripts, categories, and serialized route blobs fail the round-trip/printability guards.
-  if (expectedPushes === 1 && expectedTypes?.length === 1 && expectedTypes[0] === 'string') {
-    for (let traceIndex = fullTrace.length - 1;
-      traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
-      const stack = fullTrace[traceIndex].stack;
-      for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
-        const candidate = stack[stackIndex];
-        if (candidate.length < 2 || candidate.length > 1_024) continue;
-        const decoded = binToUtf8(candidate);
-        if (binToHex(utf8ToBin(decoded)) !== binToHex(candidate)) continue;
-        if (![...decoded].every((character) => {
-          const codePoint = character.codePointAt(0)!;
-          return codePoint >= 0x20 && codePoint !== 0x7f;
-        })) continue;
-        return asRouteReturn(scriptToBytecode([candidate]));
-      }
+  // Otherwise frame the latest single canonical push as the outer field.
+  for (let traceIndex = fullTrace.length - 1;
+    traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
+    const stack = fullTrace[traceIndex].stack;
+    for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+      const candidate = stack[stackIndex];
+      if (isOneCanonicalPush(candidate)) return binToHex(encodePushdataValue(candidate, 'bytes'));
     }
   }
   return undefined;

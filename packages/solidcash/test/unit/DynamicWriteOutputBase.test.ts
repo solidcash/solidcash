@@ -20,7 +20,7 @@ const contract = {
   lockingBytecode: `aa20${'5a'.repeat(32)}87`,
 } as unknown as Contract;
 const route = {
-  name: '__message_bus',
+  name: 'writeBoth',
   dynamicWrites: ['first', 'second'],
 } as AbiFunction;
 const stateLayout = {
@@ -84,10 +84,9 @@ describe('physical direct-dynamic output witness', () => {
     expect(resolve([chunk('first')])).toBe(0);
   });
 
-  it('uses selected trailing placeholders as provisional coordinates only', () => {
+  it('uses trailing placeholders as provisional coordinates only', () => {
     const outputs = [predecessor, provisionalChunk('first'), provisionalChunk('first')];
-    const params = { route, stateLayout, contract, categoryId, outputs,
-      start: 1, selectedDynamicWrites: new Set(['first']), allowProvisionalChunks: true };
+    const params = { route, stateLayout, contract, categoryId, outputs, start: 1, allowProvisionalChunks: true };
     expect(resolveMaterializedDynamicWriteOutputBase(params)).toBe(1);
     expect(() => resolveMaterializedDynamicWriteOutputBase({ ...params, allowProvisionalChunks: false }))
       .toThrow(/undecodable first chunk/);
@@ -97,24 +96,8 @@ describe('physical direct-dynamic output witness', () => {
     const outputs = [provisionalChunk('first'), predecessor, provisionalChunk('first')];
     expect(resolveMaterializedDynamicWriteOutputBase({
       route, stateLayout, contract, categoryId, outputs,
-      start: 2, selectedDynamicWrites: new Set(['first']), allowProvisionalChunks: true,
+      start: 2, allowProvisionalChunks: true,
     })).toBe(2);
-  });
-
-  it('keeps canonical route-union twins as the base when no handler writes them', () => {
-    expect(resolveMaterializedDynamicWriteOutputBase({
-      route, stateLayout, contract, categoryId,
-      outputs: [chunk('first'), chunk('second')],
-      start: 0, selectedDynamicWrites: new Set(), allowProvisionalChunks: true,
-    })).toBe(0);
-  });
-
-  it('does not turn an inactive route-union placeholder into a writer base', () => {
-    expect(resolveMaterializedDynamicWriteOutputBase({
-      route, stateLayout, contract, categoryId,
-      outputs: [provisionalChunk('first')],
-      start: 0, selectedDynamicWrites: new Set(), allowProvisionalChunks: true,
-    })).toBe(-1);
   });
 
   it('rejects duplicate or separated writer runs rather than guessing a base', () => {
@@ -125,7 +108,7 @@ describe('physical direct-dynamic output witness', () => {
   });
 });
 
-describe('non-composed dynamic-output witness of a delegate', () => {
+describe('dynamic-output witness of a delegate', () => {
   // The executing implementation has its own master lock; the proxy's chunks bind the proxy master's lock.
   const implementation = {
     ...contract,

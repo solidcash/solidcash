@@ -88,8 +88,8 @@ export type RepairedNftApply = 'skip' | 'apply-lock-and-commit' | 'apply-commit'
 
 /**
  * An explicitly owned data NFT, mutable NFT, or exactly preserved NFT identity
- * is physical state lineage. It wins over output-only slots from a union of
- * possible routes, even when participant metadata no longer retains the UTXO.
+ * is physical state lineage. It wins over output-only slots, even when
+ * participant metadata no longer retains the UTXO.
  */
 export function isFixedStateRepairSlot(args: {
   explicitlyOwned: boolean;
@@ -103,7 +103,7 @@ export function isFixedStateRepairSlot(args: {
 /**
  * Send-time output-only repair authority is limited to the evaluating input's
  * forward output band. Earlier coordinates belong to predecessor inputs/state,
- * and physical state lineage outranks route-union event/return metadata.
+ * and physical state lineage outranks event/return metadata.
  */
 export function isForwardOutputOnlyRepairSlot(args: {
   inputIndex: number;

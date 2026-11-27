@@ -50,9 +50,9 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
       (candidate) => candidate.name === externalCallUtxoGroups[sharedGroupIndex].functionName,
     );
   // Mutually-exclusive SafeERC20 fallback calls advertise several conditional writes to the same
-  // token master. Without a compiler-owned batch route, one physical co-spend can execute only one
-  // handler. Preserve the first active writer; replacing it with the final fallback makes the caller
-  // read the first branch's return channel while the token executes different arguments.
+  // token master, and one physical co-spend executes only one function. Preserve the first active writer;
+  // replacing it with the final fallback makes the caller read the first branch's return channel while the
+  // token executes different arguments.
   const preserveFirstConditionalWriter = sharedGroupIndex >= 0
     && nested.occurrence === 'conditional'
     && childWritesState

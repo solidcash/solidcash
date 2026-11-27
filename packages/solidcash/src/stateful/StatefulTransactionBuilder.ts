@@ -873,7 +873,6 @@ export class StatefulTransactionBuilder {
   private unslottedPoolCoSpends: UnlockableUtxo[] = [];
   /** A contract caller the transaction does not hold, for a block that runs elsewhere (`setStandInCaller`). */
   private standInCaller?: StandInCaller;
-  private blockhashCoSpendSlotOrdinals?: number[];
   private keccakComputeCoSpendUtxos: UnlockableUtxo[];
   private keccakComputeCommitments: string[];
   private delegateComputeResources: boolean;
@@ -1128,7 +1127,6 @@ export class StatefulTransactionBuilder {
     this.blockInfoCoSpendUtxos = options.blockInfoCoSpendUtxos ?? [];
     this.delegateBlockInfoOracle = options.delegateBlockInfoOracle ?? false;
     this.unslottedPoolCoSpends = options.unslottedPoolCoSpends ?? [];
-    this.blockhashCoSpendSlotOrdinals = options.blockhashCoSpendSlotOrdinals;
     this.keccakComputeCoSpendUtxos = options.keccakComputeCoSpendUtxos ?? [];
     this.keccakComputeCommitments = options.keccakComputeCommitments ?? [];
     this.delegateComputeResources = options.delegateComputeResources ?? false;
@@ -1898,7 +1896,6 @@ export class StatefulTransactionBuilder {
       blockhashCoSpendUtxos: this.blockhashCoSpendUtxos,
       blockInfoCoSpendUtxos: this.blockInfoCoSpendUtxos,
       delegateBlockInfoOracle: this.delegateBlockInfoOracle,
-      blockhashCoSpendSlotOrdinals: this.blockhashCoSpendSlotOrdinals,
       keccakComputeCoSpendUtxos: this.keccakComputeCoSpendUtxos,
       keccakComputeCommitments: this.keccakComputeCommitments,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
@@ -2942,7 +2939,6 @@ export class StatefulTransactionBuilder {
       get readOnlyDataNftUtxos() { return self.readOnlyDataNftUtxos; },
       get blockhashCoSpendUtxos() { return self.blockhashCoSpendUtxos; },
       get blockInfoCoSpendUtxos() { return self.blockInfoCoSpendUtxos; },
-      get blockhashCoSpendSlotOrdinals() { return self.blockhashCoSpendSlotOrdinals; },
       get keccakComputeCoSpendUtxos() { return self.keccakComputeCoSpendUtxos; },
       get keccakLoopSideCars() { return self.keccakLoopSideCars; },
       get keccakLoopPrecedesTrailingUser() {
@@ -4938,8 +4934,8 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Rebind an absolute continuation witness when a participant-owned output is materialized after the route
-   * probe selected its append coordinate. The continuation itself is self-describing: a contiguous run of
+   * Rebind an absolute continuation witness when a participant-owned output is materialized after the probe
+   * selected its append coordinate. The continuation itself is self-describing: a contiguous run of
    * mutable P2SH32 outputs in the participant category, with uint16-le indices 0..n-1. Only search forward from
    * the authenticated provisional base, so an older chunk run cannot be mistaken for the new write.
    */
@@ -4949,8 +4945,8 @@ export class StatefulTransactionBuilder {
 
   /**
    * Bind compiler-owned continuation witnesses after every output in an isolated composition block has been
-   * materialized. Graph routes can represent several logical calls with one low-level carrier, so discovery is
-   * based on ABI/state-layout metadata and the self-describing output run rather than a source function name.
+   * materialized. Discovery is based on ABI/state-layout metadata and the self-describing output run rather than
+   * a source function name.
    * @internal
    */
   private _bindMaterializedValueChunkWitnessesHost(): BindMaterializedValueChunkWitnessesHost {

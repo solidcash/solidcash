@@ -3,7 +3,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { Op, type AbiFunction } from '@solidcash/utils';
+import { Op } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import { peekBuildId } from './buildSequence.js';
@@ -28,7 +28,6 @@ export interface BuildStatefulFunctionCallHost {
   parentContract?: StatefulContract;
   trySplitMergeBuild(): Promise<TransactionBuilder | undefined>;
   applyOverrides(): Promise<StatefulTransactionBuilder>;
-  selectedAbiFunction(): AbiFunction | undefined;
   recursivePreflightHasSignatures(): boolean;
   preflightRecursiveBuilder(builder: TransactionBuilder): void;
 }
@@ -464,10 +463,10 @@ export async function buildStatefulFunctionCall(
               })(),
               // The operands the failing check compared. Sizes alone cannot say which coordinate's body the
               // covenant expected, so carry the top of the stack as length-prefixed hex.
-              // Which ROUTE witnesses the probe actually carried. The failing checks compare locking
+              // Which witnesses the probe actually carried. The failing checks compare locking
               // bytecodes against items that came out EMPTY, and an empty item is what an unfilled ABI witness
               // looks like - so list the pushdata items of the executing input with their lengths, in ABI order,
-              // marking the empty ones. Mapping them onto the route ABI's internal input names is then a lookup.
+              // marking the empty ones. Mapping them onto the ABI's internal input names is then a lookup.
               executionWitnesses: (() => {
                 const unlocking = program.transaction.inputs[executionInput]?.unlockingBytecode
                   ?? new Uint8Array();
@@ -490,13 +489,7 @@ export async function buildStatefulFunctionCall(
                   }
                 }
                 const empty = items.filter((item) => item.length === 0).map((item) => item.index);
-                // Name the empty witnesses from the verifier program's own ABI so the missing values are
-                // identifiable without a second instrumentation round.
-                const declared: Array<{ name?: string }> = [];
-                // A candidate execution is not necessarily a VERIFIER input: the probe also runs the route and
-                // the executor. Labelling a route's pushes with the verifier ABI names invents witnesses the
-                // route never declared (measured: `localBatch` reported empty on an input whose calldata carries
-                // a 2155-byte batch push). Report what the input IS and what its pushes actually contain.
+                // Report what the input IS and what its pushes actually contain.
                 const heads: string[] = [];
                 {
                   let cursor = 0;
@@ -521,8 +514,7 @@ export async function buildStatefulFunctionCall(
                   count: items.length,
                   lengths: items.map((item) => item.length),
                   empty,
-                  emptyNames: empty.map((index) => declared[index]?.name ?? `<${index}>`),
-                  declaredNames: declared.map((input) => input.name ?? '?').slice(0, items.length + 4),
+                  emptyNames: empty.map((index) => `<${index}>`),
                   inputIndex: executionInput,
                   unlockingLength: unlocking.length,
                   inputLock: binToHex(program.sourceOutputs?.[executionInput]?.lockingBytecode ?? new Uint8Array())
@@ -894,30 +886,6 @@ export async function buildStatefulFunctionCall(
         refresh: buildFinalized,
       }),
     });
-  }
-  // J7: route union may retain speculative `00` stubs for an unselected sibling's dynamic array.
-  // Only the active named handler's dynamicWrites are incompleteness-relevant for this local builder.
-  // Absent dynamicWrites on a non-route entry means the selected handler writes none (treat as []).
-  const selectedAbi = host.selectedAbiFunction();
-  const activeDynamicWrites = selectedAbi?.dynamicWrites ?? (selectedAbi !== undefined ? [] : undefined);
-  const incompleteDynamicChunks = stb.getDynamicChunkVars().flatMap((variable) => {
-    if (Array.isArray(activeDynamicWrites) && !activeDynamicWrites.includes(variable.name)) {
-      return [];
-    }
-    const commitments = stb.getChunkRawCommitments(variable.name);
-    const unresolved = commitments.filter((commitment) => commitment === '00').length;
-    return unresolved === 0 ? [] : [{
-      variable: variable.name,
-      resolved: commitments.length - unresolved,
-      total: commitments.length,
-    }];
-  });
-  if (incompleteDynamicChunks.length > 0) {
-    (builder as TransactionBuilder & {
-      __routeIncompleteDynamicChunks?: readonly {
-        variable: string; resolved: number; total: number;
-      }[];
-    }).__routeIncompleteDynamicChunks = Object.freeze(incompleteDynamicChunks);
   }
   if (host.recursivePreflightHasSignatures()) {
     throw new Error(

@@ -1,9 +1,8 @@
 /**
  * Finalized-transaction byte gate (consensus + policy byte rules).
  *
- * Extracted from `preflight.ts` so the byte gate is a leaf module with no VM or graph dependency. The
- * non-stateful `TransactionBuilder.send` and the send-fee byte checks import it directly instead of loading the
- * whole covenant-preflight graph, and it breaks the preflight/graph import cycle.
+ * A leaf module with no VM dependency, so the non-stateful `TransactionBuilder.send` and the send-fee byte checks
+ * import it directly.
  */
 
 import { encodeTransaction, encodeTransactionOutput } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
@@ -83,7 +82,7 @@ export const FINALIZED_BYTE_RULES: readonly FinalizedByteRule[] = Object.freeze(
       + 'locking bytecode, not the token-prefixed serialization. Whether BCHN applies this to the prefixed '
       + 'form is UNVERIFIED here, and measuring the prefixed form would refuse an honest p2sh32 state output '
       + 'carrying a 128-byte commitment and a fungible amount at 203 bytes; under-refusing is the correct '
-      + 'direction while the applicability is uncertain. The two route send paths agree on this number by '
+      + 'direction while the applicability is uncertain. The build and broadcast paths agree on this number by '
       + 'measurement: `decodeTransactionUnsafe` splits the token prefix back out, so a built transaction and '
       + 'the decoded broadcast bytes report the same bare length.',
   },
@@ -113,7 +112,7 @@ export const FINALIZED_BYTE_RULES: readonly FinalizedByteRule[] = Object.freeze(
     source: 'libauth `ConsensusBch2026.maximumBytecodeLength`. The standard ceiling coincides: X49 accepted a '
       + '6,035-byte scriptSig on the node, so the legacy 1,650-byte standard limit is gone in v29 and one rule '
       + 'expresses both. Reported here as well as in the VM because the VM reads the provider limits, which on '
-      + 'every route test are 100x this figure.',
+      + 'every relaxed-limit test provider are 100x this figure.',
   },
   /*
    * `standard-output-template` IS DELIBERATELY ABSENT AND MUST NOT BE RE-ADDED WITHOUT A NEW MEASUREMENT.
@@ -130,37 +129,6 @@ export const FINALIZED_BYTE_RULES: readonly FinalizedByteRule[] = Object.freeze(
 ]);
 
 const finalizedRuleById = new Map(FINALIZED_BYTE_RULES.map((rule) => [rule.id, rule]));
-
-/** Look a rule up by the id a refusal quotes, so a caller can check a diagnostic against its rule. */
-export const finalizedByteRule = (id: string): FinalizedByteRule | undefined => finalizedRuleById.get(id);
-
-/**
- * WHAT THIS GATE CANNOT SEE, stated as scope rather than left as an omission. An envelope claiming
- * completeness it does not have is worse than a narrow one that says where it stops.
- *
- * Each entry names a real refusal class this gate does not decide and why it is out of scope here, so a reader
- * never mistakes an ADMIT for "the network will accept this".
- */
-export const FINALIZED_BYTE_GATE_BLIND_SPOTS: readonly string[] = Object.freeze([
-  'VM-priced rules - operation-cost density, hash-iteration density, per-input and per-transaction SigChecks. '
-  + 'They need an evaluation, not bytes. `evaluateEveryInput` owns that surface and currently runs at the '
-  + 'PROVIDER limits, which is an open contradiction (X109/X121) this gate deliberately does not touch.',
-  'Minimum relay fee. Computable from these bytes, and DELIBERATELY not a rule: unlike dust, this class is '
-  + 'not invisible. `MockNetworkProvider` already publishes `minRelayFeePerKb: 1000n` to its verifier '
-  + 'unconditionally, so every fixture that broadcasts through the mock has already been judged against it, '
-  + 'and the SDK own `checkMaxFee` covers the other direction. The threshold is also not node-measured on '
-  + 'this effort. A rule here would add a second decider for a class that already has one.',
-  'More than one OP_RETURN output (`multi-op-return`). BCHN enforces it; nobody here has measured it.',
-  'The rest of `IsStandardTx`: version range, mempool ancestor and descendant limits, and the transaction '
-  + 'version policy. Seven byte rules are not the complete standardness set and this list is not exhaustive.',
-  'Anything about chain state - double spends, mempool conflicts, missing or already-spent inputs, coinbase '
-  + 'maturity, locktime and sequence finality. These are not properties of the bytes.',
-  'Consensus minimum transaction size. libauth publishes 65 bytes and BCHN enforces 100; the two disagree and '
-  + 'no admissible route composition comes within an order of magnitude of either, so a rule here would be '
-  + 'a guard that cannot fire on its own subject.',
-  'Whether a covenant is satisfied. That is what the VM evaluation is for, and this gate is not a security '
-  + 'boundary in any case.',
-]);
 
 export interface FinalizedByteRefusal {
   rule: string;
@@ -350,8 +318,8 @@ export function isPushOnlyBytecode(bytecode: Uint8Array): boolean {
  * Decide ONE finalized transaction against the byte rules. Pure: no builder, no provider, no plan.
  *
  * Not a plan, because the bytes are what a node judges and a plan is not the bytes - the same plan built twice
- * can differ by an output and one of the two be refused. Not a provider, because the relaxed limits every
- * route test publishes are exactly what made the existing capacity checks vacuous.
+ * can differ by an output and one of the two be refused. Not a provider, because the relaxed limits the test
+ * providers publish are exactly what made the existing capacity checks vacuous.
  */
 export function assessFinalizedTransactionBytes(
   transaction: Transaction, subjects: readonly (FinalizedByteSubject | undefined)[] = [],
@@ -493,21 +461,6 @@ export function assessFinalizedTransactionBytes(
     outputCount: transaction.outputs.length,
     outputSatoshis,
   };
-}
-
-/** One-line summary of a verdict: what bound, how hard, and every refusal. */
-export function formatFinalizedByteVerdict(verdict: FinalizedByteVerdict): string {
-  const binding = verdict.readings[0];
-  return [
-    verdict.admitted ? 'ADMITTED' : 'REFUSED',
-    `inputs=${verdict.inputCount}`,
-    `outputs=${verdict.outputCount}`,
-    `serialized=${verdict.serializedBytes}B`,
-    binding === undefined ? 'binds=none'
-      : `binds=${binding.rule} ${binding.ratio.toFixed(4)}x at ${binding.where}`,
-    verdict.refusals.length === 0 ? 'refusals=none'
-      : `refusals=${verdict.refusals.map((row) => `${row.regime}:${row.rule}@${row.where}`).join(',')}`,
-  ].join(' | ');
 }
 
 export const enforcedFinalizedByteRefusals = (

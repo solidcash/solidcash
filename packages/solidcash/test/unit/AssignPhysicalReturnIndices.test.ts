@@ -203,7 +203,6 @@ import {
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
-import { reassertRoutedReadOnlyDynamicChunkTwins } from '../../src/stateful/mutable-output-reassert.js';
 import {
   describeValueChunkWrites, resolveChunkableEntryCollection,
 } from '../../src/stateful/StatefulContract.js';
@@ -436,7 +435,7 @@ describe('generic persisted value-chunk write identity', () => {
         mutationSourceEffectOrdinal: 3,
       },
     };
-    const kernelArtifact = {
+    const executorArtifact = {
       ...carrier.externalContract.inner.artifact,
       abi: carrier.externalContract.inner.artifact.abi.map((fn: { name: string }) => ({
         ...fn, name: 'applyRecord',
@@ -446,8 +445,8 @@ describe('generic persisted value-chunk write identity', () => {
       ...carrier,
       functionName: 'applyRecord',
       logicalFunctionName: 'applyRecord',
-      logicalArtifact: kernelArtifact,
-      externalContract: { inner: { artifact: kernelArtifact } },
+      logicalArtifact: executorArtifact,
+      externalContract: { inner: { artifact: executorArtifact } },
       valueChunkWrites: [],
       valueChunkProducerClaims: [claim],
       valueChunkStateOwner: owner,
@@ -582,7 +581,7 @@ describe('generic persisted value-chunk write identity', () => {
     expect(legacyPlannedChunkableValueWriteCollection(driftedLayout)).toBeUndefined();
   });
 
-  it('selects publish ownership by renamed resource identity and collapses duplicate route views', () => {
+  it('selects publish ownership by renamed resource identity and collapses duplicate views of one write', () => {
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(selectValueChunkWriteCategory([renamed])).toEqual({
       status: 'exact', categoryId, write: renamed,
@@ -593,7 +592,7 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectValueChunkWriteCategory([])).toEqual({ status: 'absent' });
   });
 
-  it('resolves chunkable entry ownership from exact metadata and fails closed for kernel ambiguity', () => {
+  it('resolves chunkable entry ownership from exact metadata and fails closed for ambiguous published collections', () => {
     expect(resolveChunkableEntryCollection).toBe(resolveRuntimeChunkableEntryCollection);
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(resolveChunkableEntryCollection({
@@ -812,7 +811,7 @@ describe('generic persisted value-chunk write identity', () => {
     expect(persistUpdateDigestLock(categoryId, [], null)).toBeUndefined();
     expect(selectPersistedValueChunkWrite([decoy], categoryId)).toBeUndefined();
     expect(selectPersistedValueChunkWrite([decoy, renamed], categoryId)).toEqual(renamed);
-    // The route and logical group may both describe one physical write; identity de-duplication keeps it exact.
+    // The physical and logical groups may both describe one write; identity de-duplication keeps it exact.
     expect(selectPersistedValueChunkWrite([renamed, { ...renamed }], categoryId)).toEqual(renamed);
     StatefulTransactionBuilder.clearPersistedJobEvents();
   });
@@ -2125,7 +2124,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(resolveAbsolutePredOut(99n, 244, 99)).toBe(343n);
   });
 
-  it('uses ABI blockLayout for a proxy delegate that has no kernel compilerRoute', () => {
+  it('uses ABI blockLayout for a proxy delegate', () => {
     const initializeLayout = {
       blockSize: 14,
       slots: [
@@ -2284,7 +2283,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(() => inheritWriterBatchPlan(carrier, writer)).toThrow(/conflicting sorted-batch/);
   });
 
-  it('excludes a different non-routed shared handler from the physical writer plan', () => {
+  it('excludes a different shared handler from the physical writer plan', () => {
     const physical = { functionName: 'transferFrom' };
 
     expect(writerBatchPlanMatchesPhysicalCarrier(physical, {
@@ -3723,7 +3722,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(liveChunkWidthForGroup(groups, -1)).toBe(0);
   });
 
-  it('does not let legacy child names alter kernel value-chunk ownership', () => {
+  it('leaves a descriptor-free legacy token writer out of value-chunk ownership', () => {
     const groups = [
       { functionName: 'transferFrom', valueChunkOutputCount: 3 },
       { functionName: 'moveUnits', valueChunkOutputCount: 5 },
@@ -3997,53 +3996,6 @@ describe('assignPhysicalReturnIndices', () => {
 
     expect(reassertReadOnlyMutableOneToOnes(outputs, [input], [input])).toBe(0);
     expect(outputs[0]).toBe(output);
-  });
-
-  it('restores selected read-only chunks ahead of a displaced mapping entry', () => {
-    const chunkLock = Uint8Array.of(0xaa, 0x20, 0x05, 0x87);
-    const entryLock = Uint8Array.of(0xaa, 0x20, 0x16, 0x87);
-    const chunk = (id: string, commitment: string, flag: bigint): {
-      txid: string; vout: number; satoshis: bigint;
-      token: { amount: bigint; category: string; nft: { capability: 'mutable'; commitment: string } };
-      unlocker: {
-        generateLockingBytecode: () => Uint8Array;
-        contract: { artifact: { contractName: string } };
-        abiFunction: { inputs: { name: string }[] };
-        params: bigint[];
-      };
-    } => ({
-      txid: id.repeat(64), vout: 0, satoshis: 1200n,
-      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment } },
-      unlocker: {
-        generateLockingBytecode: () => chunkLock,
-        contract: { artifact: { contractName: 'ChunkNft_owner' } },
-        abiFunction: { inputs: [{ name: 'flag' }] },
-        params: [flag],
-      },
-    });
-    const first = chunk('1', '00aa', 1n);
-    const second = chunk('2', '01bb', 1n);
-    const entry = {
-      txid: '3'.repeat(64), vout: 0, satoshis: 1200n,
-      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment: 'entry' } },
-      unlocker: {
-        generateLockingBytecode: () => entryLock,
-        contract: { artifact: { contractName: 'EntryNft_owner' } },
-        abiFunction: { inputs: [{ name: 'flag' }] },
-        params: [1n],
-      },
-    };
-    const outputs: Output[] = [
-      { to: entryLock, amount: 1200n, token: entry.token },
-      { to: chunkLock, amount: 1200n, token: first.token },
-      { to: chunkLock, amount: 1200n, token: second.token },
-    ];
-
-    expect(reassertRoutedReadOnlyDynamicChunkTwins(outputs, [first, second, entry] as never, [])).toBe(0);
-    expect(reassertRoutedReadOnlyDynamicChunkTwins(
-      outputs, [first, second, entry] as never, [chunkLock],
-    )).toBe(2);
-    expect(outputs.map((output) => output.token?.nft?.commitment)).toEqual(['00aa', '01bb', 'entry']);
   });
 
   it('places the extraTransfer return at the post-rotate minting master', () => {
@@ -4700,7 +4652,7 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('derives insert-lock repair offsets from renamed compiler descriptors', () => {
-    const routedAbi = {
+    const writerAbi = {
       name: 'moveUnitsFrom',
       inputs: [],
       writesState: true,
@@ -4727,14 +4679,14 @@ describe('assignPhysicalReturnIndices', () => {
         ],
       },
     };
-    const routed = {
+    const writer = {
       functionName: 'moveUnitsFrom',
-      logicalArtifact: { abi: [routedAbi] } as unknown as Artifact,
+      logicalArtifact: { abi: [writerAbi] } as unknown as Artifact,
       plannedEntryInserts: [{
         blockSlot: 3, outputBlockSlot: 8, newCommitment: 'ab'.repeat(32) + '00'.repeat(32),
       }],
     };
-    expect(entryInsertLockRepairs(routed)).toEqual([{
+    expect(entryInsertLockRepairs(writer)).toEqual([{
       collection: 'ledger:mapping(bytes20 => int)',
       predecessorOffset: 3,
       candidateInsertedOffsets: [5, 7],
@@ -4757,21 +4709,21 @@ describe('assignPhysicalReturnIndices', () => {
       to: wrongLock,
       token: { category: 'ft', nft: { capability: 'mutable', commitment: 'ab'.repeat(64) } },
     };
-    expect(reassertDescribedEntryInsertLocks(outputs, 0, 'ft', routed)).toBe(1);
+    expect(reassertDescribedEntryInsertLocks(outputs, 0, 'ft', writer)).toBe(1);
     expect(outputs[5].to).toEqual(wrongLock);
     expect(outputs[7].to).toEqual(predecessorLock);
 
     // Published effect metadata makes a familiar name powerless when no planned INSERT exists.
     expect(entryInsertLockRepairs({
-      ...routed,
+      ...writer,
       functionName: 'transferFrom',
-      logicalArtifact: { abi: [{ ...routedAbi, name: 'transferFrom', entryAccesses: [] }] } as unknown as Artifact,
+      logicalArtifact: { abi: [{ ...writerAbi, name: 'transferFrom', entryAccesses: [] }] } as unknown as Artifact,
       plannedEntryInserts: [],
     })).toEqual([]);
     expect(entryInsertLockRepairs({
-      ...routed,
+      ...writer,
       functionName: 'transferFrom',
-      logicalArtifact: { abi: [{ ...routedAbi, name: 'transferFrom' }] } as unknown as Artifact,
+      logicalArtifact: { abi: [{ ...writerAbi, name: 'transferFrom' }] } as unknown as Artifact,
       plannedEntryInserts: [{
         blockSlot: 2, outputBlockSlot: 8, newCommitment: 'ab'.repeat(64),
       }],

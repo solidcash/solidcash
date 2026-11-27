@@ -114,7 +114,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     timingEnabled, functionName, routeValueChunkProducerEpochByPhysicalGroup,
     preparedAtomicNodeByExternalGroup, latestPreparedAtomicNodeByPhysicalGroup,
     nestedSortedListCache, valueChunkWriteStagingSession,
-    publicSelfAddress, nestedProxyReadCache, memoizeGraphPlanningProducerResult,
+    publicSelfAddress, nestedProxyReadCache,
   } = params;
   let nestedIndices = params.nestedIndices;
   let nestedByCallsite = params.nestedByCallsite;
@@ -263,7 +263,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       categoryId: host.categoryId,
       concatBytes: (...a: any[]) => concatBytes(...a),
       deriveReturnValue: (...a: any[]) => (callee as any)._deriveReturnValue(...a),
-      memoizeGraphPlanningProducerResult,
       resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
     },
     {
@@ -287,7 +286,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       nestedProxyReadCache,
     },
   );
-  let precomputedReturnCommitment = precomputedReturns.precomputedReturnCommitment;
   const loopReturnCommitments = precomputedReturns.loopReturnCommitments;
   const resolveLoopReturnCommitment = precomputedReturns.resolveLoopReturnCommitment;
   const resolveLoopReturnValue = precomputedReturns.resolveLoopReturnValue;
@@ -474,7 +472,6 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     delegateCallGroupIndex,
     childExternalGroupIndex,
     childValueChunkSlots,
-    precomputedReturnCommitment,
     loopReturnCommitments,
     resolveLoopReturnCommitment,
     resolveLoopReturnValue,

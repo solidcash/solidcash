@@ -4,7 +4,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction } from '@solidcash/utils';
-import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type { UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { callNamesNoReader } from './call-record.js';
@@ -49,23 +49,6 @@ export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   selectorParamSlot: typeof selectorParamSlot;
   isComputedBlockhashKey(readKey: string): boolean;
   noteBhLocktime(locktime: number): void;
-  extractGraphBlockhashRead(
-    contract: any,
-    masterUtxo: Utxo,
-    masterUnlocker: Unlocker,
-    dataNftUtxos: UnlockableUtxo[],
-    prior: Array<{ slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output }>,
-    absoluteBase: number,
-    slotOrdinal: number,
-    slotCount: number,
-    masterInputIndex: number,
-  ): Promise<bigint | null>;
-  paramBlockhashN(
-    contract: any,
-    readKey: string,
-    rowArgs: any[],
-    handler: AbiFunction,
-  ): bigint | null;
 }
 
 /**

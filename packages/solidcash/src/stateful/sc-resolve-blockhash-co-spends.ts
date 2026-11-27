@@ -115,53 +115,6 @@ export async function extractBlockhashReads(
   return extractBlockhashReadsFromTrace(trace, base, slotCount);
 }
 
-/** Batch graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding
- * inactive positions use inert inputs and prior active oracle co-spends occupy their exact slots. */
-export async function extractGraphBlockhashRead(
-  host: BlockhashCoSpendHost,
-  masterUtxo: Utxo, stateInputUnlocker: Unlocker, dataNftUtxos: Utxo[],
-  prior: Array<{ slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output }>,
-  base: number, targetOrdinal: number, slotCount: number, masterInputIndex = 0,
-): Promise<bigint | null> {
-  const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-  const vm = createVirtualMachineBch2026ForProvider(host.inner.provider);
-  const b = new CovenantTransactionBuilder({ provider: host.inner.provider });
-  b.locktime = 499999999;
-  const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(host.inner as any, 0, host.categoryId));
-  while (b.inputs.length < masterInputIndex) {
-    const i = b.inputs.length;
-    b.addInput({ txid: (0x8000 + i).toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n }, inertUnlocker);
-  }
-  b.addInput(masterUtxo, stateInputUnlocker, (masterUtxo as Partial<UnlockableUtxo>).options);
-  dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
-  const priorByIndex = new Map(prior.map((p) => [base + p.slotOrdinal, p]));
-  while (b.inputs.length <= base + targetOrdinal) {
-    const inputIndex = b.inputs.length;
-    const p = priorByIndex.get(inputIndex);
-    if (p) b.addInput(p.utxo, p.unlocker);
-    else b.addInput({ txid: inputIndex.toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n }, inertUnlocker);
-  }
-  while (b.outputs.length < masterInputIndex) {
-    b.addOutput({ to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
-  }
-  b.addOutput({ to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
-  dataNftUtxos.forEach((u, i) => b.addOutput({
-    to: dataUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
-  }));
-  while (b.outputs.length < b.inputs.length) {
-    const inputIndex = b.outputs.length;
-    const p = priorByIndex.get(inputIndex);
-    b.addOutput(p?.recreate ?? { to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
-  }
-  await placeBlockInfoOracle(host, b, stateInputUnlocker, masterInputIndex);
-  const transaction = b.buildLibauthTransaction();
-  const trace = vm.debug({
-    inputIndex: masterInputIndex, sourceOutputs: generateLibauthSourceOutputs(b.inputs), transaction,
-  }) as AuthenticationProgramStateCommon[];
-  return extractBlockhashReadsFromTrace(trace, base, slotCount)
-    .find((read) => read.inputIndex === base + targetOrdinal)?.n ?? null;
-}
-
 // Resolve every blockhash slot co-spend for a call, ordered by slot (ordinal 0..slotCount-1), from the reader's
 // oracle pool. Reads are resolved STRICTLY in slot order so the co-spend inputs stay contiguous from the bottom: a
 // param read's n is its call arg; a computed read's n is extracted from a probe that co-spends the already-resolved

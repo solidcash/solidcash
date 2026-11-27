@@ -86,7 +86,6 @@ export function constructCreateBuilderTransactionBuilder(
     blockInfoCoSpendUtxos?: UnlockableUtxo[];
     delegateBlockInfoOracle?: boolean;
     unslottedPoolCoSpends?: UnlockableUtxo[];
-    blockhashCoSpendSlotOrdinals: number[] | undefined;
     keccakComputeCoSpendUtxos: UnlockableUtxo[];
     keccakComputeCommitments: any;
     delegateComputeResources: boolean;
@@ -137,7 +136,6 @@ export function constructCreateBuilderTransactionBuilder(
     runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments, tokenContainers,
     tokenContainerLockingBytecodes, satoshiContainerUtxo, satoshiContainerLockingBytecode,
     blockhashCoSpendUtxos, blockInfoCoSpendUtxos, delegateBlockInfoOracle, unslottedPoolCoSpends,
-    blockhashCoSpendSlotOrdinals,
     keccakComputeCoSpendUtxos,
     keccakComputeCommitments, delegateComputeResources, deferredKeccakCompute,
     deferredEcrecoverCompute, ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates,
@@ -170,7 +168,7 @@ export function constructCreateBuilderTransactionBuilder(
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
     // Zip the FINAL args with their ABI names: indexing `finalArgs` by the ABI position is unsafe for
-    // probe/route frames (hidden args are appended and reordered by name), and that mis-index is what made the
+    // probe frames (hidden args are appended and reordered by name), and that mis-index is what made the
     // earlier reading of this witness wrong. Only a name-keyed dump can be trusted.
     const names = (abiFunction?.inputs ?? []).map((input) => input.name);
     console.error('msg-sender-category-final', JSON.stringify({
@@ -239,7 +237,6 @@ export function constructCreateBuilderTransactionBuilder(
     ...(blockInfoCoSpendUtxos && blockInfoCoSpendUtxos.length > 0 && { blockInfoCoSpendUtxos }),
     ...(delegateBlockInfoOracle && { delegateBlockInfoOracle: true }),
     ...(unslottedPoolCoSpends && unslottedPoolCoSpends.length > 0 && { unslottedPoolCoSpends }),
-    ...(blockhashCoSpendSlotOrdinals && { blockhashCoSpendSlotOrdinals }),
     ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
     ...(delegateComputeResources && { delegateComputeResources: true }),
     ...(deferredKeccakCompute && { deferredKeccakCompute }),
@@ -319,7 +316,6 @@ export function constructCreateBuilderTransactionBuilder(
         route: abiFunction, stateLayout, contract: host.inner, categoryId: host.categoryId,
         outputs: materialized.outputs, start: 0, end: materialized.outputs.length,
         allowProvisionalChunks: true,
-        selectedDynamicWrites: new Set(abiFunction.dynamicWrites ?? []),
       }));
     };
   const dynamicWriteActive = dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0;

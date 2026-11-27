@@ -231,9 +231,9 @@ export async function deriveReturnValue(
     );
   }
   const abiFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
-  // A route is the physical carrier, not the logical result schema: its aggregate `bytes` output and
-  // hidden route name cannot decode a selected handler's uint/struct result. Preserve every selected row's
-  // stable handler identity and fail closed if one static read would expose multiple logical return values.
+  // A function without outputs (such as a proxy forwarder) is the physical carrier, not the logical result
+  // schema: the result comes from its one returning stateful call, kept with that call's identity, and a static
+  // read exposing several logical return values fails closed.
   const delegatedReturnCandidates: ReturnAbiCandidate<LogicalReturnContext>[] = (calls ?? [])
     .filter((call): call is StatefulCall => call.type === 'stateful')
     .flatMap((call): ReturnAbiCandidate<LogicalReturnContext>[] => {

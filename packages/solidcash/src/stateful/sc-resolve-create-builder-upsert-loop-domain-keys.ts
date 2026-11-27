@@ -220,8 +220,8 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
       const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));
       return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
     });
-    // Do not sort this beside `permutation`. The generated row loop advances its physical-key cursor only on a
-    // selected source frame: selectedOccurrences[i] therefore consumes permutation[i], even when permutation[i]
+    // Do not sort this beside `permutation`. The generated loop advances its physical-key cursor only on a
+    // selected source iteration: selectedOccurrences[i] therefore consumes permutation[i], even when permutation[i]
     // originated at another logical rank. Later topology reordering has the same cursor semantics.
     sourceOccurrences = selectedOccurrences;
     selectedSourceValues = selectedOccurrences.map((occurrence: any) => domain[occurrence]);

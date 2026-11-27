@@ -195,7 +195,6 @@ import {
 } from '../utils.js';
 import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
-import { generatedOriginOf } from '../ast/Location.js';
 import { emitCompilerWarning } from '../warnings.js';
 import { CALL_BATCH_ROW_SHIFT } from './CallBatch.js';
 
@@ -2934,9 +2933,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
   }
 
-  // Compiler-generated source is native SolidCash: it carries no file stamp, so the root's `.sol` must not reach it.
   private inSolidityUnit(node: Node): boolean {
-    if (generatedOriginOf(node.location)) return false;
     return (node.location?.sourceFileId ?? this.rootFileId).endsWith('.sol');
   }
 
@@ -4042,8 +4039,7 @@ function expectParameters(node: NodeWithParameters, actual: Type[], expected: Ty
 function stripGeneratedLogicalSenderArgument(
   node: FunctionCallNode, expected: Type[], calleeTakesProxyMaster: boolean,
 ): void {
-  if ((!calleeTakesProxyMaster && !generatedOriginOf(node.location) && !generatedOriginOf(node.identifier.location))
-    || node.parameters.length !== expected.length + 1) return;
+  if (!calleeTakesProxyMaster || node.parameters.length !== expected.length + 1) return;
   const matches = node.parameters.flatMap((parameter, index) => {
     const type = parameter.type;
     const expectedAtIndex = expected[index];

@@ -482,9 +482,7 @@ import {
   type ResolveKeccakProbeCtx,
 } from './sc-resolve-keccak-compute-co-spends.js';
 import {
-  paramBlockhashN as paramBlockhashNImpl,
   extractBlockhashReads as extractBlockhashReadsImpl,
-  extractGraphBlockhashRead as extractGraphBlockhashReadImpl,
   resolveBlockhashCoSpends as resolveBlockhashCoSpendsImpl,
   resolveCalleeIndirectBlockhashCoSpends,
   resolveIndirectBlockhashCoSpends,
@@ -553,7 +551,6 @@ import { calleeBlockExceedsLowLevelBand } from './sc-select-compat-callee-block-
 import { refuseMessageBusArtifact } from '../legacy-artifact.js';
 import {
   createGraphPlanningProducerResultContext,
-  memoizeGraphPlanningProducerResult,
   type GraphPlanningProducerResultContext,
 } from './graph-planning-producer-result.js';
 import { OWN_STATE_EVIDENCE, LIFECYCLE_MODIFIERS } from './state-effect-reading.js';
@@ -661,8 +658,8 @@ export type StateEffectEvidence =
  * state machinery" - and that is a strictly weaker claim than "changes a state variable".
  *
  * MEASURED, not argued. `Foo.callBar` publishes `writesState: true` and its whole body is `bar.log();` - one
- * external call and not one assignment. `Attack.attack` is the same shape. So of the seven handlers the L2-F2
- * partition counts as explicit writers, at least two write nothing at all, and the four that publish the flag
+ * external call and not one assignment. `Attack.attack` is the same shape. So of seven measured handlers
+ * counted as explicit writers, at least two write nothing at all, and the four that publish the flag
  * ABSENT and are conservatively counted as writers are handlers of contracts with `dataNftCount === 0`, which
  * have no state variable for any handler to change.
  *
@@ -991,7 +988,7 @@ export function evalComputedKey(
             return bound;
           }
         }
-        // Route frames hand numeric parameters over as JS numbers (and some label paths as decimal strings), while the
+        // Integer arguments may arrive as JS numbers or decimal strings (the argument encoder accepts both), while the
         // expression grammar below is numeric: `binop:+` accepts bigints only. Without this normalization an
         // otherwise evaluable key - a dynamic state array indexed by `index_` - silently stays unresolved, and the
         // entry is proven at an empty key instead of the real one.
@@ -1541,9 +1538,9 @@ export function takeSoftStateSnapshot(): SoftStateSnapshot {
 }
 
 /**
- * These witnesses describe the assembled transaction, not the route which requested it. Route builders
- * may carry provisional values from an isolated probe, but composition can omit conditional calls, fuse groups,
- * or move participant blocks. The SDK must therefore resolve these names after the physical layout is known.
+ * These witnesses describe the assembled transaction, not the call which requested it. A call's builder may
+ * carry provisional values from an isolated probe, but composition can omit conditional calls, share physical
+ * groups, or move participant blocks. The SDK must therefore resolve these names after the physical layout is known.
  */
 export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boolean {
   return paramName === '__internal__externalCallInputBase'
@@ -1559,7 +1556,7 @@ export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boo
  */
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
-  /** Exact selected handler selector when transported by a route. */
+  /** Exact selector of the entry point this call executes; `handler.selector` applies when absent. */
   selector?: string;
   /** Compiler-owned row arguments which are not encoded as public handler inputs. */
   internalArgs?: Readonly<Record<string, FunctionArgument>>;
@@ -1567,11 +1564,11 @@ export interface RouteExpressionKeyRow {
   sourceLogicalIndex?: number;
   /** Compiler-stable source callsite before repeated-owner collapsing. */
   sourceCallsiteId?: number;
-  /** Source loop occurrence represented by this physical route row. */
+  /** Loop occurrence of this call at its source callsite. */
   occurrenceIndex?: number;
-  /** Compiler-authored program point shared by source entry mutations and graph calls. */
+  /** Compiler-authored program point shared by source entry mutations and external calls. */
   sourceEffectOrdinal?: number;
-  /** Exact root-to-row source occurrence transported by the compiled graph. */
+  /** Exact root-to-row call occurrence path the SDK derived for this call. */
   producerPath?: ValueChunkProducerPathDisposition;
   handler: AbiFunction;
 }
@@ -1640,9 +1637,9 @@ export function evaluateExternalCallAffineIterationDomain<T extends object>(
 }
 
 /**
- * Resolve a nested/route entry key. Expression labels that decode `rowArgs` must use THAT row's
- * handler arguments, not the route planning ABI — evaluating against the route args either
- * accidentally selected row 0 or left later-row slots funder-filled.
+ * Resolve a nested direct call-frame entry key. A label decoding a value named `rowArgs`
+ * (`AbiDecodeAtNode{data=id:rowArgs,index=N,...}`) resolves to argument N of the matching row's own visible
+ * arguments; every other label is evaluated against the planning arguments.
  */
 export function resolveRouteRowExpressionKey(params: {
   expressionLabel: string | undefined;
@@ -1672,10 +1669,10 @@ export function resolveRouteRowExpressionKey(params: {
     }
     return undefined;
   }
-  // A composed `map:<stateArray>(...)` label indexes a decoded dynamic state array by a route loop counter
-  // (`map:items(binop:+(id:i,id:index_))`). The counter is a source-loop local: it is not an ABI input, so the
-  // planning ABI cannot resolve it. With exactly one selected row that row's occurrence IS the counter, and the
-  // label becomes evaluable against that row. More than one candidate row stays unresolved rather than guessing.
+  // A composed `map:<stateArray>(...)` label indexes a decoded dynamic state array by a source-loop counter
+  // (`map:items(binop:+(id:i,id:index_))`). The counter is not an ABI input, so the planning ABI cannot resolve
+  // it. With exactly one row, that row's occurrence stands in for the counter and the label becomes evaluable
+  // against that row. More than one candidate row stays unresolved rather than guessing.
   const loopLocal = params.expressionLabel?.startsWith('map:') && params.rowArguments?.length === 1
     ? unresolvableLabelLocals(params.expressionLabel, params.routeVisibleInputs)
     : [];
@@ -1705,7 +1702,7 @@ export function resolveRouteRowExpressionKey(params: {
   );
 }
 
-/** `id:<name>` operands of a label that no visible route input can supply (source-loop locals, row arguments). */
+/** `id:<name>` operands of a label that no visible planning input can supply (source-loop locals, row arguments). */
 function unresolvableLabelLocals(
   label: string,
   visibleInputs: readonly { name: string; type?: string }[],
@@ -1775,8 +1772,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * which in SDK terms is "needs the state machinery" - it is set by an external call, a child deploy, a
    * library delegate, a low-level call, a split/merge or a covenant-bypass modifier just as readily as by an
    * assignment. `Foo.callBar` publishes `true` with a body of `bar.log();` and not one assignment. Reading the
-   * flag as "this handler mutates state" over-counts, and the over-count is not small: of the seven handlers
-   * the L2-F2 partition counts as explicit writers, at least two write nothing.
+   * flag as "this handler mutates state" over-counts, and the over-count is not small: of seven measured handlers
+   * counted as explicit writers, at least two write nothing.
    *
    * ONLY `false` IS A PROOF, AND ONLY IN ONE DIRECTION. That is the reading `_prepareCall`'s derivation skip
    * uses, and the only one this SDK acts on. Everything else is evidence to be read, which is what this
@@ -3297,12 +3294,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
   }
 
-  // n for a PARAM blockhash read = the matching call arg (a direct-identifier n). Computed reads
-  // (<computed:i> keys) are NOT resolved here - they come from the probe trace. Returns null on a non-bigint.
-  private paramBlockhashN(readKey: string, args: any[], abiFunction: AbiFunction): bigint | null {
-    return paramBlockhashNImpl(readKey, args, abiFunction);
-  }
-
   // Run a minimal covenant probe (master + data NFTs + the already-resolved oracle co-spends, max-height
   // locktime so any tx.time >= n CLTV passes) and read the blockhash reads' (inputIndex, n) off the trace.
   private async _extractBlockhashReads(
@@ -3313,19 +3304,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return extractBlockhashReadsImpl(
       { categoryId: this.categoryId, inner: this.inner as any },
       masterUtxo, stateInputUnlocker, dataNftUtxos, priorCoSpends, base, slotCount,
-    );
-  }
-
-  /** Batch graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding
-   * inactive positions use inert inputs and prior active oracle co-spends occupy their exact slots. */
-  private async _extractGraphBlockhashRead(
-    masterUtxo: Utxo, stateInputUnlocker: Unlocker, dataNftUtxos: Utxo[],
-    prior: Array<{ slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output }>,
-    base: number, targetOrdinal: number, slotCount: number, masterInputIndex = 0,
-  ): Promise<bigint | null> {
-    return extractGraphBlockhashReadImpl(
-      { categoryId: this.categoryId, inner: this.inner as any },
-      masterUtxo, stateInputUnlocker, dataNftUtxos, prior, base, targetOrdinal, slotCount, masterInputIndex,
     );
   }
 
@@ -3772,7 +3750,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    *
    * The overlay is a normal NetworkProvider view of those outputs, so return derivation follows the callee's
    * ordinary ABI/VM path. It deliberately handles only compiler-proven read-only, single-return functions whose
-   * non-chunked collection dependencies have no later writer; intermediate-state reads require an atomic route.
+   * non-chunked collection dependencies have no later writer; a read between two writes is not refreshed.
    */
   private async _refreshProjectedExternalReturns(
     stb: StatefulTransactionBuilder,
@@ -5621,9 +5599,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 });
                 if (routed) return routed;
               }
-              // `map:<stateArray>(...)` names an entry key read out of a dynamic state array, which only the
-              // selected route rows can supply (the array itself plus that row's loop occurrence). Scoped to that
-              // label form and to a routed call, so an ordinary computed key keeps its established fallbacks.
               // A compiler-described key (`keySources[i].kind === 'expression'`) can name a state read that no ABI
               // parameter carries - for example a counter member (`field:_value(state:escrowIdCounter)`). Resolve the
               // label against the same decoded state view the value evaluator uses: the slot is the hash of the
@@ -7979,7 +7954,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // entry per recipient, combine duplicates into ONE entry (co-spent once) with the merged amount, BEFORE the
         // self-transfer filter / reorder. For += the merged sum equals the original sum, so a coexisting `bal[msg.sender]
         // -= amounts[i]` debit is unchanged. Scalar/const-value: a `set` (= amount / = 100) duplicate is idempotent, so
-        // dedupe (keep one); compiler-owned counter streams retain every occurrence because their row loop and effect
+        // dedupe (keep one); compiler-owned counter streams retain every occurrence because their loop and effect
         // domains cannot be shortened. Those streams use the pending transition below for set/delete/`+=`/`-=`.
         if (!counterSpec && !info.mutation && Array.isArray(keysArr) && keysArr.length > 1
         && !info.valueArrayIndexParam && (isDelete || perKey || info.op === 'set')) {
@@ -8709,7 +8684,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let blockhashCoSpendUtxos: UnlockableUtxo[] = [];
     let blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
     let delegateBlockInfoOracle = false;
-    let blockhashCoSpendSlotOrdinals: number[] | undefined;
     // Largest blockhash n read (require(tx.time >= n)), -1 when none is: a read of n = 0 still needs a height locktime.
     let maxBhLocktime = -1;
     // keccak256 compute side-cars co-spent at the keccakSideCar slots; parallel commitments (R_i) drive the
@@ -9075,7 +9049,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   nestedFunderIndex,
                   publicSelfAddress,
                   nestedProxyReadCache,
-                  memoizeGraphPlanningProducerResult,
                   routeValueChunkProducerAliases: undefined,
                   routeValueChunkProducerPhysicalGroup: undefined,
                   routeValueChunkProducerEpoch: undefined,
@@ -9644,10 +9617,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const recoveryLoop = abiFunction?.ecrecoverTrailingLoop === true;
     if ((abiFunction?.ecrecoverCompute || entryAbiFunction?.ecrecoverCompute) && this.categoryId && !recoveryLoop) {
       const ecrecoverAbiFunction = abiFunction?.ecrecoverCompute ? abiFunction : entryAbiFunction!;
-      // A selected handler is represented by a different ABI object than the synthetic route
-      // wrapper, but its compute resources still belong to the route owner's balanced block. Treat resources as
-      // delegated only when an actual delegatecall group executes that ABI; object inequality alone also matches
-      // every ordinary journal handler and incorrectly moves its fixed compute slots behind the owner block.
+      // `entryAbiFunction` differs from `abiFunction` only for a delegate implementation promoted under a forwarder.
+      // Treat compute resources as delegated only when an actual delegatecall group executes that ABI.
       const ecrecoverExecutingGroup = ecrecoverAbiFunction !== abiFunction
         ? lowLevelCallUtxoGroups.find((group) => (
           group.callMode === 'delegatecall' && group.functionName === ecrecoverAbiFunction.name
@@ -10089,7 +10060,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         blockInfoCoSpendUtxos,
         delegateBlockInfoOracle,
         unslottedPoolCoSpends,
-        blockhashCoSpendSlotOrdinals,
         keccakComputeCoSpendUtxos,
         keccakComputeCommitments,
         delegateComputeResources,
@@ -10209,7 +10179,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         functionName,
         timing,
         directCallDelegateLayout,
-        blockhashCoSpendSlotOrdinals,
         keccakComputeCoSpendUtxos,
         ecrecoverComputeCoSpendUtxos,
         iterationEntryInputs,
@@ -11662,7 +11631,6 @@ export class StatefulFunctionCall {
       parentContract: this.parentContract,
       trySplitMergeBuild: () => this._trySplitMergeBuild(),
       applyOverrides: () => this._applyOverrides(),
-      selectedAbiFunction: () => this._selectedAbiFunction(),
       recursivePreflightHasSignatures: () => this._recursivePreflightHasSignatures(),
       preflightRecursiveBuilder: (builder) => this._preflightRecursiveBuilder(builder),
     });

@@ -87,7 +87,7 @@ export function evalComputedKey(
       const idx = inputs.findIndex((i) => i.name === m![1]);
       if (idx >= 0) {
         const bound = args[idx];
-        // Route frames hand numeric parameters over as JS numbers (and some label paths as decimal strings), while the
+        // Integer arguments may arrive as JS numbers or decimal strings (the argument encoder accepts both), while the
         // expression grammar below is numeric: `binop:+` accepts bigints only. Without this normalization an
         // otherwise evaluable key - a dynamic state array indexed by `index_` - silently stays unresolved, and the
         // entry is proven at an empty key instead of the real one.
@@ -262,7 +262,7 @@ const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),sch
  */
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
-  /** Exact selected handler selector when transported by a route. */
+  /** Exact selector of the entry point this call executes; `handler.selector` applies when absent. */
   selector?: string;
   /** Compiler-owned row arguments which are not encoded as public handler inputs. */
   internalArgs?: Readonly<Record<string, FunctionArgument>>;
@@ -270,11 +270,11 @@ export interface RouteExpressionKeyRow {
   sourceLogicalIndex?: number;
   /** Compiler-stable source callsite before repeated-owner collapsing. */
   sourceCallsiteId?: number;
-  /** Source loop occurrence represented by this physical route row. */
+  /** Loop occurrence of this call at its source callsite. */
   occurrenceIndex?: number;
-  /** Compiler-authored program point shared by source entry mutations and graph calls. */
+  /** Compiler-authored program point shared by source entry mutations and external calls. */
   sourceEffectOrdinal?: number;
-  /** Exact root-to-row source occurrence transported by the compiled graph. */
+  /** Exact root-to-row call occurrence path the SDK derived for this call. */
   producerPath?: ValueChunkProducerPathDisposition;
   handler: AbiFunction;
 }
@@ -490,12 +490,8 @@ export function canShareIdempotentCounterLoopSettlement(params: {
 }
 
 /**
- * Direct call-frame planning rows.
- *
- * A "route row" here is one direct call's handler ABI, visible arguments and callsite identity.
- */
-/**
- * Select the direct call frame that owns an expression-keyed entry slot.
+ * Select the direct call frame that owns an expression-keyed entry slot. A "route row" in these helpers is one
+ * direct call's handler ABI, visible arguments and callsite identity (`RouteExpressionKeyRow`).
  * Later rows decode the same `rowArgs` label shape; matching is by collection + handler arity,
  * then an optional `_rN` hint, then the handler's own expression label.
  */
@@ -533,9 +529,9 @@ export function matchingRouteRowsForExpressionKey(params: {
 }
 
 /**
- * Resolve a nested direct call-frame entry key. Expression labels that decode `rowArgs` must use THAT row's
- * handler arguments, not the route planning ABI — evaluating against the route args either
- * accidentally selected row 0 or left later-row slots funder-filled.
+ * Resolve a nested direct call-frame entry key. A label decoding a value named `rowArgs`
+ * (`AbiDecodeAtNode{data=id:rowArgs,index=N,...}`) resolves to argument N of the matching row's own visible
+ * arguments; every other label is evaluated against the planning arguments.
  */
 export function resolveRouteRowExpressionKey(params: {
   expressionLabel: string | undefined;
@@ -565,10 +561,10 @@ export function resolveRouteRowExpressionKey(params: {
     }
     return undefined;
   }
-  // A composed `map:<stateArray>(...)` label indexes a decoded dynamic state array by a route loop counter
-  // (`map:items(binop:+(id:i,id:index_))`). The counter is a source-loop local: it is not an ABI input, so the
-  // planning ABI cannot resolve it. With exactly one selected row that row's occurrence IS the counter, and the
-  // label becomes evaluable against that row. More than one candidate row stays unresolved rather than guessing.
+  // A composed `map:<stateArray>(...)` label indexes a decoded dynamic state array by a source-loop counter
+  // (`map:items(binop:+(id:i,id:index_))`). The counter is not an ABI input, so the planning ABI cannot resolve
+  // it. With exactly one row, that row's occurrence stands in for the counter and the label becomes evaluable
+  // against that row. More than one candidate row stays unresolved rather than guessing.
   const loopLocal = params.expressionLabel?.startsWith('map:') && params.rowArguments?.length === 1
     ? unresolvableLabelLocals(params.expressionLabel, params.routeVisibleInputs)
     : [];
@@ -598,7 +594,7 @@ export function resolveRouteRowExpressionKey(params: {
   );
 }
 
-/** `id:<name>` operands of a label that no visible route input can supply (source-loop locals, row arguments). */
+/** `id:<name>` operands of a label that no visible planning input can supply (source-loop locals, row arguments). */
 function unresolvableLabelLocals(
   label: string,
   visibleInputs: readonly { name: string; type?: string }[],

@@ -1,9 +1,8 @@
 /**
- * Select the physical mutations from a compiler-published sorted-batch union.
+ * Select the physical mutations from a compiler-published sorted batch.
  *
- * Batch functions publish the union of every bounded handler's write slots. At runtime, slots belonging to
- * unselected handlers are inactive, and runtime aliases are owned by their canonical slot. Neither class may
- * allocate predecessor outputs: doing so shifts the absolute output band of later active batches.
+ * At runtime some batch slots are inactive, and runtime aliases are owned by their canonical slot. Neither class
+ * may allocate predecessor outputs: doing so shifts the absolute output band of later active batches.
  */
 export function planActiveSortedBatchMutation<T>(
   slotIndices: readonly number[],
@@ -177,10 +176,10 @@ export function selectSortedBatchTraceCommitment(existing: string | undefined, c
 }
 
 /**
- * Whether one compiler-published entry lane owns a value continuation in the concrete route envelope.
+ * Whether one compiler-published entry lane owns a value continuation.
  *
- * Route ABIs publish the union of every admitted handler's operations. Once runtime activity is available, that
- * projection is authoritative: a write declared only by an unselected handler must not allocate output geometry.
+ * Once runtime activity is available it overrides the declared operations: a declared write that is not active
+ * must not allocate output geometry.
  */
 export function routeCollectionValueWriteIsActive(
   slotIndex: number,

@@ -715,8 +715,9 @@ export type ValueChunkResourceSelection =
   | { status: 'multi'; identities: string[] }
   | { status: 'ambiguous' };
 
-/** Select storage-resource ownership independently of the operations applied to it. A graph may INSERT and then
- * UPDATE the same resource in source order; differing operation/route ordinals do not create a second resource. */
+/** Select storage-resource ownership independently of the operations applied to it. One transaction may
+ * INSERT and then UPDATE the same resource in source order; differing `operation`/`routeSlot` values do not
+ * create a second resource. */
 export function selectValueChunkResource(
   writes: ReadonlyArray<ValueChunkWriteDescriptor>,
 ): ValueChunkResourceSelection {
@@ -732,7 +733,7 @@ export function selectValueChunkResource(
   return { status: 'exact', identity, categoryId };
 }
 
-/** Select one compiler-described chunkable-value resource identity; duplicate route/logical views collapse. */
+/** Select one compiler-described chunkable-value resource identity; duplicate logical/physical views collapse. */
 export function selectValueChunkWriteCategory(
   writes: ReadonlyArray<ValueChunkWriteDescriptor>,
 ): ValueChunkWriteCategorySelection {

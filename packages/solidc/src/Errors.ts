@@ -51,7 +51,7 @@ import {
   RevertNode,
 } from './ast/AST.js';
 import { Symbol, SymbolType } from './ast/SymbolTable.js';
-import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
+import { Location, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
 export type SolidcDiagnosticCode =
@@ -139,29 +139,12 @@ export class UnpublishableLoopGuardError extends SolidcDiagnosticError {
 }
 
 /**
- * X92. Say so when a Line/Column is a position in COMPILER-GENERATED source.
- *
- * A diagnostic raised during SEMANTIC ANALYSIS on a node a generated parse built carries a position in that
- * generated text. The position can fall INSIDE the user's file, so nothing else signals it is wrong.
- */
-export function generatedSourceCaveat(location?: Location): string {
-  const origin = generatedOriginOf(location);
-  if (!origin) return '';
-  return ` - a position in ${origin}, NOT in your file. It shifts when an unrelated compile option changes the`
-    + ' generated preamble, and no edit to the contract can name it. This is a compiler defect';
-}
-
-/**
  * X107. Name the imported file a HARD error's Line/Column belongs to.
  *
  * Warnings learned to do this; every error class here still printed a bare `Line N, Column M`, which cites a line
  * that is real in an IMPORTED file and impossible in the file the user named. Measured: `ERC20Mock.sol` (15 lines)
  * reports `Type 'address' can not be assigned to variable of type 'address payable' at Line 16` - line 16 of the
  * ERC20 base it inherits.
- *
- * X92 rule, unchanged: a position can look both imported and generated, and GENERATED WINS. The imported label
- * asserts "line N is real in file F on disk"; a generated position is in a string no file holds, so labelling it
- * would be a SPECIFIC FALSE label naming a real file - worse than none.
  *
  * Measured over mistswap + solidity-by-example + eacc + a since-removed message-bus pass, 7394 diagnostics:
  * hard-error positions naming a file too short to hold the line went 21 -> 4, and no diagnostic anywhere names a
@@ -174,7 +157,6 @@ export function generatedSourceCaveat(location?: Location): string {
  *    not even call it. Those exact Locations DO carry the stamp, measured.
  */
 export function importedFileCaveat(location?: Location): string {
-  if (generatedOriginOf(location)) return '';
   const file = sourceFileOf(location);
   return file ? ` of imported "${file}"` : '';
 }
@@ -189,7 +171,6 @@ export class SolidCashError extends Error {
     if (node.location) {
       message += ` at ${node.location.start}`;
       message += importedFileCaveat(node.location);
-      message += generatedSourceCaveat(node.location);
     }
 
     super(message);
@@ -335,7 +316,6 @@ export class ParseError extends Error {
       // parse was reading - an import as often as the root. The listener-built positions (syntax errors) carry no
       // stamp, so they print unchanged.
       message += importedFileCaveat(location);
-      message += generatedSourceCaveat(location);
     }
 
     super(message);

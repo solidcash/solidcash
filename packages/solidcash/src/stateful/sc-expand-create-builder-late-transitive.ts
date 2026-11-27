@@ -421,7 +421,7 @@ export async function expandCreateBuilderLateTransitive(
       if (!childState.masterUtxo) {
         // Every frame here is a reached occurrence: the loop above already dropped the ones whose guard is false.
         // A reached occurrence has to co-spend its callee's master, so skipping this quietly composed a
-        // transaction with no callee input that the generated route then refuses at spend time. The ordinary
+        // transaction with no callee input that the covenant then refuses at spend time. The ordinary
         // transitive discovery path already refuses this condition; name the callsite and occurrence here too.
         throw new Error(
           `Late external callsite ${nested.callsiteId ?? '?'} occurrence ${occurrenceIndex} has no master UTXO `
@@ -433,7 +433,7 @@ export async function expandCreateBuilderLateTransitive(
           .map((slot) => slot.nftIndex ?? 0))];
       const dataNftUtxos = requiredDataNftIndices.map((nftIndex) => {
         const utxo = childState.dataNftUtxos[nftIndex];
-        if (!utxo) throw new Error(`Late external data NFT at index ${nftIndex} is missing for the selected handler.`);
+        if (!utxo) throw new Error(`Late external data NFT at index ${nftIndex} is missing for the called function.`);
         return {
           ...utxo,
           unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),

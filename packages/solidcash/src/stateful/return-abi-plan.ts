@@ -41,8 +41,8 @@ export type ReturnAbiPlan<T> = {
 
 /**
  * Select the ABI which describes a call's logical value independently from the ABI which physically carries
- * its return event. A route can aggregate many rows, so a facade with no direct result fails closed
- * unless exactly one selected row returns a value.
+ * its return event. A function with no direct result (such as a proxy forwarder) takes the result of its one
+ * returning candidate call, and fails closed when more than one candidate returns a value.
  */
 export function selectReturnAbiPlan<T>(
   functionName: string,
@@ -56,7 +56,7 @@ export function selectReturnAbiPlan<T>(
   if (returning.length > 1) {
     throw new Error(
       `staticCall: '${functionName}' selects ${returning.length} logical return rows; `
-      + 'an aggregate route has no single return value.',
+      + 'a result taken from more than one returning call has no single return value.',
     );
   }
   const selected = returning[0];

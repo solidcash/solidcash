@@ -105,7 +105,7 @@ export function deriveFullPhase1ReturnAndEvents(
         `function '${calleeReturnFunction?.name ?? group.functionName}' result`,
       );
     if (!returnCommitments?.length) {
-      const pending = extractPendingReturnCommitment(fullTraceRet, 1, []);
+      const pending = extractPendingReturnCommitment(fullTraceRet);
       if (pending) returnCommitments = [pending];
     }
     let evmScalar = calleeReturnEncoding === 'evm-abi-v1'
@@ -119,7 +119,7 @@ export function deriveFullPhase1ReturnAndEvents(
       fullTraceRet = evaluateFaithfulOrDebugTrace(host.inner.provider, returnProgram);
       returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
       if (!returnCommitments?.length) {
-        const pending = extractPendingReturnCommitment(fullTraceRet, 1, []);
+        const pending = extractPendingReturnCommitment(fullTraceRet);
         if (pending) returnCommitments = [pending];
       }
       evmScalar = calleeReturnEncoding === 'evm-abi-v1'
@@ -168,7 +168,7 @@ export function deriveFullPhase1ReturnAndEvents(
     ));
     // An exact return-output comparison binds the result to the compiler-assigned channel. A schema-shaped
     // stack value is only fallback evidence: mappings and state serialization can leave canonical pushdata
-    // wrappers around unrelated ABI-width words (for example a hashed key) in the same route frame.
+    // wrappers around unrelated ABI-width words (for example a hashed key) in the same trace.
     // Never let that weaker scan replace an authenticated output observation.
     if (evmScalar && !returnCommitments?.length
       && (!fullTraceRet.at(-1)?.error || !/^0+$/.test(evmScalar))) {
@@ -529,7 +529,7 @@ export function deriveFullPhase1ReturnAndEvents(
       );
     }
     if (!returnCommitments?.length) {
-      const pending = extractPendingReturnCommitment(returnTrace, 1, []);
+      const pending = extractPendingReturnCommitment(returnTrace);
       if (pending) returnCommitments = [pending];
     }
     // The same rule as the pre-event derivation: a void callee that pins no record returns no bytes, so the

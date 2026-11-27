@@ -29,7 +29,6 @@ export interface BuildInputsHost {
   readOnlyDataNftUtxos: UnlockableUtxo[];
   blockhashCoSpendUtxos: UnlockableUtxo[];
   blockInfoCoSpendUtxos?: UnlockableUtxo[];
-  blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos: UnlockableUtxo[];
   keccakLoopSideCars: UnlockableUtxo[];
   keccakLoopPrecedesTrailingUser: boolean;
@@ -225,7 +224,6 @@ export function buildInputs(
       externalCallInputs: externalCallInputs.length,
       outStateInputs: externalOutStateInputs.length,
       entries: entryInputs.length,
-      blockhashOrdinals: host.blockhashCoSpendSlotOrdinals !== undefined,
       directCallDelegateBlock: host.directCallDelegateBlock,
       delegateEntriesAfterLowLevel: host.delegateEntriesAfterLowLevel,
       guardPasses: useDensePlacement,
@@ -325,12 +323,8 @@ export function buildInputs(
           }
           break;
         case 'blockhashOracle':
-          if ((host.blockhashCoSpendSlotOrdinals?.[bhIdx] ?? bhIdx) === bhOrdinal
-            && bhIdx < host.blockhashCoSpendUtxos.length) {
+          if (bhIdx === bhOrdinal && bhIdx < host.blockhashCoSpendUtxos.length) {
             positioned[slot.offset] = host.blockhashCoSpendUtxos[bhIdx++];
-          } else if (host.blockhashCoSpendSlotOrdinals) {
-            const f = funderPool.shift();
-            if (f) positioned[slot.offset] = f;
           }
           bhOrdinal++;
           break;

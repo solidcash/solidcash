@@ -286,7 +286,7 @@ export function materializeOwnerEntriesContainersTransfers(
     });
   }
 
-  // Create transfer outputs (plain BCH, no tokens). A graph route reserves a fixed per-row transfer frame;
+  // Create transfer outputs (plain BCH, no tokens). The block layout reserves a fixed transfer frame;
   // inactive sites remain OP_TRUE outputs so later participant blocks cannot slide into the gaps.
   const reservedTransferSlots = host.blockLayout?.slots.filter((slot) => slot.kind === 'transfer').length
     ?? host.pendingTransfers.length;

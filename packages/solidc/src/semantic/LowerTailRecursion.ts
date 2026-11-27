@@ -1002,9 +1002,9 @@ export default class LowerTailRecursion extends AstTraversal {
       const group = functions.filter((fn) => unordered.includes(fn));
       const names = new Set(group.map((fn) => fn.name));
       // A recursive call in the conditional RHS is still tail-positioned, but only on the path which reaches it.
-      // Spell that source short circuit as ordinary control flow before fold recognition so the row loop never
-      // turns a skipped recursive operand into an unconditional iteration. The recursive-LHS form needs a deferred
-      // continuation environment and deliberately remains outside this normalization.
+      // Spell that source short circuit as ordinary control flow before fold recognition so the dispatch loop
+      // never turns a skipped recursive operand into an unconditional iteration. The recursive-LHS form needs a
+      // deferred continuation environment and deliberately remains outside this normalization.
       for (const fn of group) this.normalizeRightShortCircuitReturns(fn.body!, names);
       const first = group[0];
       const sameFrame = group.every((fn) => fn.body

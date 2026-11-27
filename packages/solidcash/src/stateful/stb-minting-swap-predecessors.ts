@@ -64,7 +64,7 @@ ScaledPreserveEmitHost,
   setRelocationFunderUtxos(next: UnlockableUtxo[]): void;
 }
 
-/** The entry access the selected handlers publish at a slot index. */
+/** The first entry access these functions publish at a slot index. */
 export function physicalEntryAccessForSlot(
   handlers: readonly Pick<AbiFunction, 'entryAccesses'>[],
   slotIndex: number,
@@ -133,8 +133,8 @@ export function placeValueChunkPredecessorInputs(
 ): void {
   // A compiler-published balanced block is a complete ownership map. Legacy persistence recovery infers
   // destinations from cached input shape, so applying it after fixed-width assembly can replace a declared
-  // route slot with an unrelated resource. Routes must receive every live/disposal input through the
-  // ordinary builder options and leave the materialized block immutable.
+  // block slot with an unrelated resource. Such a block receives every live/disposal input through the
+  // ordinary builder options, and its materialized form stays immutable.
   if (host.preserveBlockLayoutWidth || host.directCallDelegateBlock
     || host.blockLayout?.trailingCapacity !== undefined) return;
   const band = host.getChunkableValueWriteBand();

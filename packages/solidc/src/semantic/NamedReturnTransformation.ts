@@ -13,7 +13,7 @@ import {
   TupleAssignmentNode,
   AssemblyStatementNode,
 } from '../ast/AST.js';
-import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
+import { sourceFileOf } from '../ast/Location.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
 import { fallsOffEndCheck } from './EnsureFinalRequireTraversal.js';
@@ -83,7 +83,7 @@ function bodyHolds(body: Node, matches: (node: Node) => boolean): boolean {
  */
 function warnUnusedNamedReturns(node: FunctionDefinitionNode): void {
   const { body, location } = node;
-  if (!body || generatedOriginOf(location) !== undefined || node.name.startsWith('__')) return;
+  if (!body || node.name.startsWith('__')) return;
   if (bodyHolds(body, (child) => child instanceof AssemblyStatementNode
     || (child instanceof ReturnNode && child.expressions.length > 0))) return;
   const line = location?.start?.line;

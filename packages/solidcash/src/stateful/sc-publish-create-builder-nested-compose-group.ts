@@ -41,7 +41,6 @@ export type PublishCreateBuilderNestedComposeGroupParams = {
   delegateCallGroupIndex: number | undefined;
   childExternalGroupIndex: number;
   childValueChunkSlots: number;
-  precomputedReturnCommitment: Uint8Array | undefined;
   loopReturnCommitments: Uint8Array[] | undefined;
   resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<any>) | undefined;
@@ -66,7 +65,7 @@ export function publishCreateBuilderNestedComposeGroup(
     childBatchPredecessorOutputs, childBatchEntryLockingBytecodes,
     childBatchEntryCommitments, childDynamicChunkResources, selectedLayout,
     sharedGroupIndex, delegateCallGroupIndex,
-    childValueChunkSlots, precomputedReturnCommitment, loopReturnCommitments,
+    childValueChunkSlots, loopReturnCommitments,
     resolveLoopReturnCommitment, resolveLoopReturnValue, resolveLoopFunctionArgs,
     delegateCallerIdentity, externalCallUtxoGroups, lowLevelCallUtxoGroups,
   } = params;
@@ -166,7 +165,6 @@ export function publishCreateBuilderNestedComposeGroup(
       sharedGroupIndex,
       blockInputs: [] as UnlockableUtxo[],
     }),
-    ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
     ...(loopReturnCommitments && { loopReturnCommitments }),
     ...(nested.resultArrayOutput !== undefined && {
       loopResultArrayOutput: nested.resultArrayOutput,

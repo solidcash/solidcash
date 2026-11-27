@@ -107,7 +107,6 @@ export async function allocateCreateBuilderFunders(
     functionName,
     timing,
     directCallDelegateLayout = undefined,
-    blockhashCoSpendSlotOrdinals = undefined,
     keccakComputeCoSpendUtxos = [] as any[],
     ecrecoverComputeCoSpendUtxos = [] as any[],
     iterationEntryInputs = [] as any[],
@@ -232,18 +231,7 @@ export async function allocateCreateBuilderFunders(
       (s) => s.kind === 'tokenContainer' && !tcInfos.some((c) => c.tokenContainerSlotIndex === s.slotIndex && c.exists),
     ).length;
     timing?.('funder-slot-counted');
-    if (blockhashCoSpendSlotOrdinals) {
-      const active = new Set(blockhashCoSpendSlotOrdinals);
-      let ordinal = 0;
-      for (const slot of effectiveBlockLayout.slots) {
-        if (slot.kind !== 'blockhashOracle') continue;
-        if (!active.has(ordinal)) neededFunders++;
-        ordinal++;
-      }
-    }
-    // Batch routes publish the union of compute resources required by every admitted handler. A selected
-    // handler can leave some of those physical slots inactive, but the balanced route remains fixed-width: later
-    // executor, identity, and participant inputs must not shift into an unused compute coordinate.
+    // A compute side-car slot no co-spend fills takes a funder, so later inputs keep their coordinates.
     neededFunders += Math.max(
       0,
       effectiveBlockLayout.slots.filter((slot) => slot.kind === 'keccakSideCar').length

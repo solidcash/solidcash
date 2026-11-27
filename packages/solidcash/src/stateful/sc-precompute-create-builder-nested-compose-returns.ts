@@ -12,12 +12,10 @@ export type PrecomputeCreateBuilderNestedComposeReturnsHost = {
   readonly categoryId: string;
   concatBytes: (...parts: Uint8Array[]) => Uint8Array;
   deriveReturnValue: (...args: any[]) => Promise<FunctionArgument>;
-  memoizeGraphPlanningProducerResult: (...args: any[]) => Promise<any>;
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
 };
 
 export type PrecomputeCreateBuilderNestedComposeReturnsResult = {
-  precomputedReturnCommitment: Uint8Array | undefined;
   loopReturnCommitments: Uint8Array[] | undefined;
   resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
@@ -65,7 +63,6 @@ export async function precomputeCreateBuilderNestedComposeReturns(
 
   } = params;
 
-  let precomputedReturnCommitment: Uint8Array | undefined;
   let loopReturnCommitments: Uint8Array[] | undefined;
   let resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   let resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
@@ -145,18 +142,14 @@ export async function precomputeCreateBuilderNestedComposeReturns(
       return nextValue;
     };
     resolveLoopReturnCommitment = async (index: number): Promise<Uint8Array> => (
-      index === 0 && precomputedReturnCommitment
-        ? precomputedReturnCommitment
-        : encodeReturn(await resolveLoopReturnValue!(index))
+      encodeReturn(await resolveLoopReturnValue!(index))
     );
     const arraySource = (nested.argSources ?? []).find((source: any) => source.kind === 'arrayElement');
     const array = arraySource?.paramIndex !== undefined
       ? delegateVisibleArgs[arraySource.paramIndex] : undefined;
     if (Array.isArray(array) && array.length > 1) {
-      loopReturnCommitments = precomputedReturnCommitment
-        ? [precomputedReturnCommitment]
-        : [];
-      for (let index = loopReturnCommitments.length; index < array.length; index++) {
+      loopReturnCommitments = [];
+      for (let index = 0; index < array.length; index++) {
         loopReturnCommitments.push(await resolveLoopReturnCommitment(index));
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -165,8 +158,6 @@ export async function precomputeCreateBuilderNestedComposeReturns(
           functionName: nested.functionName,
           array: array.map((item: any) => (typeof item === 'string' ? item
             : item instanceof Uint8Array ? binToHex(item) : String(item))),
-          precomputedHex: precomputedReturnCommitment
-            ? binToHex(precomputedReturnCommitment) : undefined,
           commitments: loopReturnCommitments.map((part: any) => binToHex(part)),
         });
       }
@@ -177,14 +168,11 @@ export async function precomputeCreateBuilderNestedComposeReturns(
         arrayLength: Array.isArray(array) ? array.length : undefined,
         paramIndex: arraySource?.paramIndex,
         visibleLen: delegateVisibleArgs.length,
-        precomputedHex: precomputedReturnCommitment
-          ? binToHex(precomputedReturnCommitment) : undefined,
       });
     }
   }
 
   return {
-    precomputedReturnCommitment,
     loopReturnCommitments,
     resolveLoopReturnCommitment,
     resolveLoopReturnValue,

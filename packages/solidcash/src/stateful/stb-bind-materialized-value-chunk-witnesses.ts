@@ -39,8 +39,8 @@ export interface BindMaterializedValueChunkWitnessesHost {
 
 /**
  * Bind compiler-owned continuation witnesses after every output in an isolated composition block has been
- * materialized. Graph routes can represent several logical calls with one low-level carrier, so discovery is
- * based on ABI/state-layout metadata and the self-describing output run rather than a source function name.
+ * materialized. Discovery is based on ABI/state-layout metadata and the self-describing output run rather than
+ * a source function name.
  */
 export function bindMaterializedValueChunkWitnesses(
   host: BindMaterializedValueChunkWitnessesHost,

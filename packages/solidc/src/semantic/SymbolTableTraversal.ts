@@ -139,7 +139,7 @@ import {
 import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
 import {
-  type Location, computeExpressionSiteKey, generatedOriginOf, sourceFileOf,
+  type Location, computeExpressionSiteKey, sourceFileOf,
 } from '../ast/Location.js';
 import { computeBranchOps, countBranchOps, hasEffectiveCallValue } from './branchOps.js';
 import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
@@ -1154,19 +1154,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   /**
    * ` at line N` for a diagnostic, naming the imported file when line N is not in the file being compiled.
    * Built lazily: a compilation whose diagnostics all point into the user's own file pays nothing.
-   *
-   * X92. A position can be both generated and imported-looking, and GENERATED WINS. The imported label asserts
-   * "line N is real in file F on disk"; a generated position is in a string that exists only inside the
-   * compiler, so no file holds it and the imported label would be a SPECIFIC FALSE label naming a real file -
-   * the failure X93 already refused. The mark is also the stronger evidence: it is stamped on the Location
-   * instance by the parse that built it, whereas the imported map is inferred from reachability, which a
-   * lowering pass can perturb by re-parenting a generated node under an imported declaration root.
    */
   private diagLine(location?: LocationI): string {
     const line = location?.start?.line;
     if (line === undefined) return '';
-    const generated = generatedOriginOf(location);
-    if (generated) return ` at line ${line} of ${generated}, not of your file`;
     // X107: the parse that built this Location stamped the file it was reading, so prefer that over the
     // reachability map. It cannot name a re-exporting intermediate and needs no import list to be present.
     const stamped = sourceFileOf(location);
@@ -2397,9 +2388,6 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
-      // Compiler-generated source's unused locals identify nothing the user can fix.
-      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedSourceWarnings?: boolean })
-        .__suppressGeneratedSourceWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -2423,7 +2411,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.name.startsWith('__internal__leadingPushValue_')
       || node.name.startsWith('__internal__collectionIter')
       || (node.name === '__internal__msgSenderAnchorIdx'
-        && (node.syntheticallyUsed || generatedOriginOf(node.location) !== undefined))
+        && node.syntheticallyUsed)
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -2443,12 +2431,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // the same name as its function, `function max(..) returns (int max)`, which is legal Solidity. Both live at
     // contract/library level, so this never masks a genuine same-scope param/local collision. Native solidcash
     // keeps the strict check.
-    // Compiler-generated code reaches user state only through `this.x`,
-    // so a generated parameter may shadow a state-variable name without ambiguity; native source stays strict.
-    const generatedParameter = generatedOriginOf(node.location) !== undefined;
     const shadowsOuter = (existing?.symbolType === SymbolType.FUNCTION && this.compilerOptions.evmCompat)
-      || (existing?.symbolType === SymbolType.STATE_VARIABLE
-        && (this.compilerOptions.evmCompat || generatedParameter));
+      || (existing?.symbolType === SymbolType.STATE_VARIABLE && this.compilerOptions.evmCompat);
     if (existing && !shadowsOuter) {
       throw new VariableRedefinitionError(node);
     }
@@ -5548,8 +5532,6 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
-      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedSourceWarnings?: boolean })
-        .__suppressGeneratedSourceWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -14061,8 +14043,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.symbolTable.unusedSymbols();
     this.markUnreadOpaqueReturns(unusedSymbols, node);
     for (const unused of unusedSymbols) {
-      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedSourceWarnings?: boolean })
-        .__suppressGeneratedSourceWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -14100,13 +14080,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Solidity. set() below adds it to the inner scope, so the shadow resolves correctly. Shadowing an outer
       // LOCAL that is still live is NOT accepted: codegen slots locals by name, so a live shadow would reuse the
       // outer's slot and miscompile - a clean rejection is sound; disjoint sibling scopes reuse names fine.
-      // Compiler-generated code reaches user state only through the
-      // explicit `this.x` form, so a generated local may shadow a state-variable name without ambiguity.
       // Native source stays strict: the evmCompat gate is what relaxes it for user code.
-      const generatedLocal = generatedOriginOf(node.location) !== undefined;
       const shadowsOuter = (existing.symbolType === SymbolType.FUNCTION && this.compilerOptions.evmCompat)
-        || (existing.symbolType === SymbolType.STATE_VARIABLE
-          && (this.compilerOptions.evmCompat || generatedLocal));
+        || (existing.symbolType === SymbolType.STATE_VARIABLE && this.compilerOptions.evmCompat);
       if (!loopReuse && !shadowsOuter) {
         throw new VariableRedefinitionError(node);
       }
@@ -16756,8 +16732,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.tryBlock.symbolTable.unusedSymbols();
     this.markUnreadOpaqueReturns(unusedSymbols, node.tryBlock);
     for (const unused of unusedSymbols) {
-      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedSourceWarnings?: boolean })
-        .__suppressGeneratedSourceWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);

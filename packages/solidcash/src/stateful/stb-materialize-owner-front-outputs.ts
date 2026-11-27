@@ -32,7 +32,6 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly blockInfoCoSpendUtxos?: readonly UnlockableUtxo[];
   /** The oracle belongs to the delegated implementation; its recreate is emitted with that band. */
   readonly delegateBlockInfoOracle?: boolean;
-  readonly blockhashCoSpendSlotOrdinals?: readonly number[];
   readonly keccakComputeCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCommitments: readonly string[];
   readonly preserveBlockLayoutWidth: boolean;
@@ -132,9 +131,6 @@ export function materializeOwnerFrontOutputs(
       token: oracle.token,
     };
   };
-  const blockhashOrdinals = host.blockhashCoSpendSlotOrdinals
-    ?? host.blockhashCoSpendUtxos.map((_utxo, index) => index);
-
   const auxSlots = host.blockLayout
     ? host.blockLayout.slots.filter((slot) => isAuxiliaryBlockSlot(slot) && slot.kind !== 'lowLevelCall') : [];
   let readOnlyIdx = 0, bhOrdinal = 0, kIdx = 0, erIdx = 0;
@@ -156,7 +152,7 @@ export function materializeOwnerFrontOutputs(
         emitAt(slot.offset, readOnlyIdx < readOnlyOutputs.length ? readOnlyOutputs[readOnlyIdx++] : undefined);
         break;
       case 'blockhashOracle': {
-        const activeIndex = positioned ? blockhashOrdinals.indexOf(bhOrdinal) : bhOrdinal;
+        const activeIndex = positioned && bhOrdinal >= host.blockhashCoSpendUtxos.length ? -1 : bhOrdinal;
         bhOrdinal += 1;
         emitAt(slot.offset, activeIndex >= 0 ? blockhashOutput(activeIndex) : undefined);
         break;

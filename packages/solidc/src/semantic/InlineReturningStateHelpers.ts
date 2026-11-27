@@ -190,13 +190,6 @@ const captureCallsiteActivationInNode = (
   }
 };
 
-/** Capture source lexical callsite activation before helper/control-flow normalization. */
-export function captureCallsiteActivations(source: SourceFileNode): void {
-  for (const fn of [...source.contract.functions, ...(source.freeFunctions ?? [])]) {
-    if (fn.body) captureCallsiteActivationInNode(fn.body, []);
-  }
-}
-
 export default class InlineReturningStateHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   private funcByKey: Map<string, FunctionDefinitionNode> = new Map(); // keyed by inlineKey(name, arity) for overloads

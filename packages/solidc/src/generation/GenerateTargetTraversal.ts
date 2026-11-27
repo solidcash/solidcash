@@ -3071,7 +3071,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopStreamKey = '';
   private sortedUpsertLoopVaryingArrayParam = '';
   private sortedUpsertLoopJournalAccessStreamIndex: number | undefined;
-  private sortedUpsertLoopJournalCursorName: string = '(kernel_journal_cursor)';
+  private sortedUpsertLoopJournalCursorName: string = '(journal_cursor)';
   private sortedUpsertLoopInputCountParam: string | undefined;
   private sortedUpsertLoopOutputCountParam: string | undefined;
   private sortedUpsertGrouped = false;
@@ -6880,8 +6880,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const journalSlotsOf = (id: number, slots: Map<string, StateVariableNode>): StateVariableNode[] =>
       [...slots.values()].filter((sv) =>
         !sv.isDynamic || writerIds.has(id) || dynamicInvokerHolders.has(id));
-    // X139, completing L2-F2. `visitUserFunctionCall` PICKs the callee's context off the CALLER's frame, so EVERY
-    // invoker of an admitted handler must hold it.
+    // X139. `visitUserFunctionCall` PICKs the callee's context off the CALLER's frame, so EVERY invoker of a
+    // function that holds a journal context must hold it too.
     //
     // WHY WIDENING HERE CANNOT SILENCE A CHECK. `invokesJournalHandler` in `visitFunctionDefinition` scans the
     // SAME AST call edges this fixpoint walks. An edge C -> D with D admitted and C not is therefore either a
@@ -6890,8 +6890,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //
     // The two sets are separate on purpose. Holding a scalar context is not a licence to journal a chunk-backed
     // slot: a pure reader that starts loading a dynamic header from the journal while its elements still come
-    // from the chunk loop breaks vmap at input 0. A caller is promoted to the dynamic set only when the callee it must serve keeps a dynamic slot itself, in
-    // which case the caller's slot map already contains that slot through the fixpoint above.
+    // from the chunk loop breaks vmap at input 0. A caller is promoted to the dynamic set only when the callee it
+    // must serve keeps a dynamic slot itself, in which case the caller's slot map already contains that slot
+    // through the fixpoint above.
     const holdsContext = (id: number): boolean =>
       writerIds.has(id) || invokerHolders.has(id);
     for (let widened = true; widened;) {
@@ -36296,7 +36297,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         if (this.readsRecordsFromFrame) this.emitFramedDistinctBatchTargets(node, targets, loc);
         // ROUTE-SKIP-1: -2 skips a target's topology and census here. A plain direct target has no inactive row
-        // (as DS-1): only a framed skipped group or a compose row the preflight bound to an alias carries it.
+        // (as DS-1): only a framed skipped group or a compose-on-alias row the preflight bound to an earlier
+        // write's entry carries it.
         if (this.directConvention && !this.readsRecordsFromFrame
           && !this.currentFunctionIsDelegate) {
           for (const slot of targets) {
@@ -39386,7 +39388,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertPendNextName = `(pu_next_${suffix})`;
     this.sortedUpsertReadProofSlotName = `(read_proof_slot_${suffix})`;
     this.sortedUpsertReadProofNextName = `(read_proof_next_${suffix})`;
-    this.sortedUpsertLoopJournalCursorName = `(kernel_journal_cursor_${suffix})`;
+    this.sortedUpsertLoopJournalCursorName = `(journal_cursor_${suffix})`;
     // Conditional lowering may clone the write after slots were assigned. Recover the collection's unique
     // runtime-loop slot; key/value recipe validation below still rejects ambiguous unsupported shapes.
     const slotIndex = writeNode.entrySlotIndex >= 0 ? writeNode.entrySlotIndex
@@ -40272,7 +40274,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const pickAddress = (): void => this.emitPickTrackedFromBottom(this.sortedUpsertLoopAddrName, loc);
     const hkIdx = (): number => this.getStackIndex('(credit_hk)');
     const amtIdx = (): number => this.getStackIndex('(credit_amt)');
-    const physicalCommitment = `(kernel_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
+    const physicalCommitment = `(journal_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
     // Emit `master + blockSize + <persistent counter> + add`, leaving an output/input index on top (U untracked above).
     // A framed frame with no sorted batch ahead of the loop creates its records as trailing outputs, so the turn's
     // output is named by its position in the segment's declared list - the negative ordinal a batch's created record
@@ -40870,7 +40872,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertLoopStreamKey = '';
     this.sortedUpsertLoopVaryingArrayParam = '';
     this.sortedUpsertLoopJournalAccessStreamIndex = undefined;
-    this.sortedUpsertLoopJournalCursorName = '(kernel_journal_cursor)';
+    this.sortedUpsertLoopJournalCursorName = '(journal_cursor)';
     this.sortedUpsertLoopInputCountParam = undefined;
     this.sortedUpsertLoopOutputCountParam = undefined;
   }
@@ -51965,7 +51967,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_TOALTSTACK, loc); // retained header
 
     // A canonical access without a predecessor must match the empty actual-predecessor marker. Otherwise select
-    // the predecessor record and bind its slot byte-for-byte to the proof identity used by the row loop.
+    // the predecessor record and bind its slot byte-for-byte to the actual predecessor slot.
     this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);

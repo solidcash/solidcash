@@ -187,12 +187,6 @@ const resolvedRecipeHelper = (
   return undefined;
 };
 
-/** True only when a recipe helper call is bound by semantic identity or one unique exact parameter signature. */
-export const hasExactRecipeHelperIdentity = (
-  call: FunctionCallNode, helperFunctions: readonly FunctionDefinitionNode[],
-  handlerInputTypes?: ReadonlyMap<string, string>,
-): boolean => resolvedRecipeHelper(call, helperFunctions, handlerInputTypes) !== undefined;
-
 const materializableGenesisType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
   if (type instanceof ArrayType) {
     return type.bound !== undefined && Number.isSafeInteger(type.bound) && type.bound >= 0

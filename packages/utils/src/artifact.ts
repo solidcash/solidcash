@@ -7,13 +7,6 @@ export interface ResolvedImport {
 
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
-/** Exact ABI entry-point identity for overload-safe compiler and SDK selection. */
-export interface AbiFunctionReference {
-  name: string;
-  /** Four-byte function selector as eight hexadecimal characters (the optional `0x` prefix is accepted). */
-  selector: string;
-}
-
 /**
  * How an `address` value is materialized when it becomes bytes.
  *
@@ -388,7 +381,7 @@ export interface FunctionBlockLayout {
   fixedSuffix?: number;
 }
 
-/** A pure value expression which an SDK can reproduce from a decoded handler row and authenticated pre-state. */
+/** A pure value expression which an SDK can reproduce from a call's decoded arguments and authenticated pre-state. */
 export type ChildDeploymentValueRecipe =
   | { kind: 'handlerInput'; inputIndex: number; resultType?: string }
   /** The authenticated logical caller (`msg.sender`). */
@@ -431,17 +424,17 @@ export type ChildDeploymentValueRecipe =
     right: ChildDeploymentValueRecipe;
   };
 
-/** A fixed BCH transfer whose operands are reproducible from one authenticated handler row. */
+/** A fixed BCH transfer whose operands are reproducible from one authenticated call. */
 export interface FixedBchTransferAbi {
-  /** Physical transfer register within the handler's per-row effect frame. */
+  /** Physical transfer register within the function's effect frame. */
   transferIndex: number;
   /** Legacy shallow sources retained for artifact consumers which do not yet evaluate recipes. */
   recipient: ArgSource;
   amount: ArgSource;
-  /** Canonical typed recipes used by journal composition. Absence means the operand is not materializable. */
+  /** Canonical typed recipes the SDK evaluates for the operands. Absence means the operand is not materializable. */
   recipientRecipe?: ChildDeploymentValueRecipe;
   amountRecipe?: ChildDeploymentValueRecipe;
-  /** A stateless child address derived from compiler-pinned body bytes and pure row recipes. */
+  /** A stateless child address derived from compiler-pinned body bytes and pure recipes. */
   derivedRecipient?: {
     contractName: string;
     creationBytecode: string;
@@ -478,42 +471,6 @@ export interface ChildDeploymentGenesisEntryAbi {
   value: ChildDeploymentValueRecipe;
   /** The collection's empty-map HEAD sentinel, minted at genesis with an all-zero entry commitment. */
   head?: true;
-}
-
-export interface ChildDeploymentSiteAbi {
-  siteIndex: number;
-  contractName: string;
-  occurrence: 'once' | 'conditional' | 'loop' | 'recursive';
-  /** Offset and width of this source occurrence inside its route row's compiler-owned deployment frame. */
-  spanOffset?: number;
-  spanWidth?: number;
-  /** Exact pure row expression deciding whether a conditional occurrence executes. */
-  activation?: ChildDeploymentValueRecipe;
-  genesisInputCount: 1;
-  masterOutputCount: 1;
-  dataNftOutputCount: number;
-  entryNftOutputCount?: number;
-  totalOutputCount: number;
-  categorySource: 'genesis-input-outpoint-txhash';
-  constructorArgs: readonly (ChildDeploymentValueRecipe | { kind: 'expression' })[];
-  salt?: { kind: 'handlerInput'; inputIndex: number } | { kind: 'literal'; value: string }
-  | ChildDeploymentValueRecipe | { kind: 'expression' };
-  /** BCH sent by this creation site in its separately reserved transfer slot. The recipient is always the
-   * compiler-authenticated child locking bytecode and is therefore intentionally not caller-supplied metadata. */
-  value?: {
-    transferIndex: number;
-    amount: ChildDeploymentValueRecipe | { kind: 'expression' };
-  };
-  /** Exact child body embedded by the parent's address computation, before category/salt pinning. */
-  creationBytecode: string;
-  /** Hash of the canonical child state geometry used to interpret `genesisState`. */
-  childLayoutDigest?: string;
-  /** Present only when the complete constructor transition was folded into pure row recipes. */
-  genesisState?: ChildDeploymentGenesisStateAbi;
-  /** Finite constructor-created collection entries, in canonical child-output order. */
-  genesisEntries?: readonly ChildDeploymentGenesisEntryAbi[];
-  /** This site's genesis includes one compiler-folded call on the freshly created child. */
-  hasFoldedChildCall?: true;
 }
 
 /**
@@ -833,12 +790,6 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
-  /**
-   * Optional compiler-owned replay programs for locally constructed key vectors. These become actionable only
-   * when the corresponding compiler-generated route authenticates the replayed key/rank relation; consumers must ignore
-   * an artifact carrying a descriptor without that route capability.
-   */
-  constructedKeyVectors?: readonly ConstructedKeyVectorV1Abi[];
   /**
    * Compiler-authored affine recursive-frame relation. It is not a journal capability:
    * absence and presence both require the existing recursive settlement admission checks.
@@ -1405,42 +1356,6 @@ export type ExternalResultConsumerAbi = {
 );
 
 /**
- * A compiler-authored, finite proof program for a locally constructed mapping-key vector.
- *
- * This is deliberately data-only ABI metadata: consumers must evaluate it with the narrow v1 replay
- * interpreter, never by executing source text or inspecting local variable names. Omission is not a weaker
- * descriptor; it means the compiler did not prove a replay program and compiler admission must remain closed.
- */
-export interface ConstructedKeyVectorV1Abi {
-  version: 1;
-  /** Stable ordinal within the owning handler's compact journal-access stream. */
-  vectorOrdinal: number;
-  /** Exact fixed-width element ABI type. */
-  elementType: string;
-  allocationLength: ExternalCallExpression;
-  producer: {
-    domain: {
-      kind: 'pre-test' | 'post-test';
-      start: ExternalCallExpression;
-      bound: ExternalCallExpression;
-      step: ExternalCallExpression;
-      comparison: '<' | '<=' | '>' | '>=';
-    };
-    writes: readonly {
-      index: ExternalCallExpression;
-      value: ExternalCallExpression;
-      condition?: ExternalCallExpression;
-    }[];
-  };
-  consumer: {
-    index: ExternalCallExpression;
-    vectorElementComponent: number;
-    keyComponentCount: number;
-    fixedComponents: readonly { component: number; expression: ExternalCallExpression }[];
-  };
-}
-
-/**
  * A data-only proof of the relationship between a source recursive unwind rank and the
  * mapping accesses made by that frame. It intentionally names neither source locals nor
  * state declarations: `accessOrdinal` binds it to the already-published compact journal
@@ -1779,12 +1694,6 @@ export interface InvocationAnalysisArtifact {
     recursive: boolean;
   }[];
 }
-
-/**
- * Consensus P2SH redeem-script ceiling (BCH `maximumBytecodeLength`).
- * deployability certificate deployability certificates compare measured artifact bytecode against this limit.
- */
-export const P2SH_BYTECODE_LIMIT = 10_000;
 
 /**
  * The entry witness naming the input index of the contract that reads its call record (`Artifact.callRecordReader`):
@@ -2415,79 +2324,6 @@ export interface FunctionSplitBundle {
   loaders: readonly FunctionSplitLoader[];
 }
 
-/** How a published occurrence bound reads back, with the unknown legs made explicit. */
-export interface OccurrenceBound {
-  kind: 'once' | 'conditional' | 'loop';
-  /** Proven floor on reached rows, or undefined when the compiler proved none. */
-  minimum?: number;
-  /** Proven ceiling on reached rows, or undefined when the compiler proved none. */
-  maximum?: number;
-  /** True when floor and ceiling coincide, so exactly one count can ever be honest. */
-  exact: boolean;
-  source?: 'literal' | 'guard' | 'structural';
-}
-
-/**
- * Read one callsite's published occurrence bound.
- *
- * `once` is a straight-line callsite, so its count is structurally one whether or not the compiler wrote a
- * bound down. Every other class reports exactly what the artifact carries: an absent leg means the compiler
- * proved nothing there, never that any count is admissible.
- */
-export function occurrenceBoundOf(call: ExternalCallAbi): OccurrenceBound {
-  const kind = call.occurrence ?? 'once';
-  if (kind === 'once') {
-    return { kind, minimum: 1, maximum: 1, exact: true, source: call.occurrenceBoundSource ?? 'structural' };
-  }
-  const minimum = call.minimumOccurrences;
-  const maximum = call.maximumOccurrences;
-  return {
-    kind,
-    ...(minimum !== undefined && { minimum }),
-    ...(maximum !== undefined && { maximum }),
-    exact: minimum !== undefined && minimum === maximum,
-    // A conditional callsite's ceiling of one is a property of the branch, not of any written-down bound, so
-    // its provenance is structural even when the compiler spent no bytes saying so.
-    source: call.occurrenceBoundSource ?? (kind === 'conditional' ? 'structural' : undefined),
-  };
-}
-
-const boundProvenance = (bound: OccurrenceBound): string =>
-  bound.source === 'literal' ? 'a compile-time trip count'
-    : bound.source === 'guard' ? 'a dominating require guard'
-      : bound.source === 'structural' ? 'a single-reach branch'
-        : 'the compiler';
-
-/**
- * Validate a chosen reached-occurrence count against the compiler-published bound.
- *
- * Returns undefined when the count is admitted, otherwise a precise diagnostic naming the callsite, the
- * chosen count, the bound it violates and where that bound came from. A consumer that plans a count outside
- * the published bound builds a transaction the caller covenant rejects; this turns that into a plan-time
- * error. An absent bound leg is never treated as permission - callers decide separately whether an unproven
- * ceiling is admissible at all.
- */
-export function occurrenceCountViolation(call: ExternalCallAbi, count: number): string | undefined {
-  const bound = occurrenceBoundOf(call);
-  const where = `callsite ${call.callsiteId ?? '?'}`;
-  if (!Number.isInteger(count) || count < 0) {
-    return `${where} was planned with ${count} occurrences, which is not a reached-row count`;
-  }
-  if (bound.kind !== 'loop' && count > 1) {
-    return `${where} is a ${bound.kind} callsite reached at most once, but ${count} occurrences were planned`;
-  }
-  if (bound.maximum !== undefined && count > bound.maximum) {
-    return `${where} was planned with ${count} occurrences, above the ${bound.maximum} `
-      + `proven by ${boundProvenance(bound)}`;
-  }
-  if (bound.minimum !== undefined && count < bound.minimum) {
-    return `${where} was planned with ${count} occurrences, below the ${bound.minimum} `
-      + `proven by ${boundProvenance(bound)}`
-      + (bound.exact ? `; this callsite reaches exactly ${bound.minimum} rows` : '');
-  }
-  return undefined;
-}
-
 /**
  * A provenance as a consumer must read it, with the unpublished leg made explicit.
  *
@@ -2546,32 +2382,6 @@ export function signatureGuardDominatesDelegatecalls(
   fn: Pick<AbiFunction, 'signatureGuardDominatesDelegatecalls'>,
 ): boolean {
   return fn.signatureGuardDominatesDelegatecalls === true;
-}
-
-/**
- * Is this value fixed for a given contract address - committed into the p2sh32 or into the script itself?
- *
- * True for `constructorArg` and `literal` only. `stateVar` is fixed only relative to the contract's own
- * authorized writes, which is a different question a consumer has to answer for itself; `parameter`,
- * `computed` and `unknown` are all "a spender may vary this". Anything not on the true list is refused, so a
- * kind added by a later compiler falls closed here rather than being admitted by omission.
- */
-export function isAddressCommittedProvenance(provenance: ReadValueProvenance): boolean {
-  return provenance.kind === 'constructorArg' || provenance.kind === 'literal';
-}
-
-/** Human-readable provenance, for diagnostics that have to say why a value was refused. */
-export function describeProvenance(provenance: ReadValueProvenance): string {
-  switch (provenance.kind) {
-    case 'constructorArg': return `constructor argument '${provenance.name}'`;
-    case 'parameter': return `caller-supplied parameter '${provenance.name}'`;
-    case 'stateVar': return `state variable '${provenance.name}'`;
-    case 'literal': return 'a compile-time literal';
-    case 'computed': return 'a computed expression';
-    // Either the body carried nothing to describe or the artifact predates the field; a consumer must not
-    // distinguish them, because both mean the artifact proves nothing here.
-    default: return 'a source this artifact does not name';
-  }
 }
 
 export function formatSplitArtifactBundle(

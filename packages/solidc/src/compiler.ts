@@ -25,9 +25,9 @@ import {
   canonicalSelectorSignature, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, MappingType,
   needsOptimiserCrossCheck, scriptToBytecode, bytecodeToScript, asmToScript, Op, optimiseBytecode,
   optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual, type AbiFunction,
-  type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle, type DeployerAbi,
+  type FunctionSplitBundle, type SplitArtifactBundle, type DeployerAbi,
   type FunctionBlockLayout, type BlockSlotKind, type SplitStateFootprint, StructType, TupleType, type Type,
-  ValueType, isDynamicStorageType, childStateLayoutDigest, abiTypeString, dynamicChunkSignature,
+  ValueType, isDynamicStorageType, dynamicChunkSignature,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact, resultArrayOutputOf } from './artifact/Artifact.js';
 import {
@@ -91,7 +91,6 @@ import SymbolTableTraversal, { assignFunctionSourceEffectOrdinals } from './sema
 import { stampArgumentConditionalEntryActivations } from './semantic/ArgumentConditionActivation.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
-import { packedStateLayoutVariables } from './semantic/packedStateLayout.js';
 import EnsureFinalRequireTraversal from './semantic/EnsureFinalRequireTraversal.js';
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation, { holdsUnconfinedReturn } from './semantic/EarlyReturnTransformation.js';
@@ -214,10 +213,6 @@ import {
   directCallNames, emitsAnyEvent, walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
-import {
-  analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries,
-  childDeploymentGenesisState, childDeploymentStructDefinitions, childDeploymentValueRecipe,
-} from './deploymentRecipes.js';
 import { cloneNode, cloneNodeGraph } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
@@ -1879,8 +1874,6 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     ...options,
     composition: compositionConvention,
     optimise,
-    // Compiler-owned locals are generated source and never user-actionable warning locations.
-    __suppressGeneratedSourceWarnings: true,
     // Recorded once, from the options as the caller gave them so a normalized copy keeps the original.
     __referencedChildOptions: (options as InternalCompilerOptions).__referencedChildOptions
       ?? publicCompilerOptions(options),
@@ -2825,215 +2818,6 @@ function namesTokenContainer(body: BlockNode): boolean {
 function contractNamesTokenContainer(contract: ContractNode): boolean {
   return [...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : []),
     ...(contract.fallbackDef ? [contract.fallbackDef] : [])].some((fn) => namesTokenContainer(fn.body));
-}
-
-/**
- * What a user should do about a rejection reason, for the reasons whose remedy is exact. A reason with no entry
- * is still named; inventing a remedy for one would be worse than stating the refusal alone.
- */
-
-function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): number {
-  const variables = packedStateLayoutVariables(contract, commitmentLimit, tagSingletonDataNfts);
-  return variables.length === 0 ? 0 : Math.max(...variables.map((variable) => variable.nftIndex)) + 1;
-}
-
-function childDeploymentSites(
-  root: FunctionDefinitionNode,
-  compiledBytecodes: ReadonlyMap<string, Uint8Array>,
-  commitmentLimit: number,
-  helperFunctions: readonly FunctionDefinitionNode[] = [],
-  tagSingletonDataNfts = false,
-): ChildDeploymentSiteAbi[] {
-  const sites: ChildDeploymentSiteAbi[] = [];
-  // Every site this function can report requires an InstantiationNode in the body, and
-  // `hasContractInstantiation` is set for every contract instantiation the symbol pass sees. When the flag is
-  // strictly false there is nothing to report, so the recipe analysis plus the whole-body walk below are
-  // skipped. Only the returned array is consumed by the caller.
-  if (root.hasContractInstantiation === false) return sites;
-  const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
-  const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
-  const recipeAnalysis = analyzeChildDeploymentRecipes(root, helperFunctions);
-  const active: Array<{ fn: FunctionDefinitionNode; siteStart: number }> = [{ fn: root, siteStart: 0 }];
-  let spanOffset = 0;
-
-  const source = (expression: ExpressionNode): ChildDeploymentSiteAbi['constructorArgs'][number] =>
-    childDeploymentValueRecipe(
-      expression, inputIndex, false, inputTypes, undefined, undefined, undefined, new Set(), helperFunctions,
-    ) ?? { kind: 'expression' };
-  const saltSource = (expression: ExpressionNode): NonNullable<ChildDeploymentSiteAbi['salt']> => {
-    if (expression instanceof IdentifierNode && inputIndex.has(expression.name)) {
-      return { kind: 'handlerInput', inputIndex: inputIndex.get(expression.name)! };
-    }
-    if (expression instanceof HexLiteralNode) return { kind: 'literal', value: binToHex(expression.value) };
-    return childDeploymentValueRecipe(
-      expression, inputIndex, false, inputTypes, undefined, undefined, undefined, new Set(), helperFunctions,
-    ) ?? { kind: 'expression' };
-  };
-  const combineActivation = (
-    outer: ChildDeploymentSiteAbi['activation'], inner: ChildDeploymentSiteAbi['activation'],
-  ): ChildDeploymentSiteAbi['activation'] => outer === undefined ? inner
-    : inner === undefined ? outer : {
-      kind: 'binary', operator: '&&', resultType: 'bool', left: outer, right: inner,
-    };
-
-  const walk = (
-    value: unknown,
-    occurrence: ChildDeploymentSiteAbi['occurrence'],
-    seen: WeakSet<object>,
-    activation?: ChildDeploymentSiteAbi['activation'],
-  ): void => {
-    if (Array.isArray(value)) {
-      for (const item of value) walk(item, occurrence, seen, activation);
-      return;
-    }
-    if (!(value instanceof Node) || seen.has(value)) return;
-    seen.add(value);
-
-    if (value instanceof InstantiationNode && value.isStatefulDeploy && value.referencedContract) {
-      const analyzed = recipeAnalysis.get(value);
-      const child = value.referencedContract;
-      const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit, tagSingletonDataNfts);
-      const creationBytecode = compiledBytecodes.get(child.name);
-      if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
-      const genesisState = value.constructorStateFoldComplete === true
-        ? childDeploymentGenesisState(
-          value.foldedStateInit, child.stateVariables, inputIndex, inputTypes, false, analyzed?.aliases,
-          analyzed?.aliasDefinitions, child.functions,
-        )
-        : undefined;
-      const genesisEntries = value.constructorStateFoldComplete === true
-        ? childDeploymentGenesisEntries(
-          value.foldedCollectionEntries, inputIndex, inputTypes, analyzed?.aliases, analyzed?.aliasDefinitions,
-          child.collections,
-        ) : undefined;
-      const childLayoutDigest = childStateLayoutDigest({
-        variables: child.stateVariables.map((state) => ({
-          name: state.name,
-          type: state.type instanceof EnumType ? 'bigint' : abiTypeString(state.type),
-          nftIndex: state.nftIndex ?? 0,
-          fieldIndex: state.fieldIndex ?? 0,
-          ...(state.isDynamic && { dynamic: true }),
-          ...(state.isPacked && { packed: true }),
-        })),
-        dataNftCount: dataNftOutputCount,
-        commitmentLimit,
-        ...(tagSingletonDataNfts && dataNftOutputCount === 1 && { taggedDataNfts: true }),
-        structs: childDeploymentStructDefinitions(child.stateVariables),
-        collections: childDeploymentCollectionDefinitions(child.collections),
-      });
-      const entryNftOutputCount = genesisEntries?.length ?? 0;
-      const spanWidth = 1 + dataNftOutputCount + entryNftOutputCount;
-      sites.push({
-        siteIndex: sites.length,
-        contractName: child.name,
-        occurrence,
-        spanOffset,
-        spanWidth,
-        ...(activation && { activation }),
-        genesisInputCount: 1,
-        masterOutputCount: 1,
-        dataNftOutputCount,
-        ...(entryNftOutputCount > 0 && { entryNftOutputCount }),
-        totalOutputCount: spanWidth,
-        categorySource: 'genesis-input-outpoint-txhash',
-        constructorArgs: childDeploymentArguments(child, value.parameters.map((parameter, index) => (analyzed
-          ? analyzed.constructorArgs[index] ?? { kind: 'expression' }
-          : source(parameter)))),
-        ...(value.callOptions?.salt && {
-          salt: analyzed ? analyzed.salt ?? { kind: 'expression' } : saltSource(value.callOptions.salt),
-        }),
-        ...(hasEffectiveCallValue(value.callOptions?.value) && {
-          value: {
-            transferIndex: value.transferIndex,
-            amount: analyzed?.value ?? { kind: 'expression' },
-          },
-        }),
-        creationBytecode: binToHex(creationBytecode),
-        childLayoutDigest,
-        ...(value.hasFoldedChildCall && { hasFoldedChildCall: true as const }),
-        ...(genesisState && { genesisState }),
-        ...(genesisEntries && genesisEntries.length > 0 && { genesisEntries }),
-      });
-      spanOffset += spanWidth;
-    }
-
-    if (value instanceof BranchNode) {
-      const condition = childDeploymentValueRecipe(value.condition, inputIndex, true, inputTypes);
-      const nestedOccurrence = occurrence === 'loop' || occurrence === 'recursive' ? occurrence : 'conditional';
-      const positive = condition ? combineActivation(activation, condition) : undefined;
-      walk(value.ifBlock, nestedOccurrence, new WeakSet<object>(), positive);
-      if (value.elseBlock) {
-        const negative = condition ? combineActivation(activation, {
-          kind: 'unary', operator: '!', resultType: 'bool', operand: condition,
-        }) : undefined;
-        walk(value.elseBlock, nestedOccurrence, new WeakSet<object>(), negative);
-      }
-      return;
-    }
-    if (value instanceof SwitchNode) {
-      const nestedOccurrence = occurrence === 'loop' || occurrence === 'recursive' ? occurrence : 'conditional';
-      const discriminant = childDeploymentValueRecipe(value.expression, inputIndex, true, inputTypes);
-      let defaultActivation = activation;
-      for (const arm of value.cases) {
-        const armValue = childDeploymentValueRecipe(arm.value, inputIndex, true, inputTypes);
-        const matches: ChildDeploymentSiteAbi['activation'] = discriminant && armValue ? {
-          kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
-        } : undefined;
-        // The generated switch is a cascading IF/ELSE chain. Include every prior miss in this arm's activation
-        // so even repeated/equivalent case expressions cannot authorize a later site when an earlier case won.
-        walk(arm.body, nestedOccurrence, new WeakSet<object>(),
-          matches ? combineActivation(defaultActivation, matches) : undefined);
-        const misses: ChildDeploymentSiteAbi['activation'] = discriminant && armValue ? {
-          kind: 'binary', operator: '!=', resultType: 'bool', left: discriminant, right: armValue,
-        } : undefined;
-        defaultActivation = misses ? combineActivation(defaultActivation, misses) : undefined;
-      }
-      if (value.defaultCase) {
-        walk(value.defaultCase, nestedOccurrence, new WeakSet<object>(), defaultActivation);
-      }
-      return;
-    }
-    if (value instanceof TryCatchNode) {
-      // Catch clauses are unreachable on BCH: a failed foreign operation aborts script evaluation. Both the
-      // operation and its success body therefore retain their enclosing successful-path occurrence.
-      walk(value.expression, occurrence, new WeakSet<object>(), activation);
-      walk(value.tryBlock, occurrence, new WeakSet<object>(), activation);
-      return;
-    }
-
-    // Source `for` loops are represented by WhileNode with a non-zero forLoopUpdateCount.
-    const nestedOccurrence = value instanceof WhileNode || value instanceof DoWhileNode
-      ? 'loop'
-      : value instanceof BranchNode || value instanceof SwitchNode || value instanceof TryCatchNode
-        ? occurrence === 'loop' || occurrence === 'recursive' ? occurrence : 'conditional'
-        : occurrence;
-    for (const [key, child] of Object.entries(value)) {
-      if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
-        || key === 'symbolTable') continue;
-      walk(child, nestedOccurrence, seen, activation);
-    }
-
-    if (value instanceof FunctionCallNode && value.resolvedFunction
-      && !value.resolvedFunction.isEntryPoint) {
-      const target = value.resolvedFunction;
-      const cycleAt = active.findIndex((frame) => frame.fn === target);
-      if (cycleAt >= 0) {
-        // This preparatory metadata must not turn a recursive deployment into a finite row claim.
-        for (let index = active[cycleAt].siteStart; index < sites.length; index++) {
-          sites[index].occurrence = 'recursive';
-        }
-        return;
-      }
-      active.push({ fn: target, siteStart: sites.length });
-      // A helper called twice represents two physical sites, so each expansion receives a fresh seen-set.
-      walk(target.body, nestedOccurrence, new WeakSet<object>(), activation);
-      active.pop();
-    }
-  };
-
-  walk(root.body, 'once', new WeakSet<object>());
-  return sites;
 }
 
 /**
@@ -4206,19 +3990,6 @@ function compileResolvedAst(
     ? new Map<string, Uint8Array>()
     : compileReferencedContracts(ast, code, mergedCompilerOptions);
   foldPublishedCreationCodeHashes(ast.contract, compiledBytecodes);
-  // Code generation rewrites bodies in place. Snapshot deployment provenance at the last semantic boundary so
-  // publication does not depend on which representation the backend chose for a body.
-  const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => `${fn.name}(${fn.parameters
-    .filter((parameter) => !parameter.name.startsWith('__internal__'))
-    .map((parameter) => parameter.type.toString()).join(',')})`;
-  const childDeploymentsBySignature = new Map<string, ChildDeploymentSiteAbi[]>();
-  for (const fn of ast.contract.functions) {
-    const deployments = childDeploymentSites(
-      fn, compiledBytecodes, mergedCompilerOptions.commitmentLimit!, ast.contract.functions,
-      mergedCompilerOptions.tagSingletonDataNfts,
-    );
-    if (deployments.length > 0) childDeploymentsBySignature.set(deploymentTopologyKey(fn), deployments);
-  }
   profileLog('resolved:referenced', referencedStarted, {
     contract: contractName, imported: ast.importedContracts.length, compiled: compiledBytecodes.size,
   });
@@ -4852,18 +4623,6 @@ function compileResolvedAst(
     }
   }
   return artifact;
-}
-
-/**
- * The child's constructor inputs as a creating site fills them: its arguments when the child takes them as contract
- * parameters, then the creator's own `__oraclePool` for a bound child, which no recipe describes yet.
- */
-function childDeploymentArguments(
-  child: ContractNode, siteArguments: ChildDeploymentSiteAbi['constructorArgs'][number][],
-): ChildDeploymentSiteAbi['constructorArgs'][number][] {
-  if (!takesOraclePool(child)) return siteArguments;
-  const baked = child.parameters.some((parameter) => parameter.name !== ORACLE_POOL_PARAMETER);
-  return [...(baked ? siteArguments : []), { kind: 'expression' }];
 }
 
 function validateAbstractContractInstantiations(ast: Ast): void {

@@ -46,8 +46,8 @@ export async function refreshProjectedExternalReturns(
     const group = groups[groupIndex];
     const callee = (group.logicalContract ?? group.externalContract) as StatefulContract;
     const artifact = group.logicalArtifact ?? callee.inner.artifact;
-    // A proxy implementation needs its own projected provider and constructor frame. Its compiler-owned route
-    // handles this sequencing today; do not pretend the proxy's physical ABI is the implementation ABI.
+    // A proxy implementation needs its own projected provider and constructor frame, which this refresh does not
+    // build: skip it rather than pretend the proxy's physical ABI is the implementation ABI.
     if (artifact !== callee.inner.artifact) continue;
 
     const baseProvider = callee.inner.provider;

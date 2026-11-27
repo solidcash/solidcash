@@ -27,11 +27,12 @@
 - The message bus and its kernel are gone from the compiler and the SDK. The compiler options `messageBus`,
   `messageBusKernel`, `messageBusGraphContext`, `messageBusHandlers`, `messageBusHandlersByContract`,
   `messageBusByContract`, `messageBusRootEnvelope`, `messageBusProxyForwardEnvelope`, `messageBusEntryPoolCapacity`
-  and `messageBusDirectParticipant` no longer exist: like any unknown option, a compile ignores them. An artifact
-  publishes no `messageBus` field and no ABI entry publishes `batchInvocations`. The SDK drops
-  `StatefulContract.batch(...)`, message-bus composition and the `@solidcash/solidcash/message-bus` and
-  `@solidcash/solidcash/kernel` entry points, and refuses an artifact a 0.52 message-bus build produced
-  (`MessageBusArtifactError`): recompile it. The helpers only the bus used go with it:
+  and `messageBusDirectParticipant` no longer exist: like any unknown option, a compile ignores them. In 0.52.1 they
+  could change a framed contract's bytes; a framed compile that set them now emits what one without them emits, so
+  recompile and redeploy such a contract. An artifact publishes no `messageBus` field and no ABI entry publishes
+  `batchInvocations`. The SDK drops `StatefulContract.batch(...)`, message-bus composition and the
+  `@solidcash/solidcash/message-bus` and `@solidcash/solidcash/kernel` entry points, and refuses an artifact a 0.52
+  message-bus build produced (`MessageBusArtifactError`): recompile it. The helpers only the bus used go with it:
   `@solidcash/utils` no longer exports `AbiFunctionReference`, `P2SH_BYTECODE_LIMIT`, `OccurrenceBound`,
   `occurrenceBoundOf`, `occurrenceCountViolation`, `isAddressCommittedProvenance`, `describeProvenance`,
   `ChildDeploymentSiteAbi` or `ConstructedKeyVectorV1Abi` (no ABI entry publishes `constructedKeyVectors`), and

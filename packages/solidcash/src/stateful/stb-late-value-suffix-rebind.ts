@@ -34,7 +34,7 @@ export interface LateValueSuffixRebindHost {
 
 /**
  * Rebase absolute output coordinates when a final, non-covenant output is inserted before the
- * authenticated suffix. Reverse-indexed suffix checks remain valid after the insertion, but composed
+ * authenticated suffix. Reverse-indexed suffix checks remain valid after the insertion, but
  * continuation writers can also receive an absolute `__internal__valueChunkOutputBase` witness. Keep the
  * recovered-output cache and every carrier of that witness aligned with the shifted physical outputs.
  *
@@ -46,21 +46,6 @@ export function rebindLateValueSuffixAfterInsertion(
   builder: TransactionBuilder,
   insertAt: number,
 ): void {
-  // Inserting inside a claimed multi-chunk run would split its on-chain index order. Reject before shifting
-  // any cache or carrier metadata; a gap between distinct resource bands is the only safe interior insertion.
-  for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
-    const currentBase = carrier.valueChunkOutputBase;
-    const firstClaim = carrier.continuationResourceClaims?.[0];
-    const claimOrigin = currentBase === undefined || firstClaim === undefined
-      ? undefined : currentBase - firstClaim.bandOffset;
-    for (const claim of carrier.continuationResourceClaims ?? []) {
-      if (claimOrigin === undefined) break;
-      const start = claimOrigin + claim.bandOffset;
-      if (insertAt > start && insertAt < start + claim.chunkCount) {
-        throw new Error('Cannot insert an output inside an authenticated continuation band.');
-      }
-    }
-  }
   const debugChangeRebind = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_CHANGE_REBIND === '1';
   if (debugChangeRebind) {
@@ -105,21 +90,10 @@ export function rebindLateValueSuffixAfterInsertion(
     const currentBase = carrier.valueChunkOutputBase;
     if (currentBase === undefined) continue;
     if (!ownsCapturedValueChunkOutputBase(carrier)) continue;
-    const firstClaim = carrier.continuationResourceClaims?.[0];
-    const claimOrigin = firstClaim === undefined ? undefined : currentBase - firstClaim.bandOffset;
     if (carrier.valueChunkWrites?.length) {
       carrier.valueChunkWrites = carrier.valueChunkWrites.map((write) => (
         write.outputBase >= insertAt ? { ...write, outputBase: write.outputBase + 1 } : write
       ));
-    }
-    if (carrier.continuationResourceClaims?.length) {
-      carrier.continuationResourceClaims = Object.freeze(
-        carrier.continuationResourceClaims.map((claim) => Object.freeze({
-          ...claim,
-          bandOffset: claimOrigin !== undefined && claimOrigin + claim.bandOffset >= insertAt
-            ? claim.bandOffset + 1 : claim.bandOffset,
-        })),
-      );
     }
     if (currentBase < insertAt) continue;
     const nextBase = currentBase + 1;
@@ -165,8 +139,8 @@ export function rebindLateValueSuffixAfterInsertion(
 }
 
 /**
- * Rebind an absolute continuation witness when a participant-owned output is materialized after the route
- * probe selected its append coordinate. The continuation itself is self-describing: a contiguous run of
+ * Rebind an absolute continuation witness when a participant-owned output is materialized after the probe
+ * selected its append coordinate. The continuation itself is self-describing: a contiguous run of
  * mutable P2SH32 outputs in the participant category, with uint16-le indices 0..n-1. Only search forward from
  * the authenticated provisional base, so an older chunk run cannot be mistaken for the new write.
  */
@@ -207,9 +181,8 @@ export function reconcileMaterializedValueChunkWitnesses(
       : [];
 
     if (expected.length === 0) {
-      const abiFunction = carrier.compilerRoute?.abiFunction
-        ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
-          ?.find((candidate) => candidate.name === carrier.functionName);
+      const abiFunction = (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
+        ?.find((candidate) => candidate.name === carrier.functionName);
       const observedRuns = (abiFunction?.entryAccesses ?? []).flatMap((access) => {
         if (!access.operations.includes('write')) return [];
         const collection = carrier.stateLayout.collections?.find((candidate) => (

@@ -3,7 +3,7 @@ import { decodeAuthenticationInstructions, encodeDataPush, encodeLockingBytecode
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 import { createVirtualMachineBch2026ForProvider } from '../../solidcash/src/network/createVirtualMachine.js';
-import { createMessageBusCapstoneTestProvider } from '../../solidcash/test/journal-message-bus/e2e/message-bus-semantic-profile.js';
+import MockNetworkProvider from '../../solidcash/src/network/MockNetworkProvider.js';
 
 const artifact = compileString(`contract Decoder() {
   function decode(bytes encoded, bytes expected) {
@@ -22,7 +22,17 @@ const fixtures = [
   { name: 'shared', artifact, frame: tuple },
   { name: 'inline', artifact: inline, frame: encodeDataPush },
 ];
-const vm = createVirtualMachineBch2026ForProvider(createMessageBusCapstoneTestProvider());
+// BCH-2026 semantics with relaxed capacity limits.
+const vm = createVirtualMachineBch2026ForProvider(new MockNetworkProvider({
+  consensusLimits: {
+    maximumInputBytes: 1_000_000,
+    maximumStackItemBytes: 1_000_000,
+    maximumTransactionBytes: 10_000_000,
+    maximumNftCommitmentBytes: 128,
+    operationCostBudgetPerByte: 10_000_000,
+    hashDigestIterationsPerByte: 10_000_000,
+  },
+}));
 
 function accepts(encoded: Uint8Array, expected: Uint8Array, selected = artifact): boolean {
   const redeem = scriptToBytecode(asmToScript(selected.bytecode));

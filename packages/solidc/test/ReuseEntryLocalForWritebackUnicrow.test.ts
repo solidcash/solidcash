@@ -13,13 +13,13 @@ import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corp
  *   escrows[escrowId].split = escrow.split; escrows[escrowId].consensus = escrow.consensus;
  *   escrows[escrowId].claimed = 1;
  *
- * `refund` folds a 3-field run and `release` folds its single `consensus` write-back (via the kernel's early
+ * `refund` folds a 3-field run and `release` folds its single `consensus` write-back (via the journal's early
  * `__mefw` coalesce). ReuseEntryLocalForWriteback re-targets each whole-struct write-back at the already-taken
  * `escrow` local, eliding exactly one entry re-read per run. This test verifies BOTH the baseline-independent
  * invariant (handlers and artifact strictly shrink) and the delivered bytecode reduction, measured in BYTES via
  * `asmToBytecode` (the artifact's `.bytecode` is an ASM string, so its `.length` is characters, not bytes).
  *
- * Measured on this tree (kernel route): refund handler 2065 -> 1957 (-108 bytes), release handler 1304 -> 1189
+ * Measured on this tree (compiler-generated route): refund handler 2065 -> 1957 (-108 bytes), release handler 1304 -> 1189
  * (-115 bytes), total artifact 74811 -> 74573 bytes (-238 bytes). The July deferral note recorded -339 bytes for
  * the refund handler alone on the pre-block-layout-v2 baseline (5683-byte handler); block-layout-v2 and later
  * codegen shrank the handlers, so the same elisions now total 238 bytes. Structural correctness
@@ -33,9 +33,6 @@ const OPTIONS = {
   ecrecover: 'p2pkh',
   optimizeForCompilationSpeed: true,
   suppressWarnings: true,
-  messageBus: true,
-  messageBusKernel: true,
-  messageBusGraphContext: true,
   maximumInputBytes: 10_000_000,
   commitmentLimit: 10_000_000,
   __artifactCache: false,
@@ -61,8 +58,9 @@ describe.skipIf(contractsRoot === undefined)('ReuseEntryLocalForWriteback on the
     // Baseline-independent invariant: the pass elides one entry re-read, so the enabled build is strictly smaller.
     expect(withoutBytes).toBeGreaterThan(withBytes);
     // Delivered bytecode reduction, measured in real bytes: the pass must shrink the whole artifact by a
-    // meaningful floor. On this tree it is 238 bytes (refund -108, release -115, plus route deltas); the July
-    // deferral note's -339 B was the refund handler alone on the larger pre-block-layout-v2 baseline.
-    expect(artifactBytes(withoutPass) - artifactBytes(withPass)).toBeGreaterThanOrEqual(200);
+    // meaningful floor. On the direct-only tree it is 117 bytes (refund 2482 -> 2359, release 1495 -> 1493);
+    // the earlier 238-byte figure included the removed route's overhead, and the July deferral note's -339 B
+    // was the refund handler alone on the larger pre-block-layout-v2 baseline.
+    expect(artifactBytes(withoutPass) - artifactBytes(withPass)).toBeGreaterThanOrEqual(100);
   });
 });

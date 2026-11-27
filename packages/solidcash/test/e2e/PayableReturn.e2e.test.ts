@@ -27,7 +27,7 @@ describe('a payable entry that returns the value it accumulated', () => {
     const fundingUtxo: Utxo = { txid: '7c'.repeat(32), vout: 0, satoshis: 2_000_000n };
     await provider.seedUtxo(binToHex(authorLock), fundingUtxo);
     const artifact = compileString(SOURCE, {
-      deployer: true, messageBus: false, primaryContractName: 'Pay', ...options,
+      deployer: true, primaryContractName: 'Pay', ...options,
     } as never);
     const { contract } = await StatefulContract.deploy(artifact, [], {
       provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),

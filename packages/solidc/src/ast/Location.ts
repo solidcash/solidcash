@@ -1,28 +1,13 @@
 import type { ParserRuleContext, Token } from 'antlr4';
 import type { LocationI } from '@solidcash/utils';
 
-// X92. A position built while COMPILER-GENERATED source is being parsed is a position in that string, not in
-// anything the user wrote. Stamped at construction rather than walked afterwards: later lowering passes clone
-// and re-parent nodes, and a post-parse walk misses every node they create.
-let activeGeneratedOrigin: string | undefined;
-
 // X107. A position built while an IMPORTED file is being parsed is a position in THAT file, not in the one the
-// user named. Stamped at construction for the same reason the generated mark is, plus one more: the parse is
-// reading exactly one file's text, so it KNOWS the answer, while a reachability walk over the merged AST only
-// infers it - and infers it from links a lowering pass can re-parent. The stamp therefore names the file that
-// HOLDS the line, never an intermediate that merely re-exports it, with no ordering rule to get wrong.
+// user named. Stamped at construction rather than walked afterwards: later lowering passes clone and re-parent
+// nodes, and a post-parse walk misses every node they create. The parse is also reading exactly one file's text,
+// so it KNOWS the answer, while a reachability walk over the merged AST only infers it - and infers it from links
+// a lowering pass can re-parent. The stamp therefore names the file that HOLDS the line, never an intermediate
+// that merely re-exports it, with no ordering rule to get wrong.
 let activeSourceFileId: string | undefined;
-
-/** Run `parse` with every Location it builds marked as a position in compiler-generated source. */
-export function withGeneratedSource<T>(origin: string, parse: () => T): T {
-  const previous = activeGeneratedOrigin;
-  activeGeneratedOrigin = origin;
-  try {
-    return parse();
-  } finally {
-    activeGeneratedOrigin = previous;
-  }
-}
 
 /**
  * Run `parse` with every Location it builds stamped as a position in `fileId`.
@@ -38,11 +23,6 @@ export function withSourceFile<T>(fileId: string | undefined, parse: () => T): T
   }
 }
 
-/** The generated-source origin of a position, or undefined when it is a position in a real file. */
-export function generatedOriginOf(location?: LocationI): string | undefined {
-  return (location as Location | undefined)?.generatedOrigin;
-}
-
 /** The imported file holding a position, or undefined when it is in the root file being compiled. */
 export function sourceFileOf(location?: LocationI): string | undefined {
   return (location as Location | undefined)?.sourceFileId;
@@ -51,20 +31,16 @@ export function sourceFileOf(location?: LocationI): string | undefined {
 /** Stable source identity for matching a serialized compute expression to its emitted VM call site. */
 export function computeExpressionSiteKey(location: LocationI): string {
   const source = sourceFileOf(location) ?? '';
-  const generated = generatedOriginOf(location) ?? '';
-  return `${source}\0${generated}\0${location.start.line}:${location.start.column}`
+  // The empty middle field keeps the published key shape.
+  return `${source}\0\0${location.start.line}:${location.start.column}`
     + `-${location.end.line}:${location.end.column}`;
 }
 
 export class Location implements LocationI {
-  /** Set when this position is in compiler-generated source rather than in a file on disk. */
-  generatedOrigin?: string;
-
   /** Set when this position is in an IMPORTED file rather than in the root file being compiled. */
   sourceFileId?: string;
 
   constructor(public start: Point, public end: Point) {
-    this.generatedOrigin = activeGeneratedOrigin;
     this.sourceFileId = activeSourceFileId;
   }
 
@@ -92,9 +68,8 @@ export class Location implements LocationI {
     const end = new Point(object.end.line, object.end.column);
 
     const copy = new Location(start, end);
-    // A copy of a generated-source position is still one, whenever the copy is taken. Same for the file stamp:
-    // a copy taken by a lowering pass (long after every parse) would otherwise read as a root-file position.
-    copy.generatedOrigin = generatedOriginOf(object) ?? copy.generatedOrigin;
+    // A copy keeps the file stamp: one taken by a lowering pass (long after every parse) would otherwise read as
+    // a root-file position.
     copy.sourceFileId = sourceFileOf(object) ?? copy.sourceFileId;
     return copy;
   }

@@ -10,7 +10,6 @@ import {
   computeEventNameHash,
 } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { permitsLegacyValueChunkEventReconstruction } from './chunkable-value-write-selection.js';
 import {
   encodeJobEventEmitCommitment,
   jobEventFieldEmpty,
@@ -32,7 +31,6 @@ import {
   hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
   chunkableValueWriteCategory,
-  permitsLegacyNamedValueChunkFallbackForGroups,
   shouldRematerializePersistUpdateForHost,
 } from './stb-chunkable-write-planning.js';
 import {
@@ -100,12 +98,8 @@ export function reassertNestedEmitEvents(
     });
   }
   if (eventSelection.status === 'ambiguous') return;
-  const legacyEventFallback = eventSelection.status === 'absent'
-    && permitsLegacyValueChunkEventReconstruction(
-      [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups],
-      hasChunkableValueWriteMetadata(host),
-      host.messageBusConvention,
-    );
+  // Inferred event reconstruction is only for descriptor-free plans.
+  const legacyEventFallback = eventSelection.status === 'absent' && !hasChunkableValueWriteMetadata(host);
   if (eventSelection.status === 'absent' && !legacyEventFallback) return;
   const publishFn = chunkableValueWriteAbi(host);
   // A known writer that declares no event emits none. Reconstructing one mints an immutable NFT no covenant reads,
@@ -125,7 +119,7 @@ export function reassertNestedEmitEvents(
     ? eventSelection.categoryId : chunkableValueWriteCategory(host);
   // A direct delegate runs on its state owner's records, so its event (at impl + offset) carries the owner's
   // category and lock; the implementation's brand fails the delegate's event check and DX-8 conservation.
-  const delegateOwnerCategory = llcGroup?.callMode === 'delegatecall' && llcGroup.compilerRoute === undefined
+  const delegateOwnerCategory = llcGroup?.callMode === 'delegatecall'
     && selectedCategory === llcGroup.categoryId
     ? lowLevelCallStateOwnerCategory(llcIndex, llcGroup, host.externalCallUtxoGroups, host.categoryId)
     : undefined;
@@ -180,14 +174,12 @@ export function reassertNestedEmitEvents(
         functionName: proxyGroup.functionName,
         logicalFunctionName: proxyGroup.logicalFunctionName,
         delegateCallGroupIndex: proxyGroup.delegateCallGroupIndex,
-        route: proxyGroup.compilerRoute?.abiFunction.name,
       },
       selectedLowLevelGroup: llcIndex >= 0 ? {
         index: llcIndex,
         categoryId: host.lowLevelCallUtxoGroups[llcIndex].categoryId,
         functionName: host.lowLevelCallUtxoGroups[llcIndex].functionName,
         logicalFunctionName: host.lowLevelCallUtxoGroups[llcIndex].logicalFunctionName,
-        route: host.lowLevelCallUtxoGroups[llcIndex].compilerRoute?.abiFunction.name,
       } : undefined,
       selectedWriterViews: [proxyGroup, llcGroup].filter((group) => group !== undefined).map((group) => ({
         categoryId: group.categoryId,
@@ -195,7 +187,6 @@ export function reassertNestedEmitEvents(
         logicalFunctionName: group.logicalFunctionName,
         delegateCallGroupIndex: group.delegateCallGroupIndex,
         sharedGroupIndex: group.sharedGroupIndex,
-        route: group.compilerRoute?.abiFunction.name,
       })),
     });
   }
@@ -268,16 +259,13 @@ export function reassertNestedEmitEvents(
     }
     // Nested publishJobEvent rows may each learn a commitment even when only one
     // physical event slot is reasserted onto the covenant dest. Name discovery is legacy-only.
-    const publishJobEventGroups = permitsLegacyNamedValueChunkFallbackForGroups(host)
-      ? [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]
-        .filter((group) => legacyGroupLooksLikePublishJobEvent(group))
-      : [];
+    const publishJobEventGroups = [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]
+      .filter((group) => legacyGroupLooksLikePublishJobEvent(group));
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_EMIT_MATCH === '1') {
       console.error('publishJobEvent-groups', publishJobEventGroups.map((group, index) => ({
         index,
         name: group.functionName ?? group.logicalFunctionName,
-        route: group.compilerRoute?.abiFunction?.name,
         eventOutputs: (group.eventOutputs ?? []).map((eventOutput) => ({
           sig: eventOutput?.eventSignature,
           commit: String(eventOutput?.commitment ?? '').slice(0, 24),

@@ -80,22 +80,14 @@ export async function submitFinalTransaction(
       logicalFunctionArgs: group.logicalFunctionArgs,
       sharedGroupIndex: group.sharedGroupIndex,
       delegateCallGroupIndex: group.delegateCallGroupIndex,
-      route: group.compilerRoute?.abiFunction.name,
-      rows: group.compilerRoute?.rowArguments?.map((row) => ({
-        functionName: row.handler.name,
-        args: row.args,
-      })),
+      rows: [],
     })),
     lowLevel: host.lowLevelCallUtxoGroups.map((group, index) => ({
       index,
       functionName: group.functionName,
       logicalFunctionName: group.logicalFunctionName,
       functionArgs: group.functionArgs,
-      route: group.compilerRoute?.abiFunction.name,
-      rows: group.compilerRoute?.rowArguments?.map((row) => ({
-        functionName: row.handler.name,
-        args: row.args,
-      })),
+      rows: [],
     })),
   }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

@@ -20,22 +20,20 @@ export type ResolveCreateBuilderEffectiveLayoutHost = {
 };
 
 export type ResolveCreateBuilderEffectiveLayoutResult = {
-  compilerRouteDelegateLayout: FunctionBlockLayout | undefined;
+  directCallDelegateLayout: FunctionBlockLayout | undefined;
   effectiveBlockLayout: FunctionBlockLayout | undefined;
   logicalIdentity: ResolvedLogicalIdentity | undefined;
   usesComposedDelegateDynamicTail: boolean;
 };
 
 /**
- * After dynamic chunks: select the compiler-route delegate layout (or legacy
- * execution layout), fold projected delegate event slots into the effective
- * block layout (X56 return-event relocate), and resolve logical identity for
- * nested msg.sender observers.
+ * After dynamic chunks: select the delegate execution layout, fold projected
+ * delegate event slots into the effective block layout (X56 return-event
+ * relocate), and resolve logical identity for nested msg.sender observers.
  */
 export async function resolveCreateBuilderEffectiveLayout(
   host: ResolveCreateBuilderEffectiveLayoutHost,
   params: {
-    delegateRouteGroup: ExternalCallUtxoGroup | undefined;
     physicalAbiFunction: AbiFunction | undefined;
     abiFunction: AbiFunction | undefined;
     lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -45,37 +43,33 @@ export async function resolveCreateBuilderEffectiveLayout(
     dynamicChunkVars: Array<{ delegate?: boolean; delegateSuffix?: boolean }>;
     delegateReturnEventOffset: number | undefined;
     delegateEventSlots: Array<{ kind: string; offset: number; slotIndex?: number }>;
-    overrides: { logicalIdentity?: ResolvedLogicalIdentity } | undefined;
     functionName: string;
     timingEnabled: boolean;
     timing?: (label: string) => void;
   },
 ): Promise<ResolveCreateBuilderEffectiveLayoutResult> {
   const {
-    delegateRouteGroup, physicalAbiFunction, abiFunction, lowLevelCallUtxoGroups,
+    physicalAbiFunction, abiFunction, lowLevelCallUtxoGroups,
     nestedDelegateProxyGroupByLowLevel, activeDelegateGroupIndex, externalCallUtxoGroups,
-    dynamicChunkVars, delegateReturnEventOffset, delegateEventSlots, overrides,
+    dynamicChunkVars, delegateReturnEventOffset, delegateEventSlots,
     functionName, timingEnabled, timing,
   } = params;
 
-  const compilerRouteDelegateLayout = delegateRouteGroup?.compilerRoute?.abiFunction.blockLayout
-    ?? (physicalAbiFunction?.delegateForwarding || (physicalAbiFunction?.lowLevelCalls
-      ?.some((call) => call.callMode === 'delegatecall') === true
-      && physicalAbiFunction.blockLayout?.slots.some((slot: any) => slot.kind === 'lowLevelCall') === true)
-      ? undefined
-      : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel));
+  const directCallDelegateLayout = physicalAbiFunction?.delegateForwarding || (physicalAbiFunction?.lowLevelCalls
+    ?.some((call) => call.callMode === 'delegatecall') === true
+    && physicalAbiFunction.blockLayout?.slots.some((slot: any) => slot.kind === 'lowLevelCall') === true)
+    ? undefined
+    : selectDelegateExecutionLayout(lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel);
   const dynamicDelegateGroup = activeDelegateGroupIndex === undefined
     ? lowLevelCallUtxoGroups.find((group) => {
       if (group.callMode !== 'delegatecall') return false;
-      const fn = group.compilerRoute?.abiFunction
-        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-          .find((candidate) => candidate.name === group.functionName);
+      const fn = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === group.functionName);
       return (fn?.dynamicWrites?.length ?? 0) > 0;
     })
     : lowLevelCallUtxoGroups[activeDelegateGroupIndex];
-  const dynamicDelegateFunction = dynamicDelegateGroup?.compilerRoute?.abiFunction
-    ?? (dynamicDelegateGroup?.externalContract.inner.artifact.abi as readonly AbiFunction[] | undefined)
-      ?.find((candidate) => candidate.name === dynamicDelegateGroup?.functionName);
+  const dynamicDelegateFunction = (dynamicDelegateGroup?.externalContract.inner.artifact.abi as
+    readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === dynamicDelegateGroup?.functionName);
   const delegateDynamicLayout = dynamicDelegateFunction?.blockLayout;
   const usesComposedDelegateDynamicTail = delegateDynamicLayout !== undefined
     && externalCallUtxoGroups.some((group) => group.sharedGroupIndex === undefined);
@@ -86,7 +80,7 @@ export async function resolveCreateBuilderEffectiveLayout(
   }
   // The proxy is the physical route owner. Its implementation's compiler-owned route layout therefore replaces
   // the forwarder's tiny master/data/call layout, exactly like a nested proxy's preassembled `blockInputs`.
-  let effectiveBlockLayout = compilerRouteDelegateLayout ?? abiFunction?.blockLayout;
+  let effectiveBlockLayout = directCallDelegateLayout ?? abiFunction?.blockLayout;
   // X56. Relocate - never duplicate - the forwarder's returnEvent slot when the impl resolves its own return
   // event at a DIFFERENT index in this block. Unconditional on the send mode: two slots at one offset would
   // have the funder loop position the same index twice, and a plain send has to keep the event where it is.
@@ -120,36 +114,33 @@ export async function resolveCreateBuilderEffectiveLayout(
   }
 
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('stateful-builder-create', {
       functionName, externalGroups: externalCallUtxoGroups.length,
       lowLevelGroups: lowLevelCallUtxoGroups.length,
     });
   }
   if (timingEnabled) console.error('logical-identity-input', {
-    override: overrides?.logicalIdentity !== undefined,
     logicalAddress: host.getLogicalAddress(),
     externalGroups: externalCallUtxoGroups.length,
   });
   // A selected own-self witness or a nested msg.sender observer needs this contract's stable CREATE anchor.
   // Native contracts have no logical address and retain the authenticated minting-master input bytecode.
   const nestedUsesMsgSender = [...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].some((group) => {
-    const called = group.compilerRoute?.abiFunction
-      ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-        .find((candidate) => candidate.name === group.functionName);
+    const called = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+      .find((candidate) => candidate.name === group.functionName);
     return called?.usesMsgSender === true;
   });
-  const logicalIdentity = overrides?.logicalIdentity
-    ?? ((nestedUsesMsgSender || usesOrdinarySelfIdentity(abiFunction)) && host.getLogicalAddress()
-      ? await resolveLogicalIdentity(host.inner.provider, host.getLogicalAddress()!)
-      : undefined);
+  const logicalIdentity = (nestedUsesMsgSender || usesOrdinarySelfIdentity(abiFunction)) && host.getLogicalAddress()
+    ? await resolveLogicalIdentity(host.inner.provider, host.getLogicalAddress()!)
+    : undefined;
   if (logicalIdentity && !host.getLogicalAddress()) {
     host.setLogicalAddress(logicalIdentity.logicalAddress);
   }
   timing?.('logical-identity-complete');
 
   return {
-    compilerRouteDelegateLayout,
+    directCallDelegateLayout,
     effectiveBlockLayout,
     logicalIdentity,
     usesComposedDelegateDynamicTail,

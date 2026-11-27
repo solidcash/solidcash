@@ -43,8 +43,8 @@ export interface RunSendPhase3FinalRebuildHost {
 
 /**
  * Rebuild with fee funder + change, optional recursive VM preflight, view-tail repack,
- * final-layout reassert, and post-layout materialization. Returns the rebuilt builder,
- * serialized accounting funders, and the reassertFinalLayout fixed-point callback.
+ * final-layout reassert, and post-layout materialization. Returns the rebuilt builder and the
+ * serialized accounting funders.
  */
 export function runSendPhase3FinalRebuild(
   host: RunSendPhase3FinalRebuildHost,
@@ -54,7 +54,6 @@ export function runSendPhase3FinalRebuild(
 ): {
     finalBuilder: TransactionBuilder;
     serializedAccountingFunders: UnlockableUtxo[];
-    reassertFinalLayout: () => void;
   } {
   // The funder input and change output go past the covenant's block range.
   // The compiler uses blockSize (not OP_TXOUTPUTCOUNT) for bounds checks,
@@ -83,12 +82,10 @@ export function runSendPhase3FinalRebuild(
     host.reassertSendAfterViewRepackHost(), finalBuilder, reboundViews,
   );
 
-  // Materialization and computed-output repair can replace provisional
-  // funder pass-through outputs with lower-valued covenant outputs. Fold the
-  // exposed surplus into one existing output owned by the configured funder,
-  // preserving every physical index. If none survives, create suffix-safe
-  // change. Running this after every repair makes fee balance part of the same
-  // fixed-point loop as authenticated output convergence.
+  // Materialization can replace provisional funder pass-through outputs with
+  // lower-valued covenant outputs. Fold the exposed surplus into one existing
+  // output owned by the configured funder, preserving every physical index. If
+  // none survives, create suffix-safe change.
   // Output ownership is finalized only after the event, dynamic-state, and
   // fixed-state materializers above. Reapply protocol-wide conservation at this
   // fixed-point boundary, then rebalance any value exposed by selecting a
@@ -126,5 +123,5 @@ export function runSendPhase3FinalRebuild(
     })));
   }
 
-  return { finalBuilder, serializedAccountingFunders, reassertFinalLayout };
+  return { finalBuilder, serializedAccountingFunders };
 }

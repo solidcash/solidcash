@@ -12,7 +12,7 @@ import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
 
 const WRONG_DISPATCH_PREFLIGHT = new RegExp(
-  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+  '^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
 );
 
 describe('fixed-method table', () => {
@@ -103,7 +103,7 @@ describe('fixed-method table', () => {
       // belongs at holds no token, and taking 32 bytes of its empty category fails.
       tableSc.registerExternalArray('ICounter', [c0.sc]);
       await expect(tableSc.fireAll(3n, alicePub, sig()).send()).rejects.toThrow(new RegExp(
-        '^messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid '
+        '^BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid '
           + 'index\\. stack item length: 0; requested split index: 32\\.$',
       ));
       expect((await tableSc.getState()).bumps).toBe(2n);

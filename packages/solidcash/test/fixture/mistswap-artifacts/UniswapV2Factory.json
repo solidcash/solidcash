@@ -1701,8 +1701,7 @@
       "enforceLocktimeGuard": true,
       "enforceFinalRequire": true,
       "allowUnsafeOperations": false,
-      "commitmentLimit": 128,
-      "messageBus": false
+      "commitmentLimit": 128
     }
   },
   "invocationAnalysis": {
@@ -4123,8 +4122,7 @@
         "enforceLocktimeGuard": true,
         "enforceFinalRequire": true,
         "allowUnsafeOperations": false,
-        "commitmentLimit": 128,
-        "messageBus": false
+        "commitmentLimit": 128
       }
     },
     "updatedAt": "2026-10-13T16:42:33.097Z",

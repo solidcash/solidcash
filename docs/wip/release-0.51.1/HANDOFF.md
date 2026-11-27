@@ -1,3 +1,6 @@
+> Historical workstream note. The message bus and its kernel were removed from the compiler and SDK in
+> 2026-11; any instruction to compile with `messageBus` or to use the bus describes the tree as it stood then.
+
 # Handoff: SolidCash 0.51.1 (2026-11-17)
 
 A patch release of 0.51.0 for one SDK fix: creating a contract through a deployer coin from an external wallet.

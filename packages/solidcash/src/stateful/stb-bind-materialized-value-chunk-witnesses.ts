@@ -12,7 +12,6 @@ import {
   ownsCapturedValueChunkOutputBase,
   refreshCapturedValueChunkOutputBase,
   rebaseValueChunkWriteDescriptors,
-  transportedContinuationLocalBase,
 } from './value-chunk-base-writer-select.js';
 import {
   coherentAuthenticatedValueChunkRun,
@@ -32,7 +31,6 @@ export interface BindMaterializedValueChunkWitnessesHost {
   readonly categoryId: string;
   readonly derivedChunkOutputs: Map<number, DerivedChunkOutputObservation>;
   readonly allInputs: readonly UnlockableUtxo[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   syncRefreshedCarrierMasters(
     builder: TransactionBuilder,
     carriers: ReadonlySet<ExternalCallUtxoGroup>,
@@ -41,8 +39,8 @@ export interface BindMaterializedValueChunkWitnessesHost {
 
 /**
  * Bind compiler-owned continuation witnesses after every output in an isolated composition block has been
- * materialized. Graph routes can represent several logical calls with one low-level carrier, so discovery is
- * based on ABI/state-layout metadata and the self-describing output run rather than a source function name.
+ * materialized. Discovery is based on ABI/state-layout metadata and the self-describing output run rather than
+ * a source function name.
  */
 export function bindMaterializedValueChunkWitnesses(
   host: BindMaterializedValueChunkWitnessesHost,
@@ -54,23 +52,14 @@ export function bindMaterializedValueChunkWitnesses(
   const occupiedBases = new Map<number, string>();
 
   for (const [carrierIndex, carrier] of carriers.entries()) {
-    const abiFunction = carrier.compilerRoute?.abiFunction
-      ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
-        ?.find((candidate) => candidate.name === carrier.functionName);
+    const abiFunction = (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
+      ?.find((candidate) => candidate.name === carrier.functionName);
     if (!abiFunction?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')) continue;
-    const activeFunctions = carrier.compilerRoute?.abiFunction === abiFunction
-      && (carrier.compilerRoute.rowArguments?.length ?? 0) > 0
-      ? carrier.compilerRoute.rowArguments!.map((row) => row.handler)
-      : [abiFunction];
-    const activeWriteCollections = (abiFunction as AbiFunction & {
-      messageBusActiveWriteCollections?: readonly string[];
-    }).messageBusActiveWriteCollections;
+    const activeFunctions = [abiFunction];
     const chunkableCollections = [...new Set(activeFunctions.flatMap((activeFunction) => (
       activeFunction.entryAccesses ?? []
     ).flatMap((access) => {
-      if (!access.operations.includes('write')
-        || (activeWriteCollections !== undefined
-          && !activeWriteCollections.includes(access.collection))) return [];
+      if (!access.operations.includes('write')) return [];
       const collection = carrier.stateLayout.collections?.find((candidate) => (
         candidate.name === access.collection || candidate.signature === access.collection
       ));
@@ -101,112 +90,11 @@ export function bindMaterializedValueChunkWitnesses(
       group?.valueChunkWrites ?? []
     )).map(valueChunkWriteResourceIdentity));
     let selectedStart = -1;
-    let selectedWidth = 0;
     let selectedResourceIdentity: string | undefined;
     const provisionalBase = carrier.valueChunkOutputBase;
     let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
       ? undefined
       : provisionalBase >= coordinateBase ? provisionalBase - coordinateBase : provisionalBase;
-    const transportedClaims = aliasGroups.flatMap((group) => group?.continuationResourceClaims ?? []);
-    const canonicalLocalBases = [...resourceIdentities].flatMap((resourceIdentity) => {
-      const writeCount = aliasGroups.flatMap((group) => group?.valueChunkWrites ?? [])
-        .find((write) => valueChunkWriteResourceIdentity(write) === resourceIdentity)?.outputCount;
-      if (writeCount === undefined) return [];
-      const base = transportedContinuationLocalBase(transportedClaims, resourceIdentity, writeCount);
-      return base === undefined ? [] : [base];
-    });
-    if (canonicalLocalBases.length === 1) preferredLocalBase = canonicalLocalBases[0];
-    // One scalar witness cannot describe several independently placed resources. Their authenticated
-    // claims supply each physical base; bind each write to its own exact run and refresh only the scalar
-    // for the first (lowest) band. A single observed run must never shift the other resources as a group.
-    const claimsByResource = new Map<string, (typeof transportedClaims)[number]>();
-    for (const claim of transportedClaims) {
-      const identity = claim.producerClaim.resourceIdentity;
-      const prior = claimsByResource.get(identity);
-      if (prior && (prior.bandOffset !== claim.bandOffset || prior.chunkCount !== claim.chunkCount)) {
-        throw new Error(`Transported value-chunk resource '${identity}' has conflicting carrier bands.`);
-      }
-      claimsByResource.set(identity, claim);
-    }
-    if (claimsByResource.size > 1) {
-      const claimedWrites = aliasGroups.flatMap((group) => group?.valueChunkWrites ?? []);
-      const complete = [...claimsByResource].every(([identity, claim]) => {
-        if (!resourceIdentities.has(identity)
-          || !Number.isSafeInteger(claim.bandOffset) || claim.bandOffset < 0
-          || !Number.isSafeInteger(claim.chunkCount) || claim.chunkCount < 1
-          || !Number.isSafeInteger(claim.bandOffset + claim.chunkCount)
-          || claim.bandOffset + claim.chunkCount > builder.outputs.length
-          || !claimedWrites.some((write) => valueChunkWriteResourceIdentity(write) === identity)) return false;
-        for (let index = 0; index < claim.chunkCount; index += 1) {
-          const offset = claim.bandOffset + index;
-          const observed = host.derivedChunkOutputs.get(offset);
-          const output = builder.outputs[offset];
-          const lock = output?.to instanceof Uint8Array
-            ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
-          if (observed?.resourceIdentity !== identity
-            || observed.resourcePart !== `chunk:${index}`
-            || valueChunkIndexFromCommitment(observed.commitment) !== index
-            || lock === undefined || !isP2sh32LockScript(lock)
-            || binToHex(lock) !== binToHex(observed.lockingBytecode)
-            || output.token?.category !== outputCategoryId
-            || output.token.nft?.capability !== 'mutable'
-            || output.token.nft.commitment !== observed.commitment) return false;
-        }
-        return true;
-      });
-      // A progressive probe may not have materialized every claimed run yet. Leave all claims untouched;
-      // the final composer validates every resource/output pair before publishing the transaction.
-      if (!complete) continue;
-      const firstClaim = [...claimsByResource.values()].reduce((first, claim) => (
-        claim.bandOffset < first.bandOffset ? claim : first
-      ));
-      const scalarStart = coordinateBase + firstClaim.bandOffset;
-      const priorOwner = occupiedBases.get(scalarStart);
-      if (priorOwner !== undefined && priorOwner !== physicalOwnerId) {
-        throw new Error('Transported value-chunk carrier bands have conflicting physical owners.');
-      }
-      occupiedBases.set(scalarStart, physicalOwnerId);
-      for (const alias of aliasGroups.filter(
-        (candidate): candidate is ExternalCallUtxoGroup => candidate !== undefined
-          && ownsCapturedValueChunkOutputBase(candidate),
-      )) {
-        const nextWrites = alias.valueChunkWrites?.map((write) => {
-          const claim = claimsByResource.get(valueChunkWriteResourceIdentity(write));
-          return claim === undefined ? write : {
-            ...write, outputBase: coordinateBase + claim.bandOffset, outputCount: claim.chunkCount,
-          };
-        });
-        const writesChanged = nextWrites?.some((write, index) => (
-          write.outputBase !== alias.valueChunkWrites?.[index]?.outputBase
-            || write.outputCount !== alias.valueChunkWrites?.[index]?.outputCount
-        )) === true;
-        if (writesChanged) alias.valueChunkWrites = nextWrites;
-        if (alias.valueChunkOutputBase !== scalarStart
-          || alias.internalArgs?.__internal__valueChunkOutputBase !== BigInt(scalarStart)) {
-          const trailingBase = alias.blockLayout?.trailingBase ?? carrier.blockLayout?.trailingBase;
-          const blockSize = alias.blockLayout?.blockSize ?? carrier.blockLayout?.blockSize;
-          if (trailingBase !== undefined && blockSize !== undefined
-            && host.messageBusConvention === 'kernel-row-loop') {
-            refreshCapturedValueChunkOutputBase(alias, scalarStart, {
-              shiftPredOut: false,
-              resolveAuthority: {
-                publishedBase: coordinateBase,
-                blockSize,
-                trailingBase,
-                trailingCapacity: alias.blockLayout?.trailingCapacity
-                  ?? carrier.blockLayout?.trailingCapacity,
-                valueChunkBandOffset: firstClaim.bandOffset - trailingBase,
-                valueChunkCount: firstClaim.chunkCount,
-              },
-            });
-          } else {
-            refreshCapturedValueChunkOutputBase(alias, scalarStart, { shiftPredOut: false });
-          }
-          changedCarriers.add(alias);
-        } else if (writesChanged) changedCarriers.add(alias);
-      }
-      continue;
-    }
     const exactResourceStarts = [...host.derivedChunkOutputs.entries()]
       .filter(([, chunk]) => resourceIdentities.has(chunk.resourceIdentity ?? '')
         && chunk.resourcePart === 'chunk:0')
@@ -321,7 +209,6 @@ export function bindMaterializedValueChunkWitnesses(
       const owner = occupiedBases.get(absoluteStart);
       if (owner === undefined || owner === physicalOwnerId) {
         selectedStart = start;
-        selectedWidth = width;
         selectedResourceIdentity = runResourceIdentity;
       }
     }
@@ -359,39 +246,7 @@ export function bindMaterializedValueChunkWitnesses(
           : alias.valueChunkWrites
         : alias.valueChunkWrites?.map((write) => valueChunkWriteResourceIdentity(write) === selectedResourceIdentity
           ? { ...write, outputBase: absoluteStart } : write);
-      // Kernel sole authority: when trailing geometry is published, assign via resolve (not invent).
-      const trailingBase = alias.blockLayout?.trailingBase
-        ?? carrier.blockLayout?.trailingBase;
-      const blockSize = alias.blockLayout?.blockSize
-        ?? carrier.blockLayout?.blockSize;
-      const writes = alias.valueChunkWrites ?? carrier.valueChunkWrites ?? [];
-      const write = selectedResourceIdentity === undefined
-        ? writes.length === 1 ? writes[0] : undefined
-        : writes.find((candidate) => valueChunkWriteResourceIdentity(candidate) === selectedResourceIdentity);
-      if (trailingBase !== undefined && blockSize !== undefined
-        && host.messageBusConvention === 'kernel-row-loop') {
-        // Descriptors may already carry aggregate coordinates. Resolve the observed builder-local run,
-        // not the old descriptor's absolute/provisional base, against the published local trailing band.
-        const bandOffset = selectedStart - trailingBase;
-        const resolveAuthority = {
-          publishedBase: coordinateBase,
-          blockSize: Math.max(blockSize, trailingBase + selectedWidth),
-          trailingBase,
-          trailingCapacity: alias.blockLayout?.trailingCapacity
-            ?? carrier.blockLayout?.trailingCapacity,
-          valueChunkBandOffset: bandOffset,
-          valueChunkCollection: write?.collection,
-          // The complete coherent run is known here. A descriptor can still carry a conservative
-          // planning estimate or the aggregate width of multiple resources in this carrier.
-          valueChunkCount: selectedWidth,
-        };
-        refreshCapturedValueChunkOutputBase(alias, absoluteStart, {
-          shiftPredOut: false,
-          resolveAuthority,
-        });
-      } else {
-        refreshCapturedValueChunkOutputBase(alias, absoluteStart, { shiftPredOut: false });
-      }
+      refreshCapturedValueChunkOutputBase(alias, absoluteStart, { shiftPredOut: false });
       changedCarriers.add(alias);
     }
   }

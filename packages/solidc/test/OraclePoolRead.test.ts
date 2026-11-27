@@ -92,9 +92,7 @@ function redeemOf(artifact: Artifact, pool: Uint8Array = POOL): Uint8Array {
 
 /** As the SDK: a sole function with no compiler route or multi-call entry in the redeem takes no selector. */
 function dispatchesBySelector(artifact: Artifact): boolean {
-  const route = artifact.messageBus !== undefined && artifact.messageBus.available !== false
-    && artifact.messageBus.routeInBytecode !== false;
-  return artifact.abi.length > 1 || route || typeof artifact.callBatch === 'object';
+  return artifact.abi.length > 1 || typeof artifact.callBatch === 'object';
 }
 
 /** The selector at the bottom, then the ABI arguments with the first on top, then the redeem. */
@@ -166,7 +164,7 @@ function readSpend(artifact: Artifact, coin: Coin, time = TIME): Spend {
 }
 
 describe('a block.* reader bound to an oracle pool', () => {
-  const artifact = compileString(READER, { messageBus: false });
+  const artifact = compileString(READER);
 
   it('takes the __oraclePool input, and no pool slots, update entry or block register', () => {
     expect(artifact.usesBlockOracle).toBe(true);
@@ -182,7 +180,7 @@ describe('a block.* reader bound to an oracle pool', () => {
   });
 
   it('accepts the same reads in a stateful reader, whose entry checks the coin through its shared helper', () => {
-    const stateful = compileString(STATEFUL_READER, { messageBus: false });
+    const stateful = compileString(STATEFUL_READER);
     expect(stateful.stateLayout).toBeDefined();
     expect(stateful.constructorInputs).toEqual([{ name: ORACLE_POOL_PARAMETER, type: 'bytes32' }]);
     expect(vm.verify(readSpend(stateful, infoCoin()))).toBe(true);
@@ -220,8 +218,8 @@ describe('a framed block.* reader', () => {
 
 describe('a creator of a bound contract', () => {
   it('passes its own binding as the child\'s __oraclePool', () => {
-    const maker = compileString(MAKER, { messageBus: false, primaryContractName: 'Maker' });
-    const child = compileString(MAKER, { messageBus: false, primaryContractName: 'Child' });
+    const maker = compileString(MAKER, { primaryContractName: 'Maker' });
+    const child = compileString(MAKER, { primaryContractName: 'Child' });
     expect(child.constructorInputs).toEqual([{ name: ORACLE_POOL_PARAMETER, type: 'bytes32' }]);
     expect(maker.constructorInputs).toEqual([{ name: ORACLE_POOL_PARAMETER, type: 'bytes32' }]);
     const spend = (childPool: Uint8Array): Spend => ({
@@ -237,7 +235,7 @@ describe('a creator of a bound contract', () => {
   });
 
   it('publishes the binding as the deployed child\'s forwarded argument', () => {
-    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
+    const options = { forceStateful: true, allowUnsafeOperations: true };
     // The binding-forwarding shape predates B10; the legacy fold path is the one that carries a block-reading
     // child (a deployer refuses `child-reads-block-data`).
     const maker = compileString(STATEFUL_MAKER, {
@@ -251,7 +249,7 @@ describe('a creator of a bound contract', () => {
 });
 
 describe('ORACLE-1: a blockhash-only contract with two functions', () => {
-  const artifact = compileString(HASH_READER, { messageBus: false });
+  const artifact = compileString(HASH_READER);
   const pokeSpend = (output: VmOutput): Spend => ({
     sourceOutputs: [master(artifact), { lockingBytecode: FUNDER_LOCK, valueSatoshis: 100_000n }],
     transaction: {

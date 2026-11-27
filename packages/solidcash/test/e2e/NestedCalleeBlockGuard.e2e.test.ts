@@ -47,7 +47,7 @@ const SOURCE = `pragma solidcash ^0.52.0;
     function requireHeight(ID d, IT t, int atLeast) external { d.requireHeight(t, atLeast); runs = runs + 1; } }`;
 
 const compileOptions = (primary: string): never => ({
-  deployer: true, genesisCalls: true, messageBus: false, primaryContractName: primary,
+  deployer: true, genesisCalls: true, primaryContractName: primary,
 }) as never;
 
 // Floors no mock block reaches: a height of a billion, and a time in the year 2286.

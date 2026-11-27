@@ -4,13 +4,13 @@
 #   scripts/gate.sh fast    bytecode identity + timing (about 1 minute)
 #   scripts/gate.sh full    fast + utils suite + solidc suite (about 15 minutes)
 #
-# A performance change is only acceptable if `full` reports the SAME solidc counts as the baseline
-# (0 failed / 7366 passed of 7366) and the identity line below is unchanged. `full` fails when a suite fails or
+# A performance change is only acceptable if `full` reports the SAME solidc counts as a run at the baseline commit
+# and the identity line below (the framed MarketplaceV1 build) is unchanged. `full` fails when a suite fails or
 # leaves test files unreported; each suite's full output is kept in the log it names.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-EXPECTED='{"routeBytes":44920,"fullBytes":256741,"fullHash":"6a3ccc467ccc480b"}'
+EXPECTED='{"fullBytes":100948,"fullHash":"7173cac5e281a698"}'
 status=0
 
 echo "== build =="
@@ -60,7 +60,7 @@ run_suite() {
 if [ "${1:-fast}" = "full" ]; then
   echo "== utils suite =="
   run_suite utils yarn workspace @solidcash/utils vitest run test/
-  echo "== solidc suite (expect 0 failed / 7366 passed of 7366) =="
+  echo "== solidc suite =="
   run_suite solidc yarn workspace @solidcash/solidc vitest run test/
 fi
 

@@ -50,7 +50,7 @@ function settleDirect(artifact: Artifact, entry: string, args: readonly bigint[]
 /** Each convention accepts every honest argument list of `f` and refuses every other one. */
 function expectSettles(members: string, label: string, honest: readonly bigint[][], wrong: readonly bigint[][]): void {
   const source = `${P} contract C { ${members} }`;
-  const direct = compileString(source, { messageBus: false });
+  const direct = compileString(source, {});
   const master = deployFramedMaster(source, label);
   const conventions: Array<[string, (args: readonly bigint[]) => boolean]> = [
     ['direct', (args) => settleDirect(direct, 'f', args)],
@@ -92,7 +92,7 @@ describe('a sequence expression', () => {
 
   it('has no comma form: a comma statement is a parse error, and a tuple for-header assigns the tuple', () => {
     expect(() => compileString(`${P} contract C { function f() external { uint a = 0; uint b = 0; (a = 1, b = 2);`
-      + ' require(a + b == 3); } }', { messageBus: false })).toThrow("Mismatched input ',' expecting ')'");
+      + ' require(a + b == 3); } }', {})).toThrow("Mismatched input ',' expecting ')'");
     expectSettles('function f(uint e) external { uint i; uint j; uint s = 0;'
       + ' for ((i, j) = (0, 0); i < 3; (i, j) = (i + 1, j + 2)) { s = s + j; } require(s == e); }', 'tuple for header',
     [[6n]], [[3n]]);

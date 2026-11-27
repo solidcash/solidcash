@@ -28,7 +28,6 @@ export interface ConvergeAndSerializeFinalTransactionHost {
   computeMinFee(size: bigint): bigint;
   assertConvergedFinalTransaction(
     builder: TransactionBuilder,
-    reassertFinalLayout: () => void,
     finalizeFeeBeforeValidation: (transaction: ConvergedLibauthTransaction) => boolean,
   ): ConvergedLibauthTransaction;
 }
@@ -41,7 +40,6 @@ export function convergeAndSerializeFinalTransaction(
   host: ConvergeAndSerializeFinalTransactionHost,
   finalBuilder: TransactionBuilder,
   serializedAccountingFunders: readonly UnlockableUtxo[],
-  reassertFinalLayout: () => void,
   sendTiming: (label: string) => void,
 ): {
     finalizedTransaction: ConvergedLibauthTransaction;
@@ -71,8 +69,8 @@ export function convergeAndSerializeFinalTransaction(
   );
 
   // Validate the exact transaction which will be serialized. Fee adjustment runs before each validation
-  // attempt, including after computed-output repairs, so the successful VM receipt remains bound to the exact
-  // transaction object submitted to the provider. Token conservation depends only on input/output assets.
+  // attempt, so the successful VM receipt remains bound to the exact transaction object submitted to the
+  // provider. Token conservation depends only on input/output assets.
   finalBuilder.validateTokenConservation();
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_RETURN_LAYOUT === '1') {
@@ -98,11 +96,7 @@ export function convergeAndSerializeFinalTransaction(
         })).filter((entry) => entry !== undefined),
     }));
   }
-  const finalizedTransaction = host.assertConvergedFinalTransaction(
-    finalBuilder,
-    reassertFinalLayout,
-    finalizeFeeBeforeValidation,
-  );
+  const finalizedTransaction = host.assertConvergedFinalTransaction(finalBuilder, finalizeFeeBeforeValidation);
   sendTiming('covenants-converged');
 
   const rawTxBin = encodeTransaction(finalizedTransaction);

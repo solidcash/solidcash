@@ -13,7 +13,7 @@ const KECCAK = computeFunctionSelectorHex(SIGNATURE, true);
 
 const selectorOfTransfer = (evmCompat: boolean): string | undefined => {
   const source = 'contract C { function transfer(address to, int amount) public { require(true); } }';
-  const artifact = compileString(source, { messageBus: false, enforceFinalRequire: false, evmCompat });
+  const artifact = compileString(source, { enforceFinalRequire: false, evmCompat });
   return artifact.abi.find((entry) => entry.name === 'transfer')?.selector;
 };
 

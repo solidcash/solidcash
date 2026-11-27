@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import {
   legacyJobEventsPersistValueChunkLock,
   persistValueChunkLock,
-  permitsLegacyNamedValueChunkFallback,
   type ValueChunkWriteDescriptor,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
@@ -32,18 +31,10 @@ const write: ValueChunkWriteDescriptor = {
 };
 
 describe('persist value-chunk lock generality', () => {
-  it('fails closed for an unmatched kernel candidate instead of synthesizing a legacy schema lock', () => {
-    const kernelArtifact = { messageBus: { convention: 'kernel-row-loop' as const } };
+  it('fails closed for an undescribed candidate instead of synthesizing a legacy schema lock', () => {
     const candidate = persistValueChunkLock(candidateCategory, value, undefined, masterLock);
     const legacy = legacyJobEventsPersistValueChunkLock(candidateCategory, value, masterLock);
 
-    expect(permitsLegacyNamedValueChunkFallback([{
-      logicalArtifact: kernelArtifact as never,
-      valueChunkWrites: [write],
-    }])).toBe(false);
-    expect(permitsLegacyNamedValueChunkFallback([{
-      logicalArtifact: { messageBus: { convention: 'legacy-unroll' } } as never,
-    }])).toBe(true);
     expect(candidate).toBeUndefined();
     expect(legacy).toBeDefined();
   });

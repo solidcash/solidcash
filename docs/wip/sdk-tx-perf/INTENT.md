@@ -57,7 +57,7 @@ the branch tree exactly (checked with `git apply --cached` on a scratch index). 
 `git show perf/sdk-tx-perf:docs/wip/sdk-tx-perf/SPEC.md`). The code is commit 1 and the fix:
 `network/createVirtualMachine.ts`, `stateful/faithful-probe-trace.ts`, `StatefulContract.ts`, the deploy and
 iteration probes, the test helpers `test/deterministic-random.ts` and `test/live-like-provider.ts`, the four tests
-above, and a `docs/kernel-diagnostics.md` section on the probe switches.
+above, and a `docs/compiler-diagnostics.md` section on the probe switches.
 
 ## State against master (2026-11-13)
 

@@ -5,7 +5,6 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Output } from '../interfaces.js';
 import { calculateDust } from '../utils.js';
-import type { KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
 import type { RuntimeLoopTransferOutput } from './external-call-utxo-group.js';
 
 export type LoopEntryVar = {
@@ -39,16 +38,11 @@ export interface MaterializeRuntimeLoopTrailingHost {
    */
   pendingKeccakLoopRecreates(builder: object): readonly Output[];
   readonly keccakLoopFollowsTrailingUser: boolean;
-  readonly kernelJournalSettlementOutputPlan: readonly unknown[];
-  readonly kernelJournalEagerOutputPlan: readonly unknown[];
   readonly loopEntriesBeforeDynamicChunks: boolean;
   readonly delegateEntriesAfterLowLevel: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   trailingLoopEntryVars(): readonly LoopEntryVar[];
   delegateLoopEntryVars(): readonly LoopEntryVar[];
-  validateKernelJournalSettlementOutputPlan(): void;
-  kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan;
-  trailingLoopEntryOutputCount(): number;
   loopEntryTransitionSatoshis(variable: LoopEntryVar, commitment: string): bigint | undefined;
   getRequiredLoopEntryCount(collection: string): number;
   getLoopEntryOutputBase(): number;
@@ -128,9 +122,6 @@ export function materializeRuntimeLoopTrailing(
   };
   if (host.runtimeLoopTrailingSegments.length > 0) {
     const variables = new Map(host.trailingLoopEntryVars().map((variable) => [variable.collection, variable]));
-    const hasKernelSettlementOutputPlan = host.kernelJournalSettlementOutputPlan.length > 0
-      || host.kernelJournalEagerOutputPlan.length > 0;
-    if (hasKernelSettlementOutputPlan) host.validateKernelJournalSettlementOutputPlan();
     // Fixed-batch predecessor rewrites occupy the leading trailing coordinates, before the source-ordered
     // runtime row stream. They share `loopEntryCommitments` with runtime mapping outputs but deliberately have
     // no runtime segment: a segment describes a source-row occurrence, while these outputs authenticate the
@@ -179,29 +170,11 @@ export function materializeRuntimeLoopTrailing(
         throw new Error(`Runtime loop ${kind} segments cover ${expected} of ${length} outputs`);
       }
     }
-    if (hasKernelSettlementOutputPlan) {
-      const layout = host.kernelJournalOutputLayout();
-      if (layout.finalOutputCursorDelta !== host.trailingLoopEntryOutputCount()) {
-        throw new Error(
-          `Kernel journal output layout covers ${layout.finalOutputCursorDelta} of `
-          + `${host.trailingLoopEntryOutputCount()} trailing entry commitments`,
-        );
-      }
-      for (const entry of layout.outputs) {
-        const variable = variables.get(entry.collection);
-        const commitment = host.loopEntryCommitments.get(entry.collection)?.[entry.offset];
-        if (!variable || commitment === undefined) {
-          throw new Error(`Kernel journal settlement plan references missing ${entry.collection}[${entry.offset}]`);
-        }
-        appendLoopEntry(variable, commitment);
-      }
-    } else {
-      for (const variable of host.trailingLoopEntryVars()) {
-        const commitments = host.loopEntryCommitments.get(variable.collection) ?? [];
-        const prefixCount = prefixCounts.get(variable.collection) ?? commitments.length;
-        for (let index = 0; index < prefixCount; index++) {
-          appendLoopEntry(variable, commitments[index]!);
-        }
+    for (const variable of host.trailingLoopEntryVars()) {
+      const commitments = host.loopEntryCommitments.get(variable.collection) ?? [];
+      const prefixCount = prefixCounts.get(variable.collection) ?? commitments.length;
+      for (let index = 0; index < prefixCount; index++) {
+        appendLoopEntry(variable, commitments[index]!);
       }
     }
     // A direct call's covenant mints the entry band from emitTrailingWriteOutputBase, compacted into the block's
@@ -226,7 +199,6 @@ export function materializeRuntimeLoopTrailing(
         }
         continue;
       }
-      if (hasKernelSettlementOutputPlan) continue;
       const variable = variables.get(segment.collection!);
       if (!variable) throw new Error(`Runtime loop segment references unknown collection '${segment.collection}'`);
       const commitments = host.loopEntryCommitments.get(segment.collection!) ?? [];
@@ -246,9 +218,9 @@ export function materializeRuntimeLoopTrailing(
     if (host.loopEntriesBeforeDynamicChunks || host.delegateEntriesAfterLowLevel) {
       // Legacy delegated upsert collections are restored at transaction-suffix coordinates by
       // `_reassertDelegateLoopEntries`. Appending them here as well would duplicate their outputs and shift
-      // the indexed P'/NEW lane. Compiler-routed delegates instead own these entries inside their authenticated
+      // the indexed P'/NEW lane. Routed delegates instead own these entries inside their authenticated
       // participant frame, so they must be emitted here exactly once.
-      const delegateCollections = new Set((host.compilerRouteDelegateBlock
+      const delegateCollections = new Set((host.directCallDelegateBlock
         ? [] : host.delegateLoopEntryVars()).map((variable) => variable.collection));
       for (const lv of host.trailingLoopEntryVars()) {
         if (delegateCollections.has(lv.collection)) continue;

@@ -16,10 +16,10 @@ import { compileStringMulti } from '../../../src/compiler.js';
 
 const OTHER = '0x' + '11'.repeat(31) + 'ee';
 const PING = 'interface IOther { function ping(); } contract Other { function ping() { require(true); } }';
-// A call through the interface member: no message-bus edge, so every form reaches the cache the body itself plans.
+// A call through the interface member.
 const CALL = `IOther(${OTHER}).ping.call();`;
-// A call through the interface cast, which the message-bus lowering plans its own cache for first.
-const EDGE_CALL = `IOther(${OTHER}).ping();`;
+// A call through the interface cast.
+const CAST_CALL = `IOther(${OTHER}).ping();`;
 
 /** A ledger whose `move` entry runs `body`. */
 const LEDGER = (body: string): string => `pragma solidcash ^0.52.0;${PING}`
@@ -85,11 +85,11 @@ describe('the segment a framed mapping write lands in, for every form the source
     expect(published(compile(`${CALL} ${loop} ${CALL}`), 'balances')).toStrictEqual({ segment: 1, refused: [] });
   });
 
-  it('publishes the segment the source names beside a call the message-bus lowering plans first', () => {
+  it('publishes the segment the source names beside a call through the interface cast', () => {
     const loop = 'for (uint i = 0; i < amount; i = i + 1) { balances[to] = balances[to] + 1; }';
     for (const write of ['balances[to] += amount;', loop]) {
-      expect(published(compile(`${write} ${EDGE_CALL}`), 'balances')).toStrictEqual({ segment: 0, refused: [] });
-      expect(published(compile(`${EDGE_CALL} ${write} ${EDGE_CALL}`), 'balances'))
+      expect(published(compile(`${write} ${CAST_CALL}`), 'balances')).toStrictEqual({ segment: 0, refused: [] });
+      expect(published(compile(`${CAST_CALL} ${write} ${CAST_CALL}`), 'balances'))
         .toStrictEqual({ segment: 1, refused: [] });
     }
   });

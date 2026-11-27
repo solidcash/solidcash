@@ -5,7 +5,6 @@ import {
   chunksFromJobEventsValue,
   chunksFromValue,
   legacyJobEventsPersistValueChunkLock,
-  permitsLegacyNamedValueChunkFallback,
   type ValueChunkWriteDescriptor,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
@@ -32,13 +31,7 @@ const exactWrite: ValueChunkWriteDescriptor = {
 };
 
 describe('value-chunk construction authority', () => {
-  it('does not manufacture a legacy lock for an undescribed generic or kernel value', () => {
-    const kernelGroup = {
-      logicalArtifact: { messageBus: { convention: 'kernel-row-loop' as const } } as never,
-      valueChunkWrites: [exactWrite],
-    };
-
-    expect(permitsLegacyNamedValueChunkFallback([kernelGroup])).toBe(false);
+  it('does not manufacture a legacy lock for a value without an exact compiler descriptor', () => {
     expect(chunksFromValue(value, { categoryId, masterLock })).toEqual([]);
     expect(chunksFromValue(value, {
       categoryId,
@@ -59,12 +52,7 @@ describe('value-chunk construction authority', () => {
     expect(chunks.every((chunk) => chunk.categoryId === categoryId)).toBe(true);
   });
 
-  it('retains explicit descriptor-free legacy compatibility behind the legacy convention gate', () => {
-    const legacyGroup = {
-      logicalArtifact: { messageBus: { convention: 'legacy-unroll' as const } } as never,
-    };
-    expect(permitsLegacyNamedValueChunkFallback([legacyGroup])).toBe(true);
-
+  it('retains descriptor-free legacy compatibility through the explicitly named legacy adapters', () => {
     const expectedLock = legacyJobEventsPersistValueChunkLock(categoryId, value, masterLock);
     const chunks = chunksFromJobEventsValue(value, undefined, categoryId, masterLock);
     expect(expectedLock).toBeDefined();

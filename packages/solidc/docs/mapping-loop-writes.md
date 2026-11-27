@@ -139,6 +139,5 @@ by `LowerVMapCounterLoops` to full-width slot order.
 ## Verified
 
 `packages/solidcash/test/e2e/DynamicLoopEntry.test.ts` (for / while / do-while, N=1..3, each entry reads back),
-`DynamicLoopEntryAdversarial.test.ts` (wrong commitment, redirected address, and orphan output all rejected),
-`EntryWriteBehavior.test.ts` (invariant-key caching, counter/array-key set and RMW, and counter-key deletes), and
-`KernelLoopCompose.test.ts` (sequential disjoint counter-loop journals, including insert and update passes).
+`DynamicLoopEntryAdversarial.test.ts` (wrong commitment, redirected address, and orphan output all rejected), and
+`EntryWriteBehavior.test.ts` (invariant-key caching, counter/array-key set and RMW, and counter-key deletes).

@@ -10,7 +10,6 @@ import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { createBuildSessionPrelude } from '../../src/stateful/stb-create-build-session-prelude.js';
 import { redirectViewTailOffFiller } from '../../src/stateful/mutable-output-reassert.js';
 import {
-  adaptLegacyNestedJobEventArguments,
   vmapBatchWitnessFallback,
 } from '../../src/stateful/StatefulContract.js';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
@@ -48,8 +47,6 @@ import {
   selectDelegateExecutionLayout,
   physicalDelegateSlotOffset,
   pinExactSortedBatchEntry,
-  skipCompilerOwnedInBlockCollectionStrip,
-  groupOwnsLinearSortedBatch,
   assignBalancedOutputAtOffset,
   blockOutputOwnsSlotKind,
   blockOutputOwnsFixedDataNft,
@@ -194,9 +191,6 @@ import {
   selectChunkableValueWriteExecution,
   valueChunkWriteResourceIdentity,
   legacyPlannedChunkableValueWriteCollection,
-  permitsLegacyNamedValueChunkFallback,
-  permitsLegacyValueChunkEventReconstruction,
-  permitsLegacyDelegateEventRepair,
   placeSameIndexTwin,
   placeInsertNewAt,
   shouldOverwriteForSameIndexTwin,
@@ -209,12 +203,11 @@ import {
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
-import { reassertRoutedReadOnlyDynamicChunkTwins } from '../../src/stateful/mutable-output-reassert.js';
 import {
   describeValueChunkWrites, resolveChunkableEntryCollection,
 } from '../../src/stateful/StatefulContract.js';
 import { resolveChunkableEntryCollection as resolveRuntimeChunkableEntryCollection }
-  from '../../src/stateful/kernel-value-chunk-lanes.js';
+  from '../../src/stateful/value-chunk-lanes.js';
 
 describe('delegate-only physical slot projection', () => {
   const layout = {
@@ -405,60 +398,6 @@ describe('generic persisted value-chunk write identity', () => {
     expect(groupWritesSingleChunkableArrayCollection(array)).toBe(true);
   });
 
-  it('confines application-name recovery to pre-kernel artifacts', () => {
-    const legacyNamed = { functionName: 'publishJobEvent' };
-    const renamedLegacy = { functionName: 'appendNotice' };
-    expect(permitsLegacyNamedValueChunkFallback([legacyNamed, renamedLegacy])).toBe(true);
-
-    const kernelArtifact = {
-      messageBus: { convention: 'kernel-row-loop' },
-    } as unknown as Artifact;
-    expect(permitsLegacyNamedValueChunkFallback([
-      { ...legacyNamed, logicalArtifact: kernelArtifact },
-    ])).toBe(false);
-    expect(permitsLegacyNamedValueChunkFallback([
-      { ...renamedLegacy, logicalArtifact: kernelArtifact },
-    ])).toBe(false);
-
-    // The active route owns the compatibility decision. A kernel owner must not recover historical names merely
-    // because all of its nested participants are old or publish no convention themselves.
-    expect(permitsLegacyNamedValueChunkFallback([legacyNamed], 'kernel-row-loop')).toBe(false);
-    expect(permitsLegacyNamedValueChunkFallback([renamedLegacy], 'kernel-row-loop')).toBe(false);
-    expect(permitsLegacyNamedValueChunkFallback([legacyNamed], 'legacy-unroll')).toBe(true);
-  });
-
-  it('reconstructs descriptor-free events only for legacy plans, ignoring a named kernel decoy', () => {
-    const legacyRenamed = { functionName: 'appendNotice' };
-    const kernelArtifact = {
-      messageBus: { convention: 'kernel-row-loop' },
-    } as unknown as Artifact;
-    const kernelNamedDecoy = { functionName: 'publishJobEvent', logicalArtifact: kernelArtifact };
-
-    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], false)).toBe(true);
-    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], true)).toBe(false);
-    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
-    // A kernel route can legitimately compose an older descriptor-free child. The active owner convention is
-    // authoritative: neither the historical name nor the child's missing convention may re-enable reconstruction.
-    expect(permitsLegacyValueChunkEventReconstruction(
-      [{ functionName: 'publishJobEvent' }], false, 'kernel-row-loop',
-    )).toBe(false);
-  });
-
-  it('keeps nested delegate event repair legacy-only across misleading names', () => {
-    const legacyNamed = { functionName: 'publishJobEvent' };
-    const legacyRenamed = { functionName: 'appendNotice' };
-    const kernelArtifact = {
-      messageBus: { convention: 'kernel-row-loop' },
-    } as unknown as Artifact;
-    const kernelNamedDecoy = { functionName: 'publishJobEvent', logicalArtifact: kernelArtifact };
-
-    expect(permitsLegacyDelegateEventRepair([legacyNamed, legacyRenamed], false)).toBe(true);
-    expect(permitsLegacyDelegateEventRepair([legacyNamed], true)).toBe(false);
-    expect(permitsLegacyDelegateEventRepair([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
-    expect(permitsLegacyDelegateEventRepair(
-      [{ functionName: 'publishJobEvent' }], false, 'kernel-row-loop',
-    )).toBe(false);
-  });
 
   it('selects a renamed physical value writer from metadata and rejects a named decoy', () => {
     const renamed = makeGroup('appendNotice');
@@ -496,19 +435,18 @@ describe('generic persisted value-chunk write identity', () => {
         mutationSourceEffectOrdinal: 3,
       },
     };
-    const kernelArtifact = {
+    const executorArtifact = {
       ...carrier.externalContract.inner.artifact,
       abi: carrier.externalContract.inner.artifact.abi.map((fn: { name: string }) => ({
         ...fn, name: 'applyRecord',
       })),
-      messageBus: { convention: 'kernel-row-loop' as const },
     };
     const executor = {
       ...carrier,
       functionName: 'applyRecord',
       logicalFunctionName: 'applyRecord',
-      logicalArtifact: kernelArtifact,
-      externalContract: { inner: { artifact: kernelArtifact } },
+      logicalArtifact: executorArtifact,
+      externalContract: { inner: { artifact: executorArtifact } },
       valueChunkWrites: [],
       valueChunkProducerClaims: [claim],
       valueChunkStateOwner: owner,
@@ -589,7 +527,6 @@ describe('generic persisted value-chunk write identity', () => {
         logicalArtifact: {
           abi: [handler],
           stateLayout: { variables: [], collections: [collection] },
-          messageBus: { convention: 'legacy-unroll' },
         } as unknown as Artifact,
         valueChunkOutputBase: 12,
         valueChunkOutputCount: 2,
@@ -606,10 +543,6 @@ describe('generic persisted value-chunk write identity', () => {
       name: 'history', signature: 'history:mapping(int => Notice[])',
     });
     expect(legacyPlannedChunkableValueWriteCollection(ambiguous)).toBeUndefined();
-
-    const kernel = structuralLegacy('publishJobEvent', 'jobEvents');
-    kernel.logicalArtifact.messageBus = { convention: 'kernel-row-loop' } as Artifact['messageBus'];
-    expect(legacyPlannedChunkableValueWriteCollection(kernel)).toBeUndefined();
 
     const noWidth = structuralLegacy('appendNotice', 'notices');
     noWidth.valueChunkOutputCount = 0;
@@ -634,13 +567,6 @@ describe('generic persisted value-chunk write identity', () => {
     });
     expect(legacyPlannedChunkableValueWriteCollection(overloaded)).toBeUndefined();
 
-    const mixedConvention = structuralLegacy('appendNotice', 'notices');
-    mixedConvention.externalContract = { inner: { artifact: {
-      ...mixedConvention.logicalArtifact,
-      messageBus: { convention: 'kernel-row-loop' },
-    } as Artifact } };
-    expect(legacyPlannedChunkableValueWriteCollection(mixedConvention)).toBeUndefined();
-
     const driftedLayout = structuralLegacy('appendNotice', 'notices');
     driftedLayout.externalContract = { inner: { artifact: {
       ...driftedLayout.logicalArtifact,
@@ -655,45 +581,7 @@ describe('generic persisted value-chunk write identity', () => {
     expect(legacyPlannedChunkableValueWriteCollection(driftedLayout)).toBeUndefined();
   });
 
-  it('uses the routed writer layout and collection even when its artifact contains a legacy-named decoy', () => {
-    const renamed = makeGroup('appendNotice');
-    const routeHandler = {
-      ...renamed.externalContract.inner.artifact.abi[0],
-      name: 'routeAppendNotice',
-      blockLayout: {
-        blockSize: 7,
-        slots: [
-          { kind: 'master' as const, offset: 0 },
-          { kind: 'entry' as const, offset: 1, slotIndex: 0 },
-          { kind: 'event' as const, offset: 6, slotIndex: 0 },
-        ],
-      },
-    };
-    const namedDecoy = {
-      ...renamed.externalContract.inner.artifact.abi[0],
-      name: 'publishJobEvent',
-      entryAccesses: [],
-      blockLayout: { blockSize: 2, slots: [{ kind: 'master' as const, offset: 0 }] },
-    };
-    const routed = {
-      ...renamed,
-      compilerRoute: { abiFunction: routeHandler },
-      externalContract: { inner: { artifact: {
-        ...renamed.externalContract.inner.artifact,
-        abi: [namedDecoy, renamed.externalContract.inner.artifact.abi[0]],
-      } } },
-    };
-
-    expect(selectChunkableValueWriteExecution([
-      { group: routed, inputIndex: 17 },
-    ])).toMatchObject({
-      inputIndex: 17,
-      collection: 'notices',
-      abiFunction: { name: 'routeAppendNotice', blockLayout: { blockSize: 7 } },
-    });
-  });
-
-  it('selects publish ownership by renamed resource identity and collapses duplicate route views', () => {
+  it('selects publish ownership by renamed resource identity and collapses duplicate views of one write', () => {
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(selectValueChunkWriteCategory([renamed])).toEqual({
       status: 'exact', categoryId, write: renamed,
@@ -704,47 +592,29 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectValueChunkWriteCategory([])).toEqual({ status: 'absent' });
   });
 
-  it('resolves chunkable entry ownership from exact metadata and fails closed for kernel ambiguity', () => {
+  it('resolves chunkable entry ownership from exact metadata and fails closed for ambiguous published collections', () => {
     expect(resolveChunkableEntryCollection).toBe(resolveRuntimeChunkableEntryCollection);
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(resolveChunkableEntryCollection({
       writes: [renamed],
       categoryId,
       publishedCollections: ['decoy'],
-      convention: 'kernel-row-loop',
     })).toBe(signature);
     expect(resolveChunkableEntryCollection({
       writes: [],
       categoryId,
       publishedCollections: ['records'],
-      convention: 'kernel-row-loop',
     })).toBe('records');
     expect(() => resolveChunkableEntryCollection({
       writes: [],
       categoryId,
       publishedCollections: ['records', 'audit'],
-      convention: 'kernel-row-loop',
-      legacyFallback: 'historical',
-    })).toThrow(/requires one exact compiler-published collection identity/);
-    expect(() => resolveChunkableEntryCollection({
-      writes: [],
-      categoryId,
-      publishedCollections: [],
-      convention: 'kernel-row-loop',
-      legacyFallback: 'historical',
-    })).toThrow(/requires one exact compiler-published collection identity/);
-    expect(() => resolveChunkableEntryCollection({
-      writes: [],
-      categoryId,
-      publishedCollections: ['records', 'audit'],
-      convention: 'legacy-unroll',
       legacyFallback: 'historical',
     })).toThrow(/ambiguous compiler-published collections/);
     expect(resolveChunkableEntryCollection({
       writes: [],
       categoryId,
       publishedCollections: [],
-      convention: 'legacy-unroll',
       legacyFallback: 'historical',
     })).toBe('historical');
   });
@@ -760,7 +630,6 @@ describe('generic persisted value-chunk write identity', () => {
     expect(persistedValueChunkReadiness({
       selection,
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: false,
       legacyReady: true,
     })).toBe(false);
@@ -775,42 +644,30 @@ describe('generic persisted value-chunk write identity', () => {
     expect(persistedValueChunkReadiness({
       selection: exact,
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: false,
       legacyReady: true,
     })).toBe(false);
     expect(persistedValueChunkReadiness({
       selection: exact,
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: true,
       legacyReady: false,
     })).toBe(true);
     expect(persistedValueChunkReadiness({
       selection: { status: 'absent' },
       hasWriteMetadata: false,
-      permitsLegacyFallback: false,
-      descriptorReady: false,
-      legacyReady: true,
-    })).toBe(false);
-    expect(persistedValueChunkReadiness({
-      selection: { status: 'absent' },
-      hasWriteMetadata: false,
-      permitsLegacyFallback: true,
       descriptorReady: false,
       legacyReady: true,
     })).toBe(true);
     expect(() => persistedValueChunkReadiness({
       selection: { status: 'absent' },
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: false,
       legacyReady: true,
     })).toThrow(/did not produce one exact resource descriptor/);
     expect(() => persistedValueChunkReadiness({
       selection: { status: 'ambiguous' },
       hasWriteMetadata: true,
-      permitsLegacyFallback: false,
       descriptorReady: false,
       legacyReady: true,
     })).toThrow(/Ambiguous compiler-described value-chunk write identity/);
@@ -872,7 +729,7 @@ describe('generic persisted value-chunk write identity', () => {
     )).toEqual({ status: 'ambiguous' });
   });
 
-  it('selects a renamed writer event from compiler route metadata and collapses duplicate views', () => {
+  it('selects a renamed writer event from its block layout and collapses duplicate views', () => {
     const eventOutput = {
       eventSignature: 'NoticeAppended(int,bytes)',
       commitment: '01aa',
@@ -884,54 +741,12 @@ describe('generic persisted value-chunk write identity', () => {
         blockSize: 3,
         slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
       },
-      compilerRoute: {
-        abiFunction: {
-          name: 'appendNotice', inputs: [], emits: [{
-            eventName: 'NoticeAppended', eventSignature: eventOutput.eventSignature, emitIndex: 0,
-          }],
-          blockLayout: {
-            blockSize: 3,
-            slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
-          },
-        },
-        eventSignaturesBySlot: [eventOutput.eventSignature],
-      },
       eventOutputs: [eventOutput],
     } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
     expect(selectCompilerWriterEvent([candidate, { ...candidate }])).toMatchObject({
       status: 'exact', categoryId, slotOffset: 2,
       eventSignature: 'NoticeAppended(int,bytes)', eventOutput,
     });
-  });
-
-  it('fails closed on conflicting writer event slots, declarations, or observations', () => {
-    const base = {
-      categoryId,
-      blockLayout: {
-        blockSize: 3,
-        slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
-      },
-      compilerRoute: {
-        abiFunction: { name: 'appendNotice', inputs: [], blockLayout: {
-          blockSize: 3,
-          slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
-        } },
-        eventSignaturesBySlot: ['NoticeAppended(int,bytes)'],
-      },
-    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
-    expect(selectCompilerWriterEvent([
-      base,
-      { ...base, compilerRoute: {
-        ...base.compilerRoute, eventSignaturesBySlot: ['AuditAppended(int,bytes)'],
-      } },
-    ])).toEqual({ status: 'ambiguous' });
-    expect(selectCompilerWriterEvent([{
-      ...base,
-      eventOutputs: [{
-        eventSignature: 'AuditAppended(int,bytes)', commitment: '01bb',
-        lockingBytecode: Uint8Array.of(0x51),
-      }],
-    }])).toEqual({ status: 'ambiguous' });
   });
 
   it('fails closed when independent chunkable writers claim different physical inputs', () => {
@@ -996,7 +811,7 @@ describe('generic persisted value-chunk write identity', () => {
     expect(persistUpdateDigestLock(categoryId, [], null)).toBeUndefined();
     expect(selectPersistedValueChunkWrite([decoy], categoryId)).toBeUndefined();
     expect(selectPersistedValueChunkWrite([decoy, renamed], categoryId)).toEqual(renamed);
-    // The route and logical group may both describe one physical write; identity de-duplication keeps it exact.
+    // The physical and logical groups may both describe one write; identity de-duplication keeps it exact.
     expect(selectPersistedValueChunkWrite([renamed, { ...renamed }], categoryId)).toEqual(renamed);
     StatefulTransactionBuilder.clearPersistedJobEvents();
   });
@@ -1059,25 +874,6 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectProtectedLoopEntryCollections([{ functionName: 'unrelated' }])).toEqual({
       status: 'absent', collections: [],
     });
-    const kernelArtifact = {
-      messageBus: { convention: 'kernel-row-loop' },
-    } as unknown as Artifact;
-    expect(selectProtectedLoopEntryCollections([{
-      functionName: 'publishJobEvent', logicalArtifact: kernelArtifact,
-    }])).toEqual({ status: 'absent', collections: [] });
-    // A partially populated compiler-route group may not carry a nested artifact from which to infer the
-    // convention. The active owner is still authoritative and must keep historical application-name recovery
-    // disabled for a kernel row loop.
-    const compilerRouteOnly = {
-      functionName: 'publishJobEvent', compilerRoute: {},
-    };
-    expect(selectProtectedLoopEntryCollections(
-      [compilerRouteOnly], 'kernel-row-loop',
-    )).toEqual({ status: 'absent', collections: [] });
-    expect(selectProtectedLoopEntryCollections(
-      [compilerRouteOnly], 'legacy-unroll',
-    )).toEqual({ status: 'absent', collections: ['jobEvents'] });
-
     const [malformed] = renamed.valueChunkWrites;
     expect(selectProtectedLoopEntryCollections([{
       ...renamed,
@@ -2319,19 +2115,16 @@ describe('assignPhysicalReturnIndices', () => {
     expect(resolveAbsolutePredOut(17n, 3, 14, 14)).toBe(17n);
     expect(resolveAbsolutePredOut(15n, 3, 14)).toBe(18n);
     expect(groupLayoutBlockSize({
-      compilerRoute: { abiFunction: { blockLayout: { blockSize: 14 } } },
-    })).toBe(14);
-    expect(groupLayoutBlockSize({
       blockLayout: { blockSize: 14 },
     })).toBe(14);
     expect(groupLayoutBlockSize({})).toBe(8);
     expect(groupLayoutTrailingBase({
-      compilerRoute: { abiFunction: { blockLayout: { blockSize: 163, trailingBase: 99 } } },
+      blockLayout: { blockSize: 163, trailingBase: 99 },
     })).toBe(99);
     expect(resolveAbsolutePredOut(99n, 244, 99)).toBe(343n);
   });
 
-  it('uses ABI blockLayout for a proxy delegate that has no kernel compilerRoute', () => {
+  it('uses ABI blockLayout for a proxy delegate', () => {
     const initializeLayout = {
       blockSize: 14,
       slots: [
@@ -2349,9 +2142,6 @@ describe('assignPhysicalReturnIndices', () => {
       { callMode: 'call', blockLayout: initializeLayout },
       { callMode: 'delegatecall' },
     ])).toBeUndefined();
-    expect(selectDelegateExecutionLayout([
-      { callMode: 'delegatecall', compilerRoute: { abiFunction: { blockLayout: initializeLayout } } },
-    ])).toEqual(initializeLayout);
     expect(selectDelegateExecutionLayout(
       [{ callMode: 'delegatecall', blockLayout: initializeLayout }],
       new Set([0]),
@@ -2378,96 +2168,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(pinExactSortedBatchEntry({
       exact: false, conditionalLayoutSlot: true, linearSortedBatch: false,
     })).toBe(false);
-  });
-
-  it('does not treat a kernel linear string-mapping batch as a continuation writer', () => {
-    const meceTags = {
-      name: 'meceTags',
-      signature: 'meceTags:mapping(string => string)',
-      keyType: 'string',
-      valueType: 'string',
-      chunkableValue: true,
-    };
-    const initialize = {
-      functionName: 'initialize',
-      logicalFunctionName: 'initialize',
-      stateLayout: { variables: [], dataNftCount: 0, commitmentLimit: 128, collections: [meceTags] },
-      logicalArtifact: {
-        messageBus: { convention: 'kernel-row-loop' as const },
-        abi: [{
-          name: 'initialize',
-          inputs: [],
-          entryAccesses: [{ collection: 'meceTags', keyParams: ['key'], operations: ['write'] as Array<'write'> }],
-          sortedBatchInfo: [{
-            collection: 'meceTags',
-            slotIndices: [0, 1, 2, 3, 4, 5, 6, 7],
-            linear: true,
-          }],
-        }],
-      },
-      compilerRoute: {
-        abiFunction: {
-          name: 'initialize',
-          inputs: [],
-          entryAccesses: [{ collection: 'meceTags', keyParams: ['key'], operations: ['write'] as Array<'write'> }],
-          sortedBatchInfo: [{
-            collection: 'meceTags',
-            slotIndices: [0, 1, 2, 3, 4, 5, 6, 7],
-            linear: true,
-          }],
-        },
-      },
-    };
-    expect(groupChunkableValueWriteCollection(initialize)).toBe('meceTags');
-    expect(groupOwnsLinearSortedBatch(initialize)).toBe(true);
-    expect(selectChunkableValueWriteExecution([{ group: initialize, inputIndex: 3 }])).toBeUndefined();
-    const registerUser = {
-      functionName: 'registerUser',
-      logicalFunctionName: 'registerUser',
-      stateLayout: {
-        variables: [], dataNftCount: 0, commitmentLimit: 128,
-        collections: [{
-          name: 'users',
-          signature: 'users:mapping(address => User)',
-          keyType: 'address',
-          valueType: 'User',
-          chunkableValue: true,
-        }],
-      },
-      logicalArtifact: {
-        messageBus: { convention: 'kernel-row-loop' as const },
-        abi: [{
-          name: 'registerUser',
-          inputs: [{ name: '__internal__vmapBatchTrailingCount', type: 'bigint' }],
-          entryAccesses: [{
-            collection: 'users', keyParams: ['sender:msg.sender'], operations: ['read', 'write'] as Array<'read' | 'write'>,
-          }],
-          entryLoopWrites: ['users'],
-        }],
-      },
-      compilerRoute: {
-        abiFunction: {
-          name: 'registerUser',
-          inputs: [{ name: '__internal__vmapBatchTrailingCount', type: 'bigint' }],
-          entryAccesses: [{
-            collection: 'users', keyParams: ['sender:msg.sender'], operations: ['read', 'write'] as Array<'read' | 'write'>,
-          }],
-          entryLoopWrites: ['users'],
-        },
-      },
-    };
-    expect(groupChunkableValueWriteCollection(registerUser)).toBe('users');
-    expect(groupOwnsLinearSortedBatch(registerUser)).toBe(false);
-    expect(selectChunkableValueWriteExecution([{ group: registerUser, inputIndex: 3 }])).toBeUndefined();
-    expect(skipCompilerOwnedInBlockCollectionStrip({
-      preserveBlockLayoutWidth: true, pinnedEntryCount: 8,
-    })).toBe(true);
-    expect(skipCompilerOwnedInBlockCollectionStrip({
-      preserveBlockLayoutWidth: true, pinnedEntryCount: 0,
-    })).toBe(false);
-    expect(skipCompilerOwnedInBlockCollectionStrip({
-      preserveBlockLayoutWidth: true, pinnedEntryCount: 0, requiredEntryCount: 8,
-    })).toBe(true);
   });
 
   it('falls back to nested-callee sentinels for a vmap-batch slot with no planned batch', () => {
@@ -2531,9 +2231,6 @@ describe('assignPhysicalReturnIndices', () => {
         __internal__vmapBatchPredOut_0: -1n,
         __internal__returnOutputIdx: 33n,
       },
-      compilerRoute: {
-        internalArgs: { __internal__vmapBatchSlot_0: new Uint8Array(32) as bigint | Uint8Array },
-      },
       plannedEntryInserts: [] as Array<{ blockSlot: number; outputBlockSlot: number }>,
       plannedEntryInsertHandles: [] as number[],
       relativeOutputInternalArgs: [] as string[],
@@ -2545,9 +2242,7 @@ describe('assignPhysicalReturnIndices', () => {
       internalArgs: {
         __internal__vmapBatchPredOut_0: 8n,
         __internal__vmapBatchTrailingCount: 1n,
-      },
-      compilerRoute: {
-        internalArgs: { __internal__vmapBatchNext_0: new Uint8Array([1]) as bigint | Uint8Array },
+        __internal__vmapBatchNext_0: new Uint8Array([1]) as bigint | Uint8Array,
       },
       plannedEntryInserts: [plannedInsert],
       plannedEntryInsertHandles: [17],
@@ -2574,11 +2269,6 @@ describe('assignPhysicalReturnIndices', () => {
       __internal__returnOutputIdx: 33n,
       __internal__vmapBatchNext_0: new Uint8Array([1]),
     });
-    expect(carrier.compilerRoute.internalArgs).toMatchObject({
-      __internal__vmapBatchPredOut_0: 8n,
-      __internal__vmapBatchTrailingCount: 1n,
-      __internal__vmapBatchNext_0: new Uint8Array([1]),
-    });
   });
 
   it('rejects mixing distinct writer batch plans on one physical carrier', () => {
@@ -2593,7 +2283,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(() => inheritWriterBatchPlan(carrier, writer)).toThrow(/conflicting sorted-batch/);
   });
 
-  it('excludes a different non-routed shared handler from the physical writer plan', () => {
+  it('excludes a different shared handler from the physical writer plan', () => {
     const physical = { functionName: 'transferFrom' };
 
     expect(writerBatchPlanMatchesPhysicalCarrier(physical, {
@@ -2602,13 +2292,6 @@ describe('assignPhysicalReturnIndices', () => {
     })).toBe(false);
     expect(writerBatchPlanMatchesPhysicalCarrier(physical, {
       functionName: 'transferFrom',
-      sharedGroupIndex: 1,
-    })).toBe(true);
-    expect(writerBatchPlanMatchesPhysicalCarrier({
-      ...physical,
-      compilerRoute: {},
-    }, {
-      functionName: 'approve',
       sharedGroupIndex: 1,
     })).toBe(true);
   });
@@ -3617,31 +3300,6 @@ describe('assignPhysicalReturnIndices', () => {
     StatefulTransactionBuilder.clearPersistedJobEvents(categoryId);
   });
 
-  it('does not seed a kernel persist band from an unowned legacy lock', () => {
-    const categoryId = 'e8'.repeat(31) + '17';
-    const legacyLock = new Uint8Array(35);
-    legacyLock[0] = 0xaa; legacyLock[1] = 0x20; legacyLock[34] = 0x87;
-    legacyRememberValueChunkLock(categoryId, legacyLock);
-
-    for (const sessionLock of [legacyLock, undefined]) {
-      let placed = 0;
-      const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype) as object, {
-        valueChunkRedeemLock: sessionLock,
-        _shouldRematerializePersistUpdate: () => true,
-        getChunkableValueWriteBand: () => ({ start: 4, end: 4, nNew: 1 }),
-        _chunkableValueWriteCategory: () => categoryId,
-        _persistedValueChunkValue: () => new Uint8Array(80).fill(0x43),
-        _persistedValueChunkWrite: () => undefined,
-        _hasChunkableValueWriteMetadata: () => false,
-        _permitsLegacyNamedValueChunkFallback: () => false,
-        bumpChunkableValueWriteWidth: () => false,
-        setDerivedChunkOutput: () => { placed += 1; return true; },
-      }) as unknown as StatefulTransactionBuilder;
-      expect(builder.seedPersistedJobEventsBand()).toBe(0);
-      expect(placed).toBe(0);
-    }
-    StatefulTransactionBuilder.clearPersistedJobEvents(categoryId);
-  });
 
   it('rematerializes persist UPDATE only for empty-address dest, not Created or Whitelisted', () => {
     expect(isWithdrawShapedJobEvent([16, '', '', 0])).toBe(true);
@@ -3765,13 +3423,10 @@ describe('assignPhysicalReturnIndices', () => {
       persistReady: true, persistWidth: 0, firstPublishInsert: false,
     })).toBe(false);
     expect(shouldUseLegacyPersistDigestLockForValueChunks({
-      hasWriteMetadata: false, permitsLegacyFallback: true, stampPersistUpdate: true,
+      hasWriteMetadata: false, stampPersistUpdate: true,
     })).toBe(true);
     expect(shouldUseLegacyPersistDigestLockForValueChunks({
-      hasWriteMetadata: true, permitsLegacyFallback: true, stampPersistUpdate: true,
-    })).toBe(false);
-    expect(shouldUseLegacyPersistDigestLockForValueChunks({
-      hasWriteMetadata: false, permitsLegacyFallback: false, stampPersistUpdate: true,
+      hasWriteMetadata: true, stampPersistUpdate: true,
     })).toBe(false);
     expect(persistUpdateDigestLock('missing-category')).toBeUndefined();
     expect(persistUpdateDigestLock(
@@ -3821,49 +3476,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(hex!.length).toBeGreaterThan(10);
     const viaStruct = encodeJobEventEmitCommitment(0, stamped);
     expect(viaStruct === hex || (viaStruct?.startsWith('0060') && viaStruct !== '0060000000')).toBe(true);
-  });
-
-  it('quarantines nested timestamp adaptation to the exact legacy ABI schema', () => {
-    const artifact = (convention: 'legacy-unroll' | 'kernel-row-loop', renamed = false): Artifact => ({
-      contractName: 'Archive',
-      abi: [{
-        name: 'appendNotice',
-        inputs: [
-          { name: 'item', type: renamed ? 'Notice' : 'JobEventData' },
-          { name: 'id', type: 'uint256' },
-        ],
-      }],
-      structs: [{
-        name: renamed ? 'Notice' : 'JobEventData',
-        fields: renamed
-          ? [
-            { name: 'kind', type: 'uint8' },
-            { name: 'recipient', type: 'bytes' },
-            { name: 'payload', type: 'bytes' },
-            { name: 'observedAt', type: 'uint32' },
-          ]
-          : [
-            { name: 'type_', type: 'uint8' },
-            { name: 'address_', type: 'bytes' },
-            { name: 'data_', type: 'bytes' },
-            { name: 'timestamp_', type: 'uint32' },
-          ],
-      }],
-      messageBus: { convention },
-    }) as unknown as Artifact;
-    const original = [16, '', '', 0] as const;
-    const timestamp = 0x65574ce0n;
-
-    // Function spelling and argument position provide no authority; only the explicitly legacy schema adapts.
-    expect(adaptLegacyNestedJobEventArguments(
-      artifact('legacy-unroll'), 'appendNotice', [original, 7n], timestamp,
-    )[0]).toEqual([16, '', '', timestamp]);
-    expect(adaptLegacyNestedJobEventArguments(
-      artifact('kernel-row-loop'), 'appendNotice', [original, 7n], timestamp,
-    )[0]).toBe(original);
-    expect(adaptLegacyNestedJobEventArguments(
-      artifact('legacy-unroll', true), 'appendNotice', [original, 7n], timestamp,
-    )[0]).toBe(original);
   });
 
   it('selects the post-append value whose sha256 is the chunk pin, not the Created witness', () => {
@@ -4110,16 +3722,13 @@ describe('assignPhysicalReturnIndices', () => {
     expect(liveChunkWidthForGroup(groups, -1)).toBe(0);
   });
 
-  it('does not let legacy child names alter kernel value-chunk ownership', () => {
+  it('leaves a descriptor-free legacy token writer out of value-chunk ownership', () => {
     const groups = [
       { functionName: 'transferFrom', valueChunkOutputCount: 3 },
       { functionName: 'moveUnits', valueChunkOutputCount: 5 },
     ];
     // Descriptor-free legacy plans retain their historical token-writer exclusion.
     expect(liveChunkSlotsByOwner(groups).has(0)).toBe(false);
-    // A kernel owner requires compiler descriptors, so both otherwise identical children are treated uniformly.
-    expect([...liveChunkSlotsByOwner(groups, 'kernel-row-loop').entries()]).toEqual([[0, 3], [1, 5]]);
-    expect(liveChunkWidthForGroup(groups, 0, 'kernel-row-loop')).toBe(3);
   });
 
   it('reserves proxy pads so FakeToken starts after the live jobEvents band', () => {
@@ -4248,7 +3857,7 @@ describe('assignPhysicalReturnIndices', () => {
       categoryId: ownerCategory,
       functionName: 'appendNotice',
       blockLayout: layout,
-      compilerRoute: { abiFunction, eventSignaturesBySlot: [eventSignature] },
+      logicalArtifact: { abi: [abiFunction] },
       eventOutputs: [{ eventSignature, commitment: '01aa', lockingBytecode: eventLock }],
       valueChunkWrites: [{
         categoryId: ownerCategory, collection: 'notices', collectionSignature: signature,
@@ -4259,7 +3868,6 @@ describe('assignPhysicalReturnIndices', () => {
     const detachedEventReceipts: Array<{ eventSignature: string; commitment: string }> = [];
     const host = {
       externalCallUtxoGroups: [writer], lowLevelCallUtxoGroups: [],
-      messageBusConvention: 'kernel-row-loop', composedParticipant: true,
       allInputs: [], detachedEventReceipts, builderOptions: { provider: {} },
       getExternalCallMasterInputIndex: () => 0, getLowLevelCallMasterInputIndex: () => -1,
       findMintingInputIndex: () => -1, ensureDistinctJobEventNfts: () => {},
@@ -4390,53 +3998,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[0]).toBe(output);
   });
 
-  it('restores selected read-only chunks ahead of a displaced mapping entry', () => {
-    const chunkLock = Uint8Array.of(0xaa, 0x20, 0x05, 0x87);
-    const entryLock = Uint8Array.of(0xaa, 0x20, 0x16, 0x87);
-    const chunk = (id: string, commitment: string, flag: bigint): {
-      txid: string; vout: number; satoshis: bigint;
-      token: { amount: bigint; category: string; nft: { capability: 'mutable'; commitment: string } };
-      unlocker: {
-        generateLockingBytecode: () => Uint8Array;
-        contract: { artifact: { contractName: string } };
-        abiFunction: { inputs: { name: string }[] };
-        params: bigint[];
-      };
-    } => ({
-      txid: id.repeat(64), vout: 0, satoshis: 1200n,
-      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment } },
-      unlocker: {
-        generateLockingBytecode: () => chunkLock,
-        contract: { artifact: { contractName: 'ChunkNft_owner' } },
-        abiFunction: { inputs: [{ name: 'flag' }] },
-        params: [flag],
-      },
-    });
-    const first = chunk('1', '00aa', 1n);
-    const second = chunk('2', '01bb', 1n);
-    const entry = {
-      txid: '3'.repeat(64), vout: 0, satoshis: 1200n,
-      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment: 'entry' } },
-      unlocker: {
-        generateLockingBytecode: () => entryLock,
-        contract: { artifact: { contractName: 'EntryNft_owner' } },
-        abiFunction: { inputs: [{ name: 'flag' }] },
-        params: [1n],
-      },
-    };
-    const outputs: Output[] = [
-      { to: entryLock, amount: 1200n, token: entry.token },
-      { to: chunkLock, amount: 1200n, token: first.token },
-      { to: chunkLock, amount: 1200n, token: second.token },
-    ];
-
-    expect(reassertRoutedReadOnlyDynamicChunkTwins(outputs, [first, second, entry] as never, [])).toBe(0);
-    expect(reassertRoutedReadOnlyDynamicChunkTwins(
-      outputs, [first, second, entry] as never, [chunkLock],
-    )).toBe(2);
-    expect(outputs.map((output) => output.token?.nft?.commitment)).toEqual(['00aa', '01bb', 'entry']);
-  });
-
   it('places the extraTransfer return at the post-rotate minting master', () => {
     expect(tokenWriterReturnIndex(27, {
       blockSize: 8,
@@ -4504,13 +4065,13 @@ describe('assignPhysicalReturnIndices', () => {
       name: string, writes: number,
     ): import('../../src/stateful/value-chunk-geometry.js').CompilerTokenWriterGroup => ({
       functionName: name,
-      compilerRoute: { abiFunction: {
+      logicalArtifact: { abi: [{
         name,
         inputs: [],
         outputs: [{ type: 'bool' }],
         writesState: true,
         entryAccesses: Array.from({ length: writes }, (_unused, index) => write(`ledger${index}`)),
-      } },
+      }] } as unknown as Artifact,
     });
 
     expect(isCompilerDescribedMintingBandWriter(described('moveUnits', 2))).toBe(true);
@@ -4528,25 +4089,6 @@ describe('assignPhysicalReturnIndices', () => {
 
     // Old artifacts without effect metadata retain their compatibility classification.
     expect(isCompilerDescribedMintingBandWriter({ functionName: 'transferFrom' }, true)).toBe(true);
-  });
-
-  it('does not classify descriptor-free kernel participants by transfer-like source names', () => {
-    const kernelArtifact = {
-      abi: [], messageBus: { convention: 'kernel-row-loop' },
-    } as unknown as Artifact;
-    const kernelGroup = (name: string): { functionName: string; logicalArtifact: Artifact } => ({
-      functionName: name, logicalArtifact: kernelArtifact,
-    });
-
-    for (const name of ['moveUnits', 'transfer', 'transferFrom', 'approve']) {
-      expect(isCompilerDescribedMintingBandWriter(kernelGroup(name))).toBe(false);
-      expect(isCompilerDescribedMintingBandWriter(kernelGroup(name), true)).toBe(false);
-    }
-    // The kernel owner also dominates descriptor-free legacy children, whose own artifacts cannot advertise the
-    // active route convention. Familiar source names must not manufacture token-writer geometry in that case.
-    expect(isCompilerDescribedMintingBandWriter(
-      { functionName: 'transferFrom' }, true, 'kernel-row-loop',
-    )).toBe(false);
   });
 
   it('restores persisted continuations from transaction structure, independent of caller names', () => {
@@ -4927,87 +4469,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[3].token?.nft?.commitment).toBe('51');
   });
 
-  it('detects one active chunkable array writer independently of function and collection names', () => {
-    expect(groupWritesSingleChunkableArrayCollection({
-      functionName: 'append', logicalFunctionName: 'append',
-    })).toBe(false);
-    const groupFor = (
-      functionName: string,
-      collectionName: string,
-    ): Parameters<typeof groupChunkableArrayWriteCollection>[0] => ({
-      functionName: '__forward',
-      logicalFunctionName: functionName,
-      stateLayout: {
-        variables: [], dataNftCount: 0, commitmentLimit: 128,
-        collections: [{
-          name: collectionName,
-          signature: `${collectionName}:mapping(int => bytes[])`,
-          kind: 'mapping' as const,
-          keyType: 'int256',
-          valueType: 'bytes[]',
-          chunkableValue: true,
-        }],
-      },
-      compilerRoute: {
-        abiFunction: { name: '__route', inputs: [] },
-        rowArguments: [{
-          handler: {
-            name: functionName,
-            inputs: [],
-            entryAccesses: [{
-              collection: collectionName, keyParams: ['key'], operations: ['write'],
-            }],
-          },
-        }],
-      },
-    });
-    expect(groupChunkableArrayWriteCollection(groupFor('append', 'records'))).toBe('records');
-    expect(groupChunkableArrayWriteCollection(groupFor('store', 'segments'))).toBe('segments');
-    expect(groupWritesSingleChunkableArrayCollection(groupFor('store', 'segments'))).toBe(true);
-    const signatureAddressed = groupFor('replace', 'payloads');
-    signatureAddressed.compilerRoute!.rowArguments![0].handler.entryAccesses![0].collection =
-      signatureAddressed.stateLayout!.collections![0].signature;
-    expect(groupChunkableArrayWriteCollection(signatureAddressed)).toBe('payloads');
-  });
-
-  it('honors active route writes and refuses ambiguous chunkable array collections', () => {
-    const stateLayout = {
-      variables: [], dataNftCount: 0, commitmentLimit: 128,
-      collections: ['first', 'second'].map((name) => ({
-        name,
-        signature: `${name}:mapping(int => bytes[])`,
-        kind: 'mapping' as const,
-        keyType: 'int256',
-        valueType: 'bytes[]',
-        chunkableValue: true,
-      })),
-    };
-    const handler = {
-      name: 'writeBoth',
-      inputs: [],
-      entryAccesses: ['first', 'second'].map((collection) => ({
-        collection, keyParams: ['key'], operations: ['write'],
-      })),
-    };
-    const ambiguous = {
-      functionName: '__forward', stateLayout,
-      compilerRoute: { abiFunction: { name: '__route', inputs: [] }, rowArguments: [{ handler }] },
-    };
-    expect(groupChunkableArrayWriteCollection(ambiguous)).toBeUndefined();
-    expect(groupWritesSingleChunkableArrayCollection(ambiguous)).toBe(false);
-
-    const selected = {
-      ...ambiguous,
-      compilerRoute: {
-        ...ambiguous.compilerRoute,
-        abiFunction: {
-          name: '__route', inputs: [], messageBusActiveWriteCollections: ['second'],
-        },
-      },
-    };
-    expect(groupChunkableArrayWriteCollection(selected)).toBe('second');
-  });
-
   it('rewrites transferFrom NEW at master+4 to the P\' collection lock', () => {
     const pred = hexToBin('aa20791c538fb2fe539b54c73708c74489fa6c9366f2c0d631713c72f98ccff61c8787');
     const other = hexToBin('aa208d7630fa347b05be1ef9a44b957ebc24877930faf9713d510ed43bce44ce97dd87');
@@ -5191,40 +4652,41 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('derives insert-lock repair offsets from renamed compiler descriptors', () => {
-    const routed = {
+    const writerAbi = {
+      name: 'moveUnitsFrom',
+      inputs: [],
+      writesState: true,
+      entryAccesses: [{
+        collection: 'ledger:mapping(bytes20 => int)',
+        keyParams: ['owner'],
+        operations: ['read', 'write'] as Array<'read' | 'write'>,
+      }, {
+        collection: 'ledger:mapping(bytes20 => int)',
+        keyParams: ['recipient'],
+        operations: ['write'] as Array<'write'>,
+      }, {
+        collection: 'permits:mapping(bytes20 => int)',
+        keyParams: ['spender'],
+        operations: ['write'] as Array<'write'>,
+      }],
+      blockLayout: {
+        blockSize: 8,
+        slots: [
+          { kind: 'master' as const, offset: 0 },
+          { kind: 'entry' as const, offset: 3, slotIndex: 0 },
+          { kind: 'entry' as const, offset: 5, slotIndex: 1 },
+          { kind: 'entry' as const, offset: 7, slotIndex: 2 },
+        ],
+      },
+    };
+    const writer = {
       functionName: 'moveUnitsFrom',
-      compilerRoute: { abiFunction: {
-        name: 'routeMoveUnitsFrom',
-        inputs: [],
-        writesState: true,
-        entryAccesses: [{
-          collection: 'ledger:mapping(bytes20 => int)',
-          keyParams: ['owner'],
-          operations: ['read', 'write'] as Array<'read' | 'write'>,
-        }, {
-          collection: 'ledger:mapping(bytes20 => int)',
-          keyParams: ['recipient'],
-          operations: ['write'] as Array<'write'>,
-        }, {
-          collection: 'permits:mapping(bytes20 => int)',
-          keyParams: ['spender'],
-          operations: ['write'] as Array<'write'>,
-        }],
-        blockLayout: {
-          blockSize: 8,
-          slots: [
-            { kind: 'master' as const, offset: 0 },
-            { kind: 'entry' as const, offset: 3, slotIndex: 0 },
-            { kind: 'entry' as const, offset: 5, slotIndex: 1 },
-            { kind: 'entry' as const, offset: 7, slotIndex: 2 },
-          ],
-        },
-      } },
+      logicalArtifact: { abi: [writerAbi] } as unknown as Artifact,
       plannedEntryInserts: [{
         blockSlot: 3, outputBlockSlot: 8, newCommitment: 'ab'.repeat(32) + '00'.repeat(32),
       }],
     };
-    expect(entryInsertLockRepairs(routed)).toEqual([{
+    expect(entryInsertLockRepairs(writer)).toEqual([{
       collection: 'ledger:mapping(bytes20 => int)',
       predecessorOffset: 3,
       candidateInsertedOffsets: [5, 7],
@@ -5247,78 +4709,65 @@ describe('assignPhysicalReturnIndices', () => {
       to: wrongLock,
       token: { category: 'ft', nft: { capability: 'mutable', commitment: 'ab'.repeat(64) } },
     };
-    expect(reassertDescribedEntryInsertLocks(outputs, 0, 'ft', routed)).toBe(1);
+    expect(reassertDescribedEntryInsertLocks(outputs, 0, 'ft', writer)).toBe(1);
     expect(outputs[5].to).toEqual(wrongLock);
     expect(outputs[7].to).toEqual(predecessorLock);
 
     // Published effect metadata makes a familiar name powerless when no planned INSERT exists.
     expect(entryInsertLockRepairs({
-      ...routed,
+      ...writer,
       functionName: 'transferFrom',
-      compilerRoute: { abiFunction: {
-        ...routed.compilerRoute.abiFunction,
-        name: 'transferFrom',
-        entryAccesses: [],
-      } },
+      logicalArtifact: { abi: [{ ...writerAbi, name: 'transferFrom', entryAccesses: [] }] } as unknown as Artifact,
       plannedEntryInserts: [],
     })).toEqual([]);
     expect(entryInsertLockRepairs({
-      ...routed,
+      ...writer,
       functionName: 'transferFrom',
+      logicalArtifact: { abi: [{ ...writerAbi, name: 'transferFrom' }] } as unknown as Artifact,
       plannedEntryInserts: [{
         blockSlot: 2, outputBlockSlot: 8, newCommitment: 'ab'.repeat(64),
       }],
     })).toEqual([]);
 
-    // Only an explicitly legacy-unroll descriptor-free artifact retains the historical coordinates.
-    expect(entryInsertLockRepairs({
-      functionName: 'transferFrom',
-      logicalArtifact: { messageBus: { convention: 'legacy-unroll' } } as unknown as Artifact,
-    })).toEqual([{
-      collection: '', predecessorOffset: 2, candidateInsertedOffsets: [4], insertedSlot: '',
-    }]);
     expect(entryInsertLockRepairs({ functionName: 'transferFrom' })).toEqual([]);
-    expect(entryInsertLockRepairs({
-      functionName: 'transferFrom',
-      logicalArtifact: { messageBus: { convention: 'kernel-row-loop' } } as unknown as Artifact,
-    })).toEqual([]);
 
     // A renamed linear batch publishes the two entry accesses which share one sorted collection. No source
     // spelling or positional value argument participates in selecting its repair geometry.
+    const linearAbi = {
+      name: 'moveUnitsFrom',
+      inputs: [
+        { name: 'quantity', type: 'uint256' },
+        { name: 'source', type: 'address' },
+        { name: 'destination', type: 'address' },
+      ],
+      writesState: true,
+      entryAccesses: [
+        {
+          collection: 'ledger', keyParams: ['destination'], operations: ['read', 'write'],
+          valueSource: 'binop:+(entry,id:quantity)',
+        },
+        { collection: 'permits', keyParams: ['source'], operations: ['read', 'write'] },
+        {
+          collection: 'ledger', keyParams: ['source'], operations: ['read', 'write'],
+          valueSource: 'binop:-(entry,id:quantity)',
+        },
+      ],
+      sortedBatchInfo: [{ collection: 'ledger', slotIndices: [0, 2], linear: true }],
+      blockLayout: {
+        blockSize: 8,
+        slots: [
+          { kind: 'master' as const, offset: 0 },
+          { kind: 'dataNft' as const, offset: 1, nftIndex: 0 },
+          { kind: 'entry' as const, offset: 2, slotIndex: 0 },
+          { kind: 'entry' as const, offset: 3, slotIndex: 1 },
+          { kind: 'entry' as const, offset: 4, slotIndex: 2 },
+        ],
+      },
+    };
     const linear = {
       functionName: 'moveUnitsFrom',
       logicalFunctionArgs: [9n, 'alice', 'bob'],
-      compilerRoute: { abiFunction: {
-        name: 'moveUnitsFrom',
-        inputs: [
-          { name: 'quantity', type: 'uint256' },
-          { name: 'source', type: 'address' },
-          { name: 'destination', type: 'address' },
-        ],
-        writesState: true,
-        entryAccesses: [
-          {
-            collection: 'ledger', keyParams: ['destination'], operations: ['read', 'write'],
-            valueSource: 'binop:+(entry,id:quantity)',
-          },
-          { collection: 'permits', keyParams: ['source'], operations: ['read', 'write'] },
-          {
-            collection: 'ledger', keyParams: ['source'], operations: ['read', 'write'],
-            valueSource: 'binop:-(entry,id:quantity)',
-          },
-        ],
-        sortedBatchInfo: [{ collection: 'ledger', slotIndices: [0, 2], linear: true }],
-        blockLayout: {
-          blockSize: 8,
-          slots: [
-            { kind: 'master' as const, offset: 0 },
-            { kind: 'dataNft' as const, offset: 1, nftIndex: 0 },
-            { kind: 'entry' as const, offset: 2, slotIndex: 0 },
-            { kind: 'entry' as const, offset: 3, slotIndex: 1 },
-            { kind: 'entry' as const, offset: 4, slotIndex: 2 },
-          ],
-        },
-      } },
+      logicalArtifact: { abi: [linearAbi] } as unknown as Artifact,
       plannedEntryInserts: [],
     };
     expect(linearSortedBatchEntryBands(linear)).toEqual([{
@@ -5344,9 +4793,9 @@ describe('assignPhysicalReturnIndices', () => {
     const decoy = {
       ...linear,
       functionName: 'transferFrom',
-      compilerRoute: { abiFunction: {
-        ...linear.compilerRoute.abiFunction, name: 'transferFrom', sortedBatchInfo: undefined,
-      } },
+      logicalArtifact: { abi: [{
+        ...linearAbi, name: 'transferFrom', sortedBatchInfo: undefined,
+      }] } as unknown as Artifact,
     };
     expect(linearSortedBatchEntryBands(decoy)).toEqual([]);
     expect(linearSortedBatchPlannedLockCounts(batchOutputs, 0, 'token', decoy).size).toBe(0);
@@ -5356,13 +4805,13 @@ describe('assignPhysicalReturnIndices', () => {
     const unrelatedNumericDecoy = {
       ...linear,
       functionName: 'transferFrom',
-      compilerRoute: { abiFunction: {
-        ...linear.compilerRoute.abiFunction,
+      logicalArtifact: { abi: [{
+        ...linearAbi,
         name: 'transferFrom',
-        entryAccesses: linear.compilerRoute.abiFunction.entryAccesses.map((access) => ({
+        entryAccesses: linearAbi.entryAccesses.map((access) => ({
           ...access, valueSource: undefined,
         })),
-      } },
+      }] } as unknown as Artifact,
     };
     expect(linearSortedBatchEntryBands(unrelatedNumericDecoy)).toHaveLength(1);
     expect(linearSortedBatchValueArgument(unrelatedNumericDecoy, 'ledger')).toBeUndefined();

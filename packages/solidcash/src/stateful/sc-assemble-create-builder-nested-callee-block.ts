@@ -31,14 +31,12 @@ import {
   getSatoshiContainerAddress,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
-import { evalComputedKey } from './route-expression-key.js';
+import { evalComputedKey } from './call-expression-key.js';
 import {
   SortedList, bytesToSlotValue, keyToSlotMulti, decodeEntryCommitment,
 } from './SortedList.js';
 import { isMsgSenderKeySource } from './soft-state-overlays.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { planNestedStreamedEvents, type NestedStreamedEventPlan } from './nested-streamed-events.js';
-import { deriveChunkableArrayValueChannels } from './resource-fold-route.js';
+import { deriveChunkableArrayValueChannels } from './resource-fold.js';
 import { artifactOraclePool, poolInfoCoSpend, readPoolTimestamp } from '../oracle/pool/reader.js';
 
 export interface AssembleCreateBuilderNestedCalleeBlockHost {
@@ -76,7 +74,6 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   bRelativeOutputInternalArgs: Set<string>;
   /** Collection entry locks for funder-backed sorted-batch lanes, keyed by block offset. */
   bBatchEntryLockingBytecodes: Map<number, Uint8Array>;
-  bStreamedEventPlan?: NestedStreamedEventPlan;
   bBlockLayout: NonNullable<AbiFunction['blockLayout']>;
   bHasLoop: boolean;
   bSc: { inner: any } | null;
@@ -88,7 +85,6 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   bValueChunkOutputCount: number;
   bDirectChunkValue?: Uint8Array;
   bKeccak: { inputs: UnlockableUtxo[] };
-  compilerRoute: ExternalCallUtxoGroup['compilerRoute'] | undefined;
   callInfo: {
     args: FunctionArgument[];
     functionName: string;
@@ -121,7 +117,6 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     bStatelayout,
     bRequiredNftIndices,
     bKeccak,
-    compilerRoute,
     callInfo,
     externalCategoryId,
     slotIndex,
@@ -141,11 +136,8 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     // A loop-expanded slot shares ONE contiguous return-event band across its iterations, so its callees
     // keep the appended-tail shape and take no returnEvent funder.
     const bLoopExpanded = loopIdxRanges.some((r) => slotIndex >= r.start && slotIndex < r.start + r.count);
-    const hasStreamedEvents = compilerRoute?.rowArguments?.some((row) =>
-      row.handler.runtimeLoopEvents?.some((stream) => stream.stream || stream.chunked)) === true;
-    const physicalFixedSize = hasStreamedEvents
-      ? bBlockLayout.trailingBase ?? bBlockLayout.blockSize : bBlockLayout.blockSize;
-    const hasExtraSlots = hadFullBlockKinds || hasStreamedEvents
+    const physicalFixedSize = bBlockLayout.blockSize;
+    const hasExtraSlots = hadFullBlockKinds
       || (!bLoopExpanded && bBlockLayout.slots.some((s) => s.kind === 'returnEvent'));
     if ((hasExtraSlots || bHasLoop) && bSc) {
       // Build B's full block following blockLayout slot order.
@@ -156,16 +148,11 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
       // Create proper unlocker for B's master (not just a type cast). If B's function reads msg.sender, append
       // OUR category (docs/deferrals.md #1): B is called BY us, so B's msg.sender = this contract - B's covenant
       // resolves it (emitMsgSenderMintingVerification) from OUR co-spent minting master at that category.
-      const bRouteArgs = compilerRoute?.args ?? (callInfo.args ?? []);
+      const bCallArgs = callInfo.args ?? [];
       // This provisional unlocker is replaced below once the complete hidden frame is known.
-      const bBlockArgs = bRouteArgs;
-      const bMasterUnlocker = compilerRoute
-        ? callInfo.externalContract.inner.createCompilerRouteUnlocker(
-          compilerRoute.abiFunction, compilerRoute.selector,
-        )(...bBlockArgs)
-        : ((callInfo.externalContract.inner.unlock as any)[callInfo.functionName]
-          ? (callInfo.externalContract.inner.unlock as any)[callInfo.functionName](...bBlockArgs)
-          : undefined);
+      const bMasterUnlocker = (callInfo.externalContract.inner.unlock as any)[callInfo.functionName]
+        ? (callInfo.externalContract.inner.unlock as any)[callInfo.functionName](...bCallArgs)
+        : undefined;
       const bMasterUnlockable: UnlockableUtxo = {
         ...bState.masterUtxo!,
         ...(bMasterUnlocker && { unlocker: bMasterUnlocker }),
@@ -269,7 +256,6 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
               process?: { env?: Record<string, string> };
             }).process?.env?.SOLIDC_DEBUG_EXTERNAL_ENTRY === '1' ? {
                 callee: callInfo.externalContract?.inner.artifact.contractName,
-                frame: compilerRoute ? 'route' : 'concrete',
                 calleeFunction: callInfo.functionName,
                 blockSlot: slot.offset,
                 slotIndex: slot.slotIndex,
@@ -285,7 +271,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
               // Find entry matching the key from B's function args
               const keyParam = bEntryAccess.keyParams[0];
               const keyParamIdx = bAbiFunc!.inputs.findIndex((inp) => inp.name === keyParam);
-              const rawKeyValue = keyParamIdx >= 0 ? bRouteArgs[keyParamIdx] : undefined;
+              const rawKeyValue = keyParamIdx >= 0 ? bCallArgs[keyParamIdx] : undefined;
               // Convert FunctionArgument to primitive for key matching. CashAddress strings must
               // become locking bytecode so they hash to the same slot as `msg.sender` inserts.
               const keyValue = tryCashAddressToLockScript(rawKeyValue)
@@ -297,7 +283,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                 // address, `address(this)`, a sorted local) has no argument value; resolve it the same way
                 // the per-key encoding below does, or the slot's batch witnesses are never published.
                 ?? (bEntryAccess.keySources?.[0]?.kind === 'expression'
-                  ? evalComputedKey(bEntryAccess.keySources[0].expressionLabel, bRouteArgs, bAbiFunc!.inputs)
+                  ? evalComputedKey(bEntryAccess.keySources[0].expressionLabel, bCallArgs, bAbiFunc!.inputs)
                   : undefined);
               // The callee reconstructs msg.sender from the authenticated caller identity anchor. Its entry
               // witness must use that same locking bytecode, even when the caller executes at another lock.
@@ -323,11 +309,11 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   }
                   const source = bEntryAccess.keySources?.[keyIndex];
                   if (source?.kind === 'expression') {
-                    const auto = evalComputedKey(source.expressionLabel, bRouteArgs, bAbiFunc!.inputs);
+                    const auto = evalComputedKey(source.expressionLabel, bCallArgs, bAbiFunc!.inputs);
                     if (auto) return auto;
                   }
                   const index = bAbiFunc!.inputs.findIndex((input) => input.name === name);
-                  const value = index >= 0 ? bRouteArgs[index] : undefined;
+                  const value = index >= 0 ? bCallArgs[index] : undefined;
                   const addressKey = tryCashAddressToLockScript(value);
                   if (addressKey) return addressKey;
                   if (typeof value === 'string'
@@ -337,7 +323,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   if (value instanceof Uint8Array) return value;
                   if (typeof value === 'bigint') return bigIntToVmNumber(value);
                   if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
-                  throw new Error(`External message-bus batch cannot resolve entry key '${name}'`);
+                  throw new Error(`External call batch cannot resolve entry key '${name}'`);
                 });
                 const bSlot = keyToSlotMulti(encodedKeys, bCollection);
                 if (entryDiagnostic) {
@@ -357,13 +343,9 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                       + String(node.utxo.token?.nft?.commitment ?? ''),
                   );
                 }
-                let unsupportedColdEntry = false;
                 try {
                   const exact = bList.find(bSlot);
-                  if (compilerRoute && !exact) unsupportedColdEntry = true;
-                  matchUtxo = compilerRoute
-                    ? (exact ?? bList.predecessorOf(bSlot))?.utxo
-                    : (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
+                  matchUtxo = (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
                   if (bAbiFunc?.sortedBatchInfo?.some((batch) =>
                     batch.slotIndices.includes(slot.slotIndex ?? 0))) {
                     if (exact) {
@@ -371,10 +353,10 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                       const blockOffset = bBlockLayout.slots.find((candidate) =>
                         candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
                       if (blockOffset === undefined) {
-                        throw new Error(`External message-bus batch entry slot ${routeSlot} has no block offset`);
+                        throw new Error(`External call batch entry slot ${routeSlot} has no block offset`);
                       }
                       const commitment = exact.utxo.token?.nft?.commitment;
-                      if (!commitment) throw new Error(`External message-bus batch entry slot ${routeSlot} has no commitment`);
+                      if (!commitment) throw new Error(`External call batch entry slot ${routeSlot} has no commitment`);
                       ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${routeSlot}`] = bSlot;
                       ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${routeSlot}`] = BigInt(blockOffset);
                       ctx.bCompilerInternalArgs[`__internal__vmapBatchNext_${routeSlot}`] =
@@ -385,7 +367,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                       const blockOffset = bBlockLayout.slots.find((candidate) =>
                         candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
                       if (blockOffset === undefined) {
-                        throw new Error(`External message-bus batch entry slot ${routeSlot} has no block offset`);
+                        throw new Error(`External call batch entry slot ${routeSlot} has no block offset`);
                       }
                       const plan = bList.planInsert(bSlot);
                       const predOutName = `__internal__vmapBatchPredOut_${routeSlot}`;
@@ -417,13 +399,6 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   // as an unrelated "unsupported parameter" diagnostic and loses the collection/key cause.
                   if (bAbiFunc?.sortedBatchInfo?.some((batch) =>
                     batch.slotIndices.includes(slot.slotIndex ?? 0))) throw error;
-                }
-                if (unsupportedColdEntry) {
-                  throw new Error(
-                    'External message-bus batch resource-shaped route requires an existing '
-                    + `${bEntryAccess.collection} entry for slot ${slot.slotIndex}; `
-                    + 'cold-entry predecessor planning is not yet supported',
-                  );
                 }
               } else if (keyValue !== undefined && bCollection) {
                 for (const u of bEntryUtxos) {
@@ -530,7 +505,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   const targetSlot = ctx.bCompilerInternalArgs[
                     `__internal__vmapBatchSlot_${slot.slotIndex ?? 0}`
                   ];
-                  if (!compilerRoute && ctx.bDirectChunkValue === undefined
+                  if (ctx.bDirectChunkValue === undefined
                     && bAbiFunc.sourceEffectOrder === 'linear' && writtenChunkable.length === 1
                     && writtenChunkable[0] === bEntryAccess && bEntryAccess.activation === undefined
                     && bEntryAccess.chunkableArrayValue && bEntryAccess.arrayMutation === 'push'
@@ -545,7 +520,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                       : await readPoolTimestamp(bSc.inner.provider, oraclePool);
                     if (timestamp !== undefined) recipeState.__block_timestamp = timestamp;
                     const currentElement = host.encodeStoredElementSource(
-                      bEntryAccess, bCollection.valueType.slice(0, -2), bRouteArgs, bAbiFunc,
+                      bEntryAccess, bCollection.valueType.slice(0, -2), bCallArgs, bAbiFunc,
                       selectedArtifact, recipeState,
                     );
                     if (currentElement !== undefined) {
@@ -597,10 +572,10 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             const bTcAccess = bTcAccesses?.[slot.slotIndex ?? 0];
             if (bTcAccess && bSc) {
               // The TC categoryId comes from B's function args
-              const bTcKeyIdx = bRouteArgs.findIndex(
+              const bTcKeyIdx = bCallArgs.findIndex(
                 (_: unknown, i: number) => bAbiFunc?.inputs[i]?.name === bTcAccess.keyParam,
               );
-              const bTcCatValue = bTcKeyIdx >= 0 ? bRouteArgs[bTcKeyIdx] : undefined;
+              const bTcCatValue = bTcKeyIdx >= 0 ? bCallArgs[bTcKeyIdx] : undefined;
               const bTcCatId = bTcCatValue instanceof Uint8Array
                 ? binToHex(bTcCatValue) : (bTcCatValue ? String(bTcCatValue) : '');
               if (bTcCatId) {
@@ -623,13 +598,8 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             }
             break;
           }
-          case 'trailing':
-            // This is capacity, not a fixed effect slot. A lifted stream materializes only its actual
-            // resources/records here; reserving the whole band would push the first event past that band.
-            if (!hasStreamedEvents) ctx.bBlockInputs.push(await makeFunder());
-            break;
           default:
-            // Output-only slots (transfer, tcTransfer, event) - funder
+            // Output-only slots (transfer, tcTransfer, event) and trailing capacity - funder
             ctx.bBlockInputs.push(await makeFunder());
             break;
         }
@@ -700,15 +670,15 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         const byProof = new Map<bigint, Array<{
           slotIndex: number; key: Uint8Array; planned?: NestedCalleePlannedEntryInsert;
         }>>();
-        for (const routeSlotIndex of batch.slotIndices) {
-          const proof = ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${routeSlotIndex}`];
-          const key = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${routeSlotIndex}`];
-          const predOut = ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${routeSlotIndex}`];
-          const planned = ctx.bPlannedEntryInserts.find((candidate) => candidate.slotIndex === routeSlotIndex);
+        for (const batchSlotIndex of batch.slotIndices) {
+          const proof = ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${batchSlotIndex}`];
+          const key = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${batchSlotIndex}`];
+          const predOut = ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${batchSlotIndex}`];
+          const planned = ctx.bPlannedEntryInserts.find((candidate) => candidate.slotIndex === batchSlotIndex);
           if (typeof proof !== 'bigint' || proof < 0n || predOut === -2n
             || !(key instanceof Uint8Array)) continue;
           const rows = byProof.get(proof) ?? [];
-          rows.push({ slotIndex: routeSlotIndex, key, planned });
+          rows.push({ slotIndex: batchSlotIndex, key, planned });
           byProof.set(proof, rows);
         }
         for (const rows of byProof.values()) {
@@ -755,7 +725,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           ctx.bBlockInputs.push(await makeFunder());
         }
       }
-      // Direct callees use this block's sorted-entry proofs, but unlike composed/transitive callees
+      // Direct callees use this block's sorted-entry proofs, but unlike transitive callees
       // they do not pass through the nested batch planner. Publish the same ordered row vector and
       // per-slot ranks from the authenticated target/next witnesses assembled above.
       for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {
@@ -776,18 +746,6 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         ctx.bCompilerInternalArgs[`__internal__vmapBatchRows_${batch.collection}`] = Uint8Array.from(
           rows.flatMap((row) => [...row.slot, ...row.next]),
         );
-      }
-      if (compilerRoute && ctx.bBlockInputs) {
-        const plan = planNestedStreamedEvents(
-          compilerRoute, callInfo.externalContract.inner.artifact, externalCategoryId,
-          ctx.bBlockInputs.length, makeFunder,
-        );
-        if (plan) {
-          ctx.bStreamedEventPlan = plan;
-          for (let record = 0; record < plan.outputs.size; record += 1) {
-            ctx.bBlockInputs.push(await makeFunder());
-          }
-        }
       }
     }
   }

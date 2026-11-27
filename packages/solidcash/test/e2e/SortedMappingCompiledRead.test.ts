@@ -15,7 +15,7 @@ import {
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // End-to-end: a COMPILED sorted-set mapping. `require(!claimed[k])` compiles to the sorted read covenant; the SDK
 // co-spends the exact entry if k is present, else the bracketing predecessor. So the guard passes for an absent

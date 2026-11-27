@@ -35,7 +35,7 @@ For a quick Git-aware check that requires no file selection, use `yarn test:comp
 exit successfully when no tests are affected. Use them for bounded validation after the target test is green.
 
 In `solidcash`, `test:unit` means only `test/unit`. `test:fast`, `test:changed`, and `test:watch` also cover
-top-level SDK regressions but exclude the conformance and journal/message-bus directories. Do not broaden these
+top-level SDK regressions but exclude the conformance and compatibility directories. Do not broaden these
 development-loop commands; `yarn test` remains the comprehensive non-root-e2e regression gate for major milestones.
 
 During debugging, run only the test currently being made green, optionally with one adjacent test (the target
@@ -45,9 +45,9 @@ small, directly affected set of tests. Run full suites only at major milestones 
 integration, or release, not for ordinary edits or handoffs; they can consume an hour of CPU time. Run the
 one-shot `yarn build` before handoff.
 
-Kernel/compiler diagnostic switches are documented in `docs/kernel-diagnostics.md`. Use them on a focused
+Compiler diagnostic switches are documented in `docs/compiler-diagnostics.md`. Use them on a focused
 test, and distinguish trace-only output from switches that alter bytecode, witnesses, optimisation, or timing.
-Authoritative cold measurements must use the clean-env gate or scoreboard; never infer production behavior
+Authoritative cold measurements run with no inherited `SOLIDC_*` variable; never infer production behavior
 from an instrumented run.
 
 Always use `test:e2e:watch` for focused e2e watch runs. Do not run `vitest test/e2e <file>`: Vitest treats
@@ -67,10 +67,10 @@ authored JavaScript and ambient declarations. Run `yarn check:source-tree` befor
 can still be tracked, and authored exceptions must not be deleted as build artifacts. If the guard finds a
 tracked generated file, inspect it and untrack that exact path; never bulk-delete `src/` or its declarations.
 Do not force-add emitted sidecars or silence the guard. Keep diagnostic switches opt-in and documented in
-`docs/kernel-diagnostics.md`; a switch that alters bytecode or SDK settlement is an experiment, not a
+`docs/compiler-diagnostics.md`; a switch that alters bytecode or SDK settlement is an experiment, not a
 production measurement. Remove one-off probes keyed to a contract/function name, literal output index, or
 address prefix once the investigation ends; retained probes must describe a reusable type, effect, flow, or VM
-boundary. Kernel/compiler/SDK behavior must likewise be selected by type, effect, flow, ABI schema, or authenticated
+boundary. Compiler/SDK behavior must likewise be selected by type, effect, flow, ABI schema, or authenticated
 metadata, never an application, contract, collection, event, or function name. Historical name-based compatibility
 is debt: keep it explicitly fenced to legacy artifacts and do not copy or widen it.
 

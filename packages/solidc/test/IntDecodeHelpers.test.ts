@@ -32,19 +32,17 @@ const expectSpeedHintedOutline = (artifact: Artifact): void => {
 };
 
 const compileSpeedHintStore = (): Artifact => compileString(SPEED_HINT_STORE, {
-  messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+  optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
 });
 
 const compileSpeedHintStoreMulti = (): Artifact => {
   const map = compileStringMulti(SPEED_HINT_STORE, {
-    messageBus: true,
     optimizeForCompilationSpeed: true,
     maximumInputBytes: 1_000_000,
     compileDeclarations: ['Store'],
   });
   const artifact = map.Store;
   expect(artifact).toBeDefined();
-  expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   return artifact;
 };
 
@@ -81,7 +79,7 @@ describe('shared integer helpers', () => {
     `;
 
   const compiledSetBody = (delegate: boolean): string => {
-    const artifact = compileString(source(delegate), { messageBus: false });
+    const artifact = compileString(source(delegate));
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -127,7 +125,7 @@ describe('shared integer helpers', () => {
           require(this.x == this.y);
         }
       }
-    `, { messageBus: false });
+    `);
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -151,7 +149,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -169,7 +167,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -185,39 +183,11 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-  });
-
-  it('keeps authenticated collection-journal bodies trace-stable under the compilation-speed hint', () => {
-    const traceSource = `
-      contract TraceStable() {
-        int[] public items;
-        mapping(bytes20 => int) public weights;
-        function append(bytes20 key, int value) public {
-          require(this.weights[key] >= 0);
-          this.items.push(value);
-        }
-      }
-    `;
-    const options = {
-      messageBus: true,
-      maximumInputBytes: 1_000_000,
-      commitmentLimit: 128,
-    } as const;
-    const fast = compileString(traceSource, { ...options, optimizeForCompilationSpeed: true });
-    const selector = fast.abi.find((fn) => fn.name === 'append')?.selector;
-    expect(selector).toBeDefined();
-    expect(fast.abi.find((fn) => fn.name === 'append')).toMatchObject({
-      dynamicWrites: ['items'],
-      entryAccesses: [expect.any(Object)],
-    });
-    expect(fast.functionBodies?.[selector!]).toBeTypeOf('string');
-    expect(Object.values(fast.debug?.invokeDebug ?? {})
-      .some((entry) => entry.name?.startsWith('outlined source span'))).toBe(false);
   });
 
   it('still speed-hint outlines when statement prediction skips ATN for while-loops', () => {
@@ -230,7 +200,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for while-loops', () => {
@@ -244,10 +214,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -261,7 +230,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for do-loops', () => {
@@ -275,10 +244,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -292,7 +260,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for console.log', () => {
@@ -306,10 +274,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -323,7 +290,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for revert', () => {
@@ -337,10 +304,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -354,7 +320,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for assert', () => {
@@ -368,10 +334,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -385,7 +350,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for delete', () => {
@@ -399,10 +364,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -416,7 +380,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for break', () => {
@@ -430,10 +394,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -447,7 +410,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for continue', () => {
@@ -461,10 +424,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -478,7 +440,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for assembly', () => {
@@ -492,10 +454,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -509,7 +470,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for unchecked', () => {
@@ -523,10 +484,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -540,7 +500,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for switch', () => {
@@ -554,10 +514,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -571,7 +530,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for selfdestruct', () => {
@@ -585,10 +544,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -602,7 +560,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for try', () => {
@@ -616,10 +574,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -633,7 +590,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact optional-lowering prediction skips ATN for assembly-feature-survey', () => {
@@ -647,10 +604,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -664,7 +620,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact optional-lowering prediction skips ATN for function-type-survey', () => {
@@ -678,10 +634,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -695,7 +650,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for index', () => {
@@ -709,10 +664,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -726,7 +680,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for member-dot', () => {
@@ -740,10 +694,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -757,7 +710,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for plus', () => {
@@ -771,10 +724,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -788,7 +740,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for minus', () => {
@@ -802,10 +754,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -819,7 +770,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for star', () => {
@@ -833,10 +784,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -850,7 +800,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for slash', () => {
@@ -864,10 +814,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -881,7 +830,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for percent', () => {
@@ -895,10 +844,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -912,7 +860,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for eq', () => {
@@ -926,10 +874,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -943,7 +890,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for neq', () => {
@@ -957,10 +904,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -974,7 +920,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for lt', () => {
@@ -988,10 +934,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1005,7 +950,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for gt', () => {
@@ -1019,10 +964,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1036,7 +980,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for le', () => {
@@ -1050,10 +994,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1067,7 +1010,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for ge', () => {
@@ -1081,10 +1024,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1098,7 +1040,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for andand', () => {
@@ -1112,10 +1054,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1129,7 +1070,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for oror', () => {
@@ -1143,10 +1084,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1160,7 +1100,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for pow', () => {
@@ -1174,10 +1114,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1191,7 +1130,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for shl', () => {
@@ -1205,10 +1144,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1222,7 +1160,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for shr', () => {
@@ -1236,10 +1174,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1253,7 +1190,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for bitand', () => {
@@ -1267,10 +1204,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1284,7 +1220,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for bitxor', () => {
@@ -1298,10 +1234,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1315,7 +1250,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for bitor', () => {
@@ -1329,10 +1264,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1346,7 +1280,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for qmark', () => {
@@ -1360,10 +1294,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1377,7 +1310,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for plusplus', () => {
@@ -1391,10 +1324,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1408,7 +1340,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for minusminus', () => {
@@ -1422,10 +1354,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1439,7 +1370,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for placeholder', () => {
@@ -1453,10 +1384,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1470,7 +1400,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for singleton-group-sort', () => {
@@ -1484,10 +1414,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1501,7 +1430,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for under-cap-group-splice', () => {
@@ -1515,10 +1444,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1532,7 +1460,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for prefix-unroll-4', () => {
@@ -1546,10 +1474,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1563,7 +1490,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for collision-unroll-4', () => {
@@ -1577,10 +1504,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1594,7 +1520,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-4', () => {
@@ -1608,10 +1534,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1625,7 +1550,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-5', () => {
@@ -1639,10 +1564,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1656,7 +1580,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-3', () => {
@@ -1670,10 +1594,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1687,7 +1610,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-6', () => {
@@ -1701,10 +1624,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1718,7 +1640,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-7', () => {
@@ -1732,10 +1654,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1749,7 +1670,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-9', () => {
@@ -1763,10 +1684,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1780,7 +1700,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-10', () => {
@@ -1794,10 +1714,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1811,7 +1730,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-11', () => {
@@ -1825,10 +1744,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1842,7 +1760,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for plus', () => {
@@ -1856,10 +1774,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1873,7 +1790,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for minus', () => {
@@ -1887,10 +1804,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1904,7 +1820,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for star', () => {
@@ -1918,10 +1834,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1935,7 +1850,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for slash', () => {
@@ -1949,10 +1864,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1966,7 +1880,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for percent', () => {
@@ -1980,10 +1894,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -1997,7 +1910,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for eq', () => {
@@ -2011,10 +1924,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2028,7 +1940,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for neq', () => {
@@ -2042,10 +1954,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2059,7 +1970,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for lt', () => {
@@ -2073,10 +1984,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2090,7 +2000,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for gt', () => {
@@ -2104,10 +2014,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2121,7 +2030,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for le', () => {
@@ -2135,10 +2044,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2152,7 +2060,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for ge', () => {
@@ -2166,10 +2074,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2183,7 +2090,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for andand', () => {
@@ -2197,10 +2104,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2214,7 +2120,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for oror', () => {
@@ -2228,10 +2134,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2245,7 +2150,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for pow', () => {
@@ -2259,10 +2164,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2276,7 +2180,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for shl', () => {
@@ -2290,10 +2194,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2307,7 +2210,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for shr', () => {
@@ -2321,10 +2224,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2338,7 +2240,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for bitand', () => {
@@ -2352,10 +2254,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2369,7 +2270,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for bitxor', () => {
@@ -2383,10 +2284,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2400,7 +2300,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for bitor', () => {
@@ -2414,10 +2314,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2431,7 +2330,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for qmark', () => {
@@ -2445,10 +2344,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2462,7 +2360,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for plusplus', () => {
@@ -2476,10 +2374,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2493,7 +2390,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for minusminus', () => {
@@ -2507,10 +2404,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2524,7 +2420,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for length', () => {
@@ -2538,10 +2434,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2555,7 +2450,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for reverse', () => {
@@ -2569,10 +2464,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2586,7 +2480,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for split', () => {
@@ -2600,10 +2494,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2617,7 +2510,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for slice', () => {
@@ -2631,10 +2524,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2648,7 +2540,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for length', () => {
@@ -2662,10 +2554,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2679,7 +2570,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for reverse', () => {
@@ -2693,10 +2584,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2710,7 +2600,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for split', () => {
@@ -2724,10 +2614,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2741,7 +2630,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for slice', () => {
@@ -2755,10 +2644,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2772,7 +2660,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for value', () => {
@@ -2786,10 +2674,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2803,7 +2690,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for value', () => {
@@ -2817,10 +2704,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2834,7 +2720,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact optional-lowering prediction skips ATN for inline-deploy-gate', () => {
@@ -2848,10 +2734,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2865,7 +2750,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact parser prediction skips ATN for token-type-prefill', () => {
@@ -2879,10 +2764,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2896,7 +2780,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for prefix-unroll-8', () => {
@@ -2910,10 +2794,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2927,7 +2810,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for collision-unroll-8', () => {
@@ -2941,10 +2824,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2958,7 +2840,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-8', () => {
@@ -2972,10 +2854,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -2989,7 +2870,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-12', () => {
@@ -3003,10 +2884,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3020,7 +2900,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-3', () => {
@@ -3034,10 +2914,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3051,7 +2930,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-6', () => {
@@ -3065,10 +2944,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3082,7 +2960,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-7', () => {
@@ -3096,10 +2974,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3113,7 +2990,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-10', () => {
@@ -3127,10 +3004,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3144,7 +3020,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-13', () => {
@@ -3158,10 +3034,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3175,7 +3050,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-14', () => {
@@ -3189,10 +3064,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3206,7 +3080,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-15', () => {
@@ -3220,10 +3094,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3237,7 +3110,7 @@ describe('shared integer helpers', () => {
           this.b = this.a; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-16', () => {
@@ -3251,10 +3124,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3270,7 +3142,7 @@ describe('shared integer helpers', () => {
           this.a = s.value; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact .value field assignment is not parsed as a method call', () => {
@@ -3286,10 +3158,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3309,7 +3180,7 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       evmCompat: true,
     }));
   });
@@ -3330,11 +3201,10 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       evmCompat: true,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3348,7 +3218,7 @@ describe('shared integer helpers', () => {
           this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
   });
 
   it('still speed-hint outlines when multi-artifact statement prediction skips ATN for for-loops', () => {
@@ -3362,10 +3232,9 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
     });
-    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
     expectSpeedHintedOutline(map.Store);
   });
 
@@ -3386,7 +3255,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3402,7 +3271,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3419,7 +3288,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3430,7 +3298,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when leftover fingerprint intern is reused on the window-4 pass', () => {
@@ -3442,7 +3309,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3459,7 +3326,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3470,7 +3336,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when leftover hash collisions split on packed window keys', () => {
@@ -3482,7 +3347,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3499,7 +3364,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3510,7 +3374,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when leftover window hashes are unrolled for widths 4 5 and 8', () => {
@@ -3522,7 +3385,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3539,7 +3402,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3550,7 +3412,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when leftover hashing skips bodies shorter than the window', () => {
@@ -3562,7 +3423,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3579,7 +3440,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3590,7 +3450,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when chained method calls share a left-factored postfix', () => {
@@ -3605,7 +3464,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3625,7 +3484,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3636,7 +3494,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when concat forms share a left-factored prefix', () => {
@@ -3650,7 +3507,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3669,7 +3526,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3680,7 +3536,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when tx input and output introspection share a prefix', () => {
@@ -3694,7 +3549,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b || v == v);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3713,7 +3568,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3724,7 +3578,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when abi.encode forms share a left-factored prefix', () => {
@@ -3738,7 +3591,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3757,7 +3610,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3768,7 +3620,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when method calls share a left-factored postfix', () => {
@@ -3783,7 +3634,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3803,7 +3654,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3814,7 +3664,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when function calls share a left-factored prefix', () => {
@@ -3829,7 +3678,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3849,7 +3698,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3860,7 +3708,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when this-expressions share a left-factored prefix', () => {
@@ -3876,7 +3723,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3897,7 +3744,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3908,7 +3754,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when indexed expressions share a left-factored postfix', () => {
@@ -3924,7 +3769,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3945,7 +3790,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -3956,7 +3800,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when new-expressions share a left-factored prefix', () => {
@@ -3970,7 +3813,7 @@ describe('shared integer helpers', () => {
           this.a = uint256(d[0]); this.b = uint256(d[1]); require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -3989,7 +3832,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4000,7 +3842,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when parenthesized expressions share a left-factored prefix', () => {
@@ -4015,7 +3856,7 @@ describe('shared integer helpers', () => {
           require((this.a) == (this.b));
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4035,7 +3876,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4046,7 +3886,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when statement prediction skips ATN for require if and blocks', () => {
@@ -4059,7 +3898,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4077,7 +3916,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4088,7 +3926,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when Solidity diagnostic trailers are skipped if absent', () => {
@@ -4100,7 +3937,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4117,7 +3954,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4128,7 +3964,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when EVMVersion and function layout-at rewrites are skipped if absent', () => {
@@ -4140,7 +3975,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4157,7 +3992,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4168,7 +4002,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when parse preprocessing skips absent SPDX and bidi scans', () => {
@@ -4180,7 +4013,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4197,7 +4030,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4208,7 +4040,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when Hardhat console import rewrite is skipped if absent', () => {
@@ -4220,7 +4051,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4237,7 +4068,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4248,7 +4078,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when malformed type-name predicates reject by first character', () => {
@@ -4260,7 +4089,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4277,7 +4106,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4288,7 +4116,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when Yul keyword lookup uses a hoisted set', () => {
@@ -4301,7 +4128,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4319,7 +4146,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4330,7 +4156,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when nested-tuple lookahead inspects token types', () => {
@@ -4342,7 +4167,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4359,7 +4184,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4370,7 +4194,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when call-ahead predicates inspect token types', () => {
@@ -4382,7 +4205,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4399,7 +4222,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4410,7 +4232,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when expression postfix loops stop without ATN on closers', () => {
@@ -4422,7 +4243,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4439,7 +4260,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4450,7 +4270,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when the lexer reads a packed UTF-16 char stream', () => {
@@ -4462,7 +4281,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4479,7 +4298,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4490,7 +4308,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when expression prefix prediction skips ATN for address this and new', () => {
@@ -4504,7 +4321,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4522,7 +4339,7 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4538,7 +4355,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4557,7 +4374,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4568,7 +4384,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when multi-artifact expression prefix prediction skips ATN for casts', () => {
@@ -4583,7 +4398,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4594,7 +4408,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when multi-artifact expression prefix prediction skips ATN', () => {
@@ -4607,7 +4420,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4618,7 +4430,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when the binder clones the parse snapshot instead of re-lexing', () => {
@@ -4630,7 +4441,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4647,7 +4458,6 @@ describe('shared integer helpers', () => {
         }
       }
     `, {
-      messageBus: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       compileDeclarations: ['Store'],
@@ -4658,7 +4468,6 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
-    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines after sharing lexer prediction caches', () => {
@@ -4670,7 +4479,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4686,7 +4495,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4702,7 +4511,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4718,7 +4527,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4734,7 +4543,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4753,7 +4562,7 @@ describe('shared integer helpers', () => {
           require(this.b == this.c);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4769,7 +4578,7 @@ describe('shared integer helpers', () => {
           this.a = v; this.b = v; require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4789,7 +4598,7 @@ describe('shared integer helpers', () => {
           require(this.c == this.d);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const whole = artifact.debug?.bytecode ?? '';
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
@@ -4807,14 +4616,14 @@ describe('shared integer helpers', () => {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
     expect(artifact.functionBodies![selector!]!.length).toBeGreaterThan(0);
   });
 
-  it('keeps production message-bus outlining at the trace-stable window', () => {
+  it('keeps production-outlined function bodies in the artifact and its delegate', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
 interface IHub { function ping() external; }
@@ -4829,7 +4638,7 @@ contract Store {
     require(this.a == this.b);
   }
 }
-    `, { forceStateful: true, evmCompat: true, messageBus: true });
+    `, { forceStateful: true, evmCompat: true });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -4854,7 +4663,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, compileDeclarations: ['Store'] });
+    `, { compileDeclarations: ['Store'] });
     const artifact = map.Store;
     expect(artifact).toBeDefined();
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
@@ -4877,7 +4686,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -4902,7 +4711,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -4927,7 +4736,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -4952,7 +4761,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -4977,7 +4786,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5002,7 +4811,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5027,7 +4836,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5049,7 +4858,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5067,7 +4876,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5085,7 +4894,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5103,7 +4912,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5124,7 +4933,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5149,7 +4958,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5174,7 +4983,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5196,7 +5005,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5214,7 +5023,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5232,7 +5041,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5250,7 +5059,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5268,7 +5077,7 @@ contract Store {
           require(this.a == this.b);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
@@ -5289,7 +5098,7 @@ contract Store {
           require(this.x == this.y);
         }
       }
-    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    `, { optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -5313,7 +5122,6 @@ contract Store {
         }
       }
     `, {
-      messageBus: false,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
     });
@@ -5348,7 +5156,7 @@ contract Store {
           require(this.x >= a);
         }
       }
-    `, { messageBus: false, evmCompat: true });
+    `, { evmCompat: true });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -5365,7 +5173,7 @@ contract Store {
           require(this.scores[k] == v);
         }
       }
-    `, { messageBus: false });
+    `);
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -5382,7 +5190,7 @@ contract Store {
           require(this.blob.length > 0);
         }
       }
-    `, { messageBus: false, evmCompat: true });
+    `, { evmCompat: true });
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -5401,7 +5209,7 @@ contract Store {
           require(this.balances[k] == v);
         }
       }
-    `, { messageBus: false });
+    `);
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -5418,7 +5226,7 @@ contract Store {
           require(this.balances[k] == v);
         }
       }
-    `, { messageBus: false });
+    `);
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];
@@ -5441,7 +5249,7 @@ contract Store {
           require(this.x == this.y);
         }
       }
-    `, { messageBus: false });
+    `);
     const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
     expect(selector).toBeDefined();
     const body = artifact.functionBodies?.[selector!];

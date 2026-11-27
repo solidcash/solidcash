@@ -125,7 +125,6 @@ These compile, but 0.52.0 does not include them in its stability promise:
 
 - composed external state mutation: a typed call that changes another contract's state;
 - custom delegate forwarding beyond the built-in proxy profile (`upgrades.deployProxy`);
-- message-bus kernel composition (see [Message Bus](/docs/guides/message-bus));
 - the framed convention, `composition: 'framed'` (see [Framed Composition](/docs/guides/framed-composition)); and
 - Solidity source shapes outside the subset documented here and in
   [Solidity Import Compatibility](/docs/compiler/solidity-import-compat), even when the parser accepts them.

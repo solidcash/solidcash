@@ -21,8 +21,7 @@ import {
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
 import { valueChunkWriteResourceIdentity } from './value-chunk-persist.js';
 
-/** Resolve the one active chunkable dynamic-value collection written by a composed group.
- * Route rows are authoritative when present; a route-level active-write filter narrows union-shaped handlers.
+/** Resolve the one active chunkable dynamic-value collection written by a group.
  * Ambiguous metadata fails closed rather than selecting a collection by source-level name. */
 export type ChunkableValueWriteGroup = {
   categoryId?: string;
@@ -32,10 +31,6 @@ export type ChunkableValueWriteGroup = {
   blockLayout?: FunctionBlockLayout;
   logicalArtifact?: Artifact;
   externalContract?: { inner?: { artifact?: Artifact } };
-  compilerRoute?: {
-    abiFunction?: AbiFunction;
-    rowArguments?: readonly { handler: AbiFunction }[];
-  };
   valueChunkWrites?: readonly ValueChunkWriteDescriptor[];
   valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
   valueChunkStateOwner?: { categoryId: string; lockingBytecode: string };
@@ -47,52 +42,11 @@ export type ChunkableValueWriteGroup = {
   valueChunkOutputCount?: number;
 };
 
-/**
- * Old message-bus plans identified the chunkable writer by application ABI names because their artifacts did
- * not publish resource descriptors. Keep that migration path out of the kernel convention: once an artifact
- * declares `kernel-row-loop`, missing descriptors mean "not described", never permission to guess from names.
- */
-export function permitsLegacyNamedValueChunkFallback(
-  groups: ReadonlyArray<ChunkableValueWriteGroup>,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
-): boolean {
-  if (ownerConvention === 'kernel-row-loop') return false;
-  return !groups.some((group) => {
-    const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact];
-    return artifacts.some((artifact) => artifact?.messageBus?.convention === 'kernel-row-loop');
-  });
-}
-
-/** Permit inferred event reconstruction only for descriptor-free pre-kernel plans. */
-export function permitsLegacyValueChunkEventReconstruction(
-  groups: ReadonlyArray<ChunkableValueWriteGroup>,
-  hasChunkableValueWriteMetadata: boolean,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
-): boolean {
-  return !hasChunkableValueWriteMetadata
-    && permitsLegacyNamedValueChunkFallback(groups, ownerConvention);
-}
-
-/** Legacy delegate event placement is unavailable once either the artifact or the active layout owns the frame. */
-export function permitsLegacyDelegateEventRepair(
-  groups: ReadonlyArray<ChunkableValueWriteGroup>, compilerOwnedDelegateBlock: boolean,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
-): boolean {
-  return !compilerOwnedDelegateBlock
-    && permitsLegacyNamedValueChunkFallback(groups, ownerConvention);
-}
-
 export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGroup): string[] {
-  const route = group.compilerRoute;
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
   const direct = artifact?.abi?.find((candidate) => candidate.name === directName);
-  const activeFunctions = route?.rowArguments?.length
-    ? route.rowArguments.map((row) => row.handler)
-    : route?.abiFunction ? [route.abiFunction] : direct ? [direct] : [];
-  const activeWriteCollections = (route?.abiFunction as (AbiFunction & {
-    messageBusActiveWriteCollections?: readonly string[];
-  }) | undefined)?.messageBusActiveWriteCollections;
+  const activeFunctions = direct ? [direct] : [];
   const collections = group.stateLayout?.collections ?? artifact?.stateLayout?.collections ?? [];
   const matches = new Set<string>();
   for (const handler of activeFunctions) {
@@ -100,10 +54,7 @@ export function groupChunkableValueWriteCollections(group: ChunkableValueWriteGr
       const collection = collections.find((candidate) => (
         candidate.name === access.collection || candidate.signature === access.collection
       ));
-      const active = activeWriteCollections === undefined || activeWriteCollections.some((candidate) => (
-        candidate === access.collection || candidate === collection?.name || candidate === collection?.signature
-      ));
-      if (!access.operations.includes('write') || !active) continue;
+      if (!access.operations.includes('write')) continue;
       if (access.chunkableArrayValue === true || collection?.chunkableValue === true) {
         matches.add(collection?.name ?? access.collection);
       }
@@ -208,7 +159,6 @@ export function groupChunkableValueWriteResource(
   if (groupOwnsLinearSortedBatch(group)) return undefined;
   const claimed = claimedChunkableValueWriteResource(group);
   if (claimed) return claimed;
-  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
   const collection = groupChunkableValueWriteCollection(group)
     ?? legacyPlannedChunkableValueWriteCollection(group);
   return collection === undefined ? undefined : { collection };
@@ -228,8 +178,7 @@ export const groupWritesSingleChunkableArrayCollection = groupWritesSingleChunka
 export function groupDeclaredAbiFunction(group: ChunkableValueWriteGroup): AbiFunction | undefined {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
-  return group.compilerRoute?.abiFunction
-    ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === directName);
+  return artifact?.abi.find((candidate: AbiFunction) => candidate.name === directName);
 }
 
 /** Linear sorted batches mint in-block vmap nodes, not a single continuation band. */
@@ -273,15 +222,11 @@ export function legacyPlannedChunkableValueWriteCollection(
   if (!Number.isSafeInteger(group.valueChunkOutputCount) || group.valueChunkOutputCount! <= 0) {
     return undefined;
   }
-  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
-  const routeFunction = group.compilerRoute?.abiFunction;
-  if ((routeFunction as (AbiFunction & { messageBusConvention?: string }) | undefined)
-    ?.messageBusConvention === 'kernel-row-loop') return undefined;
   const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact]
     .filter((artifact, index, all): artifact is Artifact => artifact !== undefined
       && all.indexOf(artifact) === index);
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const namedFunctions = routeFunction ? [routeFunction] : artifacts.flatMap((artifact) => (
+  const namedFunctions = artifacts.flatMap((artifact) => (
     (artifact.abi as readonly AbiFunction[]).filter((candidate) => candidate.name === logicalName)
   ));
   const identities = new Set(namedFunctions.map((candidate) => (
@@ -310,7 +255,6 @@ export function legacyPlannedChunkableValueWriteCollection(
 /** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */
 export function selectChunkableValueWriteExecution(
   candidates: ReadonlyArray<{ group: ChunkableValueWriteGroup; inputIndex: number }>,
-  options?: { allowCompilerDescribed?: boolean },
 ): {
     inputIndex: number; abiFunction: AbiFunction; collection: string;
     resourceIdentity?: string; resourceOwnerIdentity?: string;
@@ -321,19 +265,11 @@ export function selectChunkableValueWriteExecution(
   }>();
   for (const { group, inputIndex } of candidates) {
     if (inputIndex < 0) continue;
-    // Under `kernel-row-loop` the named fallback is closed, but a COMPOSED participant still needs the band: the
-    // compiler describes the chunkable collection it writes, and the composed path is the only one that asks for
-    // this relaxation, so ordinary direct sends keep the strict claim.
-    const described = options?.allowCompilerDescribed === true
-      ? groupChunkableValueWriteCollections(group)
-      : [];
-    const resource = groupChunkableValueWriteResource(group)
-      ?? (described.length === 1 ? { collection: described[0] } : undefined);
+    const resource = groupChunkableValueWriteResource(group);
     if (resource === undefined) continue;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
-    const abiFunction = group.compilerRoute?.abiFunction
-      ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
+    const abiFunction = artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
     if (abiFunction) executions.set(`${inputIndex}:${resource.resourceOwnerIdentity
       ?? resource.resourceIdentity ?? resource.collection}`, {
       inputIndex, abiFunction, ...resource,

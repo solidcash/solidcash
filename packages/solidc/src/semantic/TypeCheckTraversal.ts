@@ -195,7 +195,6 @@ import {
 } from '../utils.js';
 import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
-import { generatedOriginOf } from '../ast/Location.js';
 import { emitCompilerWarning } from '../warnings.js';
 import { CALL_BATCH_ROW_SHIFT } from './CallBatch.js';
 
@@ -312,16 +311,13 @@ export default class TypeCheckTraversal extends AstTraversal {
    * from its SDK. A framed master derives each operand from its own witness block instead
    * (`framed/master/support.ts`, `derivableBatchWitnessNames`), so the operand is not part of the frame a source
    * call pushes, and the call resolves against the parameters left over. A shape whose operands the master cannot
-   * derive is refused by name where the master is assessed. A generated route is the exception: it forwards the
-   * created-record count it holds at the handler's own position, so its call resolves against every parameter, as
-   * it does under the direct convention; the framed convention drops the route's bodies before code generation.
+   * derive is refused by name where the master is assessed.
    */
   private callSiteParameterTypes(fn: FunctionDefinitionNode): Type[] {
-    const derivesBatch = this.framedComposition && this.currentFunction?.messageBusRoute !== true;
     return fn.parameters
       .filter((parameter) => parameter.name !== '__internal__msgSenderCategory'
         && parameter.name !== '__internal__msgSenderAnchorIdx'
-        && !(derivesBatch && FRAMED_DERIVED_BATCH_PARAMETER.test(parameter.name)))
+        && !(this.framedComposition && FRAMED_DERIVED_BATCH_PARAMETER.test(parameter.name)))
       .map((parameter) => parameter.type);
   }
 
@@ -2080,11 +2076,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       );
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
-        this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true
-          || this.currentFunction.name.startsWith('__message_bus')
-          || node.resolvedFunction.name.startsWith('__message_bus')
-          || node.resolvedFunction.parameters.some((parameter) =>
-            parameter.name === '__internal__proxyMasterIndex'),
+        node.resolvedFunction.parameters.some((parameter) => parameter.name === '__internal__proxyMasterIndex'),
       );
       node.parameters = this.coerceHexArgs(node.parameters, resolvedParamTypes);
       expectParameters(node, node.parameters.map((p) => p.type!), resolvedParamTypes);
@@ -2110,11 +2102,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       );
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
-        this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true
-          || this.currentFunction.name.startsWith('__message_bus')
-          || node.resolvedFunction.name.startsWith('__message_bus')
-          || node.resolvedFunction.parameters.some((parameter) =>
-            parameter.name === '__internal__proxyMasterIndex'),
+        node.resolvedFunction.parameters.some((parameter) => parameter.name === '__internal__proxyMasterIndex'),
       );
       node.parameters = this.coerceHexArgs(node.parameters, resolvedParamTypes);
       const argTypes = node.parameters.map((p) => p.type!);
@@ -2815,14 +2803,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (synthetic.length === 0) return;
     // Only auto-forward when the call site passed exactly the user-visible args (synthetic params are never
     // written at the call site).
-    // The call site normally writes only the user-visible args, but a compiler-generated route writes some
-    // synthetics itself (it passes `__internal__msgSenderCategory` explicitly). Forward the ones it did NOT
-    // write, identified BY NAME: counting positionally would double-forward when the route also omits a visible
-    // argument, appending a synthetic the call already carries instead of surfacing the real defect.
+    // The call site normally writes only the user-visible args, but a compiler-generated call can write some
+    // synthetics itself. Forward the ones it did NOT write, identified BY NAME: counting positionally would
+    // double-forward when the call also omits a visible argument, appending a synthetic the call already carries
+    // instead of surfacing the real defect.
     const missing = effectiveParameters.length - node.parameters.length;
     if (missing <= 0 || missing > synthetic.length) return;
     // Forward exactly the trailing synthetics needed to reach the callee's arity. When the call site wrote none
-    // of them this is the original all-synthetics case; when a generated route wrote a leading one itself, only
+    // of them this is the original all-synthetics case; when a generated call wrote a leading one itself, only
     // the rest are appended. If a name in that tail is ALREADY an argument the call is malformed for another
     // reason - surface the arity error rather than masking it with a duplicate.
     const pending = synthetic.slice(synthetic.length - missing);
@@ -2835,13 +2823,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     // own same-named param). Bail on anything else (e.g. external-call selector/index params) so the normal
     // arity check still fires.
     // `__internal__proxyMasterIndex` joins these for the same reason: within one delegate execution the proxy
-    // master sits at a fixed input, so an internal callee reads the caller's own value. Without it, a generated
-    // route cannot call a delegate-marked getter (`owner()`) at all.
+    // master sits at a fixed input, so an internal callee reads the caller's own value.
     const FORWARDABLE = new Set([
       '__internal__blockhashInputIndex', '__internal__blockOracleInputIndex', '__internal__proxyMasterOutputIndex',
-      '__internal__proxyMasterIndex', '__internal__kernelJournalAccessStreams',
-      '__internal__kernelJournalRecords', '__internal__dynamicChunkInputBase',
-      '__internal__dynamicChunkOutputBase',
+      '__internal__proxyMasterIndex', '__internal__dynamicChunkInputBase', '__internal__dynamicChunkOutputBase',
     ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {
@@ -2948,9 +2933,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
   }
 
-  // Compiler-generated source is native SolidCash: it carries no file stamp, so the root's `.sol` must not reach it.
   private inSolidityUnit(node: Node): boolean {
-    if (generatedOriginOf(node.location)) return false;
     return (node.location?.sourceFileId ?? this.rootFileId).endsWith('.sol');
   }
 
@@ -4054,10 +4037,9 @@ function expectParameters(node: NodeWithParameters, actual: Type[], expected: Ty
 }
 
 function stripGeneratedLogicalSenderArgument(
-  node: FunctionCallNode, expected: Type[], inMessageBusRoute: boolean,
+  node: FunctionCallNode, expected: Type[], calleeTakesProxyMaster: boolean,
 ): void {
-  if ((!inMessageBusRoute && !generatedOriginOf(node.location) && !generatedOriginOf(node.identifier.location))
-    || node.parameters.length !== expected.length + 1) return;
+  if (!calleeTakesProxyMaster || node.parameters.length !== expected.length + 1) return;
   const matches = node.parameters.flatMap((parameter, index) => {
     const type = parameter.type;
     const expectedAtIndex = expected[index];

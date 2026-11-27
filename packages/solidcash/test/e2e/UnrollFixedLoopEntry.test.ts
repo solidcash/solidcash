@@ -47,7 +47,7 @@ describe('fixed-bound loop mapping write (unrolled to N static entry writes)', (
     // A wrong value is rejected (the entry genuinely holds 111/222, not a stale/last-only value).
     sc = StatefulContract.withCategory(contract, categoryId);
     await expect(sc.check(10n, 999n, alicePub, sig).send())
-      .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+      .rejects.toThrow('BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 
   it('preserves source-order writes around statically selected continue and break sites', async () => {
@@ -65,10 +65,8 @@ describe('fixed-bound loop mapping write (unrolled to N static entry writes)', (
         require(true);
       }
     }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+      forceStateful: true, maximumInputBytes: 1_000_000,
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
 
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(

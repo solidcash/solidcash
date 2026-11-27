@@ -124,8 +124,7 @@ export function ensureAuthenticatedViewReturns(
       if (!carrier.returnWitnessGroups) continue;
       for (const [name, owner] of Object.entries(carrier.returnWitnessGroups)) {
         if (owner !== groupIdx || !/^__internal__externalReturnOutputIdx\d*$/.test(name)) continue;
-        const rawIdx = carrier.internalArgs?.[name]
-          ?? carrier.compilerRoute?.internalArgs?.[name];
+        const rawIdx = carrier.internalArgs?.[name];
         const index = typeof rawIdx === 'bigint' ? Number(rawIdx)
           : typeof rawIdx === 'number' ? rawIdx : -1;
         if (index >= 0) witnessArgHosts.push(index);

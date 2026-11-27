@@ -22,7 +22,6 @@ import {
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { isJobEventEmitCommitment } from './same-index-twin-emit.js';
-import { permitsLegacyNamedValueChunkFallbackForGroups } from './stb-chunkable-write-planning.js';
 import {
   isPersistedCompatibilityValueChunkReady,
   persistedJobEventsWidth,
@@ -39,8 +38,6 @@ export interface DelegateImplEventReassertHost {
     // NetworkProvider is structural; getBlockTime is optional on mock providers.
     provider: object;
   };
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
-  readonly composedParticipant: boolean;
   getLowLevelCallMasterInputIndex(index: number): number;
   getExternalCallMasterInputIndex(index: number): number;
   registerDetachedEvent(eventDef: EventDefinitionAbi, lockingBytecode: Uint8Array): void;
@@ -57,8 +54,7 @@ export function ensureDistinctJobEventNfts(
 ): void {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DISABLE_JOBEVENT_DETACH === '1') return;
-  // Multi-emit receipt detach uses legacy-name discovery; kernel uses descriptor emits.
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return;
+  // Multi-emit receipt detach uses legacy-name discovery.
   const eventSignature = 'JobEvent(uint256,JobEventData)';
   const publishers = [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups].filter((group) => {
     if (legacyGroupLooksLikePublishJobEvent(group)) {
@@ -169,16 +165,15 @@ export function reassertDelegateImplEvents(
   );
   for (const [groupIndex, group] of host.lowLevelCallUtxoGroups.entries()) {
     if (group.callMode !== 'delegatecall') continue;
-    const fn = group.compilerRoute?.abiFunction
-      ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-        .find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
+    const fn = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+      .find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
     const implIndex = host.getLowLevelCallMasterInputIndex(groupIndex);
     if (implIndex < 0) continue;
     const proxyGroup = host.externalCallUtxoGroups.find((candidate) => (
       candidate.delegateCallGroupIndex === groupIndex
     ));
     const eventSlots = fn?.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
-    const eventSignatures = groupEventSignatures(group, fn);
+    const eventSignatures = groupEventSignatures(fn);
     for (const [eventOrdinal, eventSlot] of eventSlots.entries()) {
       const eventSignature = eventSignatures[eventOrdinal];
       if (!eventSignature) continue;

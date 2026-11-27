@@ -6,7 +6,7 @@ import type { EntryAccessAbi, StateLayout } from '@solidcash/utils';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StateValueType } from '../types/state-inference.js';
-import { entryAccessAt } from './route-expression-key.js';
+import { entryAccessAt } from './call-expression-key.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   extractCommitmentMapFromTrace,
@@ -58,8 +58,8 @@ export function deriveFullPhase2ApplyStateAndEntries(
     requiredNftIndices, entryAccesses, delegatecallInputIndex, phaseCheckpoint,
   } = params;
 
-  // A direct call emits its state immediately after output 0. In a composed delegate call, the proxy
-  // block follows all routed callees, so locate its minting master by category and read the contiguous
+  // A direct call emits its state immediately after output 0. In a delegate call, the proxy
+  // block can follow its callees, so locate its minting master by category and read the contiguous
   // data-NFT outputs which follow it.
   const delegateMasterOutputIndex = delegatecallInputIndex === undefined ? -1
     : probeBuilder2.outputs.findIndex((output, outputIndex, outputs) =>
@@ -153,7 +153,7 @@ export function deriveFullPhase2ApplyStateAndEntries(
         // An inactive INSERT has no rewritten predecessor either. The batch probe may have seeded that
         // trailing predecessor solely to reach the conditional flush; once the flush proves absent, remove
         // the seed so it cannot mint a phantom collection entry.
-        // This fixed conditional lane owns only its own speculative insert. A kernel route may also
+        // This fixed conditional lane owns only its own speculative insert. A compiler-generated route may also
         // publish source-row runtime segments for the same collection; those commitments belong to the
         // shared row journal and must survive an inactive/zero-trip sibling lane.
         // A PINNED family is compiler-authenticated geometry, not a speculative seed: the rewritten

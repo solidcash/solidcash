@@ -43,7 +43,7 @@ import { assertSpendableCode, assertSpendableContract } from './spendable-code.j
 /** A12: a deployment that asks for more than the deployer produces takes today's genesis instead. */
 export type DeployerFallbackCase =
   | 'initial-state' | 'identity-anchors' | 'native-token' | 'block-oracle' | 'extra-outputs-own-category'
-  | 'salt' | 'address-type' | 'thread-count' | 'message-bus-verifiers' | 'master-amount'
+  | 'salt' | 'address-type' | 'thread-count' | 'master-amount'
   | 'data-nft-amount' | 'funder-not-p2pkh' | 'metadata-probe' | 'oracle-pool'
   | `unsupported-option:${string}`;
 
@@ -57,7 +57,6 @@ export interface DeployerPathOptions {
   salt?: unknown;
   addressType?: string;
   threadCount?: number;
-  messageBusVerificationInputCount?: number;
   masterAmount?: bigint;
   dataNftAmount?: bigint;
   funder?: Unlocker;
@@ -79,7 +78,6 @@ export function deployerFallbackCase(
   if (options.salt !== undefined) return 'salt';
   if (options.addressType !== undefined && options.addressType !== 'p2sh32') return 'address-type';
   if (options.threadCount !== undefined && options.threadCount > 1) return 'thread-count';
-  if ((options.messageBusVerificationInputCount ?? 0) > 0) return 'message-bus-verifiers';
   if (options.masterAmount !== undefined && options.masterAmount !== 1200n) return 'master-amount';
   if (options.dataNftAmount !== undefined && options.dataNftAmount !== 1200n) return 'data-nft-amount';
   if (options.funder !== undefined && !isP2pkhLock(options.funder.generateLockingBytecode())) {
@@ -531,7 +529,7 @@ async function calleeEntrySlot(
   args: readonly FunctionArgument[], sender: Uint8Array, refuse: (what: string) => never,
 ): Promise<Uint8Array> {
   const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
-  const { evalComputedKey } = await import('./route-expression-key.js');
+  const { evalComputedKey } = await import('./call-expression-key.js');
   const { keyToSlotMulti } = await import('./SortedList.js');
   const visible = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
   const keys = access.keyParams.map((param, keyIndex) => {
@@ -659,17 +657,17 @@ async function planCalleeBlockByCall(
   // A function that reads msg.sender is built for the child as its caller.
   const senderReader = fn.inputs.some((input) => input.name === '__internal__msgSenderCategory');
   const standIn = senderReader ? await standInSender(sender) : undefined;
-  const route = { abiFunction: fn, emitReturn: true };
+  const calleeCall = { abiFunction: fn, emitReturn: true };
   const { StatefulFunctionCall } = await import('./StatefulContract.js');
   const participant = new StatefulFunctionCall(
     () => connected._createBuilder(functionName, [...call.args], {
-      ...route, signerUtxos: padCoins, ...(sidecarPool === undefined ? {} : { sharedSidecarPool: sidecarPool }),
+      ...calleeCall, signerUtxos: padCoins, ...(sidecarPool === undefined ? {} : { sharedSidecarPool: sidecarPool }),
       ...(standIn === undefined ? {} : {
         callerLockingBytecode: sender, msgSenderCategory: hexToBin(standIn.category).reverse(),
         standInCaller: standIn.caller,
       }),
     }) as never,
-    connected as never, functionName, [...call.args], route,
+    connected as never, functionName, [...call.args], calleeCall,
   );
   // Each build of the call, a call of another contract's among them, keeps the pool and the sender. The sender is
   // named before the calls are resolved: an argument msg.sender gives a call the callee makes resolves to it.
@@ -866,7 +864,7 @@ export async function planConstructorCalleeBlock(
   } = await import('./covenant-helpers.js');
   const { eventContinuationLockingBytecode } = await import('./event-chunks.js');
   const { SortedList, bytesToSlotValue, decodeEntryCommitment } = await import('./SortedList.js');
-  const { evalComputedKey } = await import('./route-expression-key.js');
+  const { evalComputedKey } = await import('./call-expression-key.js');
   const spent = options.spent ?? new Set<string>();
   const provider = contract.provider;
   const categoryId = callee.contract.categoryId;
@@ -935,7 +933,7 @@ export async function planConstructorCalleeBlock(
     const { loadCreateBuilderSatoshiContainer } = await import('./sc-load-create-builder-satoshi-container.js');
     try {
       const loaded = await loadCreateBuilderSatoshiContainer(
-        { categoryId, inner: contract as never }, { abiFunction: fn, overrides: undefined },
+        { categoryId, inner: contract as never }, { abiFunction: fn },
       );
       if (loaded.satoshiContainerUtxo !== undefined && loaded.satoshiContainerLockingBytecode !== undefined) {
         satoshiContainer = {
@@ -954,7 +952,7 @@ export async function planConstructorCalleeBlock(
     try {
       ({ tokenContainers, tokenContainerLockingBytecodes: tokenContainerLocks } = await loadCreateBuilderTokenContainers(
         { categoryId, inner: contract as never },
-        { abiFunction: fn, args: byPosition, overrides: undefined, stateValues: state.state },
+        { abiFunction: fn, args: byPosition, stateValues: state.state },
       ));
     } catch (error) {
       refuse(`its token container cannot be found: ${(error as Error).message}`);
@@ -2501,13 +2499,6 @@ export function buildDeployerUnlocking(options: BuildDeployerUnlockingOptions): 
  */
 export function assertDeployerCallee(calleeName: string, callee: Artifact, functionName: string): void {
   const fn = callee.abi.find((entry) => entry.name === functionName);
-  // A message-bus build is never record-sound, whatever its arms (A7): its option is the one in the way.
-  if (callee.recordSound !== true && callee.messageBus !== undefined) {
-    throw new DeployerCalleeError(
-      calleeName, functionName,
-      'the callee is a message-bus build, which a constructor cannot call; compile it with messageBus: false',
-    );
-  }
   if (callee.recordSound !== true) {
     throw new DeployerCalleeError(
       calleeName, functionName,

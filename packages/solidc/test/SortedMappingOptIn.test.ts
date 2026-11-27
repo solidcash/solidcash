@@ -237,7 +237,7 @@ describe('sorted mapping array push leading-value param', () => {
   });
 
   it('publishes no complete-push witness beside the leading one when no route reaches the body', () => {
-    // Only a message-bus route injects `__internal__completePushValue_N` into the bodies it reaches. A direct body's
+    // Only a batch route injects `__internal__completePushValue_N` into the bodies it reaches. A direct body's
     // frame holds none, and an input it does not take would shift every argument it reads by position.
     const artifact = compileString(`
       contract C() {

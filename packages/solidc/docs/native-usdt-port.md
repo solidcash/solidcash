@@ -93,8 +93,8 @@ delegate libraries, each riding its own co-spent input with its own 10 KB budget
 
 The one-facet hand split later exceeded the per-input cap again as compiler codegen changed. The current
 four-file arrangement separates delegated operations by role while keeping the same state-slot layout and
-public token surface. Artifact byte counts measured with `messageBus: false`, branded facets, and the current
-compiler are:
+public token surface. Artifact byte counts measured with a direct build, branded facets, and the current compiler
+are:
 
 | script | artifact bytes | role |
 | --- | --: | --- |
@@ -395,8 +395,8 @@ its arguments, and every route through the bundle now settles.
 3. **`arrays.md` miscited `compiler.ts:28` for `commitmentLimit`.** The line was 84 when this was first
    written and is 134 today - the citation rotted twice in two weeks. Fixed by citing the symbol without a
    line number.
-4. **Suite maintenance the merge forced** (all applied): compile with `messageBus: false` to match
-   `test/direct-compile.ts` (the default `auto` mode builds bus routes this contract never takes); give
+4. **Suite maintenance the merge forced** (all applied): compile as a direct build to match
+   `test/direct-compile.ts`; give
    `beforeAll` an explicit 180 s budget, since compiling the whole port overruns the suite's 10 s
    `hookTimeout`; and provision
    **two** plain funder UTXOs per top-up, because a facet call co-spends master + facet and the builder now

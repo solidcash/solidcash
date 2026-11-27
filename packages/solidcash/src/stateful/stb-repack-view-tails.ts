@@ -25,7 +25,6 @@ export interface RepackViewTailsHost {
   readonly allInputs: readonly UnlockableUtxo[];
   readonly externalCallUtxoGroups: ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   findMintingInputIndex(categoryId: string): number;
@@ -53,7 +52,7 @@ export function repackViewTailsAfterMaterialization(
     ))
     .filter((index) => index >= 0);
   const tokenWriterPresent = host.externalCallUtxoGroups.some((group) => {
-    if (!isCompilerDescribedMintingBandWriter(group, false, host.messageBusConvention)) return false;
+    if (!isCompilerDescribedMintingBandWriter(group, false)) return false;
     return host.findMintingInputIndex(group.categoryId) >= 0;
   });
   // FakeToken already parks view tails after its swapped block. Do not steal

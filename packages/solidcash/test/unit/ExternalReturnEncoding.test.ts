@@ -1,26 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
 import { AbiCoder } from 'ethers';
-import { decodePushdataValue, encodePushdataValue, sha256, type StructDefinitionInfo } from '@solidcash/utils';
+import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
-  decodeEvmReturnValue, encodeCompleteRouteArrayPushes, encodeExternalReturnValue, encodeExternalReturnValues,
-  encodeLeadingRouteArrayPushes,
+  decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues,
   encodeStructArgument,
-  isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
-  isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector,
-  isConstrainedEvmResultVector,
-  selectEvmReturnCommitment, selectEvmScalarReturnCommitment,
+  isCanonicalEvmReturnVector, isCanonicalEvmScalarReturnVector,
+  selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
+import { foldLeadingRowArrayPushes } from '../../src/stateful/resource-fold.js';
 import {
   selectMaterializedTailReturnEvents,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import {
   decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
 } from '../../src/stateful/evm-abi-result.js';
-import {
-  discoveredReturnFollowsParticipantWrite,
-  selectPreparedAtomicReturnSeed,
-} from '../../src/stateful/sc-materialize-create-builder-return-emit.js';
 
 const structs: StructDefinitionInfo[] = [{
   name: 'Pair',
@@ -73,7 +67,7 @@ describe('encodeExternalReturnValue', () => {
     expect(encoded[31]).toBe(2);
   });
 
-  it('encodes Solidity ABI string returns so the kernel can take32 the offset word', () => {
+  it('encodes Solidity ABI string returns so the journal can take32 the offset word', () => {
     const encoded = encodeExternalReturnValue('DIGITAL_VIDEO', 'string', structs, true);
     expect(encoded.length).toBe(96);
     expect(encoded[31]).toBe(32);
@@ -205,56 +199,6 @@ describe('encodeExternalReturnValue', () => {
     expect(selectEvmScalarReturnCommitment([stateHash], ['uint256'], false)).toBeUndefined();
   });
 
-  it('rejects a state-entry commitment from a framed Solidity return channel', () => {
-    const entryCommitment = new Uint8Array(64).fill(0xca);
-    expect(isCanonicalEvmScalarReturnBlob(entryCommitment, ['uint256'])).toBe(false);
-  });
-
-  it('selects a canonical dynamic string and boolean return over its provisional empty value', () => {
-    const result = new Uint8Array(128);
-    result[31] = 32;
-    result[63] = 13;
-    result.set(new TextEncoder().encode('DIGITAL_VIDEO'), 64);
-    result[127] = 1;
-    const framed = encodePushdataValue(result, 'bytes');
-    const provisional = new Uint8Array(96);
-    provisional[31] = 32;
-    provisional[95] = 1;
-
-    expect(isCanonicalEvmReturnSequence(result, [['string'], ['bool']])).toBe(true);
-    expect(isCanonicalEvmReturnVector(result, ['string', 'bool'])).toBe(false);
-    expect(isCanonicalEvmReturnBlob(framed, [['string'], ['bool']])).toBe(true);
-    expect(selectEvmReturnCommitment(
-      [framed, encodePushdataValue(provisional, 'bytes')], [['string'], ['bool']], false,
-    )).toBe(binToHex(result));
-    expect(decodeEvmReturnValue(result.slice(0, 96), 'string')).toBe('DIGITAL_VIDEO');
-    expect(decodeEvmReturnValue(result.slice(96), 'bool')).toBe(true);
-  });
-
-  it('validates a framed named-struct sequence with the producing artifact schema', () => {
-    const resultStructs: StructDefinitionInfo[] = [{
-      name: 'Record',
-      fields: [
-        { name: 'stable', type: 'uint256' },
-        { name: 'phase', type: 'uint256' },
-        { name: 'tail', type: 'string' },
-      ],
-    }];
-    const vector = encodeEvmInvocationResult(
-      [{ stable: 11n, phase: 20n, tail: 'row-epoch-payload' }], ['Record'], resultStructs,
-    );
-    const framed = encodePushdataValue(vector, 'bytes');
-    const digest = sha256(framed);
-
-    expect(isCanonicalEvmReturnSequence(vector, [['Record']])).toBe(false);
-    expect(isCanonicalEvmReturnSequence(vector, [['Record']], resultStructs)).toBe(true);
-    expect(isCanonicalEvmReturnBlob(framed, [['Record']], resultStructs)).toBe(true);
-    expect(isCanonicalEvmReturnBlob(digest, [['Record']], resultStructs)).toBe(false);
-    expect(selectEvmReturnCommitment(
-      [digest, framed], [['Record']], false, resultStructs,
-    )).toBe(binToHex(vector));
-  });
-
   it('rejects non-canonical dynamic offsets and non-zero tail padding', () => {
     const wrongOffset = new Uint8Array(128);
     wrongOffset[31] = 96;
@@ -268,44 +212,6 @@ describe('encodeExternalReturnValue', () => {
     dirtyPadding[96] = 0x61;
     dirtyPadding[127] = 1;
     expect(isCanonicalEvmReturnVector(dirtyPadding, ['string', 'bool'])).toBe(false);
-  });
-});
-
-describe('isConstrainedEvmResultVector', () => {
-  it('accepts a complete multi-row vector with at least one constrained row', () => {
-    expect(isConstrainedEvmResultVector([['uint256'], ['bool'], ['bool']])).toBe(true);
-    expect(isConstrainedEvmResultVector([['uint256'], ['address']])).toBe(true);
-    expect(isConstrainedEvmResultVector([['uint256'], ['uint8']])).toBe(true);
-    expect(isConstrainedEvmResultVector([['bytes32'], ['uint256']])).toBe(true);
-  });
-
-  it('rejects vectors whose rows are all unconstrained ABI-width words', () => {
-    expect(isConstrainedEvmResultVector([['uint256'], ['uint256']])).toBe(false);
-    expect(isConstrainedEvmResultVector([['int'], ['bigint']])).toBe(false);
-  });
-
-  it('rejects single-row schemas and dynamic rows', () => {
-    expect(isConstrainedEvmResultVector([['bool']])).toBe(false);
-    expect(isConstrainedEvmResultVector([['uint256']])).toBe(false);
-    expect(isConstrainedEvmResultVector([['uint256'], ['bytes']])).toBe(false);
-    expect(isConstrainedEvmResultVector([['bool'], ['string']])).toBe(false);
-    expect(isConstrainedEvmResultVector([])).toBe(false);
-  });
-
-  it('selects the bare multi-row vector only when its rows constrain the encoding', () => {
-    const vector = new Uint8Array(96);
-    vector[31] = 0xa0;
-    vector[63] = 1;
-    vector[95] = 1;
-    const groups = [['uint256'], ['bool'], ['bool']];
-
-    // A progressive probe can stop after the route assembled its frame and before that frame's output
-    // comparison; the complete vector is then the only authenticated observation of the result.
-    expect(selectEvmReturnCommitment([vector], groups, true)).toBe(binToHex(vector));
-    expect(selectEvmReturnCommitment([vector], groups, false)).toBeUndefined();
-    // The compiler-framed form still wins when both are live.
-    expect(selectEvmReturnCommitment([vector, encodePushdataValue(vector, 'bytes')], groups, true))
-      .toBe(binToHex(vector));
   });
 });
 
@@ -330,84 +236,6 @@ describe('selectMaterializedTailReturnEvents', () => {
     expect(events[0].commitment).toHaveLength(32);
   });
 
-  it('keeps a logical read result when its physical carrier becomes a writer', () => {
-    const readResult = new Uint8Array(32);
-    readResult[31] = 7;
-    const writerResult = new Uint8Array(32);
-    writerResult[31] = 1;
-    const carrier = {
-      functionName: 'write', logicalFunctionName: 'write', precomputedReturnCommitment: readResult,
-    };
-    expect(selectPreparedAtomicReturnSeed(carrier, 'read', writerResult)).toEqual(readResult);
-    expect(selectPreparedAtomicReturnSeed(carrier, 'write', writerResult)).toEqual(writerResult);
-    expect(selectPreparedAtomicReturnSeed({ ...carrier, functionName: '__forward', logicalFunctionName: 'read' },
-      'read', writerResult)).toEqual(writerResult);
-    expect(selectPreparedAtomicReturnSeed({ ...carrier, precomputedReturnCommitment: undefined },
-      'read', writerResult)).toBeUndefined();
-  });
-
-  it('does not prepare an isolated read after an earlier mutation of its participant', () => {
-    const artifact = { abi: [
-      { name: 'balanceOf', writesState: false },
-      { name: 'transferFrom', writesState: true },
-    ] };
-    const contract = (categoryId: string): { categoryId: string; inner: { artifact: typeof artifact } } => (
-      { categoryId, inner: { artifact } }
-    );
-    const nodes = [
-      { contract: contract('token'), functionName: 'balanceOf' },
-      { contract: contract('other'), functionName: 'transferFrom' },
-      { contract: contract('token'), functionName: 'transferFrom' },
-      { contract: contract('token'), functionName: 'balanceOf' },
-    ] as never;
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 0)).toBe(false);
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 2)).toBe(false);
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
-  });
-
-  it('does not prepare a cross-contract result whose nested read follows an earlier write', () => {
-    const artifact = { abi: [
-      { name: 'root', writesState: true },
-      { name: 'release', writesState: true },
-      { name: 'claim', writesState: true },
-      { name: 'getEscrow', writesState: false },
-      { name: 'unrelatedRead', writesState: false },
-    ] };
-    const contract = (categoryId: string): { categoryId: string; inner: { artifact: typeof artifact } } => (
-      { categoryId, inner: { artifact } }
-    );
-    const nodes = [
-      { contract: contract('marketplace'), functionName: 'root', parent: null },
-      { contract: contract('escrow'), functionName: 'release', parent: 0 },
-      { contract: contract('claim'), functionName: 'claim', parent: 1 },
-      { contract: contract('escrow'), functionName: 'getEscrow', parent: 2 },
-      { contract: contract('unrelated'), functionName: 'unrelatedRead', parent: 0 },
-    ] as never;
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 2)).toBe(true);
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 4)).toBe(false);
-  });
-
-  it('does not treat missing interface effect metadata as a read-only proof', () => {
-    const interfaceArtifact = { abi: [{ name: 'release' }] };
-    const readArtifact = { abi: [{ name: 'claim', writesState: true }, { name: 'getEscrow', writesState: false }] };
-    const nodes = [
-      {
-        contract: { categoryId: 'escrow', inner: { artifact: interfaceArtifact } },
-        functionName: 'release', selector: '01020304', parent: null,
-      },
-      {
-        contract: { categoryId: 'claim', inner: { artifact: readArtifact } },
-        functionName: 'claim', parent: 0,
-      },
-      {
-        contract: { categoryId: 'escrow', inner: { artifact: readArtifact } },
-        functionName: 'getEscrow', parent: 1,
-      },
-    ] as never;
-    expect(discoveredReturnFollowsParticipantWrite(nodes, 1)).toBe(true);
-  });
-
   it('promotes an exact writer probe over its provisional seed', () => {
     const exact = Uint8Array.of(1);
     const events = selectMaterializedTailReturnEvents([group()], [
@@ -423,9 +251,9 @@ describe('selectMaterializedTailReturnEvents', () => {
   });
 });
 
-describe('encodeLeadingRouteArrayPushes', () => {
-  type RouteRow = Parameters<typeof encodeLeadingRouteArrayPushes>[0]['rowArguments'][number];
-  const row = (key: bigint, count: bigint): RouteRow => ({
+describe('foldLeadingRowArrayPushes', () => {
+  type Row = Parameters<typeof foldLeadingRowArrayPushes>[0]['rowArguments'][number];
+  const row = (key: bigint, count: bigint): Row => ({
     args: [key, [count, true]],
     handler: {
       inputs: [
@@ -446,7 +274,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
     },
   });
   const resolveElement = (definitions: StructDefinitionInfo[]) => (
-    candidate: RouteRow, access: NonNullable<RouteRow['handler']['entryAccesses']>[number], type: string,
+    candidate: Row, access: NonNullable<Row['handler']['entryAccesses']>[number], type: string,
   ): Uint8Array | undefined => {
     const index = access.storedElementSource?.expression.source?.paramIndex;
     return index === undefined ? undefined
@@ -454,46 +282,13 @@ describe('encodeLeadingRouteArrayPushes', () => {
   };
 
   it('encodes only earlier pushes targeting the final row key', () => {
-    const encoded = encodeLeadingRouteArrayPushes({
+    const encoded = foldLeadingRowArrayPushes({
       rowArguments: [row(7n, 2n), row(8n, 3n), row(7n, 4n)],
       collection: 'history',
       valueType: 'Pair[]',
       structs,
       resolveElement: resolveElement(structs),
-    });
-    expect(encoded).toBeDefined();
-    expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([{
-      count: 2n,
-      active: true,
-    }]);
-  });
-
-  it('encodes the terminal push when pinning the complete selected-route value', () => {
-    const initialValue = encodePushdataValue([{ count: 1n, active: false }], 'Pair[]', structs);
-    const encoded = encodeCompleteRouteArrayPushes({
-      rowArguments: [row(7n, 2n), row(8n, 3n), row(7n, 4n)],
-      collection: 'history',
-      valueType: 'Pair[]',
-      structs,
-      initialValue,
-      resolveElement: resolveElement(structs),
-    });
-    expect(encoded).toBeDefined();
-    expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([
-      { count: 1n, active: false },
-      { count: 2n, active: true },
-      { count: 4n, active: true },
-    ]);
-  });
-
-  it('encodes a singleton terminal push from the empty array pre-state', () => {
-    const encoded = encodeCompleteRouteArrayPushes({
-      rowArguments: [row(7n, 2n)],
-      collection: 'history',
-      valueType: 'Pair[]',
-      structs,
-      resolveElement: resolveElement(structs),
-    });
+    })?.leading;
     expect(encoded).toBeDefined();
     expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([{
       count: 2n,
@@ -502,16 +297,16 @@ describe('encodeLeadingRouteArrayPushes', () => {
   });
 
   it('does not merge pushes for different keys', () => {
-    expect(encodeLeadingRouteArrayPushes({
+    expect(foldLeadingRowArrayPushes({
       rowArguments: [row(7n, 2n), row(8n, 3n)],
       collection: 'history',
       valueType: 'Pair[]',
       structs,
       resolveElement: resolveElement(structs),
-    })).toBeUndefined();
+    })?.leading).toBeUndefined();
   });
 
-  it('preserves arbitrary timestamp_-named fields in generic route struct encoding', () => {
+  it('preserves arbitrary timestamp_-named fields in generic struct encoding', () => {
     const stampedStructs: StructDefinitionInfo[] = [{
       name: 'Stamped',
       fields: [{ name: 'value', type: 'uint256' }, { name: 'timestamp_', type: 'uint32' }],
@@ -519,7 +314,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
     const encodedRecord = encodePushdataValue({ value: 2n, timestamp_: 0n }, 'Stamped', stampedStructs);
     const stampedRow = (
       record: Uint8Array | bigint[] | { value: bigint; timestamp_: bigint },
-    ): RouteRow => ({
+    ): Row => ({
       args: [7n, record],
       handler: {
         inputs: [
@@ -539,7 +334,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
         }],
       },
     });
-    const encoded = encodeLeadingRouteArrayPushes({
+    const encoded = foldLeadingRowArrayPushes({
       rowArguments: [
         stampedRow(encodedRecord),
         stampedRow([3n, 0n]),
@@ -549,7 +344,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
       valueType: 'Stamped[]',
       structs: stampedStructs,
       resolveElement: resolveElement(stampedStructs),
-    });
+    })?.leading;
     expect(decodePushdataValue(encoded!, 0, 'Stamped[]', stampedStructs).value).toEqual([
       { value: 2n, timestamp_: 0n },
       { value: 3n, timestamp_: 0n },
@@ -567,7 +362,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
     }];
     const payload = new Uint8Array(20).fill(0x31);
     const encodedRows = (type: string, definitions: StructDefinitionInfo[]): Uint8Array | undefined =>
-      encodeLeadingRouteArrayPushes({
+      foldLeadingRowArrayPushes({
         rowArguments: [
           {
             args: [7n, [0n, payload]],
@@ -598,41 +393,12 @@ describe('encodeLeadingRouteArrayPushes', () => {
         ],
         collection: 'history', valueType: `${type}[]`, structs: definitions,
         resolveElement: resolveElement(definitions),
-      });
+      })?.leading;
     const namedValue = decodePushdataValue(encodedRows('Named', named)!, 0, 'Named[]', named).value;
     const renamedValue = decodePushdataValue(encodedRows('Renamed', renamed)!, 0, 'Renamed[]', renamed).value;
     expect(namedValue).toEqual([{ timestamp_: 0n, address_: payload }]);
     expect(renamedValue).toEqual([{ observedAt: 0n, payload }]);
   });
 
-  it('retains timestamp and packed-address adaptation behind the explicit legacy adapter', () => {
-    const legacyStructs: StructDefinitionInfo[] = [{
-      name: 'JobEventData',
-      fields: [
-        { name: 'type_', type: 'uint8' }, { name: 'address_', type: 'bytes' },
-        { name: 'data_', type: 'bytes' }, { name: 'timestamp_', type: 'uint32' },
-      ],
-    }];
-    const rawAddress = new Uint8Array(20).fill(0x31);
-    const makeRow = (type: bigint): RouteRow => ({
-      args: [7n, [type, rawAddress, new Uint8Array(), 0n]],
-      handler: {
-        inputs: [
-          { name: 'id', type: 'uint256' }, { name: 'record', type: 'JobEventData' },
-        ],
-        entryAccesses: [{ collection: 'history', keyParams: ['id'], operations: ['read', 'write'] }],
-      },
-    });
-    const encoded = encodeLeadingRouteArrayPushes({
-      rowArguments: [makeRow(1n), makeRow(2n)],
-      collection: 'history', valueType: 'JobEventData[]', structs: legacyStructs,
-      timestamp: 42n, legacyJobEventCompatibility: true,
-    });
-    const decoded = decodePushdataValue(encoded!, 0, 'JobEventData[]', legacyStructs).value as Array<{
-      address_: Uint8Array; timestamp_: bigint;
-    }>;
-    expect(decoded[0].timestamp_).toBe(42n);
-    expect(decoded[0].address_).toHaveLength(25);
-  });
 
 });

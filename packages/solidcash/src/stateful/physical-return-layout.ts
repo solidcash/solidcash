@@ -180,9 +180,7 @@ export function assignPhysicalReturnIndices(
     if (group.sharedGroupIndex !== undefined) continue;
     const master = findMintingInputIndex(group.categoryId);
     if (master < 0) continue;
-    const layoutSize = group.blockLayout?.blockSize
-      ?? group.compilerRoute?.abiFunction?.blockLayout?.blockSize
-      ?? 0;
+    const layoutSize = group.blockLayout?.blockSize ?? 0;
     const trailingPred = (group.batchPredecessorOutputs ?? [])
       .filter((pred) => pred.outputBlockSlot >= layoutSize).length;
     const physicalWidth = physicalParticipantWidth(group);

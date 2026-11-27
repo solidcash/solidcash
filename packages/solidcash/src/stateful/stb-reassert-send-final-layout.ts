@@ -87,7 +87,7 @@ export function reassertSendFinalLayout(
   // place, so it must not replay earlier broad ownership passes over these now-authenticated coordinates.
   host.learnFinalizedDelegateEvents(finalBuilder);
   host.relocateCollidingDerivedValueChunkRuns(finalBuilder);
-  // Bind only after every final materializer has settled physical coordinates. Kernel ownership is selected
+  // Bind only after every final materializer has settled physical coordinates. Journal ownership is selected
   // by compiler resource identity; the provisional base is not allowed to override an authenticated run.
   host.bindMaterializedValueChunkWitnesses(finalBuilder);
   // Derived chunks and learned delegate events can replace funder pass-through or change cells

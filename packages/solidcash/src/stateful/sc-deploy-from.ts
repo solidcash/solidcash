@@ -79,8 +79,8 @@ import { refusePaymentsToStatefulMasters } from './master-lock-payment.js';
 import type { RuntimeEffect } from './runtime-effect-stream-trace.js';
 import type { RuntimeLoopTransferTarget } from './sc-derive-full-phase2-apply-runtime-loop.js';
 import type { RuntimeLoopTransferOutput, TokenContainerInfo } from './external-call-utxo-group.js';
-import { evalComputedKey, keyArguments, visibleHandlerInputs } from './route-expression-key.js';
-import { vmapCounterPermutationSpec } from './sc-batch-raw.js';
+import { evalComputedKey, keyArguments, visibleHandlerInputs } from './call-expression-key.js';
+import { vmapCounterPermutationSpec } from './internal-function-args.js';
 import { callRecordDigest } from './call-record.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { registeredValueAddressLockingBytecode, registerDeployment } from './deployment-registry.js';
@@ -180,7 +180,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   }
 
   // The covenant sees each address argument as the registered deployment's value identity (a physical locking
-  // bytecode for a plain contract, its public CREATE identity for a kernel participant). Derive salts, mapping
+  // bytecode for a plain contract, its public CREATE identity when it has one). Derive salts, mapping
   // keys and constructor genesis from those same bytes: a cashaddr string here would otherwise sort and pack
   // differently from the value the script compares, deriving a child address the factory never creates.
   const deployFunctionArgs = rawDeployFunctionArgs.map((arg, index) => {
@@ -822,7 +822,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   const needsGenesisRecipeEvaluator = !!deployTarget.genesisState || (deployTarget.genesisEntries?.length ?? 0) > 0
     || (deployAbi.transfers?.length ?? 0) > 0;
   const genesisRecipeModule = needsGenesisRecipeEvaluator
-    ? await import('../message-bus/compose.js') : undefined;
+    ? await import('./child-deployment-recipes.js') : undefined;
   const evaluateGenesisRecipe = genesisRecipeModule?.evaluateChildDeploymentRecipe;
   const genesisInputTypes = deployAbi.inputs
     .filter((input) => !input.name.startsWith('__internal__'))
@@ -1204,9 +1204,8 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   if (useBatch) {
     const trailingBase = deployAbi.blockLayout?.trailingBase
       ?? deployAbi.blockLayout?.blockSize ?? 1;
-    // The message-bus path injects the shared trailing-width witness into the source parameters before route
-    // synthesis, so it precedes the per-batch slot witnesses in the ABI. A direct artifact appends it after them.
-    // Insert at the ABI position rather than assuming either order.
+    // Insert the shared trailing-width witness at its ABI position rather than assuming where it falls among the
+    // per-batch slot witnesses.
     const trailingCountIndex = deployAbi.inputs
       .findIndex((input) => input.name === '__internal__vmapBatchTrailingCount');
     // NEW nodes trail the full fixed block when deployDataNft slots authenticate the child data region, and every
@@ -1320,7 +1319,6 @@ async function deployFromStatefulContractInner<T extends Artifact>(
       abiFunction: deployAbi,
       entryAbiFunction: deployAbi,
       stateLayout: factoryLayout,
-      overrides: {},
       finalArgs,
     },
   );
@@ -1447,8 +1445,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
     const input = deployAbi.inputs[finalArgs.length];
     if (input.name === '__internal__dynamicChunkInputBase'
       || input.name === '__internal__dynamicChunkOutputBase'
-      || input.name === '__internal__valueChunkOutputBase'
-      || input.name === '__internal__activeVerifierIndex') {
+      || input.name === '__internal__valueChunkOutputBase') {
       finalArgs = [...finalArgs, -1n];
     } else if (runtimeLoopPermutation(input.name) !== undefined) {
       finalArgs = [...finalArgs, runtimeLoopPermutation(input.name)!];
@@ -1652,7 +1649,7 @@ async function deployFromStatefulContractInner<T extends Artifact>(
       }
       ({ tokenContainers: loopTokenContainers } = await loadCreateBuilderTokenContainers(
         { categoryId: factory.categoryId, inner: factory.inner as never },
-        { abiFunction: deployAbi, args: finalArgs, overrides: undefined, stateValues: onChainState.state },
+        { abiFunction: deployAbi, args: finalArgs, stateValues: onChainState.state },
       ));
       const missing = loopTokenContainers.find((container) => container.utxo === undefined);
       if (missing !== undefined) {

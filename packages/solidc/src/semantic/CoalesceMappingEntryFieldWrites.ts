@@ -88,10 +88,6 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
   private contractNames = new Set<string>();
   private functionNames = new Set<string>();
 
-  constructor(private readonly rewriteSingles = false) {
-    super();
-  }
-
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFunctionsByName = new Map();
     for (const fn of node.freeFunctions ?? []) {
@@ -148,7 +144,7 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
         run.push(statements[j] as MappingFieldAssignNode);
         j += 1;
       }
-      const built = (run.length >= 2 || this.rewriteSingles) ? this.build(run, first) : undefined;
+      const built = run.length >= 2 ? this.build(run, first) : undefined;
       if (built) out.push(built);
       else for (let k = i; k < j; k += 1) out.push(statements[k]);
       i = j;

@@ -42,7 +42,7 @@ const compile = (): ReturnType<typeof compileString> => compileString(
         }
       }
     }`, {
-    forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+    forceStateful: true,
     evmCompat: true, suppressWarnings: true,
   });
 

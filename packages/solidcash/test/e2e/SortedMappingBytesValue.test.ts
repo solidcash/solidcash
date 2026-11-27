@@ -57,6 +57,6 @@ describe('sorted mapping bytes32 value', () => {
     expect((await sc.check(30n, H, alicePub, sig).send()).txid).toBeDefined();
     sc = StatefulContract.withCategory(contract, categoryId);
     await expect(sc.check(30n, hexToBin('bb'.repeat(32)), alicePub, sig).send())
-      .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+      .rejects.toThrow('BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

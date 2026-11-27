@@ -55,19 +55,6 @@ describe('cross-contract msg.sender-keyed vmap mapping (callee bal[msg.sender], 
     const provider = createTestProvider();
     const artBank = compileString(BANK, { forceStateful: true });
     const artCaller = compileString(CALLER, { forceStateful: true });
-    const artCallerExplicitBus = compileString(CALLER, {
-      forceStateful: true,
-      messageBus: true,
-    });
-    // An explicit `messageBus: true` request admits `pay` onto the row-loop route and embeds that route; the
-    // direct compile this test spends carries none. Either way the external call stays one unbatched invocation.
-    expect(artCaller.messageBus).toBeUndefined();
-    expect(artCallerExplicitBus.messageBus?.routeInBytecode).toBe(true);
-    expect(artCallerExplicitBus.messageBus?.admittedHandlerIds).toEqual(['pay']);
-    expect(artCallerExplicitBus.debug?.bytecode).not.toBe(artCaller.debug?.bytecode);
-    expect(artCallerExplicitBus.abi[0].externalCalls?.[0].batchInvocations)
-      .toBeUndefined();
-
     // Genesis Bank first (A embeds Bank's category).
     const bank = new Contract(artBank, [], { provider });
     const { categoryId: catBank } = await setupStatefulUtxos(

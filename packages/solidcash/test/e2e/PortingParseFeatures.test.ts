@@ -24,7 +24,7 @@ describe('porting parse features', () => {
       const tx = await sc.f(7n).send();
       expect(tx.txid).toBeDefined();
       await expect(sc.f(8n).send())
-        .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+        .rejects.toThrow('BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
     });
   }
 

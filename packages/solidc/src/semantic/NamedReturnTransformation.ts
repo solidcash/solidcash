@@ -13,7 +13,7 @@ import {
   TupleAssignmentNode,
   AssemblyStatementNode,
 } from '../ast/AST.js';
-import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
+import { sourceFileOf } from '../ast/Location.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
 import { fallsOffEndCheck } from './EnsureFinalRequireTraversal.js';
@@ -78,12 +78,12 @@ function bodyHolds(body: Node, matches: (node: Node) => boolean): boolean {
  * Warn on a named return the body never names, as Solidity warns "Unused function parameter" for it: the function
  * returns that output's zero value. A name counts as used where an identifier or a tuple assignment's target names
  * it, and, as Solidity counts it, a `return <values>;` uses every named return. Compiler-generated functions (a
- * generated source, or a `__` name such as a message-bus handler's copy of an entry) are left alone, and so is a body
- * with inline assembly, whose Yul can name the variable where this walk does not look.
+ * generated source or a compiler-owned `__` name) are left alone, and so is a body with inline assembly, whose Yul
+ * can name the variable where this walk does not look.
  */
 function warnUnusedNamedReturns(node: FunctionDefinitionNode): void {
   const { body, location } = node;
-  if (!body || generatedOriginOf(location) !== undefined || node.name.startsWith('__')) return;
+  if (!body || node.name.startsWith('__')) return;
   if (bodyHolds(body, (child) => child instanceof AssemblyStatementNode
     || (child instanceof ReturnNode && child.expressions.length > 0))) return;
   const line = location?.start?.line;

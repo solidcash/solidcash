@@ -57,7 +57,7 @@ contract Coin {
   }
 }`;
 attempt('evmCompat:Coin', () => record('evmCompat:Coin',
-  solidc.compileString(COIN, { evmCompat: true, forceStateful: true, messageBus: false, suppressWarnings: true })));
+  solidc.compileString(COIN, { evmCompat: true, forceStateful: true, suppressWarnings: true })));
 
 // SolidPool's contracts, with the options its artifacts record and its config's MiMC library.
 const pool = `${outFile}.pool-src`;
@@ -69,7 +69,7 @@ for (const file of readdirSync(pool).filter((f) => f.endsWith('.scash'))) {
 }
 const poolOptions = {
   enforceFunctionParameterTypes: true, enforceLocktimeGuard: true, enforceFinalRequire: true,
-  allowUnsafeOperations: true, commitmentLimit: 128, messageBus: false, suppressWarnings: true,
+  allowUnsafeOperations: true, commitmentLimit: 128, suppressWarnings: true,
   userLibraries: [{
     name: 'mimc', code: Buffer.from(mimcPrecompile()).toString('hex'),
     abi: { inputs: [{ name: 'pair', type: 'bytes' }], outputs: [{ type: 'bytes32' }] },

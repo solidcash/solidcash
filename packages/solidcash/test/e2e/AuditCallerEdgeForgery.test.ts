@@ -122,7 +122,6 @@ describe('an output no carrier lock names', () => {
   // A contract may pay a caller's `to`, and `address(0)` is the empty lock: the count reads past it.
   it.each([
     ['the compact count', {}, 'poke'],
-    ['the message-bus count', { messageBus: true }, 'next'],
   ])('settles at the empty lock beside %s', async (_, options, entry) => {
     const provider = createTestProvider();
     const counter = await deploy(provider, compileString(COUNTER, options), [], { calls: 0n });

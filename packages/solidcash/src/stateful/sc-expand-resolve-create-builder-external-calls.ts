@@ -14,7 +14,7 @@ import type { FunctionArgument } from '../Argument.js';
 import {
   CallGuardUndecidedError, ExternalCallTargetWrittenBeforeCallError, ListedCallNotMadeError, RawCallCalleeRequiredError,
 } from '../Errors.js';
-import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
+import { ExternalExpressionUnresolvedConditionError } from './result-evaluation-path.js';
 import { callGuardText } from './call-guard-text.js';
 import { connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex } from './deployment-registry.js';
 import { listedSingleLowLevelCalls } from './low-level-call-turns.js';
@@ -93,33 +93,14 @@ export interface ExpandResolveCreateBuilderExternalCallsResult {
  * expansion or a batched invocation list).
  */
 export function isRepeatedTypedLoopCallsite(call: ExternalCallAbi): boolean {
-  return call.occurrence === 'loop' && !call.loopArrayVar && !call.batchInvocations
+  return call.occurrence === 'loop' && !call.loopArrayVar
     && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1);
 }
 
 /** Refusal for a repeated typed loop callsite that the legacy builder cannot compose. */
 export function repeatedTypedLoopRefusal(call: ExternalCallAbi): Error {
-  return new Error(`messageBus: typed loop callsite ${call.callsiteId ?? '?'} requires atomic composition; `
+  return new Error(`typed loop callsite ${call.callsiteId ?? '?'} requires atomic composition; `
     + 'connect a signer before sending');
-}
-
-/**
- * Whether a bus-compiled root's discovered graph runs as bus rows: it reaches one state owner more than once, or
- * the root loops over a fixed callee and reaches any callee. A direct callee run settles one call (D50).
- */
-export function plansRepeatedBusRows(
-  entry: Pick<AbiFunction, 'externalCalls'>,
-  calls: readonly { contract: { categoryId: string; inner: { lockingBytecode: string } } }[],
-): boolean {
-  if (calls.length < 2) return false;
-  if (entry.externalCalls?.some(isRepeatedTypedLoopCallsite)) return true;
-  const owners = new Set<string>();
-  return calls.some(({ contract }) => {
-    const owner = `${contract.categoryId.toLowerCase()}:${contract.inner.lockingBytecode.toLowerCase()}`;
-    if (owners.has(owner)) return true;
-    owners.add(owner);
-    return false;
-  });
 }
 
 /** Counter names of compiler `loopIndex` sources nested in a published callsite. */
@@ -165,20 +146,9 @@ function zeroTripSharedArrayLoop(
   return Array.isArray(value) && value.length === 0;
 }
 
-/**
- * The bus-compile predicate: `selector` names an eligible message-bus route handler of `artifact`. A direct
- * compile publishes none, so its calls never reach the composer, the bus-row planner or the send-time promotion.
- */
-export function isBusCompiledEntry(
-  artifact: Pick<Artifact, 'messageBus'>, selector: string | undefined,
-): boolean {
-  return selector !== undefined && artifact.messageBus?.handlers.some((handler) => handler.eligible
-    && handler.selector.toLowerCase() === selector.toLowerCase()) === true;
-}
-
-/** A direct compile: `messageBus: false` stated, and not framed. Its repeated calls stay in the direct convention. */
-export function isDirectConventionArtifact(artifact: Pick<Artifact, 'compiler' | 'composition'>): boolean {
-  return artifact.compiler?.options?.messageBus === false && artifact.composition?.convention !== 'framed';
+/** A direct (not framed) compile: its repeated calls stay in the direct convention. */
+export function isDirectConventionArtifact(artifact: Pick<Artifact, 'composition'>): boolean {
+  return artifact.composition?.convention !== 'framed';
 }
 
 /**
@@ -285,8 +255,7 @@ type ListedLowLevelCall = {
  * so no frame can say whether the loop turns, and at none the listed callee would run uncalled. A call whose edge the
  * function counts is left to its covenant: the builder lays a low-level call's edge only for a callee that reads its
  * contract caller (stb-materialize-caller-edge-outputs.ts), and the function counts the edges it pins, so the edge of a
- * call it skips fails that count. A delegatecall is a proxy's, a raw coin runs no function, and a message-bus route
- * binds each row it runs.
+ * call it skips fails that count. A delegatecall is a proxy's, and a raw coin runs no function.
  */
 export async function refuseListedLowLevelCallsTheGuardSkips(
   host: ListedGuardHost,
@@ -297,8 +266,7 @@ export async function refuseListedLowLevelCallsTheGuardSkips(
   listedCalls: readonly ListedLowLevelCall[] | undefined,
 ): Promise<void> {
   const rows = abiFunction?.lowLevelCalls ?? [];
-  if (abiFunction === undefined || rows.length === 0 || (listedCalls?.length ?? 0) === 0
-    || isBusCompiledEntry(artifact, abiFunction.selector)) return;
+  if (abiFunction === undefined || rows.length === 0 || (listedCalls?.length ?? 0) === 0) return;
   // A per-turn row's covenant spends its list of callees to the end, one per turn the run makes, so a listed callee
   // of a turn the run skips fails that list: such a row is left to its covenant.
   const byRow = listedSingleLowLevelCalls(rows, listedCalls, `${artifact.contractName}.${abiFunction.name}`);
@@ -539,8 +507,8 @@ export async function expandResolveCreateBuilderExternalCalls(
 
   // This legacy builder places one physical callee block per published callsite. A non-array loop can reach
   // that same callsite repeatedly, but expanding it here would duplicate the owner's master input and cannot
-  // authenticate one ordered journal across the rows. The atomic composer handles that exact source domain;
-  // without a connected signer, refuse rather than broadcasting only the first call as a successful prefix.
+  // authenticate one ordered journal across the rows, so refuse rather than broadcasting only the first call as a
+  // successful prefix.
   // A published ceiling above one is that variable-width journal even when this invocation takes one row.
   // A domain that resolves to a single occurrence is one callee block, same as a call that is not a loop.
   // A return probe broadcasts nothing: when the loop's results form a published result array, it keeps the one
@@ -601,10 +569,10 @@ export async function expandResolveCreateBuilderExternalCalls(
   // proofs above did not run for it. A listed call the function makes only under a guard is decided here as a resolved
   // call's is. One whose guard reads false, or that no frame decides, is refused by name unless the function's own
   // covenant refuses a skipped call (it counts the caller edges it pins): its listed callee, co-spent, would run
-  // without being called. A message-bus route binds each row it runs instead. The published guard of a counted frame
+  // without being called. The published guard of a counted frame
   // of a multi-call spend is left to planDirectCallBatches, which drops a frame its guard skips and refuses one it
   // cannot decide; it plans a fixed frame, or one under an unpublished guard, as made, so those are decided here.
-  if (overrideExternalCalls && externalCalls && !isBusCompiledEntry(artifact, abiFunction?.selector)) {
+  if (overrideExternalCalls && externalCalls) {
     const guarded = externalCalls.flatMap((ec, index) => {
       const callee = overrideExternalCalls[index]?.externalContract;
       if (callee === undefined || overrideExternalCalls[index]?.absentCallee === true) return [];
@@ -755,8 +723,9 @@ export async function expandResolveCreateBuilderExternalCalls(
         canAutoResolve = false;
         break;
       }
-      if (undecidedGuards.has(ec) && !isBusCompiledEntry(artifact, abiFunction?.selector)
-        && !callCountsCallerEdge(ec, abiFunction, registered)) refuseUndecided(ec, registered);
+      if (undecidedGuards.has(ec) && !callCountsCallerEdge(ec, abiFunction, registered)) {
+        refuseUndecided(ec, registered);
+      }
       let functionName = ec.functionName;
       if (ec.interfaceName === '__raw__') {
         const selected = (registered as { implementation?: unknown }).implementation ?? registered;

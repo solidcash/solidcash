@@ -37,8 +37,8 @@ export type StateEffectEvidence =
  * state machinery" - and that is a strictly weaker claim than "changes a state variable".
  *
  * MEASURED, not argued. `Foo.callBar` publishes `writesState: true` and its whole body is `bar.log();` - one
- * external call and not one assignment. `Attack.attack` is the same shape. So of the seven handlers the L2-F2
- * partition counts as explicit writers, at least two write nothing at all, and the four that publish the flag
+ * external call and not one assignment. `Attack.attack` is the same shape. So of seven measured handlers
+ * counted as explicit writers, at least two write nothing at all, and the four that publish the flag
  * ABSENT and are conservatively counted as writers are handlers of contracts with `dataNftCount === 0`, which
  * have no state variable for any handler to change.
  *
@@ -61,8 +61,8 @@ export interface StateEffectReading {
   otherEffectEvidence: StateEffectEvidence[];
   /**
    * The flag is set and the ABI itemizes NOTHING. A plain `this.x = y` lands here: the ABI publishes no
-   * "assigns a state variable" field, so this is as close as an artifact gets to naming one - and it is
-   * indistinguishable from a bus-mode journal reservation, which is why it is reported rather than concluded.
+   * "assigns a state variable" field, so this is as close as an artifact gets to naming one, which is why it is
+   * reported rather than concluded.
    */
   unattributed: boolean;
   /**

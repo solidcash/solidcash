@@ -18,9 +18,8 @@ import {
   assignPhysicalReturnIndices,
   lastCollidingMutableWriterIndex,
 } from './physical-return-layout.js';
-import { visibleHandlerInputs } from './route-expression-key.js';
+import { visibleHandlerInputs } from './call-expression-key.js';
 import { tokenContainerKeyValue } from './sc-load-create-builder-token-containers.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 
@@ -60,13 +59,8 @@ export async function prepareCreateBuilderDerivePrelude(
     tokenContainerAccesses: readonly any[] | undefined;
     onChainState: any;
     executionSelfAddress: any;
-    overrides: any;
     functionName: string;
-    returnAbiFunction: AbiFunction | undefined;
     returnEmitOutputIndex: number;
-    returnMaterializationOutputIndex: number;
-    returnEmitBlockOffset: any;
-    delegateReturnEventOffset: any;
     lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
     externalCallUtxoGroups: ExternalCallUtxoGroup[];
     externalOutStateUtxoGroups: ExternalCallUtxoGroup[];
@@ -79,9 +73,8 @@ export async function prepareCreateBuilderDerivePrelude(
   const {
     builder, abiFunction, entryAbiFunction, tokenContainerAbiFunction, tokenContainerArgs,
     tokenContainerAccesses,
-    onChainState, executionSelfAddress, overrides, functionName,
-    returnAbiFunction, returnEmitOutputIndex, returnMaterializationOutputIndex,
-    returnEmitBlockOffset, delegateReturnEventOffset, lowLevelCallUtxoGroups,
+    onChainState, executionSelfAddress, functionName,
+    returnEmitOutputIndex, lowLevelCallUtxoGroups,
     externalCallUtxoGroups, externalOutStateUtxoGroups, activeDelegateGroupIndex,
     effectiveBlockLayout, timing,
   } = params;
@@ -92,14 +85,10 @@ export async function prepareCreateBuilderDerivePrelude(
   const tokenContainerTransferOps: Array<{
     type: 'transfer' | 'transferNft'; categoryId: string; outputSlot?: number;
   }> = [];
-  const runtimeTokenPlan = (abiFunction as MessageBusRuntimeAbiFunction | undefined)
-    ?.messageBusTokenContainerTransferPlan;
-  const directTokenPlan = runtimeTokenPlan === undefined
-    ? tokenContainerAbiFunction?.tokenContainerTransferSites?.map((site) => ({
-      args: tokenContainerArgs as readonly FunctionArgument[], handler: tokenContainerAbiFunction, site,
-      outputSlot: site.transferIndex,
-    })) : undefined;
-  const fixedTokenPlan = runtimeTokenPlan ?? directTokenPlan;
+  const fixedTokenPlan = tokenContainerAbiFunction?.tokenContainerTransferSites?.map((site) => ({
+    args: tokenContainerArgs as readonly FunctionArgument[], handler: tokenContainerAbiFunction, site,
+    outputSlot: site.transferIndex,
+  }));
   if (fixedTokenPlan !== undefined) {
     const occupiedSlots = new Set<number>();
     for (const planned of fixedTokenPlan) {
@@ -186,22 +175,8 @@ export async function prepareCreateBuilderDerivePrelude(
 
   // Reserve the return placeholder before computing any input indices: an active returnEvent contributes a
   // funder inside the root block and therefore shifts the delegated facet by one input.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_RETURN_LAYOUT === '1' && overrides?.omitLocalFeeTail) {
-    console.error('atomic-return-plan', JSON.stringify({
-      functionName,
-      abiFunction: abiFunction?.name,
-      returnAbiFunction: returnAbiFunction?.name,
-      returnOutputs: returnAbiFunction?.outputs,
-      returnEmitOutputIndex,
-      returnMaterializationOutputIndex,
-      returnEmitBlockOffset,
-      delegateReturnEventOffset,
-      suppliedReturnBlob: overrides.returnBlob && binToHex(overrides.returnBlob),
-    }));
-  }
   if (returnEmitOutputIndex >= 0) {
-    builder.setPlannedReturnOutputIndex(returnMaterializationOutputIndex);
+    builder.setPlannedReturnOutputIndex(returnEmitOutputIndex);
     builder.setReturnEventOutput(host.categoryId, new Uint8Array([0]));
   }
 
@@ -217,8 +192,7 @@ export async function prepareCreateBuilderDerivePrelude(
     for (const i of derivationDelegateIndexes) {
       if (lowLevelCallUtxoGroups[i].callMode === 'delegatecall') {
         const delegateGroup = lowLevelCallUtxoGroups[i];
-        delegatecallAbiFunction = delegateGroup.compilerRoute?.abiFunction
-        ?? (delegateGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        delegatecallAbiFunction = (delegateGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === delegateGroup.functionName);
         // `allInputs` is a pre-build ordering and can become stale when an active return slot adds a funder
         // inside the root block. Resolve the implementation by outpoint in the materialized probe, just as
@@ -299,13 +273,13 @@ export async function prepareCreateBuilderDerivePrelude(
     }
   }
   // Event placeholders are materialized by the STB's effective physical
-  // layout. For compiler-routed delegates that layout can be substantially
+  // layout. For routed delegates that layout can be substantially
   // wider than the public implementation ABI; using the latter maps event
   // ordinals onto unrelated participant outputs and learns false commits.
   const eventBlockLayoutForDerive = effectiveBlockLayout
   ?? entryAbiFunction?.blockLayout ?? abiFunction?.blockLayout;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('stateful-builder-delegate-index', { functionName, delegatecallInputIndex });
   }
 

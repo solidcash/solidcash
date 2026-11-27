@@ -10,12 +10,10 @@ import {
   type Artifact,
   type EntryAccessAbi,
 } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
 import {
   decodeEntryCommitment,
 } from './SortedList.js';
 import {
-  permitsLegacyNamedValueChunkFallback,
   legacyPlannedChunkableValueWriteCollection,
   valueChunkWriteResourceIdentity,
   type ExternalCallUtxoGroup,
@@ -23,18 +21,7 @@ import {
 } from './StatefulTransactionBuilder.js';
 import { legacyIsPublishJobEventName } from './legacy-job-event-helpers.js';
 
-/** Minimal runtime ABI narrowing used by writer/chunkable selection. */
-type MessageBusRuntimeAbiFunction = AbiFunction & {
-  messageBusActiveWriteCollections?: readonly string[];
-  messageBusActiveEntryRecipes?: ReadonlyMap<number, readonly {
-    rowIndex: number;
-    access: EntryAccessAbi;
-    args: FunctionArgument[];
-    inputs: AbiFunction['inputs'];
-  }[]>;
-  messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
-};
-
+/** The ABI function a group's logical call names, found in its logical (else physical) artifact. */
 export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
   const artifact = group.logicalArtifact
     ?? group.logicalContract?.inner?.artifact
@@ -43,12 +30,11 @@ export function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFu
   return (artifact?.abi as readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === name);
 }
 
-/** The exact ABI body carried by a physical participant. Compiler routes outrank source-level names because
- * overloads and shared participants can execute a different body than the logical call which introduced them. */
+/** The exact ABI body carried by a physical participant: its own function, not the logical call which
+ * introduced it, because shared participants can execute a different body than that call. */
 export function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
-  return group.compilerRoute?.abiFunction
-    ?? (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
-      ?.find((candidate) => candidate.name === group.functionName);
+  return (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
+    ?.find((candidate) => candidate.name === group.functionName);
 }
 
 export function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean {
@@ -59,7 +45,6 @@ export function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean 
  * list is authoritative and ambiguity fails closed. Source names remain only for artifacts with no effect list. */
 export function computedStateWriterGroupIndex(
   groups: readonly ExternalCallUtxoGroup[], candidateIndices: readonly number[],
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number | undefined {
   const described = candidateIndices.filter((index) => hasPublishedEntryEffects(groups[index]));
   const writers = described.filter((index) => {
@@ -69,14 +54,9 @@ export function computedStateWriterGroupIndex(
   });
   if (writers.length === 1) return writers[0];
   if (described.length > 0) return undefined;
-  if (!permitsLegacyNamedValueChunkFallback(
-    candidateIndices.map((index) => groups[index]), ownerConvention,
-  )) {
-    return undefined;
-  }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
-    const name = groups[index]?.compilerRoute?.abiFunction.name ?? groups[index]?.functionName;
+    const name = groups[index]?.functionName;
     return name === 'transferFrom' || name === 'transfer' || name === 'approve';
   });
 }
@@ -84,7 +64,6 @@ export function computedStateWriterGroupIndex(
 /** Select one physical chunkable-array writer by its published collection effects. */
 export function chunkableWriterGroupIndex(
   groups: readonly ExternalCallUtxoGroup[],
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   const candidates = groups.flatMap((group, index) => {
     const abi = physicalExternalCallFunction(group);
@@ -92,14 +71,12 @@ export function chunkableWriterGroupIndex(
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
-  if (!permitsLegacyNamedValueChunkFallback(groups, ownerConvention)) return -1;
   const plannedLegacyCandidates = groups.flatMap((group, index) => (
     legacyPlannedChunkableValueWriteCollection(group) === undefined ? [] : [index]
   ));
   if (plannedLegacyCandidates.length === 1) return plannedLegacyCandidates[0];
   if (plannedLegacyCandidates.length > 1) return -1;
-  // Compatibility only for artifacts predating compiler-published entry effects.
-  // legacy JobEvent name adapter: last-resort name match stays behind permitsLegacyNamedValueChunkFallback above.
+  // Compatibility only for artifacts predating compiler-published entry effects: a last-resort name match.
   return groups.findIndex((group) => legacyIsPublishJobEventName(group.functionName));
 }
 
@@ -107,7 +84,7 @@ export function chunkableWriterGroupIndex(
  * A shared physical participant can execute one state transition while surrounding logical views publish their
  * returns in separate tail outputs. A view after a write must read the projected output state, but only the final
  * read in a dependency chain can be recovered from the participant's final outputs. Earlier reads remain honest
- * pre-state probes; a read between two writes needs a compiler-owned route which preserves that intermediate state.
+ * pre-state probes; a read between two writes is not a candidate, since no output preserves that intermediate state.
  */
 export function projectedExternalReturnCandidates(
   groups: readonly ExternalCallUtxoGroup[],
@@ -165,26 +142,18 @@ export function describeValueChunkWrites(
   stateOwnerCategoryId?: string,
 ): ValueChunkWriteDescriptor[] {
   const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-  const abiFunction = group.compilerRoute?.abiFunction
-    ?? artifact?.abi.find((candidate) => candidate.name === group.functionName);
+  const abiFunction = artifact?.abi.find((candidate) => candidate.name === group.functionName);
   if (!abiFunction) return [];
   const layout = abiFunction.blockLayout ?? group.blockLayout;
   if (!layout) return [];
-  const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
-    && (group.compilerRoute.rowArguments?.length ?? 0) > 0
-    ? group.compilerRoute.rowArguments!.map((row) => row.handler)
-    : [abiFunction];
-  const activeWriteCollections = (abiFunction as MessageBusRuntimeAbiFunction)
-    .messageBusActiveWriteCollections;
+  const activeFunctions = [abiFunction];
   const writes: ValueChunkWriteDescriptor[] = [];
   const appendWrite = (access: EntryAccessAbi, entryAccessSlot: number, routeSlot: number): void => {
     if (!access.operations.includes('write')) return;
     const collection = group.stateLayout.collections?.find((candidate) =>
       candidate.name === access.collection || candidate.signature === access.collection);
     if (!collection?.chunkableValue) return;
-    if (activeWriteCollections !== undefined && !activeWriteCollections.some((candidate) =>
-      candidate === access.collection || candidate === collection.name
-        || candidate === collection.signature)) return;
+
     const blockSlot = layout.slots.find((slot) =>
       slot.kind === 'entry' && slot.slotIndex === routeSlot)?.offset;
     if (blockSlot === undefined) return;
@@ -203,8 +172,7 @@ export function describeValueChunkWrites(
           && /^[0-9a-f]{64}$/.test(claimKeySlot ?? '')
         ? [claimKeySlot!] : [];
     }))];
-    const publishedSlot = group.compilerRoute?.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`]
-        ?? group.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`];
+    const publishedSlot = group.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`];
     const keySlot = bytes !== undefined && bytes.length >= 32
       ? decodeEntryCommitment(bytes).slot
       : claimedKeySlots.length === 1 ? hexToBin(claimedKeySlots[0]!)
@@ -229,18 +197,9 @@ export function describeValueChunkWrites(
       writes.push(write);
     }
   };
-  const activeRecipes = (abiFunction as MessageBusRuntimeAbiFunction).messageBusActiveEntryRecipes;
-  if (activeRecipes !== undefined && activeRecipes.size > 0) {
-    for (const [routeSlot, recipes] of activeRecipes) {
-      for (const recipe of recipes) {
-        appendWrite(recipe.access, recipe.access.slotIndex ?? 0, routeSlot);
-      }
-    }
-  } else {
-    for (const activeFunction of activeFunctions) {
-      for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
-        appendWrite(access, entryAccessSlot, access.slotIndex ?? entryAccessSlot);
-      }
+  for (const activeFunction of activeFunctions) {
+    for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
+      appendWrite(access, entryAccessSlot, access.slotIndex ?? entryAccessSlot);
     }
   }
   return writes;
@@ -250,18 +209,11 @@ export function chunkableValueWriteCollections(
   group: ExternalCallUtxoGroup,
   abiFunction: AbiFunction,
 ): string[] {
-  const activeWriteCollections = (abiFunction as MessageBusRuntimeAbiFunction)
-    .messageBusActiveWriteCollections;
-  const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
-    && (group.compilerRoute.rowArguments?.length ?? 0) > 0
-    ? group.compilerRoute.rowArguments!.map((row) => row.handler)
-    : [abiFunction];
+  const activeFunctions = [abiFunction];
   return [...new Set(activeFunctions.flatMap((activeFunction) => (
     activeFunction.entryAccesses ?? []
   ).flatMap((access) => {
-    if (!access.operations.includes('write')
-      || (activeWriteCollections !== undefined
-        && !activeWriteCollections.includes(access.collection))) return [];
+    if (!access.operations.includes('write')) return [];
     const collection = group.stateLayout.collections?.find((candidate) =>
       candidate.name === access.collection || candidate.signature === access.collection);
     return access.chunkableArrayValue === true || collection?.chunkableValue === true

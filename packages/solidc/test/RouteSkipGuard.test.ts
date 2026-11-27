@@ -7,14 +7,11 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
-import type { FunctionDefinitionNode, Node } from '../src/ast/AST.js';
 import { compileString } from '../src/index.js';
-import SymbolTableTraversal from '../src/semantic/SymbolTableTraversal.js';
 
 /**
- * ROUTE-SKIP-1 residual. A message-bus handler clone's sorted writes stay on the scalar path because the clone is
- * flagged, not because of its name, so a renamed clone cannot take the batch path's -2 skip. A direct batch writes
- * every row: the inactive-row sentinel -2 is refused on a plain multi-target batch.
+ * ROUTE-SKIP-1 residual. A direct batch writes every row: the inactive-row sentinel -2 is refused on a plain
+ * multi-target batch.
  */
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
@@ -105,36 +102,10 @@ function pairSpend(artifact: Artifact, skipped?: number): true | string {
   return createVirtualMachineBch2026().verify({ sourceOutputs, transaction });
 }
 
-describe('ROUTE-SKIP-1 typed scalar-clone guard', () => {
-  it('keeps a flagged clone scalar whatever its name', () => {
-    const lone = (name: string): string => `${PRAGMA} contract Lone { mapping(uint => uint) m;`
-      + ` function ${name}(uint k, uint v) { this.m[k] = v; require(true); } }`;
-    const batched = compileString(lone('direct'), { messageBus: false }).abi.find((fn) => fn.name === 'direct');
-    expect(batched?.sortedBatchInfo).toMatchObject([{ collection: 'm', slotIndices: [0] }]);
-    expect(batched?.inputs.map((input) => input.name)).toContain('__internal__vmapBatchPredOut_0');
-
-    // A clone renamed out of the `__message_bus_` family: only the flag says the route owns its records.
-    const visit = SymbolTableTraversal.prototype.visitFunctionDefinition;
-    SymbolTableTraversal.prototype.visitFunctionDefinition = function flagRelabelled(
-      this: SymbolTableTraversal, node: FunctionDefinitionNode,
-    ): Node {
-      if (node.name === 'relabelled') node.ownRecordsScalarOnly = true;
-      return visit.call(this, node);
-    };
-    let scalar: ReturnType<typeof compileString>['abi'][number] | undefined;
-    try {
-      scalar = compileString(lone('relabelled'), { messageBus: false }).abi.find((fn) => fn.name === 'relabelled');
-    } finally {
-      SymbolTableTraversal.prototype.visitFunctionDefinition = visit;
-    }
-    expect(scalar?.entryAccesses).toHaveLength(1);
-    expect(scalar?.sortedBatchInfo).toBeUndefined();
-    expect(scalar?.inputs.some((input) => input.name.startsWith('__internal__vmapBatch'))).toBe(false);
-  });
-
+describe('ROUTE-SKIP-1 sorted-batch skip guard', () => {
   it('settles an honest direct two-target batch and refuses a forged -2 on either row', () => {
     const artifact = compileString(`${PRAGMA} contract Pair { mapping(uint => uint) m;`
-      + ' function f() { this.m[1] = 5; this.m[2] = 6; require(true); } }', { messageBus: false });
+      + ' function f() { this.m[1] = 5; this.m[2] = 6; require(true); } }');
     expect(artifact.abi.find((fn) => fn.name === 'f')?.sortedBatchInfo)
       .toMatchObject([{ collection: 'm', slotIndices: [0, 1] }]);
     expect(pairSpend(artifact), 'honest batch').toBe(true);

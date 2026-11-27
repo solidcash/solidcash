@@ -22,7 +22,6 @@ export interface FinalizeBuildValueChunkBandAndViewsHost {
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   chunkableValueWriteCategory(): string | undefined;
   hasStagedValueChunkOutputs(): boolean;
-  permitsLegacyNamedValueChunkFallback(): boolean;
   stripSurplusDerivedValueChunkLocks(builder: TransactionBuilder): void;
   repackViewTailsAfterMaterialization(builder: TransactionBuilder): boolean;
   refreshInputs(): void;
@@ -61,7 +60,7 @@ export function finalizeBuildValueChunkBandAndViews(
   const publishCategory = host.chunkableValueWriteCategory();
   const chunkLock = host.valueChunkRedeemLock
     ?? (publishCategory ? persistedCompatibilityValueChunkLock(publishCategory) : undefined);
-  // Kernel identity-scan pins count matching locks anywhere. A single persist band
+  // Identity-scan pins count matching locks anywhere. A single persist band
   // must not convert those trailing copies into OP_TRUE.
   const stagedLockHexes = new Set(
     host.valueChunkOutputs.flatMap((output) => {
@@ -84,8 +83,7 @@ export function finalizeBuildValueChunkBandAndViews(
   // drive the chunk loop to index 2+ (OP_SPLIT past the value). Strip them.
   const shouldStripStagedSurplus = host.hasStagedValueChunkOutputs()
     && host.valueChunkOutputs.length > 0;
-  const shouldStripLegacySurplus = host.permitsLegacyNamedValueChunkFallback()
-    && !host.hasStagedValueChunkOutputs()
+  const shouldStripLegacySurplus = !host.hasStagedValueChunkOutputs()
     && !skipCompilerOwnedInBlockCollectionStrip({
       preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
       pinnedEntryCount: host.pinnedEntrySlots.size,
@@ -106,7 +104,7 @@ export function finalizeBuildValueChunkBandAndViews(
     return 'rebuild';
   }
   // View-tail packing can still displace staged identity-scan chunks; restore before
-  // materialize/preflight so the kernel count pin observes the redeem locks.
+  // materialize/preflight so the journal count pin observes the redeem locks.
   host.reassertStagedValueChunkOutputs(builder);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && stagedLockHexes.size > 0) {

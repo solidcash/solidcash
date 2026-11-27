@@ -240,7 +240,7 @@ spaces, return types excluded. Normalization (`signatureInExternalFunction` / `i
 SolidCash's `canonicalSelectorSignature` (utils/state.ts) + `canonicalSelectorType` (utils/types.ts) emit these
 exact canonical names under `evmCompat`; every selector derivation that has the declared types (entry dispatch,
 the artifact ABI, `fn.selector`/`error.selector`/`E.selector`, `type(I).interfaceId`, `abi.encodeCall`, the
-message-bus and framed call-site selectors, `abi.encodeWithSignature`'s argument matching) routes through them, so
+framed call-site selectors, `abi.encodeWithSignature`'s argument matching) routes through them, so
 all of them agree. Native compiles keep the platform `type.toString()` spelling with address payability erased.
 
 Residual: a selector folded for a **library-declared** member (`L.f.selector`, `L.E.selector`,

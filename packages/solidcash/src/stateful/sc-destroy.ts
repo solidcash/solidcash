@@ -9,7 +9,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import {
   assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder, type FinalizedByteSubject,
-} from '../message-bus/preflight.js';
+} from '../finalization.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { getDustThreshold } from '../network/dust-threshold.js';
 import { addressToLockScript, calculateDust } from '../utils.js';

@@ -12,8 +12,8 @@ export type PrepareCreateBuilderNestedComposeSharedWriterResult = {
   preserveFirstConditionalWriter: boolean;
   sharedPriorFunctionName: string | undefined;
   sharedPriorFunctionArgs: FunctionArgument[] | undefined;
-  sharedPriorAtomicNodeIndex: number | undefined;
-  sharedPriorAtomicNode: any;
+  sharedPriorCallNodeIndex: number | undefined;
+  sharedPriorCallNode: any;
 };
 
 /**
@@ -33,14 +33,14 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     childFunctionArgs: FunctionArgument[];
     resolvedRawFunctionName: string | undefined;
     externalCallUtxoGroups: ExternalCallUtxoGroup[];
-    latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
-    preparedAtomicNodes: readonly unknown[] | undefined;
+    latestPreparedCallNodeByPhysicalGroup: Map<number, number>;
+    preparedCallNodes: readonly unknown[] | undefined;
   },
 ): PrepareCreateBuilderNestedComposeSharedWriterResult {
   const {
     nested, proxyCallee, callee, sharedGroupIndex, childWritesState, logicalSelector,
     childFunctionName, childFunctionArgs, resolvedRawFunctionName,
-    externalCallUtxoGroups, latestPreparedAtomicNodeByPhysicalGroup, preparedAtomicNodes,
+    externalCallUtxoGroups, latestPreparedCallNodeByPhysicalGroup, preparedCallNodes,
   } = params;
 
   const sharedLogicalArtifact = proxyCallee?.implementation.inner.artifact
@@ -50,9 +50,9 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
       (candidate) => candidate.name === externalCallUtxoGroups[sharedGroupIndex].functionName,
     );
   // Mutually-exclusive SafeERC20 fallback calls advertise several conditional writes to the same
-  // token master. Without a compiler-owned batch route, one physical co-spend can execute only one
-  // handler. Preserve the first active writer; replacing it with the final fallback makes the caller
-  // read the first branch's return channel while the token executes different arguments.
+  // token master, and one physical co-spend executes only one function. Preserve the first active writer;
+  // replacing it with the final fallback makes the caller read the first branch's return channel while the
+  // token executes different arguments.
   const preserveFirstConditionalWriter = sharedGroupIndex >= 0
     && nested.occurrence === 'conditional'
     && childWritesState
@@ -61,8 +61,7 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     // the shared physical block; otherwise the transaction executes the earlier method with stale args.
     && logicalSelector !== undefined
     && sharedPhysicalFunction?.selector === logicalSelector
-    && sharedPhysicalFunction.writesState === true
-    && !externalCallUtxoGroups[sharedGroupIndex].compilerRoute;
+    && sharedPhysicalFunction.writesState === true;
   if (sharedGroupIndex >= 0
     && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1') {
@@ -85,10 +84,10 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     ? externalCallUtxoGroups[sharedGroupIndex].functionName : undefined;
   const sharedPriorFunctionArgs = sharedGroupIndex >= 0
     ? externalCallUtxoGroups[sharedGroupIndex].functionArgs : undefined;
-  const sharedPriorAtomicNodeIndex = sharedGroupIndex >= 0
-    ? latestPreparedAtomicNodeByPhysicalGroup.get(sharedGroupIndex) : undefined;
-  const sharedPriorAtomicNode = sharedPriorAtomicNodeIndex === undefined
-    ? undefined : preparedAtomicNodes?.[sharedPriorAtomicNodeIndex];
+  const sharedPriorCallNodeIndex = sharedGroupIndex >= 0
+    ? latestPreparedCallNodeByPhysicalGroup.get(sharedGroupIndex) : undefined;
+  const sharedPriorCallNode = sharedPriorCallNodeIndex === undefined
+    ? undefined : preparedCallNodes?.[sharedPriorCallNodeIndex];
   if (sharedGroupIndex >= 0) {
     if (childWritesState && !preserveFirstConditionalWriter) {
       const primary = externalCallUtxoGroups[sharedGroupIndex];
@@ -105,7 +104,7 @@ export function prepareCreateBuilderNestedComposeSharedWriter(
     preserveFirstConditionalWriter,
     sharedPriorFunctionName,
     sharedPriorFunctionArgs,
-    sharedPriorAtomicNodeIndex,
-    sharedPriorAtomicNode,
+    sharedPriorCallNodeIndex,
+    sharedPriorCallNode,
   };
 }

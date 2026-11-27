@@ -14,11 +14,10 @@ export default defineConfig({
   compiler: {
     evmCompat: true,
     ecrecover: 'p2pkh',
-    // The port settles cross-contract state through the message bus: `KashiPairMock.accrueTwice` calls `accrue()`
+    // The port settles cross-contract state through the compiler route: `KashiPairMock.accrueTwice` calls `accrue()`
     // twice and `accrue` inlines an `IBentoBoxV1.toAmount` state read, so one UTXO master would have to be spent
     // twice and the direct path refuses the shape. That repetition exists only after inlining, so automatic
     // selection cannot see it in the source (its diagnostic now says so); the app states the option.
-    messageBus: true,
     // Pure / zero-state Solidity ports (ChainlinkOracleV2, library-like mocks) still need a master NFT +
     // blockLayout so view/pure returns emit returnEvent outputs and can be staticCall-derived. Without this
     // they compile as classic P2SH scripts with no returnEvent slot and StatefulContract pure-read fails.

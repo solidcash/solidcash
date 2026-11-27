@@ -38,7 +38,7 @@ export function materializeLateBuildChunkFrame(
   appendDelegateGroupOutputs: (groupIndex: number) => void,
   deferredCalleeDynamicChunks: readonly Output[],
   debugOwnMutableOutputs: (label: string) => void,
-  debugAtomicOutputStage: (label: string) => void,
+  debugStatefulOutputStage: (label: string) => void,
 ): void {
   const appendValueChunks = (): void => {
     appendValueChunksImpl(host.valueDynamicHost, builder);
@@ -48,11 +48,9 @@ export function materializeLateBuildChunkFrame(
     appendDynamicChunksImpl(host.valueDynamicHost, builder);
   };
   const master = host.valueDynamicHost.masterUnlocker();
-  const independentlyWitnessedRoot = !host.trailingFrameHost.composedParticipant
-    && !host.trailingFrameHost.compilerRouteDelegateBlock
-    && !host.valueDynamicHost.runtimeLoopOrComposed
+  const independentlyWitnessedRoot = !host.trailingFrameHost.directCallDelegateBlock
+    && !host.valueDynamicHost.hasRuntimeLoopOutputs
     && isContractUnlocker(master)
-    && !('messageBusConvention' in master.abiFunction)
     && master.abiFunction.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase');
   // Ordinary witnessed runs may follow every callee and identity recreation. Appending earlier lets a
   // later fixed callee output overwrite a chunk before the root publishes its materialized coordinate.
@@ -67,13 +65,13 @@ export function materializeLateBuildChunkFrame(
     associatedDelegateOutputs,
     appendDelegateGroupOutputs,
     debugOwnMutableOutputs,
-    debugAtomicOutputStage,
+    debugStatefulOutputStage,
   );
 
-  repairNestedCalleeOutputs(host.nestedCalleeHost, builder, debugAtomicOutputStage);
+  repairNestedCalleeOutputs(host.nestedCalleeHost, builder, debugStatefulOutputStage);
 
   // Ahead of the root's run, which a delegate's suffix convention keeps last.
   for (const output of deferredCalleeDynamicChunks) builder.addOutput(output);
   if (deferDynamicChunks) appendDynamicChunks();
-  debugAtomicOutputStage('deferred-dynamic-chunks');
+  debugStatefulOutputStage('deferred-dynamic-chunks');
 }

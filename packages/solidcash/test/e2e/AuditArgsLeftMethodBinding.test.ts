@@ -355,52 +355,6 @@ describe('the method a direct call names, against a callee running another of th
   }
 });
 
-/**
- * The same calls in compiles other than the direct convention. A message-bus build keeps each function's direct entry
- * beside its route, and an ordinary call spends that entry; a direct-only participant of a kernel composition is an
- * ordinary direct caller of an ordinary callee.
- */
-const CONVENTIONS: Convention[] = [
-  { name: 'message-bus', caller: { messageBus: true }, callee: { messageBus: true } },
-  { name: 'direct participant', caller: { messageBusDirectParticipant: true }, callee: {} },
-];
-
-describe('the method an args-left call names, in other conventions (VM)', () => {
-  for (const convention of CONVENTIONS) {
-    for (const shape of SHAPES) {
-      describe(`${convention.name}, ${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {
-        it(`settles the honest ${shape.a}() through a single-function interface, and ${shape.b}()`, async () => {
-          const d = await deploy(shape, 'Caller', convention);
-          // The argument the call leaves is a witness; a message-bus build's callee pins a void record for it too.
-          expect(hidden(d, 'Caller', 'oneA', LEFT_ARGUMENT)).toEqual(['__internal__callArgument0_0']);
-          const a = await spend(d, 'oneA', shape.a);
-          const b = await spend(d, 'oneB', shape.b);
-          expectOnlyTheMethodDiffers(d, shape, a, b);
-          expect(runVm(a)).toEqual({ success: true });
-          expect(runVm(b)).toEqual({ success: true });
-        }, 300_000);
-
-        // The caller digests the argument it leaves from its witness, so B's record does not match A's call.
-        it(`refuses ${shape.a}() co-spent with ${shape.b} at the caller (single-function)`, async () => {
-          const d = await deploy(shape, 'Caller', convention);
-          const a = await spend(d, 'oneA', shape.a);
-          expectRefusedAt(runVm(splice(a, await spend(d, 'oneB', shape.b), d.callerCat)), master(a, d.callerCat));
-        }, 300_000);
-
-        if (convention.name !== 'message-bus') return;
-        // A named call through a single-function interface, in the same build.
-        it(`refuses ${shape.a}(v) co-spent with ${shape.b} at the caller (single-function, named)`, async () => {
-          const d = await deploy(shape, 'Named', convention);
-          const a = await spend(d, 'oneA', shape.a, true);
-          const b = await spend(d, 'oneB', shape.b, true);
-          expectOnlyTheMethodDiffers(d, shape, a, b);
-          expectRefusedAt(runVm(splice(a, b, d.callerCat)), master(a, d.callerCat));
-        }, 300_000);
-      });
-    }
-  }
-});
-
 describe('the method an args-left call names, made once per turn of a loop over targets (VM)', () => {
   for (const shape of SHAPES) {
     describe(`${shape.name}: ${shape.a} beside ${shape.b}(int v)`, () => {

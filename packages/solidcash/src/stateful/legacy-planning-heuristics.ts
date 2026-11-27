@@ -1,9 +1,8 @@
 /**
- * Legacy planning heuristics isolated from the kernel builder path.
+ * Legacy planning heuristics isolated from the direct builder path.
  *
- * Kernel artifacts (`messageBus.convention === 'kernel-row-loop'` or typed value-chunk /
- * state-transition descriptors) must never take these branches. Older plans without descriptors
- * may opt in explicitly via `permitsLegacyNamedValueChunkFallback`.
+ * Artifacts with typed value-chunk / state-transition descriptors must never take these branches; only older
+ * plans without descriptors reach them.
  */
 
 export type LegacyScalarNameHints = {
@@ -34,11 +33,9 @@ export function legacyIsPublishJobEventName(name: string | undefined): boolean {
 export function legacyGroupLooksLikePublishJobEvent(group: {
   functionName?: string;
   logicalFunctionName?: string;
-  compilerRoute?: { abiFunction?: { name?: string } };
 }): boolean {
   return legacyIsPublishJobEventName(group.functionName)
-    || legacyIsPublishJobEventName(group.logicalFunctionName)
-    || legacyIsPublishJobEventName(group.compilerRoute?.abiFunction?.name);
+    || legacyIsPublishJobEventName(group.logicalFunctionName);
 }
 
 /** Pre-descriptor plans did not publish a write operation. Use planned INSERTs when available. */
@@ -72,21 +69,7 @@ export const LEGACY_JOB_EVENTS_COLLECTION_ALIASES: readonly string[] = Object.fr
 /** A descriptor-free collection fallback requires the historical publisher, not merely a legacy owner. */
 export function legacyNamedJobEventCollectionFallback(
   groups: readonly Parameters<typeof legacyGroupLooksLikePublishJobEvent>[0][],
-  permitted: boolean,
 ): string | undefined {
-  return permitted && groups.some(legacyGroupLooksLikePublishJobEvent)
+  return groups.some(legacyGroupLooksLikePublishJobEvent)
     ? LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0] : undefined;
-}
-
-/**
- * Whether leftover integer/bool fields may be seeded from function-name regexes.
- * Kernel convention always returns false — typed arg→field matching may still run.
- */
-export function permitsLegacyScalarNameHeuristics(
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
-  artifactConvention?: 'legacy-unroll' | 'kernel-row-loop' | string,
-): boolean {
-  if (ownerConvention === 'kernel-row-loop') return false;
-  if (artifactConvention === 'kernel-row-loop') return false;
-  return true;
 }

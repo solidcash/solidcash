@@ -94,7 +94,7 @@ const bigEndian = ({ h, v, r, s }: EvmInput): unknown[] => [h, v, beWord(r), beW
 
 type Sent = { transaction: ReturnType<typeof decodeTransactionUnsafe>; sourceOutputs: unknown[] };
 
-const COMPILE = { deployer: true, genesisCalls: true, messageBus: false } as const;
+const COMPILE = { deployer: true, genesisCalls: true } as const;
 
 /**
  * A stateful contract on the production profile with its recovery pool, `poolCoins` coins of each role, a wallet and a

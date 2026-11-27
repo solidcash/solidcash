@@ -34,7 +34,7 @@ export interface AppendDelegateOutputHelpersHost {
   readonly externalCallEntryOutputsByIndex: ReadonlyMap<number, { categoryId: string; commitment: string }>;
   readonly externalCallEntryOutputs: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly delegateComputeResources: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   /** Set only when the delegated implementation, not the owner, co-spends the block-info oracle. */
   readonly blockInfoCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCoSpendUtxos: readonly UnlockableUtxo[];
@@ -81,8 +81,7 @@ export function createAppendDelegateOutputHelpers(
     const group = host.lowLevelCallUtxoGroups[groupIndex];
     if (!group || group.callMode !== 'delegatecall') return;
     const bMaster = group.masterUtxo as UnlockableUtxo;
-    const delegateFn = group.compilerRoute?.abiFunction
-    ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+    const delegateFn = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName);
     const layout = lowLevelCallBlockLayout(group) ?? delegateFn?.blockLayout;
     const expectedMasterAbs = host.getLowLevelCallMasterInputIndex(groupIndex);
@@ -186,9 +185,9 @@ export function createAppendDelegateOutputHelpers(
     const lastTransferOffset = delegateFn?.blockLayout?.slots
       .filter((slot) => slot.kind === 'transfer')
       .reduce((max, slot) => Math.max(max, slot.offset), -1) ?? -1;
-    // A compiler-route delegate's side-cars are slots of the proxy-owned balanced route and were recreated at
+    // A route delegate's side-cars are slots of the proxy-owned balanced route and were recreated at
     // those route offsets above. Only legacy delegate geometry places compute resources after the executor.
-    const lastComputeOffset = host.delegateComputeResources && !host.compilerRouteDelegateBlock
+    const lastComputeOffset = host.delegateComputeResources && !host.directCallDelegateBlock
       ? delegateFn?.blockLayout?.slots
         .filter((slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar')
         .reduce((max, slot) => Math.max(max, slot.offset), -1) ?? -1
@@ -243,9 +242,8 @@ export function createAppendDelegateOutputHelpers(
     const delegateLoopVars = host.delegateLoopEntryVars();
     if (delegateLoopVars.length === 0) return;
     const delegateFunction = (group: ExternalCallUtxoGroup): AbiFunction | undefined => (
-      group.compilerRoute?.abiFunction
-    ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-      .find((candidate) => candidate.name === group.functionName)
+      (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === group.functionName)
     );
     const activeDelegate = host.activeDelegateGroupIndex === undefined
       ? undefined : host.lowLevelCallUtxoGroups[host.activeDelegateGroupIndex];
@@ -322,7 +320,7 @@ export function createAppendDelegateOutputHelpers(
         };
         entryOutput.amount = host.loopEntryTransitionSatoshis(lv, commitment)
         ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
-        // Earlier composed participant/identity outputs may already have been materialized. The implementation
+        // Earlier participant/identity outputs may already have been materialized. The implementation
         // covenant owns an absolute master-relative loop coordinate, so insert at that coordinate rather than
         // appending after whichever caller outputs happened to be built first.
         builder.outputs.splice(outputIndex++, 0, entryOutput);

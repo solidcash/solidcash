@@ -6,9 +6,8 @@
  * chain, then re-sends it with one push added and with the argument push removed; only the honest one is accepted.
  *
  * Arm kinds and the unlockings the SDK builds for them here: an entry (its arguments and selector), `receive` (no
- * push), `fallback` (its own selector, which the dispatcher takes as the call data it drops), a message-bus route (its
- * two positional items, its arguments and the route selector). A multi-call candidate's standalone run is in
- * ExactStackCallBatch.test.ts, and Deploy<C>'s `create` in DeployerPrologue.test.ts.
+ * push), `fallback` (its own selector, which the dispatcher takes as the call data it drops). A multi-call candidate's
+ * standalone run is in ExactStackCallBatch.test.ts, and Deploy<C>'s `create` in DeployerPrologue.test.ts.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -77,7 +76,7 @@ describe('B6.0: an arm starts from an exact stack', () => {
   };
 
   it('emits OP_DEPTH n OP_NUMEQUALVERIFY at the start of an inlined sole entry', () => {
-    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
+    const artifact = compileString(SOURCE, { genesisCalls: true });
     const opcodes = decodeAuthenticationInstructions(
       scriptToBytecode(asmToScript(artifact.bytecode)),
     ).map((i) => i.opcode);
@@ -94,7 +93,7 @@ contract C {
     int s;
     function a() { s = s + 1; }
     function b() { s = s + 2; }
-}`, { messageBus: false });
+}`);
     const checkHeads = definedBodies(artifact.bytecode).filter((body) => (
       body[0] === Op.OP_DEPTH && body[2] === Op.OP_NUMEQUALVERIFY
     ));
@@ -106,7 +105,7 @@ contract C {
   it('accepts the honest unlocking and refuses one surplus push or one missing push', async () => {
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
+    const artifact = compileString(SOURCE, { genesisCalls: true });
     const funding = { txid: 'c1c0'.repeat(16), vout: 0, satoshis: 300000n };
     await provider.addUtxo(p2pkh.address, funding);
     const deployed = await StatefulContract.deploy(artifact, [], {
@@ -214,7 +213,7 @@ contract Forwarder {
 }`;
 
   it('opens the fallback with its check, before the call data it rebuilds from its input', () => {
-    const artifact = compileString(FORWARDER, { messageBus: false });
+    const artifact = compileString(FORWARDER);
     const fallback = artifact.abi.find((fn) => fn.name === '__fallback')!;
     const body = definedBody(artifact, fallback.selector!);
     // Its model holds the redeem length the program computes for msg.data, and not the call data it rebuilds after.
@@ -222,7 +221,7 @@ contract Forwarder {
   });
 
   it('receive: accepts the honest spend and refuses one surplus push', async () => {
-    const artifact = compileString(RECEIVER, { evmCompat: true, messageBus: false });
+    const artifact = compileString(RECEIVER, { evmCompat: true });
     const { provider, hex } = await honestSpend(artifact, '__receive', { x: 0n });
     const master = masterIndex(decodeTransactionUnsafe(hexToBin(hex)));
     expect(master).toBeGreaterThanOrEqual(0);
@@ -234,79 +233,11 @@ contract Forwarder {
   }, 120_000);
 
   it('fallback: accepts the honest spend and refuses one surplus push', async () => {
-    const artifact = compileString(FORWARDER, { messageBus: false });
+    const artifact = compileString(FORWARDER);
     const { provider, hex } = await honestSpend(artifact, '__fallback', { n: 0n });
     const master = masterIndex(decodeTransactionUnsafe(hexToBin(hex)));
     expect(master).toBeGreaterThanOrEqual(0);
     expectScriptRejection(await outcome(provider, withSurplusPush(hex, master)), master);
     expect(await outcome(provider, hex)).toBe('ACCEPTED');
   }, 120_000);
-});
-
-describe('B6.0: a message-bus route starts from an exact stack once it has dropped its positional items', () => {
-  const TALLY = `pragma solidcash >=0.8.0;
-contract Tally() {
-  bigint total;
-  function bump(bigint a) public { this.total = this.total + a; require(a >= 0); }
-  function checkTotal(bigint expected) public { require(this.total == expected); }
-}`;
-
-  it('drops the two positional items, then checks a depth equal to its inputs', () => {
-    const artifact = compileString(TALLY, { forceStateful: true, messageBus: true });
-    const route = artifact.messageBus!.route;
-    const body = definedBody(artifact, route.selector!);
-    const dropBottom = [Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_DROP];
-    expect([...body.slice(0, 11)]).toEqual([...dropBottom, ...dropBottom, ...depthCheck(route.inputs.length)]);
-  }, 180_000);
-
-  it('under the proxy-forward envelope, keeps the drop decision across the check and re-reads the index after it', () => {
-    const artifact = compileString(`pragma solidcash >=0.8.0;
-      contract Bank() {
-        int counter;
-        function initialize() public { this.counter = 0; }
-        function ping(int value) public { this.counter = this.counter + value; require(true); }
-      }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
-      suppressWarnings: true, messageBusProxyForwardEnvelope: true,
-    });
-    const implementation = artifact.delegateArtifact!;
-    const route = implementation.messageBus!.route;
-    const body = hexToBin(implementation.functionBodies![route.selector!]!);
-    const index = route.inputs.findIndex((input) => input.name === '__internal__proxyMasterIndex');
-    expect(index).toBeGreaterThanOrEqual(0);
-    // The model holds the route's inputs, the last declared deepest; the decision is one item more at the check.
-    const ordinal = route.inputs.length - index;
-    const reread = 1 + index;
-    const dropBottom = [Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_DROP];
-    const small = (n: number): number => (n === 0 ? Op.OP_0 : Op.OP_1 + n - 1);
-    expect(reread).toBeGreaterThan(1);
-    const head = [
-      ...dropBottom, ...dropBottom,
-      Op.OP_DEPTH, ...(ordinal === 1 ? [Op.OP_1SUB] : [small(ordinal), Op.OP_SUB]), Op.OP_PICK,
-      Op.OP_0, Op.OP_NUMEQUAL, Op.OP_DUP, Op.OP_IF, ...dropBottom, Op.OP_ENDIF,
-      ...depthCheck(route.inputs.length + 1),
-      small(reread), Op.OP_PICK, Op.OP_0, Op.OP_NUMEQUAL, Op.OP_EQUALVERIFY,
-    ];
-    expect([...body.slice(0, head.length)]).toEqual(head);
-  }, 180_000);
-
-  it('accepts the honest route spend and refuses one surplus push', async () => {
-    const artifact = compileString(TALLY, { forceStateful: true, messageBus: true });
-    const provider = createTestProvider();
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const tally = StatefulContract.withCategory(inner, categoryId) as any;
-    const hex = await capture(provider, () => tally.batch([
-      { function: 'bump', args: [7n] }, { function: 'bump', args: [5n] },
-    ]).send());
-    const tx = decodeTransactionUnsafe(hexToBin(hex));
-    const master = masterIndex(tx);
-    // The route's master input: its first push is the route selector the dispatcher takes.
-    expect(binToHex(instructionsOf(tx.inputs[master]!.unlockingBytecode)[0]!.data!))
-      .toBe(artifact.messageBus!.route.selector);
-    expectScriptRejection(await outcome(provider, withSurplusPush(hex, master)), master);
-    expect(await outcome(provider, hex)).toBe('ACCEPTED');
-  }, 180_000);
 });

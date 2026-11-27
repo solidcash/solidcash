@@ -15,7 +15,7 @@ const NON_TRUTHY_INPUT_0 = new RegExp(INPUT_0_PREFIX
   + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack\\. '
   + 'Top stack item: ""\\.\\)$');
 const STATEFUL_OP_VERIFY_INPUT_0 = new RegExp(
-  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+  '^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
 );
 const STATEFUL_VM_OP_VERIFY_INPUT_0 = /error in evaluating input index 0: Program failed an OP_VERIFY operation/;
 

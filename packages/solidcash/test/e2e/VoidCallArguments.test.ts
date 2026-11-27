@@ -3,7 +3,6 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
   encodeDataPush, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileString as compileAutomatic } from '@solidcash/solidc';
 import { compileString, compileStringMulti } from '../direct-compile.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
 import { StatefulContract, getSatoshiContainerAddress } from '../../src/stateful/index.js';
@@ -203,11 +202,8 @@ contract Source {
     return artifact.functionBodies?.[selector] ?? artifact.bytecode;
   };
 
-  it.each([
-    ['messageBus: false', (source: string): any => compileString(source)],
-    ['automatic', (source: string): any => compileAutomatic(source)],
-  ])('depends on the argument expression (%s)', (_mode, compile) => {
-    const bodies = ['x', 'x + 1', '7'].map((argument) => relayBody(compile(caller(argument))));
+  it('depends on the argument expression', () => {
+    const bodies = ['x', 'x + 1', '7'].map((argument) => relayBody(compileString(caller(argument))));
     expect(new Set(bodies).size).toBe(3);
   });
 });

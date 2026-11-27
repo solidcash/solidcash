@@ -80,12 +80,12 @@ describe('October 2026 class C holes', () => {
     const src = `${P} contract W() { function spend(int amount) { if (amount == 0) return; require(amount == 1); } }`;
     // The spend is the same body with the final-require gate disabled: the early return is then a failing
     // require, and amount == 1 still passes. The default compile rejects the function before bytecode.
-    const artifact = compileString(src, { messageBus: false, enforceFinalRequire: false });
+    const artifact = compileString(src, { enforceFinalRequire: false });
     const fn = artifact.abi.find((entry) => entry.name === 'spend');
     if (!fn) throw new Error(`no spend; ${artifact.abi.map((entry) => entry.name).join(',')}`);
     const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
     const lock = p2sh32(redeem);
-    const dispatch = artifact.messageBus?.routeInBytecode === true;
+    const dispatch = false;
     const spend = (amount: bigint): true | string => {
       const values: Record<string, Uint8Array> = {};
       for (const entry of fn.inputs) {
@@ -102,7 +102,7 @@ describe('October 2026 class C holes', () => {
     };
     expect(spend(1n), 'SEM-1 authorized').toBe(true);
     expect(spend(0n), 'SEM-1 early return').not.toBe(true);
-    expect(() => compileString(src, { messageBus: false }), 'SEM-1 default reject').toThrow(/require/);
+    expect(() => compileString(src), 'SEM-1 default reject').toThrow(/require/);
   });
 
   it('DS-8 a batch proof cannot name the pure-read input, and a distinct proof can', () => {
@@ -110,7 +110,7 @@ describe('October 2026 class C holes', () => {
       `${P} contract C { mapping(int => int) m;`
       + ' function writeRead(int k, int v, int r, int sel) { this.m[k] = v;'
       + ' if (sel > 0) { require(this.m[r] > 0); } require(true); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'writeRead');
     if (!fn) throw new Error(`no writeRead; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -179,87 +179,15 @@ describe('October 2026 class C holes', () => {
     expect(spend(BigInt(read.offset), true), 'DS-8 proof names the read input').not.toBe(true);
   });
 
-  it('DS-8 a message-bus route proof cannot name the pure-read input, and a distinct proof can', () => {
-    const artifact = compileString(
-      `${P} contract C { mapping(int => int) m;`
-      + ' function writeRead(int k, int v, int r) { this.m[k] = v;'
-      + ' if (v < 0) { require(this.m[r] > 0); } require(true); } }',
-      { messageBus: true, messageBusKernel: false, forceStateful: true },
-    );
-    const fn = artifact.abi.find((entry) => entry.name === 'writeRead');
-    if (!fn) throw new Error(`no writeRead; ${artifact.abi.map((entry) => entry.name).join(',')}`);
-    const entries = fn.blockLayout?.slots.filter((slot) => slot.kind === 'entry') ?? [];
-    const target = entries.find((slot) => slot.slotIndex === 0);
-    const read = entries.find((slot) => slot.slotIndex === 1);
-    if (!target || !read) throw new Error(`slots ${JSON.stringify(fn.blockLayout ?? null)}`);
-    const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
-    if (redeem.length > 10_000) throw new Error(`DS-8 route is ${redeem.length} bytes`);
-    const contractLock = p2sh32(redeem);
-    const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'm')!;
-    const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
-      CATEGORY, computeCollectionHash(collection.signature), contractLock,
-    ));
-    const entryLock = p2sh32(entryRedeem);
-    const zero = new Uint8Array(32);
-    const targetSlot = keyToSlotMulti([num(7n)]);
-    const victimSlot = keyToSlotMulti([num(9n)]);
-    const targetBefore = encodeEntryCommitment(targetSlot, zero, num(1n));
-    const targetAfter = encodeEntryCommitment(targetSlot, zero, num(55n));
-    const victim = encodeEntryCommitment(victimSlot, zero, num(60n));
-    const bare = Uint8Array.of(0x51);
-    const entryUnlock = pushesOf([num(0n), num(1n), entryRedeem]);
-    const spend = (proof: bigint, overlap: boolean): true | string => {
-      const values: Record<string, Uint8Array> = {};
-      for (const entry of fn.inputs) {
-        if (entry.name === 'k') values[entry.name] = num(7n);
-        else if (entry.name === 'v') values[entry.name] = num(55n);
-        else if (entry.name === 'r') values[entry.name] = num(11n);
-        else if (/^__internal__vmapBatchSlot_\d+$/.test(entry.name)) values[entry.name] = targetSlot;
-        else if (entry.name.includes('vmapBatchProof')) values[entry.name] = num(proof);
-        else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
-        else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
-        else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
-        else throw new Error(`unexpected input ${entry.name}`);
-      }
-      const inputs = [
-        input(0, redeemUnlock(fn, redeem, values, true)),
-        input(target.offset, entryUnlock),
-        input(read.offset, overlap ? entryUnlock : new Uint8Array()),
-      ];
-      const outputs: VmOutput[] = [
-        { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
-        { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', targetAfter) },
-        overlap
-          ? { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', targetBefore) }
-          : { lockingBytecode: bare, valueSatoshis: VALUE },
-      ];
-      const sources: SourceOutputs = [
-        { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
-        {
-          lockingBytecode: entryLock, valueSatoshis: VALUE,
-          token: tokenOf('mutable', overlap ? victim : targetBefore),
-        },
-        overlap
-          ? { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', targetBefore) }
-          : { lockingBytecode: bare, valueSatoshis: VALUE },
-      ];
-      return verdict(sources, { version: 2, locktime: 0, inputs, outputs });
-    };
-    expect(spend(BigInt(target.offset), false), 'DS-8 route authorized').toBe(true);
-    expect(spend(BigInt(read.offset), true), 'DS-8 route proof names the read input').not.toBe(true);
-  });
-
   it('ARITH-3 bytesN of dynamic bytes keeps the first N bytes, so a longer prefix cannot pass a deny-list', () => {
     const artifact = compileString(
       `${P} contract W() { function spend(bytes data) { require(bytes4(data) != hex"aabbccdd"); } }`,
-      { messageBus: false },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'spend');
     if (!fn) throw new Error(`no spend; ${artifact.abi.map((entry) => entry.name).join(',')}`);
     const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
     const lock = p2sh32(redeem);
-    const dispatch = artifact.messageBus?.routeInBytecode === true;
+    const dispatch = false;
     const spend = (data: Uint8Array): true | string => {
       const values: Record<string, Uint8Array> = {};
       for (const entry of fn.inputs) {
@@ -283,7 +211,7 @@ describe('October 2026 class C holes', () => {
     const artifact = compileString(
       `${P} contract C { mapping(int => int) m;`
       + ' function drop(int k, int sel) { if (sel > 0) { require(k != 3); delete m[k]; } require(true); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'drop');
     if (!fn) throw new Error(`no drop; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -339,74 +267,10 @@ describe('October 2026 class C holes', () => {
     expect(spend(true), 'DS-6 plain delete slot').not.toBe(true);
   });
 
-  it('DS-6 a message-bus route cannot skip a branched sorted batch with a bad slot or a short commitment', () => {
-    const artifact = compileString(
-      `${P} contract C { mapping(int => int) m;`
-      + ' function drop(int k, int sel) { if (sel > 0) { require(k != 3); delete m[k]; } require(true); }'
-      + ' function set(int k, int v, int sel) { if (sel > 0) { require(k != 3); this.m[k] = v; } require(true); } }',
-      { messageBus: true, forceStateful: true },
-    );
-    const drop = artifact.abi.find((entry) => entry.name === 'drop');
-    const set = artifact.abi.find((entry) => entry.name === 'set');
-    if (!drop || !set) throw new Error(`missing route arms; ${artifact.abi.map((entry) => entry.name).join(',')}`);
-    const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
-    const contractLock = p2sh32(redeem);
-    const dispatch = artifact.messageBus?.routeInBytecode === true;
-    const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'm')!;
-    const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
-      CATEGORY, computeCollectionHash(collection.signature), contractLock,
-    ));
-    const entryLock = p2sh32(entryRedeem);
-    const zero = new Uint8Array(32);
-    const keptSlot = keyToSlotMulti([num(7n)]);
-    const kept = encodeEntryCommitment(keptSlot, zero, num(1n));
-    const other = encodeEntryCommitment(keyToSlotMulti([num(42n)]), zero, num(9n));
-    const spend = (
-      fn: AbiFunction, slot: Uint8Array, commitment: Uint8Array, outputCommitment: Uint8Array, sel: bigint,
-    ): true | string => {
-      const values: Record<string, Uint8Array> = {};
-      for (const entry of fn.inputs) {
-        if (entry.name === 'k') values[entry.name] = num(7n);
-        else if (entry.name === 'v') values[entry.name] = num(2n);
-        else if (entry.name === 'sel') values[entry.name] = num(sel);
-        else if (/^__internal__vmapBatchSlot_\d+$/.test(entry.name)) values[entry.name] = slot;
-        else if (entry.name.includes('vmapBatchProof')) values[entry.name] = num(1n);
-        else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
-        else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
-        else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
-        else throw new Error(`unexpected input ${entry.name}`);
-      }
-      const layout = fn.blockLayout?.slots.find((entry) => entry.kind === 'entry');
-      if (!layout || layout.offset !== 1) throw new Error(`entry offset ${layout?.offset}`);
-      return verdict([
-        { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
-        { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', commitment) },
-      ], {
-        version: 2, locktime: 0,
-        inputs: [
-          input(0, redeemUnlock(fn, redeem, values, dispatch)),
-          input(1, pushesOf([num(0n), num(1n), entryRedeem])),
-        ],
-        outputs: [
-          { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
-          { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', outputCommitment) },
-        ],
-      });
-    };
-    expect(spend(drop, keptSlot, kept, kept, 0n), 'DS-6 route delete arm kept').toBe(true);
-    expect(spend(drop, keptSlot, kept, encodeEntryCommitment(keptSlot, zero, num(0n)), 1n), 'DS-6 route delete taken')
-      .toBe(true);
-    expect(spend(set, keptSlot, kept, encodeEntryCommitment(keptSlot, zero, num(2n)), 1n), 'DS-6 route write arm')
-      .toBe(true);
-    expect(spend(drop, new Uint8Array(32).fill(0x11), kept, other, 0n), 'DS-6 route mismatched slot').not.toBe(true);
-    expect(spend(drop, keptSlot, Uint8Array.of(1, 2, 3, 4), other, 0n), 'DS-6 route short commitment').not.toBe(true);
-  });
-
   it('DX-4 a standalone callee cannot sit beside its own return carrier, and a carrier-less call can', () => {
     const artifact = compileString(
       `${P} contract Quoter { int q; function quote() public returns (int) { return this.q; } }`,
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'quote');
     if (!fn) throw new Error(`no quote; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -418,7 +282,7 @@ describe('October 2026 class C holes', () => {
     const dataLock = p2sh32(dataRedeem);
     const commitment = hexToBin(buildPushdataCommitment(artifact.stateLayout!, { q: 5n }, data.nftIndex ?? 0));
     const bare = Uint8Array.of(0x51);
-    const dispatch = artifact.messageBus?.routeInBytecode === true;
+    const dispatch = false;
     const dataUnlock = pushesOf([num(0n), num(0n), dataRedeem]);
     const spend = (carrier: boolean): true | string => {
       const values: Record<string, Uint8Array> = {};
@@ -464,7 +328,6 @@ describe('October 2026 class C holes', () => {
       + ' function(int) external pure returns (int) cb = abi.decode(data, (function(int) external pure returns (int)));'
       + ' require(cb(x) == x); }'
       + ' function touch() public { this.run(this.ok, 1); require(true); } }',
-      { messageBus: false },
     );
     const invoke = artifact.debug?.invokeDebug ?? {};
     const idOf = (name: string): bigint => {
@@ -513,7 +376,6 @@ describe('October 2026 class C holes', () => {
       + ' function(int) external pure returns (int) cb = abi.decode(data, (function(int) external pure returns (int)));'
       + ' require(cb(x) == x); }'
       + ' function touch() public { this.run(this.ok, 1); require(true); } }',
-      { messageBus: false },
     );
     const invoke = artifact.debug?.invokeDebug ?? {};
     const idOf = (name: string): bigint => {
@@ -555,13 +417,13 @@ describe('October 2026 class C holes', () => {
       `${P} contract W() { function spend(bytes data) {`
       + ' (uint256 nonce, uint256 v) = abi.decode(data, (uint256, uint256));'
       + ' require(nonce == 7); require(v == 1); } }',
-      { evmCompat: true, messageBus: false },
+      { evmCompat: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'spend');
     if (!fn) throw new Error(`no spend; ${artifact.abi.map((entry) => entry.name).join(',')}`);
     const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
     const lock = p2sh32(redeem);
-    const dispatch = artifact.messageBus?.routeInBytecode === true;
+    const dispatch = false;
     const word = (value: bigint): Uint8Array => {
       const out = new Uint8Array(32);
       let rest = value;
@@ -607,7 +469,6 @@ describe('October 2026 class C holes', () => {
       `${P} contract W() { function spend(bytes data) {`
       + ' (int n, bytes32 tag) = abi.decode(data, (int, bytes32));'
       + ' require(n == 1); require(tag == tag); } }',
-      { messageBus: false },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'spend');
     if (!fn) throw new Error('no spend');
@@ -638,7 +499,6 @@ describe('October 2026 class C holes', () => {
       `${P} contract W() { function spend(bytes data) {`
       + ' (int n, bytes32 tag) = abi.decode(data, (int, bytes32));'
       + ' require(n == 1); require(tag == tag); } }',
-      { messageBus: false },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'spend');
     if (!fn) throw new Error('no spend');
@@ -669,7 +529,6 @@ describe('October 2026 class C holes', () => {
     const artifact = compileString(
       `${P} enum Status { PENDING, ACTIVE, DONE } contract W() { function spend(bytes data) {`
       + ' Status s = abi.decode(data, (Status)); require(s == s); } }',
-      { messageBus: false },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'spend');
     if (!fn) throw new Error('no enum spend');
@@ -693,7 +552,7 @@ describe('October 2026 class C holes', () => {
       + ' function _note(int idx) internal returns (int) { _bump(); return idx; }'
       + ' function _bump() internal { accIndex = accIndex + 1; } }';
     const spend = (seen: number): true | string => {
-      const artifact = compileString(source(seen), { messageBus: false, forceStateful: true });
+      const artifact = compileString(source(seen), { forceStateful: true });
       const fn = artifact.abi.find((entry) => entry.name === 'poke');
       if (!fn) throw new Error(`no poke; ${artifact.abi.map((entry) => entry.name).join(',')}`);
       const data = fn.blockLayout?.slots.find((entry) => entry.kind === 'dataNft');
@@ -742,7 +601,7 @@ describe('October 2026 class C holes', () => {
       + ' function spend() { require(at(m, 0) == 0); } }';
     let artifact: ReturnType<typeof compileString> | undefined;
     try {
-      artifact = compileString(ambiguous, { messageBus: false });
+      artifact = compileString(ambiguous);
     } catch (error) {
       expect(String(error), 'SEM-5 overload').toMatch(/multiple 2-argument overloads/);
     }
@@ -762,11 +621,11 @@ describe('October 2026 class C holes', () => {
       expect(spend(0n), 'SEM-5 authorized').toBe(true);
       expect(spend(1n), 'SEM-5 dropped require').not.toBe(true);
     }
-    expect(compileString(single, { messageBus: false }).contractName, 'SEM-5 single helper').toBe('C');
+    expect(compileString(single).contractName, 'SEM-5 single helper').toBe('C');
   });
 
   it('SEM-11 a function id returned by another contract can only name a public function', async () => {
-    const options = { messageBus: false, evmCompat: true, forceStateful: true, suppressWarnings: true };
+    const options = { evmCompat: true, forceStateful: true, suppressWarnings: true };
     const callerArtifact = compileString(
       `${P} interface IP { function get(int which) external returns (int, function(int) external returns (int)); }`
       + ' contract FnIdReturned {'
@@ -893,7 +752,7 @@ describe('October 2026 class C holes', () => {
     const artifact = compileString(
       `${P} contract C { int n; event Log(int code, bytes note);`
       + ' function poke() { this.n = this.n + 1; require(true); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'poke');
     if (!fn) throw new Error(`no poke; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -959,7 +818,7 @@ describe('October 2026 class C holes', () => {
     const artifact = compileString(
       `${P} struct Claim { bytes32 root; address owner; }`
       + ' contract C { Claim rec; function set(Claim c) { rec = c; require(true); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'set');
     if (!fn) throw new Error(`no set; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -1028,7 +887,7 @@ describe('October 2026 class C holes', () => {
       + ' function total(int stopAt, int expected) { int sum = 0; int seen = 0;'
       + ' for (int v of this.bal) { if (seen == stopAt) break; sum = sum + v; seen = seen + 1; }'
       + ' require(sum == expected); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'total');
     if (!fn) throw new Error(`no total; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -1113,7 +972,7 @@ describe('October 2026 class C holes', () => {
       + ' function total(int skip, int expected) { int sum = 0;'
       + ' for (int v of this.bal) { if (v == skip) continue; sum = sum + v; }'
       + ' require(sum == expected); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'total');
     if (!fn) throw new Error(`no total; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -1187,7 +1046,7 @@ describe('October 2026 class C holes', () => {
       + ' contract C { uint256 n; using BoringMath for uint256;'
       + ' function spend(uint256 x) external { require(x.to64() == uint64(0)); }'
       + ' function touch() external { n = n + 1; require(n > 0); } }',
-      { evmCompat: true, messageBus: false, forceSplit: true, suppressWarnings: true },
+      { evmCompat: true, forceSplit: true, suppressWarnings: true },
     );
     const facetInfo = bundle.manifest.facets.find((facet) => facet.functions.includes('spend'));
     if (!facetInfo) {
@@ -1254,7 +1113,7 @@ describe('October 2026 class C holes', () => {
       + ' contract C { uint256 n; using BoringMath for uint256;'
       + ' function spend(uint256 x, uint256 y) external { unchecked { require(x.add(uint256(1)) == y); } }'
       + ' function touch() external { n = n + 1; require(n > 0); } }',
-      { evmCompat: true, messageBus: false, forceSplit: true, suppressWarnings: true },
+      { evmCompat: true, forceSplit: true, suppressWarnings: true },
     );
     const facetInfo = bundle.manifest.facets.find((facet) => facet.functions.includes('spend'));
     if (!facetInfo) {
@@ -1315,7 +1174,7 @@ describe('October 2026 class C holes', () => {
     const artifact = compileString(
       `${P} contract C { int n; event Flag(bool ok);`
       + ' function poke(bool go) { if (go) emit Flag(false); this.n = this.n + 1; require(true); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'poke');
     if (!fn) throw new Error(`no poke; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -1376,7 +1235,6 @@ describe('October 2026 class C holes', () => {
     const artifact = compileString(
       `${P} contract W() { function spend(int mode) { int s = 0; int i = 0;`
       + ' while (i < 3) { unchecked { if (i == 1) break; } s = s + 1; i = i + 1; } require(s == mode); } }',
-      { messageBus: false },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'spend');
     if (!fn) throw new Error('no spend');
@@ -1398,7 +1256,6 @@ describe('October 2026 class C holes', () => {
     const artifact = compileString(
       `${P} contract W() { function spend(int mode) { int s = 0; int i = 0;`
       + ' while (i < 3) { i = i + 1; unchecked { if (i == 2) continue; } s = s + 1; } require(s == mode); } }',
-      { messageBus: false },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'spend');
     if (!fn) throw new Error('no continue spend');
@@ -1419,7 +1276,7 @@ describe('October 2026 class C holes', () => {
   it('SEM-2 a created contract with an undefined modifier is rejected', () => {
     const src = `${P} contract B { function sweep() external onlyOwnr { require(true); } }`
       + ' contract A { function make() { B child = new B(); require(child != address(0)); } }';
-    expect(() => compileString(src, { messageBus: false }), 'SEM-2 undefined modifier').toThrow(/onlyOwnr/);
+    expect(() => compileString(src), 'SEM-2 undefined modifier').toThrow(/onlyOwnr/);
   });
 
   // An oracle pool's block-info coin holds height 100 and timestamp T0, owned by alice. Each call signs a spend

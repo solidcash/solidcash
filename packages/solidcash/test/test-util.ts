@@ -8,7 +8,7 @@ import {
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
 import {
-  buildInitialStateCommitments, hash256, messageBusVerifierCommitment, type StateLayout,
+  buildInitialStateCommitments, hash256, type StateLayout,
 } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
@@ -26,7 +26,7 @@ import {
 } from '../src/index.js';
 import { MockNetworkProvider } from '../src/network/mock/index.js';
 import {
-  getDataNftAddress, getEntryNftAddress, getMessageBusVerifierAddress, getTokenContainerAddress,
+  getDataNftAddress, getEntryNftAddress, getTokenContainerAddress,
 } from '../src/stateful/covenant-helpers.js';
 import { headSentinelCommitment } from '../src/stateful/SortedList.js';
 import {
@@ -367,7 +367,6 @@ export async function setupStatefulUtxos(
   initialState: Record<string, any>,
   opts?: {
     masterSatoshis?: bigint; dataNftSatoshis?: bigint; saltContract?: boolean; categoryOverride?: string;
-    messageBusVerificationInputCount?: number;
     // Extra token UTXOs to genesis under the SAME category (e.g. a blockhash (n->hash) oracle NFT branded to
     // the contract). Receives the resolved categoryId; the seeded UTXOs are returned as `extraUtxos`.
     extraOutputs?: (categoryId: string) => Array<{ address: string; satoshis: bigint; token: any }>;
@@ -378,7 +377,7 @@ export async function setupStatefulUtxos(
   const commitments = buildInitialStateCommitments(stateLayout, initialState);
   const dataNftCount = commitments.length;
   const sortedCollections = (stateLayout.collections ?? []).filter((collection) => collection.sorted);
-  const verifierCount = opts?.messageBusVerificationInputCount ?? (contract.artifact.messageBus?.verifierProgram ? 1 : 0);
+  const verifierCount = 0;
 
   // Chosen-category genesis (mock only): seed master+data at txid=categoryId via addUtxo. Needed when a
   // category must be known BEFORE building a dependent contract - e.g. a branded library whose __brand is the
@@ -411,17 +410,7 @@ export async function setupStatefulUtxos(
         },
       });
     }
-    const verifierUtxos: Utxo[] = [];
-    for (let i = 0; i < verifierCount; i++) {
-      verifierUtxos.push(await (provider as any).addUtxo(getMessageBusVerifierAddress(pinnedContract, categoryId), {
-        txid: categoryId, vout: commitments.length + sortedCollections.length + i + 1, satoshis: dataNftSatoshis,
-        token: {
-          category: categoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: binToHex(messageBusVerifierCommitment(i)) },
-        },
-      }));
-    }
-    return { categoryId, masterUtxo, dataNftUtxos, dataNftAddresses, verifierUtxos };
+    return { categoryId, masterUtxo, dataNftUtxos, dataNftAddresses, verifierUtxos: [] };
   }
 
   // Use addTokenUtxosDynamic for proper genesis on both providers.
@@ -446,14 +435,6 @@ export async function setupStatefulUtxos(
         token: {
           amount: 0n,
           nft: { capability: 'mutable' as const, commitment: binToHex(headSentinelCommitment()) },
-        },
-      })),
-      ...Array.from({ length: verifierCount }, (_, i) => ({
-        address: getMessageBusVerifierAddress(pinnedContract, categoryId),
-        satoshis: dataNftSatoshis,
-        token: {
-          amount: 0n,
-          nft: { capability: 'mutable' as const, commitment: binToHex(messageBusVerifierCommitment(i)) },
         },
       })),
       ...(opts?.extraOutputs ? opts.extraOutputs(categoryId) : []),

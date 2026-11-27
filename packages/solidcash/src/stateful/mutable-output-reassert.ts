@@ -4,7 +4,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { isContractUnlocker, type Output, type UnlockableUtxo } from '../interfaces.js';
+import type { Output, UnlockableUtxo } from '../interfaces.js';
 import { isFillerLockingBytecode } from './filler.js';
 import {
   cloneToken,
@@ -483,26 +483,6 @@ export function reassertReadOnlyMutableOneToOnes(
     restored += 1;
   }
   return restored;
-}
-
-/**
- * A routed delegate may relocate a selected read-only dynamic chunk input into its owner's trailing band after
- * the nested builder has laid out outputs. The route union can still supply a write-mode chunk unlocker, so
- * selected handler metadata supplies the exact read-only locks. Only unchanged authenticated output twins move;
- * the displaced mapping-entry output keeps its own token.
- */
-export function reassertRoutedReadOnlyDynamicChunkTwins(
-  outputs: Output[], inputs: readonly UnlockableUtxo[], readonlyChunkLocks: readonly Uint8Array[],
-): number {
-  if (readonlyChunkLocks.length === 0) return 0;
-  const locks = new Set(readonlyChunkLocks.map((lock) => binToHex(lock)));
-  const chunks = inputs.filter((input) => {
-    const unlocker = input.unlocker;
-    return isContractUnlocker(unlocker)
-      && unlocker.contract.artifact.contractName?.startsWith('ChunkNft_') === true
-      && locks.has(binToHex(unlocker.generateLockingBytecode()));
-  });
-  return reassertReadOnlyMutableOneToOnes(outputs, inputs, chunks, true);
 }
 
 /**

@@ -22,13 +22,10 @@ const requirePatches: { fn: string; block: 'requires' | 'logs'; ips: number[] }[
 
 for (const fixture of fixtures) {
   const artifact = compileFile(path.join(CORPUS, fixture.fn), {
-    messageBus: false,
     ...fixture.compilerOptions,
   });
   const actual = JSON.parse(JSON.stringify(artifact));
   delete actual.invocationAnalysis;
-  delete actual.compiler.options.messageBus;
-  delete actual.compiler.options.messageBusKernel;
 
   const drifted: string[] = [];
   const walk = (now: unknown, was: unknown, at: string): void => {

@@ -5,7 +5,7 @@ import { compileString, compileStringMulti } from '../src/compiler.js';
 /**
  * Direct calls to a callee a function calls several times (docs/wip/call-records/DESIGN.md, section 4): each call
  * digests the ordinal of its frame in the callee's one multi-call spend, fixed in source order for straight-line
- * calls and counted at run time once a call sits in a loop or a branch. No bus batch is built.
+ * calls and counted at run time once a call sits in a loop or a branch.
  */
 
 const BOOK = `
@@ -67,7 +67,7 @@ contract Writer(address book) {
 
 let direct: ReturnType<typeof compileStringMulti> | undefined;
 const directArtifacts = (): ReturnType<typeof compileStringMulti> => {
-  direct ??= compileStringMulti(SOURCE, { messageBus: false, suppressWarnings: true });
+  direct ??= compileStringMulti(SOURCE, { suppressWarnings: true });
   return direct;
 };
 const fn = (artifact: Artifact, name: string): AbiFunction => artifact.abi.find((entry) => entry.name === name)!;
@@ -76,19 +76,18 @@ const selector = (name: string): string => fn(directArtifacts().Book, name).sele
 const CALL_BATCH = { selector: '53434442' };
 
 describe('direct call ordinals', () => {
-  it('numbers two straight-line calls 0 and 1, digests each under its own, and builds no bus batch', () => {
+  it('numbers two straight-line calls 0 and 1 and digests each under its own', () => {
     const { PairReader, Book } = directArtifacts();
     const sum = calls(PairReader, 'sum');
     expect(sum.map((call) => call.callOrdinal)).toEqual([{ group: 0, ordinal: 0 }, { group: 0, ordinal: 1 }]);
-    expect(sum.map((call) => [call.functionName, call.needsSelectorVerification, call.batchInvocations]))
-      .toEqual([['priceOf', false, undefined], ['priceOf', false, undefined]]);
-    expect(PairReader.messageBus).toBeUndefined();
+    expect(sum.map((call) => [call.functionName, call.needsSelectorVerification]))
+      .toEqual([['priceOf', false], ['priceOf', false]]);
     // The digest preimage opens with the ordinal as two little-endian bytes, then the selector.
     expect(PairReader.bytecode).toContain(`0000${selector('priceOf')}`);
     expect(PairReader.bytecode).toContain(`0100${selector('priceOf')}`);
     // A callee a caller here calls several times takes its multi-call entry; compiled alone it stays lean.
     expect(Book.callBatch).toEqual(CALL_BATCH);
-    const alone = compileString(`pragma solidcash >=0.8.0;\n${BOOK}`, { messageBus: false, suppressWarnings: true });
+    const alone = compileString(`pragma solidcash >=0.8.0;\n${BOOK}`, { suppressWarnings: true });
     expect(alone.callBatch).toBeUndefined();
     expect(Book.bytecode).not.toBe(alone.bytecode);
   });
@@ -134,7 +133,7 @@ contract Around(address book) {
     bigint again = IBook(book).totalOf();
     this.last = before * 100 + after * 10 + again;
   }
-}`, { messageBus: false, suppressWarnings: true });
+}`, { suppressWarnings: true });
     const binding = { version: 1, selector: selector('totalOf') };
     // The read after the write runs a frame of its own; the one after it shares that frame's record.
     expect(calls(around, 'bump').map((call) => [call.functionName, call.callOrdinal, call.readonlyReturnBinding]))
@@ -150,13 +149,12 @@ contract Around(address book) {
   });
 
   it('numbers repeated state-changing calls as frames, a void one reading `digest || 0x01`', () => {
-    const writer = compileString(WRITER, { messageBus: false, suppressWarnings: true });
+    const writer = compileString(WRITER, { suppressWarnings: true });
     expect(calls(writer, 'twice').map((call) => [call.functionName, call.callOrdinal, call.hasReturnValues,
       call.needsSelectorVerification, call.returnTypes])).toEqual([
       ['setTotal', { group: 0, ordinal: 0 }, true, false, undefined],
       ['setTotal', { group: 0, ordinal: 1 }, true, false, undefined],
     ]);
-    expect(writer.messageBus).toBeUndefined();
     // Each digests its own ordinal and reads its record at a return witness of its own.
     expect(writer.bytecode).toContain(`0000${selector('setTotal')}`);
     expect(writer.bytecode).toContain(`0100${selector('setTotal')}`);
@@ -166,7 +164,7 @@ contract Around(address book) {
     // methods, so the read takes the place of the selector check and runs through a return witness, as a returning
     // call's does (the record names the method, the arguments and the reader).
     const lone = compileString(WRITER.replace('IBook(book).setTotal(a + 1);', ''),
-      { messageBus: false, suppressWarnings: true });
+      { suppressWarnings: true });
     expect(calls(lone, 'twice').map((call) => [call.callOrdinal, call.hasReturnValues, call.needsSelectorVerification]))
       .toEqual([[undefined, true, false]]);
     expect(lone.bytecode).toContain(`0000${selector('setTotal')}`);
@@ -181,14 +179,14 @@ interface IPaid { function pay(bigint by) external payable returns (bigint); }
 contract Payer(address paid) {
   bigint last;
   function twice() public { this.last = IPaid(paid).pay{value: 1000}(1) + IPaid(paid).pay(2); }
-}`, { messageBus: false, suppressWarnings: true });
+}`, { suppressWarnings: true });
     } catch (error) {
       message = (error as Error).message;
     }
-    expect(message).toMatch(/MESSAGE_BUS_REQUIRED.*\(IPaid\.pay -> IPaid\.pay\)/);
+    expect(message).toMatch(/REPEATED_CALL_UNSUPPORTED.*\(IPaid\.pay -> IPaid\.pay\)/);
     expect(message).toMatch(/multi-call entry, whose calls are regular and value-free, name a fixed method of a /);
     expect(message).toMatch(/fixed target and pass every argument their records digest; this transaction cannot be /);
-    expect(message).toMatch(/built with `messageBus: false`\.$/);
+    expect(message).toMatch(/this transaction cannot be built\.$/);
     expect(message).not.toMatch(/omit the option/);
   });
 
@@ -212,7 +210,7 @@ contract LoopedWriter(address counter) {
       'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(this.stored).inc(i); }',
     ];
     for (const body of counted) {
-      const artifact = compileString(looped(body), { messageBus: false, suppressWarnings: true });
+      const artifact = compileString(looped(body), { suppressWarnings: true });
       expect(calls(artifact, 'run').map((call) => [call.functionName, call.callOrdinal]), body)
         .toEqual([['inc', { group: 0, counted: true }]]);
       // With no epilogue, the looped call checks its record's carrier where it runs.
@@ -227,19 +225,15 @@ contract LoopedWriter(address counter) {
       ['for (bigint i = 0; i < n; i = i + 1) { ISink(take ? counter : other).put(i); }', 'ISink\\.put'],
       ['for (bigint i = 0; i < n; i = i + 1) { ISink(counter).fund{value: 1000}(i); }', 'ISink\\.fund'],
     ] as const) {
-      expect(() => compileString(looped(body), { messageBus: false, suppressWarnings: true }), body)
-        .toThrow(new RegExp(`MESSAGE_BUS_REQUIRED.*\\(${chain}\\).*cannot be built with \`messageBus: false\`\\.$`));
-    }
-    for (const body of [...counted, ternary]) {
-      // The bus binds each row; a lone call stays a direct call bound by its record.
-      expect(() => compileString(looped(body), { messageBus: true, suppressWarnings: true }), body).not.toThrow();
+      expect(() => compileString(looped(body), { suppressWarnings: true }), body)
+        .toThrow(new RegExp(`REPEATED_CALL_UNSUPPORTED.*\\(${chain}\\).*this transaction cannot be built\\.$`));
     }
     for (const body of ['acc = ICounter(counter).inc(n);',
       'for (bigint i = 0; i < all.length; i = i + 1) { acc = acc + ICounter(all[i]).inc(i); }']) {
-      expect(() => compileString(looped(body), { messageBus: false, suppressWarnings: true }), body).not.toThrow();
+      expect(() => compileString(looped(body), { suppressWarnings: true }), body).not.toThrow();
     }
     const voidLoop = compileString(looped('for (bigint i = 0; i < n; i = i + 1) { ISink(counter).put(i); }'),
-      { messageBus: false, suppressWarnings: true });
+      { suppressWarnings: true });
     expect(calls(voidLoop, 'run').map((call) => [call.functionName, call.callOrdinal]))
       .toEqual([['put', { group: 0, counted: true }]]);
     // An opaque call to one target runs once whatever its payloads: refused in a loop, its data read or not.
@@ -253,25 +247,12 @@ contract LoopedWriter(address counter) {
       'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, bytes memory r) = t.call(ps[i]); require(ok); s = s + 1; }',
       'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, ) = t.call(ps[i]); require(ok); s = s + 1; }',
     ]) {
-      expect(() => compileString(raw(body), { messageBus: false, suppressWarnings: true }), body)
-        .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`\.$/);
+      expect(() => compileString(raw(body), { suppressWarnings: true }), body)
+        .toThrow(/REPEATED_CALL_UNSUPPORTED.*this transaction cannot be built\.$/);
     }
     // A Multicall over array targets checks each iteration's callee and record where it runs.
     expect(() => compileString(raw('for (bigint i = 0; i < ts.length; i = i + 1) { (bool ok, bytes memory r) = '
-      + 'ts[i].call(ps[i]); require(ok); s = s + r.length; }'), { messageBus: false, suppressWarnings: true }))
+      + 'ts[i].call(ps[i]); require(ok); s = s + r.length; }'), { suppressWarnings: true }))
       .not.toThrow();
-  });
-
-  it('leaves a message-bus compile as it was', () => {
-    const bus = compileStringMulti(SOURCE, { messageBus: true, suppressWarnings: true });
-    const all = Object.values(bus).flatMap((artifact) => artifact.abi.flatMap((entry) => entry.externalCalls ?? []));
-    expect(all.length).toBeGreaterThan(0);
-    expect(all.every((call) => call.callOrdinal === undefined)).toBe(true);
-    expect(bus.Book.callBatch).toBeUndefined();
-    expect(calls(bus.PairReader, 'sum').map((call) => call.needsSelectorVerification)).toEqual([true, true]);
-    expect(calls(bus.TotalReader, 'spread').map((call) => call.readonlyReturnBinding?.selector))
-      .toEqual([selector('totalOf'), undefined, selector('totalOf')]);
-    const writer = compileString(WRITER, { messageBus: true, suppressWarnings: true });
-    expect(calls(writer, 'twice').map((call) => call.batchInvocations?.length)).toEqual([2]);
   });
 });

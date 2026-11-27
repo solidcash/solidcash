@@ -88,7 +88,7 @@ export function reassertScidIdentityOutputs(
   const isReserved = (output: (typeof outputs)[number] | undefined, index?: number): boolean => {
     // A token-free output can still be the consumed side of a mutable resource.
     // Placing an identity here turns its authenticated DELETE into a tokenful
-    // output, which the message-bus verifier correctly refuses.
+    // output, which the DELETE check refuses.
     if (index !== undefined && isReservedInputIndex(index)) return true;
     if (!output) return false;
     if (isViewTail(output)) return true;

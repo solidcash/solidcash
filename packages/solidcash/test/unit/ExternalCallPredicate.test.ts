@@ -8,19 +8,18 @@ import type { FunctionArgument } from '../../src/Argument.js';
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import {
-  anchorRoutedDynamicResourcesAtOwner,
-  compilerRouteUsesPhysicalWrapper,
   externalCallTargetSourceLockingBytecodeHex,
   externalReturnParamSlot,
   groupIndexForExternalCallSlot,
-  inactiveMessageBusRouteWitness,
   isSdkResolvedExternalCallTopologyWitness,
   physicalExternalCallGroupIndexByMasterOutpoint,
   physicalExternalCallSelectorHex,
-  rebaseRoutedBatchProofOffsets,
-  selectedMessageBusResourceMetadata,
-  createGraphPlanningProducerResultContext,
+  createCallPlanningProducerResultContext,
 } from '../../src/stateful/StatefulContract.js';
+import {
+  anchorRoutedDynamicResourcesAtOwner,
+  rebaseRoutedBatchProofOffsets,
+} from '../../src/stateful/proxy-embedded-block.js';
 import { createTestProvider } from '../test-util.js';
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
@@ -123,52 +122,6 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(inputs[5]).toBe(chunk);
   });
 
-  it('distinguishes synthetic compiler routes from physical wrapper routes', () => {
-    const selector = Uint8Array.of(1, 2, 3, 4);
-    const route = { name: '__message_bus1', inputs: [] } as never;
-    const wrapper = { name: '__forward', inputs: [] } as never;
-
-    expect(compilerRouteUsesPhysicalWrapper(selector, undefined, route)).toBe(false);
-    expect(compilerRouteUsesPhysicalWrapper(selector, wrapper, route)).toBe(true);
-    expect(compilerRouteUsesPhysicalWrapper(selector, route, route)).toBe(false);
-    expect(compilerRouteUsesPhysicalWrapper(undefined, wrapper, route)).toBe(false);
-  });
-
-  it('selects loop resources from the concrete message-bus handlers', () => {
-    const selected = selectedMessageBusResourceMetadata([
-      {
-        handler: {
-          name: 'append', inputs: [], entryLoopWrites: ['history'],
-          dynamicReads: ['archive'], dynamicWrites: ['archive'],
-          entryLoopWriteSignatures: { history: 'history:mapping(bytes32 => bytes[])' },
-        },
-      },
-      {
-        handler: {
-          name: 'appendAgain', inputs: [], entryLoopWrites: ['history'],
-          entryLoopWriteSignatures: { history: 'history:mapping(bytes32 => bytes[])' },
-        },
-      },
-      {
-        handler: {
-          name: 'upsert', inputs: [],
-          sortedUpsertLoopInfo: [{
-            collection: 'balances', fixedKeyParams: [], varyingArrayParam: 'keys',
-            valueArrayParam: 'values', op: 'set',
-          }],
-        },
-      },
-    ]);
-
-    expect(selected).toEqual({
-      entryLoopWrites: ['history'],
-      entryLoopWriteSignatures: { history: 'history:mapping(bytes32 => bytes[])' },
-      loopCollections: ['history', 'balances'],
-      dynamicReads: ['archive'],
-      dynamicWrites: ['archive'],
-    });
-  });
-
   it('resolves loop-index sources relative to the reached occurrence', () => {
     expect(evaluator._resolveExternalArgs(
       [{ kind: 'loopIndex', initialValue: '2', stepValue: '3' }],
@@ -219,7 +172,7 @@ describe('compiler-published external-call predicate evaluation', () => {
       functionArgs: [owner, recipient], artifact, registryOwner: evaluator, state: {},
       callerInputs: [{ type: 'address' }, { type: 'address' }],
       executionSelfAddress: new Uint8Array(35), executionMsgSender: owner,
-      producerCalls: calls, planningContext: createGraphPlanningProducerResultContext(),
+      producerCalls: calls, planningContext: createCallPlanningProducerResultContext(),
     };
 
     await expect(evaluator._planExternalCallOccurrences(calls[0], frame)).resolves.toEqual([]);
@@ -515,37 +468,6 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toBe(146n);
   });
 
-  it('evaluates compiler-published pure helper programs without helper-name knowledge', () => {
-    const helperArtifact = compileString(`
-      pragma solidity >=0.8.0;
-      function prefixItems(string[] values) pure returns (bytes) {
-        bytes result = abi.encodePacked(uint8(values.length));
-        for (uint i = 0; i < values.length; i = i + 1) {
-          result = bytes.concat(result, abi.encodePacked(uint8(bytes(values[i]).length), values[i]));
-        }
-        return result;
-      }
-      interface ISink { function publish(bytes value) external; }
-      contract HelperCaller(address sink) {
-        function run(string[] values) public {
-          ISink(sink).publish(prefixItems(values));
-          ISink(sink).publish(prefixItems(values));
-          require(values.length >= 0);
-        }
-      }
-    `, { evmCompat: true, forceStateful: true, messageBus: true });
-    const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
-      ?.externalCalls?.[0].batchInvocations?.[0].argSources?.[0].expression;
-    expect(expression).toBeDefined();
-
-    const helperEvaluator = new StatefulContract(
-      '00'.repeat(32), helperArtifact, createTestProvider(), { constructorArgs: [new Uint8Array()] },
-    ) as unknown as PredicateEvaluator;
-    expect(helperEvaluator._evaluateExternalExpression(
-      expression!, [['DV']], helperArtifact, undefined, [{ type: 'string[]' }],
-    )).toEqual(Uint8Array.of(1, 2, 0x44, 0x56));
-  });
-
   it('evaluates guarded pure-library arguments and rejects a failed guard', () => {
     const helperArtifact = compileString(`pragma solidity >=0.8.0;
       library Checked {
@@ -582,43 +504,6 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toBeUndefined();
   });
 
-  it('evaluates fixed-array element assignments in a compiler-published pure helper', () => {
-    const helperArtifact = compileString(`
-      pragma solidity >=0.8.0;
-      uint constant FIRST = 0;
-      uint constant SECOND = 1;
-      uint constant LAST = 2;
-      uint constant SCALE = 100;
-      function distribute(uint amount, uint16[3] splits) pure returns (uint[3]) {
-        uint[3] values;
-        values[FIRST] = uint(splits[FIRST]) * amount / SCALE;
-        values[SECOND] = uint(splits[SECOND]) * amount / SCALE;
-        values[LAST] = amount - values[FIRST] - values[SECOND];
-        return values;
-      }
-      interface ISink { function publish(uint value) external; }
-      contract HelperCaller(address sink) {
-        function run(uint amount, uint16[3] splits) public {
-          uint[3] memory values = distribute(amount, splits);
-          ISink(sink).publish(values[2]);
-          ISink(sink).publish(values[0]);
-          require(amount >= 0);
-        }
-      }
-    `, { evmCompat: true, forceStateful: true, messageBus: true });
-    const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
-      ?.externalCalls?.[0].batchInvocations?.[0].argSources?.[0].expression;
-    expect(expression).toBeDefined();
-
-    const helperEvaluator = new StatefulContract(
-      '00'.repeat(32), helperArtifact, createTestProvider(), { constructorArgs: [new Uint8Array()] },
-    ) as unknown as PredicateEvaluator;
-    expect(helperEvaluator._evaluateExternalExpression(
-      expression!, [1000n, [20n, 30n, 50n]], helperArtifact, undefined,
-      [{ type: 'uint' }, { type: 'uint16[3]' }],
-    )).toBe(500n);
-  });
-
   it.each([
     ['scalar state', 'Record current;', '',
       'current.enabled = flags.length > 0;', 'current.enabled'],
@@ -645,7 +530,7 @@ describe('compiler-published external-call predicate evaluation', () => {
           }
         }
       `, {
-        evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+        evmCompat: true, forceStateful: true,
         maximumInputBytes: 1_000_000,
       });
       const publish = snapshotArtifact.abi.find((candidate) => candidate.name === 'publish')!;
@@ -663,63 +548,6 @@ describe('compiler-published external-call predicate evaluation', () => {
         sources!, [[true]], snapshotArtifact, {}, publish.inputs,
       )).toEqual([Uint8Array.of(1)]);
     });
-
-  it('preserves a dominating field type for packed external-call arguments', () => {
-    const typedArtifact = compileString(`
-      pragma solidity ^0.8.0;
-      interface ISink { function accept(bytes calldata value) external; }
-      contract Registry {
-        struct Record { uint16 number; }
-        mapping(uint => Record) records;
-        address sink;
-        function publish(uint id, uint16 number) public {
-          records[id].number = number;
-          ISink(sink).accept(abi.encodePacked(records[id].number));
-          require(true);
-        }
-      }
-    `, {
-      evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
-      maximumInputBytes: 1_000_000,
-    });
-    const publish = typedArtifact.abi.find((candidate) => candidate.name === 'publish')!;
-    const sources = publish.externalCalls?.[0].argSources;
-    const typedEvaluator = new StatefulContract(
-      '00'.repeat(32), typedArtifact, createTestProvider(),
-    ) as unknown as PredicateEvaluator;
-    expect(typedEvaluator._resolveExternalArgs(
-      sources!, [7n, 2n], typedArtifact, {}, publish.inputs,
-    )).toEqual([Uint8Array.of(0, 2)]);
-  });
-
-  it('does not snapshot a conditional state-array struct write as unconditional', () => {
-    const conditionalArtifact = compileString(`
-      pragma solidity ^0.8.0;
-      interface ISink { function accept(bytes calldata value) external; }
-      contract Registry {
-        struct Record { bool enabled; }
-        Record[] records;
-        address sink;
-        function publish(bool[] calldata flags, bool update) public {
-          records.push();
-          uint id = records.length - 1;
-          Record storage record = records[id];
-          record.enabled = flags.length > 0;
-          if (update) record.enabled = false;
-          ISink(sink).accept(abi.encodePacked(record.enabled));
-          require(true);
-        }
-      }
-    `, {
-      evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
-      maximumInputBytes: 1_000_000,
-    });
-    const sources = conditionalArtifact.abi.find((candidate) => candidate.name === 'publish')
-      ?.externalCalls?.[0].argSources;
-    expect(sources).toBeDefined();
-    expect(JSON.stringify(sources)).toContain('arrayAccess');
-    expect(JSON.stringify(sources)).not.toContain('"name":"Record"');
-  });
 
   it('packs a zero address cast to uint160 at its declared Solidity width', () => {
     const expression: ExternalCallExpression = {
@@ -1245,14 +1073,6 @@ describe('conditional external-call topology', () => {
     expect(resolved.resolvedExternalCalls).toEqual([]);
   });
 
-  it('uses ABI-valid placeholders for inactive fixed route bands', () => {
-    expect(inactiveMessageBusRouteWitness('string')).toBe('');
-    expect(inactiveMessageBusRouteWitness('uint256')).toBe(0n);
-    expect(inactiveMessageBusRouteWitness('bytes4')).toEqual(new Uint8Array(4));
-    expect(inactiveMessageBusRouteWitness('bool[2]')).toEqual([false, false]);
-    expect(inactiveMessageBusRouteWitness('address')).toHaveLength(25);
-  });
-
   it('maps stable callsite slots after an earlier conditional call is omitted', () => {
     const externalCalls = [
       { callsiteId: 4, occurrence: 'conditional' },
@@ -1281,7 +1101,7 @@ describe('conditional external-call topology', () => {
     expect(externalReturnParamSlot('__internal__externalReturnOutputIdx2', externalCalls)).toBe(3);
   });
 
-  it('follows a shared proxy master to its compiler-route selector', () => {
+  it('follows a shared proxy master to its delegate selector', () => {
     const proxy = {
       functionName: '__forward', delegateCallGroupIndex: 0,
       externalContract: { inner: { artifact: { abi: [{ name: '__forward', selector: 'aaaaaaaa' }] } } },
@@ -1290,7 +1110,7 @@ describe('conditional external-call topology', () => {
       ...proxy, sharedGroupIndex: 0, delegateCallGroupIndex: undefined, functionName: 'userRegistered',
     };
     const delegate = {
-      functionName: '_batchRaw', compilerRoute: { selector: hexToBin('53434231') },
+      functionName: '_batchRaw',
       externalContract: { inner: { artifact: { abi: [{ name: '_batchRaw', selector: '53434231' }] } } },
     };
 

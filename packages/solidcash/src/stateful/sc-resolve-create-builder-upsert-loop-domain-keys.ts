@@ -19,8 +19,8 @@ import {
   bytesToSlotValue,
   keyToSlotMulti,
 } from './SortedList.js';
-import { evalComputedKey, visibleHandlerInputs } from './route-expression-key.js';
-import { vmapCounterPermutationSpec } from './sc-batch-raw.js';
+import { evalComputedKey, visibleHandlerInputs } from './call-expression-key.js';
+import { vmapCounterPermutationSpec } from './internal-function-args.js';
 
 export type ResolveCreateBuilderUpsertLoopDomainKeysHost = {
   readonly categoryId: string;
@@ -40,7 +40,6 @@ export type ResolveCreateBuilderUpsertLoopDomainKeysResult =
     skipped: false;
     collection: any;
     list: any;
-    entryAddr: string;
     entries: any[];
     argOf: (name: string | undefined) => unknown;
     visibleInputs: any[];
@@ -73,7 +72,6 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
   params: {
     info: any;
     loopAbiFunction: AbiFunction;
-    upsertFrame: any;
     loopArgs: any[];
     entryArtifact: any;
     stateLayout: any;
@@ -82,14 +80,13 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
     executionSelfAddress: any;
     insertLoopPredecessorsLength: number;
     runtimeJournalMaterializationIntentsLength: number;
-    selectedRowArgument: (row: any, name: string) => unknown;
     replaceLoopArgument: (index: number, value: FunctionArgument) => void;
     [key: string]: any;
   },
 ): Promise<ResolveCreateBuilderUpsertLoopDomainKeysResult> {
   const {
-    info, loopAbiFunction, upsertFrame, loopArgs, entryArtifact, stateLayout,
-    onChainState, executionSelfAddress, selectedRowArgument, replaceLoopArgument,
+    info, loopAbiFunction, loopArgs, entryArtifact, stateLayout,
+    onChainState, executionSelfAddress, replaceLoopArgument,
   } = params;
   let loopPredicateState = params.loopPredicateState;
   const runtimeInputStart = params.insertLoopPredecessorsLength;
@@ -105,17 +102,14 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
   const list = SortedList.fromUtxos(entries);
   const argOf = (name: string | undefined): unknown => {
     if (!name) return undefined;
-    if (upsertFrame.routed) return selectedRowArgument(upsertFrame.row!, name);
     const i = loopAbiFunction.inputs.findIndex((p: any) => p.name === name);
     return i >= 0 ? loopArgs[i] : undefined;
   };
   const visibleInputs = visibleHandlerInputs(loopAbiFunction.inputs);
-  const conditionArgs = upsertFrame.routed
-    ? [...upsertFrame.row!.args]
-    : visibleInputs.map((input: any) => {
-      const index = loopAbiFunction.inputs.findIndex((candidate: any) => candidate.name === input.name);
-      return loopArgs[index];
-    }) as FunctionArgument[];
+  const conditionArgs = visibleInputs.map((input: any) => {
+    const index = loopAbiFunction.inputs.findIndex((candidate: any) => candidate.name === input.name);
+    return loopArgs[index];
+  }) as FunctionArgument[];
   let valueTraceDomain: bigint[] | undefined;
   let sourceOccurrences: number[] | undefined;
   let selectedSourceValues: bigint[] | undefined;
@@ -226,8 +220,8 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
       const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));
       return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
     });
-    // Do not sort this beside `permutation`. The generated row loop advances its physical-key cursor only on a
-    // selected source frame: selectedOccurrences[i] therefore consumes permutation[i], even when permutation[i]
+    // Do not sort this beside `permutation`. The generated loop advances its physical-key cursor only on a
+    // selected source iteration: selectedOccurrences[i] therefore consumes permutation[i], even when permutation[i]
     // originated at another logical rank. Later topology reordering has the same cursor semantics.
     sourceOccurrences = selectedOccurrences;
     selectedSourceValues = selectedOccurrences.map((occurrence: any) => domain[occurrence]);
@@ -336,7 +330,6 @@ export async function resolveCreateBuilderUpsertLoopDomainKeys(
     skipped: false as const,
     collection,
     list,
-    entryAddr,
     entries,
     argOf,
     visibleInputs,

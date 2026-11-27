@@ -60,10 +60,6 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   private pendingHoists: StatementNode[] = [];
   private counter = 0;
 
-  constructor(private readonly mappingArrayValueMinIndices = 2) {
-    super();
-  }
-
   visitSourceFile(node: SourceFileNode): Node {
     this.stateChanging = stateChangingFunctionNames(node);
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
@@ -150,8 +146,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
 
   // An array-value READ `m[k0..][i]...` (mapping value is an array): reads parse as a nested ArrayAccess
   // chain, or as `MappingAccess[i]` after a `this.m[k]` prefix. Hoist the whole-value read into a temp and
-  // index it locally -> `T[] t = m[k0..]; ... t[i] ...`. Default `mappingArrayValueMinIndices` is 2 so the
-  // late pass keeps its historical 2D-only hoist; kernel admission uses 1 so `m[k][i]` journals as `m[k]`.
+  // index it locally -> `T[] t = m[k0..]; ... t[i] ...`. Only a read with two or more array indices hoists.
   visitArrayAccess(node: ArrayAccessNode): Node {
     const { base, keys: accessKeys } = this.flattenAccess(node);
     const mappingName = this.mappingArrayValueBaseName(base);
@@ -162,7 +157,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       let dims = 0; let t: Type = info.valueType;
       while (t instanceof ArrayType) { dims++; t = t.elementType; }
       const arrIdxCount = keys.length - info.keyCount;
-      if (arrIdxCount >= this.mappingArrayValueMinIndices && arrIdxCount <= dims) {
+      if (arrIdxCount >= 2 && arrIdxCount <= dims) {
         const visitedKeys = keys.map((k) => this.visit(k) as ExpressionNode);
         const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
         const mapKeys = visitedKeys.slice(0, info.keyCount);
@@ -611,7 +606,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const { keyCount, valueType } = info;
     if (!(valueType instanceof ArrayType) || !(valueType.elementType instanceof StructType)) return undefined;
     const arrIdxCount = node.keys.length - keyCount;
-    if (arrIdxCount < this.mappingArrayValueMinIndices) return undefined;
+    if (arrIdxCount < 2) return undefined;
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     const { decls, keys } = this.bindKeys(node.keys, info.keyTypes, node);
@@ -641,8 +636,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
 
   // `m[k0..k_{kc-1}][i][j..] = v` where m is a mapping (kc keys) whose value is an array: the parser makes
   // one MappingAssignNode with all indices. A 1-index scalar-array write (`m[k][i]=v`) already has a native
-  // sorted-RMW path after ST separates arrayIndex; a struct-element write needs the whole-entry RMW before
-  // kernel admission so the journal sees `m[k]`. A 2+-index write always desugars:
+  // sorted-RMW path after ST separates arrayIndex. A write with two or more indices desugars:
   // `T[][] t = m[k]; t[i][j] = v; m[k] = t;`.
   private tryDesugarMappingArrayValue(node: MappingAssignNode): StatementNode[] | undefined {
     if (node.arrayPush || node.arrayPop) return undefined;
@@ -655,7 +649,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     // Earlier semantic normalization may already have separated the first array-value index from the mapping
     // keys. It is still part of this whole-entry read/modify/write, not a second physical mapping key.
     const arrIdxCount = node.keys.length - keyCount + (node.arrayIndex ? 1 : 0);
-    if (arrIdxCount < this.mappingArrayValueMinIndices || arrIdxCount > dims) return undefined;
+    if (arrIdxCount < 2 || arrIdxCount > dims) return undefined;
     // A normalized scalar-array element write already has a native sorted-RMW lowering. Keep its arrayIndex
     // attached to the MappingAssign so runtime counter-loop metadata can publish the exact `setAt` mutation.
     // Struct elements need the whole-array rewrite: their field update has already become a composite value

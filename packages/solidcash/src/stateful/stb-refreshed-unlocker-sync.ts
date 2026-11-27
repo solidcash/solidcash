@@ -13,7 +13,6 @@ import { syncBuilderInputsFromAllInputs } from './persist-predecessor-layout.js'
 export interface RefreshedUnlockerSyncHost {
   /** Mutable flattened input list — callers rewrite slots after unlocker refresh. */
   readonly allInputs: UnlockableUtxo[];
-  readonly coordinateBase?: number;
   masterUtxo: UnlockableUtxo;
   masterUnlockerRefresher?: (builder?: TransactionBuilder) => Unlocker;
 }
@@ -56,7 +55,7 @@ export function syncBuilderUnlockers(
     if (pool === undefined) throw new Error('Block oracle reader binds no oracle pool');
     const matches = builder.inputs.flatMap((candidate, index) => (isPoolInfoInput(candidate, pool) ? [index] : []));
     if (matches.length !== 1) throw new Error('Block oracle reader requires one authenticated oracle input');
-    const oracleInputIndex = BigInt((host.coordinateBase ?? 0) + matches[0]);
+    const oracleInputIndex = BigInt(matches[0]);
     if (unlocker.params[position] === oracleInputIndex) continue;
     unlocker.params[position] = oracleInputIndex;
     unlocker.syncEncodedArgsFromParams?.([position]);

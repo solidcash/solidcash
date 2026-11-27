@@ -7,7 +7,7 @@ import {
 import { fundedSigner } from '../test-util.js';
 
 async function deploy(source: string): Promise<StatefulContract> {
-  const artifact = compileString(source, { forceStateful: true, evmCompat: true, messageBus: false });
+  const artifact = compileString(source, { forceStateful: true, evmCompat: true });
   return getContractFactory(artifact, await fundedSigner()).deploy();
 }
 

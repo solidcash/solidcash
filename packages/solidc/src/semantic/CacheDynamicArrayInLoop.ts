@@ -56,9 +56,8 @@ import AstTraversal from '../ast/AstTraversal.js';
  * redirected to a fresh local `__dlcache_V` (state-array write statements become local array statements;
  * index reads / `.length` / bare reads are MappingAccess/Identifier nodes that resolve to the local by name
  * after the rename). A cache read `V` is prepended and a flush `V = __dlcache_V` appended. The flush is
- * gated on `__dlcache_dirty_V`: a message-bus route also invokes handlers that write V through the journal,
- * and an unconditional flush of the untouched snapshot publishes that pre-call blob over the handler's
- * update. Runs before semantic analysis so the renamed accesses resolve as a local array.
+ * gated on `__dlcache_dirty_V`, so a body that never wrote V publishes no write. Runs before semantic analysis so
+ * the renamed accesses resolve as a local array.
  */
 const PREFIX = '__dlcache_';
 
@@ -360,8 +359,7 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
   // local cache, retaining only the state spelling is insufficient: SymbolTableTraversal resolves it against the
   // persisted collection, which the cache has not been flushed to yet, so the read observes the pre-write array
   // (a bare `.length` after a cached `push()` still reports the old count). Rebuild the exact read as local
-  // ArrayAccess / identifier nodes while the source keys and locations are still available. This is structural
-  // and also covers nodes exposed by handler cloning.
+  // ArrayAccess / identifier nodes while the source keys and locations are still available.
   private replaceIndexedReads(root: Node, name: string, local: string): void {
     const replace = (node: Node): Node => {
       for (const key of Object.keys(node)) {

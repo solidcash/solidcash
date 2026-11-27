@@ -85,11 +85,10 @@ export function deriveFullPhase2ApplyTransfers(
     const delegateGroup = delegatecallInputIndex === undefined ? undefined
       : stb.getLowLevelCallUtxoGroups().find((_group, groupIdx) =>
         stb.getLowLevelCallMasterInputIndex(groupIdx) === delegatecallInputIndex);
-    const delegateFn = delegateGroup?.compilerRoute?.abiFunction
-      ?? (delegateGroup
-        ? (delegateGroup.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
-          ?.find((candidate) => candidate.name === delegateGroup.functionName)
-        : undefined);
+    const delegateFn = delegateGroup
+      ? (delegateGroup.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
+        ?.find((candidate) => candidate.name === delegateGroup.functionName)
+      : undefined;
     const absoluteDelegateSlot = (kind: BlockSlotKind): number | undefined => {
       if (delegatecallInputIndex === undefined) return undefined;
       const offset = delegateFn?.blockLayout?.slots.find((slot) => slot.kind === kind)?.offset;

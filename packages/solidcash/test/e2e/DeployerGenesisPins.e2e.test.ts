@@ -432,7 +432,7 @@ describe('Deploy<C> genesis pins at top level (stock libauth, standard)', () => 
     clearGenesisReservations();
     const provider = new MockNetworkProvider({ profile: 'production' });
     const captured = captureBroadcasts(provider);
-    const artifact = compileString(source, { deployer: true, messageBus: false });
+    const artifact = compileString(source, { deployer: true });
     const fundingUtxo: Utxo = { txid, vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(binToHex(aliceLock), fundingUtxo);
     const seeded = seed === undefined ? {} : await seed(provider);
@@ -560,7 +560,7 @@ describe('Deploy<C> genesis pins at top level (stock libauth, standard)', () => 
       clearGenesisReservations();
       const provider = new MockNetworkProvider({ profile: 'production' });
       const captured = captureBroadcasts(provider);
-      const artifact = compileString(SELF, { deployer: true, messageBus: false });
+      const artifact = compileString(SELF, { deployer: true });
       deployer = artifact.deployer!;
       const fundingUtxo: Utxo = { txid: '55'.repeat(32), vout: 0, satoshis: 500_000n };
       await provider.seedUtxo(binToHex(aliceLock), fundingUtxo);

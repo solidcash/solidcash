@@ -87,7 +87,7 @@ describe('large-contract state-local splitting', () => {
           return ${result};
         }
       }`;
-    const options = { evmCompat: true, messageBus: false, forceSplit: true };
+    const options = { evmCompat: true, forceSplit: true };
     const projected = compileStringSplit(source('[payments[B],payments[S],payments[M],payments[P],payments[A]]'), options);
     const forwarded = compileStringSplit(source('payments'), options);
     const projectedTarget = projected.manifest.routes.find((route) => route.function === 'claim')?.target;
@@ -130,7 +130,7 @@ describe('large-contract state-local splitting', () => {
         uint256 public value;
         mapping(address => uint256) public balances;
         function set(uint256 next) public { value = next; require(next >= 0); }
-      }`, { evmCompat: true, messageBus: false, forceSplit: true });
+      }`, { evmCompat: true, forceSplit: true });
     const facet = bundle.facets[bundle.manifest.facets[0].name];
     expect(bundle.root.abi.map((fn) => fn.name)).toEqual(expect.arrayContaining(['value', 'balances']));
     expect(facet.abi.map((fn) => fn.name)).not.toEqual(expect.arrayContaining(['value', 'balances']));
@@ -165,34 +165,12 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.routes.find((route) => route.function === 'update')?.target).not.toBe('root');
   });
 
-  it('binds a detached graph verifier into a split facet route', () => {
-    const bundle = compileStringSplit(`interface IPeer { function ping(int value) external; }
-      contract GraphFacet {
-        int value;
-        function step(address target, int next) public {
-          IPeer(target).ping(next);
-          value = next;
-          require(next >= 0);
-        }
-      }`, {
-      evmCompat: true, messageBus: true, messageBusKernel: true,
-      messageBusGraphContext: true, optimizeForCompilationSpeed: true,
-      suppressWarnings: true, forceSplit: true,
-    });
-    const facet = bundle.facets[bundle.manifest.facets[0].name];
-    expect(facet.messageBus?.verifierProgram).toBeDefined();
-    expect(facet.messageBus?.route?.inputs?.map((input) => input.name))
-      .toContain('__internal__activeVerifierIndex');
-    // The same source emitted 8,710 bytes when the facet bypassed verifier binding.
-    expect(asmToBytecode(facet.bytecode).length).toBeLessThan(5_000);
-  });
-
   it('does not expose a root-owned public view call closure as a facet selector', () => {
     const bundle = compileStringSplit(`contract ViewClosure() {
       int counter;
       function read() public view returns (int) { return this.counter; }
       function increment() public { this.counter = read() + 1; require(this.counter > 0); }
-    }`, { messageBus: true, forceSplit: true });
+    }`, { forceSplit: true });
     const facet = bundle.facets[bundle.manifest.facets[0].name];
     expect(bundle.manifest.routes.find((route) => route.function === 'read')?.target).toBe('root');
     expect(facet.abi.map((fn) => fn.name)).not.toContain('read');
@@ -496,7 +474,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     // This test derives a shard limit from direct physical facet sizes; keep the default hidden route out of
     // that ruler so it measures only call-closure partitioning.
-    const options = { evmCompat: true, forceSplit: true, messageBus: false };
+    const options = { evmCompat: true, forceSplit: true };
     const union = compileStringSplit(source, options);
     const unionBytes = union.manifest.facets[0].estimatedRedeemBytes;
     expect([...union.manifest.facets[0].functions].sort()).toEqual(['publish', 'updateWhitelist']);
@@ -571,7 +549,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     // Storage-layout agreement is independent of the hidden route, while the historical 1,100-byte threshold
     // is a direct-facet size fixture.
-    const options = { evmCompat: true, forceSplit: true, messageBus: false };
+    const options = { evmCompat: true, forceSplit: true };
     const slots = (layout: any): string[] => (layout?.variables ?? [])
       .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
     // One facet holds every entry: the case that always agreed, so the divided case below is compared
@@ -592,7 +570,7 @@ describe('large-contract state-local splitting', () => {
     });
     expect(divided.manifest.facets.length).toBeGreaterThan(1);
     const expected = slots(compileString(source, {
-      evmCompat: true, messageBus: false,
+      evmCompat: true,
     }).stateLayout);
     expect(expected).toEqual(slots(together.root.stateLayout));
     expect(slots(divided.root.stateLayout)).toEqual(expected);
@@ -614,7 +592,7 @@ describe('large-contract state-local splitting', () => {
           require(v >= 0, "n");
         }
       }`;
-    const options = { evmCompat: true, forceSplit: true, messageBus: false };
+    const options = { evmCompat: true, forceSplit: true };
     const slots = (layout: any): string[] => (layout?.variables ?? []).map((v: any) => v.name);
     const baselineSlots = slots(compileString(source, options).stateLayout);
     const bundle = compileStringSplit(source, options);
@@ -635,24 +613,6 @@ describe('large-contract state-local splitting', () => {
         .toContain('__oraclePool');
     }
   });
-
-  it('admits a conditional value-transfer call in a message-bus handler', () => {
-    const artifact = compileString(`pragma solidity ^0.8.7;
-      contract ConditionalValue {
-        uint256 paid;
-        function pay(address to, uint256 amount, bool sendValue) public {
-          if (sendValue) {
-            (bool success,) = to.call{value: amount}("");
-            require(success, "send failed");
-          }
-          paid = amount;
-          require(amount >= 0, "n");
-        }
-      }`, { evmCompat: true, messageBus: true });
-
-    expect(artifact.abi.some((entry: any) => entry.name === 'pay')).toBe(true);
-    expect(asmToBytecode(artifact.bytecode).length).toBeGreaterThan(0);
-  }, 300_000);
 
   /**
    * THE GUARD IS STILL ARMED, and it has to be checked separately now that no source reaches it: the repair

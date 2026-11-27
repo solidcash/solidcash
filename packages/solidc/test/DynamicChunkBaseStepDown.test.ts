@@ -46,7 +46,6 @@ function* decodeInstructions(bytes: Uint8Array): Generator<{ opcode: number; dat
 
 const bodyOpcodes = (source: string): number[] => {
   const artifact = compileString(source, {
-    messageBus: true,
     forceStateful: true,
     evmCompat: true,
     suppressWarnings: true,

@@ -67,14 +67,6 @@ describe('pragma satoshicontainer single and pragma tokencontainer single', () =
       .toThrow(/pragma tokencontainer single is not available to a framed contract/);
   });
 
-  it('builds no message-bus route: a composed call could not keep the promise', () => {
-    for (const pragmas of [SATOSHI, TOKEN]) {
-      const artifact = compileString(contract('function f() public { this.n = 1; }', pragmas), { messageBus: true });
-      expect(artifact.messageBus).toBeUndefined();
-      expect(artifact.abi.map((fn) => fn.name)).not.toContain('__message_bus1');
-    }
-  });
-
   it('cannot send an NFT from a token container, whose one coin stays as it is', () => {
     const source = (pragmas: string): string =>`pragma solidcash ^0.52.0;
 ${pragmas}contract C(bytes32 asset) {

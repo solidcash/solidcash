@@ -53,7 +53,7 @@ ScaledPreserveEmitHost,
   funderUtxos: UnlockableUtxo[];
   pendingValueChunkPredecessors: UnlockableUtxo[];
   readonly preserveBlockLayoutWidth: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly entryNfts: readonly EntryNftInfo[];
   readonly externalCallEntryOutputs: ReadonlyMap<string, ReadonlyMap<number, string>>;
   /** Mutable groups — callers may rewrite `dataNftUtxos` after relocation. */
@@ -64,16 +64,14 @@ ScaledPreserveEmitHost,
   setRelocationFunderUtxos(next: UnlockableUtxo[]): void;
 }
 
-/** Route slot indices are physical; a selected handler's local ordinal is only a legacy fallback. */
+/** The first entry access these functions publish at a slot index. */
 export function physicalEntryAccessForSlot(
-  route: Pick<AbiFunction, 'entryAccesses'> | undefined,
   handlers: readonly Pick<AbiFunction, 'entryAccesses'>[],
   slotIndex: number,
 ): EntryAccessAbi | undefined {
   const atSlot = (fn: Pick<AbiFunction, 'entryAccesses'>): EntryAccessAbi | undefined =>
     fn.entryAccesses?.find((access, denseIndex) => access !== undefined
       && (access.slotIndex ?? denseIndex) === slotIndex);
-  if (route?.entryAccesses !== undefined) return atSlot(route);
   return handlers.map(atSlot).find((access) => access !== undefined);
 }
 
@@ -104,9 +102,7 @@ export function externalEntryLockingBytecode(
   ].filter((name): name is string => name !== undefined));
   const abiFunctions = artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
     .filter((candidate) => functionNames.has(candidate.name)));
-  const entryAccess = physicalEntryAccessForSlot(
-    group.compilerRoute?.abiFunction, abiFunctions, slot.slotIndex ?? 0,
-  );
+  const entryAccess = physicalEntryAccessForSlot(abiFunctions, slot.slotIndex ?? 0);
   const collections = [group.stateLayout, ...artifacts.map((artifact) => artifact.stateLayout)]
     .flatMap((layout) => layout?.collections ?? [])
     .filter((collection, index, all) => all.findIndex((candidate) => (
@@ -117,8 +113,7 @@ export function externalEntryLockingBytecode(
       || candidate.signature === entryAccess.collection)
     // Interface artifacts can omit implementation entry-access metadata. A state layout with exactly one
     // collection still identifies an entry slot without ambiguity; refuse to guess when several exist.
-    : group.compilerRoute?.abiFunction?.entryAccesses === undefined && collections.length === 1
-      ? collections[0] : undefined;
+    : collections.length === 1 ? collections[0] : undefined;
   const owner = group.logicalContract?.inner ?? group.externalContract?.inner;
   return collection?.signature ? scriptToLockingBytecode(
     buildEntryNftCovenantScript(
@@ -138,9 +133,9 @@ export function placeValueChunkPredecessorInputs(
 ): void {
   // A compiler-published balanced block is a complete ownership map. Legacy persistence recovery infers
   // destinations from cached input shape, so applying it after fixed-width assembly can replace a declared
-  // route slot with an unrelated resource. Compiler routes must receive every live/disposal input through the
-  // ordinary builder options and leave the materialized block immutable.
-  if (host.preserveBlockLayoutWidth || host.compilerRouteDelegateBlock
+  // block slot with an unrelated resource. Such a block receives every live/disposal input through the
+  // ordinary builder options, and its materialized form stays immutable.
+  if (host.preserveBlockLayoutWidth || host.directCallDelegateBlock
     || host.blockLayout?.trailingCapacity !== undefined) return;
   const band = host.getChunkableValueWriteBand();
   if (!band) return;
@@ -278,7 +273,6 @@ export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): 
     host.externalCallUtxoGroups,
     (categoryId) => host.findMintingInputIndex(categoryId),
     band,
-    host.messageBusConvention,
   );
   const tokenGroup = collisionIndex >= 0
     ? host.externalCallUtxoGroups[collisionIndex]

@@ -1,3 +1,6 @@
+> Historical workstream note. The message bus and its kernel were removed from the compiler and SDK in
+> 2026-11; any instruction to compile with `messageBus` or to use the bus describes the tree as it stood then.
+
 # Oracle pools on sushi-port-node: what the SDK item must change
 
 Status: done, 2026-11-04: utils, compiler, SDK, tests and docs, on `feat/oracle-pools-sushi` (from `sushi-port-node`

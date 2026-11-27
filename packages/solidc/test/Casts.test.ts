@@ -98,7 +98,7 @@ describe('SBE-2: bytesN -> bytesM cast (truncate / widen)', () => {
   it('shrinking a bounded bytes truncates the leftmost bytes (OP_SPLIT OP_DROP)', () => {
     const a = compileString(
       'contract C() { function f() { bytes2 a = 0x1234; bytes1 b = bytes1(a); require(b.length == 1); } }',
-      { messageBus: false },
+      {},
     );
     expect(a.bytecode).toContain('OP_SPLIT OP_DROP');
   });
@@ -106,7 +106,7 @@ describe('SBE-2: bytesN -> bytesM cast (truncate / widen)', () => {
   it('widening a bounded bytes right-pads with zero bytes (OP_CAT)', () => {
     const a = compileString(
       'contract C() { function f() { bytes1 a = 0x12; bytes4 b = bytes4(a); require(b.length == 4); } }',
-      { messageBus: false },
+      {},
     );
     expect(a.bytecode).toContain('OP_CAT');
   });
@@ -120,7 +120,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a, bytes20 e) { require(bytes20(a) == e); } }',
-      { messageBus: false }).debug.bytecode));
+      {}).debug.bytecode));
     expect(asm).toContain(P2PKH_IDENTITY); // check the 76a914 prefix, then take 20 and check 88ac
     expect(asm).not.toContain('OP_BIN2NUM');        // bytes20, not int
     expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(true);
@@ -131,7 +131,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a, int e) { require(uint160(a) == e); } }',
-      { messageBus: false }).debug.bytecode));
+      {}).debug.bytecode));
     expect(asm).toContain(P2PKH_IDENTITY);
     expect(asm).toContain('OP_BIN2NUM');
     warn.mockRestore();
@@ -139,12 +139,10 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
 
   it('interprets the address identity as big-endian only in Solidity-compatible numeric casts', () => {
     const source = 'contract C() { function f(address a, uint160 e) { require(uint160(a) == e); } }';
-    const native = bytecodeToAsm(hexToBin(compileString(source, { messageBus: false }).debug.bytecode));
-    const compatible = bytecodeToAsm(hexToBin(compileString(source, {
-      messageBus: false, evmCompat: true,
+    const native = bytecodeToAsm(hexToBin(compileString(source, {}).debug.bytecode));
+    const compatible = bytecodeToAsm(hexToBin(compileString(source, { evmCompat: true,
     }).debug.bytecode));
-    const evmCompatible = bytecodeToAsm(hexToBin(compileString(source, {
-      messageBus: false, evmCompat: true,
+    const evmCompatible = bytecodeToAsm(hexToBin(compileString(source, { evmCompat: true,
     }).debug.bytecode));
     expect(native).not.toContain('OP_REVERSEBYTES');
     expect(compatible).toContain('OP_REVERSEBYTES');
@@ -156,7 +154,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a, int e) { require(uint160(a) == e); } }',
-      { messageBus: false }).debug.bytecode));
+      {}).debug.bytecode));
     expect(asm).toContain('OP_SIZE 23 OP_EQUAL');
     expect(asm).toContain('OP_HASH160');
     warn.mockRestore();
@@ -166,7 +164,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(uint160(a)); } }',
-      { evmCompat: true, messageBus: false }).debug.bytecode));
+      { evmCompat: true }).debug.bytecode));
     expect(asm).toContain(P2PKH_IDENTITY);
     expect(asm).toContain('OP_BIN2NUM');
     expect(asm).toContain('OP_REVERSEBYTES');
@@ -179,7 +177,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
       + '{ return abi.encodePacked(bytes20(a), uint160(a)); } }';
     for (const form of ['hash', 'bytecode'] as const) {
       const asm = bytecodeToAsm(hexToBin(compileString(source, {
-        evmCompat: true, messageBus: false, addressForm: form,
+        evmCompat: true, addressForm: form,
       }).debug.bytecode));
       // The narrowing script belongs to the cast, and the cast emits it in either form.
       expect(asm).toContain(P2PKH_IDENTITY);
@@ -191,9 +189,8 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
 
   it("addressForm: 'hash' is assertable natively too, so the identity is the caller's choice either way", () => {
     const source = 'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(a); } }';
-    const native = bytecodeToAsm(hexToBin(compileString(source, { messageBus: false }).debug.bytecode));
-    const forced = bytecodeToAsm(hexToBin(compileString(source, {
-      messageBus: false, addressForm: 'hash',
+    const native = bytecodeToAsm(hexToBin(compileString(source, {}).debug.bytecode));
+    const forced = bytecodeToAsm(hexToBin(compileString(source, { addressForm: 'hash',
     }).debug.bytecode));
     // A native compile packs the lock by default; asking for 'hash' inserts the identity narrowing.
     expect(native).not.toContain(P2PKH_IDENTITY);
@@ -204,10 +201,10 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const source = 'contract C() { function f(address a) returns (bytes) '
       + '{ return abi.encodePacked(a); } }';
     const hash = bytecodeToAsm(hexToBin(compileString(source, {
-      evmCompat: true, messageBus: false, addressForm: 'hash',
+      evmCompat: true, addressForm: 'hash',
     }).debug.bytecode));
     const bytecode = bytecodeToAsm(hexToBin(compileString(source, {
-      evmCompat: true, messageBus: false, addressForm: 'bytecode',
+      evmCompat: true, addressForm: 'bytecode',
     }).debug.bytecode));
     expect(hash).toContain(P2PKH_IDENTITY);
     expect(bytecode).not.toContain(P2PKH_IDENTITY);
@@ -218,7 +215,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a, bytes e) { require(bytes(a) == e); } }',
-      { messageBus: false }).debug.bytecode));
+      {}).debug.bytecode));
     expect(asm).not.toContain(P2PKH_IDENTITY);
     expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(false);
     warn.mockRestore();

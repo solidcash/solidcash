@@ -30,41 +30,26 @@ describe('SOLIDC env registry compile-cache artifact identity', () => {
 
   it('execution-affecting options change buildArtifactCacheKey', () => {
     const base = buildArtifactCacheKey(src, { suppressWarnings: true }, 'CacheIdentityPin');
-    const withKernel = buildArtifactCacheKey(
+    const withJournal = buildArtifactCacheKey(
       src,
-      { suppressWarnings: true, forceStateful: true, messageBus: true, messageBusKernel: true },
+      { suppressWarnings: true, forceStateful: true },
       'CacheIdentityPin',
     );
-    const withOwnerAlt = buildArtifactCacheKey(
-      src,
-      { suppressWarnings: true, ownerAltAnchor: true },
-      'CacheIdentityPin',
-    );
-    expect(withKernel).not.toBe(base);
-    expect(withOwnerAlt).not.toBe(base);
-    expect(withKernel).not.toBe(withOwnerAlt);
+    expect(withJournal).not.toBe(base);
   });
 
   it('OPT-2 a bytecode-changing debug switch is not reused for a later compile', () => {
     process.env.SOLIDC_COMPILE_CACHE = '1';
-    const previousTail = process.env.SOLIDC_ROUTE_ABI_TAIL;
     const previousRow = process.env.SOLIDC_ROW_ASSERT;
-    delete process.env.SOLIDC_ROUTE_ABI_TAIL;
     delete process.env.SOLIDC_ROW_ASSERT;
     try {
       clearCompileCache();
-      const base = buildArtifactCacheKey(src, { suppressWarnings: true }, 'CacheIdentityPin');
-      process.env.SOLIDC_ROUTE_ABI_TAIL = '0';
-      const withTail = buildArtifactCacheKey(src, { suppressWarnings: true }, 'CacheIdentityPin');
-      expect(withTail).not.toBe(base);
-      compileString(src, { suppressWarnings: true, messageBus: false });
+      compileString(src, { suppressWarnings: true });
       expect(getCompileCacheEntryCount()).toBe(1);
       process.env.SOLIDC_ROW_ASSERT = '1';
-      compileString(src, { suppressWarnings: true, messageBus: false });
+      compileString(src, { suppressWarnings: true });
       expect(getCompileCacheEntryCount()).toBe(2);
     } finally {
-      if (previousTail === undefined) delete process.env.SOLIDC_ROUTE_ABI_TAIL;
-      else process.env.SOLIDC_ROUTE_ABI_TAIL = previousTail;
       if (previousRow === undefined) delete process.env.SOLIDC_ROW_ASSERT;
       else process.env.SOLIDC_ROW_ASSERT = previousRow;
     }
@@ -85,14 +70,14 @@ describe('SOLIDC env registry compile-cache artifact identity', () => {
   it('distinct execution options create distinct in-process cache entries', () => {
     process.env.SOLIDC_COMPILE_CACHE = '1';
     clearCompileCache();
-    compileString(src, { suppressWarnings: true, messageBus: false });
+    compileString(src, { suppressWarnings: true });
     expect(getCompileCacheEntryCount()).toBe(1);
     compileString(src, {
-      suppressWarnings: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      suppressWarnings: true, forceStateful: true,
     });
     expect(getCompileCacheEntryCount()).toBe(2);
     // Same options hit the same entry.
-    compileString(src, { suppressWarnings: true, messageBus: false });
+    compileString(src, { suppressWarnings: true });
     expect(getCompileCacheEntryCount()).toBe(2);
   });
 

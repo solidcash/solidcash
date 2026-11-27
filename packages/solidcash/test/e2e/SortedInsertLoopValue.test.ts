@@ -57,11 +57,11 @@ describe('vmap insert-in-loop with a loop-invariant VALUE (bal[ks[i]] = v) is so
     // Adversarial: a wrong expected value reverts -> the stored value really is 100, and specifically NOT the bool pin 1.
     await fund(contract.address);
     await expect(contract.chk(3n, 1n, alicePub, sig).send()).rejects.toThrow(
-      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      /^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
     await fund(contract.address);
     await expect(contract.chk(7n, 99n, alicePub, sig).send()).rejects.toThrow(
-      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      /^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
     // An absent key is bracket-proven default (0).
     await fund(contract.address);

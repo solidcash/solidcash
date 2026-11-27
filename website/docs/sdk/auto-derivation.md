@@ -92,8 +92,8 @@ console.log(app.lastDerivationIterations); // VM evaluations the last derivation
 
 Increase it only when a large transition has a genuine chain of interdependent commitments. A failure to converge
 usually indicates missing context, an unsupported cyclic shape, a wrong manual override, or a bug, not a reason to
-set an unbounded retry count. Some compiler-recognized loop-write routes internally receive a higher safety floor,
-and message-bus kernel artifacts use the pass ceiling the compiler publishes instead.
+set an unbounded retry count. Some compiler-recognized loop-write routes internally receive a higher safety floor
+from the pass ceiling the compiler publishes.
 
 A derivation failure throws an error named `AutoDerivationError`, which carries the underlying failure as `cause`
 when there is one. Common fixes are:

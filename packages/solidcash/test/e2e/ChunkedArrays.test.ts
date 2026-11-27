@@ -9,7 +9,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
 
-const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Chunk-packed fixed-width arrays (docs/arrays.md), behind the chunkedArrays flag. Whole-array
 // store/read round-trip through the dynamic-storage chunk machinery + the tight-pack codec, plus

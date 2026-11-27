@@ -66,9 +66,9 @@ type FacetName = keyof typeof FACETS;
 const facetArt = {} as Record<FacetName, Artifact>;
 
 beforeAll(() => {
-  masterArt = compileFile(fx('nusdt.scash'), { messageBus: false }) as Artifact;
+  masterArt = compileFile(fx('nusdt.scash'), {}) as Artifact;
   for (const [name, file] of Object.entries(FACETS)) {
-    facetArt[name as FacetName] = compileFile(fx(file), { brandLibrary: true, messageBus: false }) as Artifact;
+    facetArt[name as FacetName] = compileFile(fx(file), { brandLibrary: true }) as Artifact;
   }
 }, 300000);
 

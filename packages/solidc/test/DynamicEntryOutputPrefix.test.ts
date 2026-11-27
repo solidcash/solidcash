@@ -5,11 +5,12 @@ import { describe, expect, it } from 'vitest';
 import GenerateTargetTraversal from '../src/generation/GenerateTargetTraversal.js';
 
 // Exercise the emitted offset fragment with the same tracked frame and raw predecessor fields as its callers.
-// Full-contract integration is covered by KernelMixedEntryInsert; this isolates the two distinct chunk formats.
+// CollectionIterationDynamicInsertX102 (SDK e2e) runs it in a full contract, a two-chunk dynamic write beside a new
+// sorted entry; this isolates the two distinct chunk formats.
 type PrefixTraversal = {
   stack: string[];
   output: Script;
-  currentFunction: { name: string; dynamicWrites: string[]; messageBusRoute: boolean };
+  currentFunction: { name: string; dynamicWrites: string[] };
   pendingDynamicWrites: Map<string, { valueStackName: string }>;
   valueChunkTrailingCountActive: boolean;
   emitAddDynamicOutputsBeforeEntries(location: SingleLocationData, depth: number, iterations: boolean): void;
@@ -17,13 +18,13 @@ type PrefixTraversal = {
 
 describe('dynamic output prefix of scalar entry inserts', () => {
   it.each([
-    { lengths: [2, 53], depth: 5, route: true },
-    { lengths: [0, 60], depth: 0, route: false },
-    { lengths: [61, 120], depth: 5, route: false },
-    { lengths: [121, 241], depth: 0, route: true },
-  ])('counts only dynamic-state chunks at $lengths bytes (depth $depth, route $route)', ({ lengths, depth, route }) => {
+    { lengths: [2, 53], depth: 5 },
+    { lengths: [0, 60], depth: 0 },
+    { lengths: [61, 120], depth: 5 },
+    { lengths: [121, 241], depth: 0 },
+  ])('counts only dynamic-state chunks at $lengths bytes (depth $depth)', ({ lengths, depth }) => {
     const traversal = new GenerateTargetTraversal({}) as unknown as PrefixTraversal;
-    traversal.currentFunction = { name: 'prefix', dynamicWrites: ['first', 'second'], messageBusRoute: route };
+    traversal.currentFunction = { name: 'prefix', dynamicWrites: ['first', 'second'] };
     traversal.stack = [
       '__internal__dynwrite_value_first', '__internal__dynwrite_value_second',
       '__internal__valueChunkTrailingCount', '__internal__vmapBatchTrailingCount',

@@ -27,7 +27,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
-import { evalComputedKey } from '../../stateful/route-expression-key.js';
+import { evalComputedKey } from '../../stateful/call-expression-key.js';
 import { accessKeySlot, planCallLoopWrites, type CallLoopWritePlan } from '../call/entry-records.js';
 import type { MappingValueReader } from './call-resolution.js';
 import { isWholeNodeValue, type HopEntryWrites } from './entry-writes.js';

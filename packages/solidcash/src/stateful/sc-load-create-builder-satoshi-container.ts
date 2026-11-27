@@ -5,7 +5,6 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { buildSatoshiContainerCovenantScript, type AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import {
   createSatoshiContainerUnlocker,
@@ -35,15 +34,12 @@ export async function loadCreateBuilderSatoshiContainer(
   host: LoadCreateBuilderSatoshiContainerHost,
   params: {
     abiFunction: AbiFunction | undefined;
-    overrides: { blockBase?: number } | undefined;
   },
 ): Promise<LoadCreateBuilderSatoshiContainerResult> {
-  const { abiFunction, overrides } = params;
+  const { abiFunction } = params;
   const transferCount = abiFunction?.transferCount ?? 0;
-  const selectedContainer = (abiFunction as MessageBusRuntimeAbiFunction | undefined)
-    ?.messageBusActiveSatoshiContainer;
-  const needsSatoshiContainer = selectedContainer ?? (transferCount > 0
-    || abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer') === true);
+  const needsSatoshiContainer = transferCount > 0
+    || abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer') === true;
   let satoshiContainerUtxo: UnlockableUtxo | undefined;
   let satoshiContainerLockingBytecode: Uint8Array | undefined;
 
@@ -62,7 +58,7 @@ export async function loadCreateBuilderSatoshiContainer(
     }
 
     const satoshiContainerUnlocker = createSatoshiContainerUnlocker(
-      host.inner as any, overrides?.blockBase ?? 0, host.categoryId,
+      host.inner as any, 0, host.categoryId,
     );
     satoshiContainerUtxo = { ...containerUtxo, unlocker: satoshiContainerUnlocker };
 

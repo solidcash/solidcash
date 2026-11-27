@@ -5,7 +5,7 @@ import { SplitContractBundle } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';
 
-// BoringMath.to64 narrows uint256 -> uint64 with `require(a <= uint64(-1))`. On the split message-bus path the
+// BoringMath.to64 narrows uint256 -> uint64 with `require(a <= uint64(-1))`. On the split path the
 // compiler used to emit `uint64(-1)` as a runtime cast of the literal -1 (OP_1NEGATE followed by the uint64
 // sign-byte bounds check), so the guard failed for every in-range runtime value. `uint64(-1)` now folds to
 // type(uint64).max (Solidity two's-complement wrapping) during type checking, so the require compares against
@@ -28,7 +28,7 @@ contract Chef {
 
 describe('split to64 preflight (folded uint64(-1))', () => {
   it('settles an in-range runtime value through BoringMath.to64', async () => {
-    const compiled = compileStringSplit(SRC, { forceSplit: true, messageBus: true, evmCompat: true });
+    const compiled = compileStringSplit(SRC, { forceSplit: true, evmCompat: true });
     const provider = createTestProvider();
     const signer = new Signer(alicePriv, provider);
     const funding = [];
@@ -47,7 +47,7 @@ describe('split to64 preflight (folded uint64(-1))', () => {
   }, 300_000);
 
   it('still refuses an out-of-range uint64 value', async () => {
-    const compiled = compileStringSplit(SRC, { forceSplit: true, messageBus: true, evmCompat: true });
+    const compiled = compileStringSplit(SRC, { forceSplit: true, evmCompat: true });
     const provider = createTestProvider();
     const signer = new Signer(alicePriv, provider);
     const funding = [];

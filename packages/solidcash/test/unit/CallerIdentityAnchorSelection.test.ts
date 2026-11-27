@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { callerIdentityAnchorBand } from '../../src/stateful/StatefulContract.js';
+import { callerIdentityAnchorBand } from '../../src/stateful/sc-fix-create-builder-delegate-unlockers.js';
 
 describe('nested caller identity anchor selection', () => {
   const physical = 'aa20' + '11'.repeat(32) + '87';

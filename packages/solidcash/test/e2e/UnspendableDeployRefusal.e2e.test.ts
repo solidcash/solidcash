@@ -60,14 +60,6 @@ async function refusal(run: () => Promise<unknown>): Promise<UnspendableContract
   return error as UnspendableContractError;
 }
 
-const TOKEN_PAYOUT = `contract TokenPayout {
-    int sent;
-    function run(bytes32 series, bytes20[] to) public {
-        for (int i = 0; i < 3; i++) { this.tokens[series].transfer(new LockingBytecodeP2PKH(to[i]), 5 + i); }
-        this.sent = this.sent + 1;
-    }
-}`;
-
 /** A contract with a deployer (DeployerCreation.e2e.test.ts). It takes no contract arguments. */
 const C = 'pragma solidcash ^0.52.0; contract C { int n; constructor() { n = 1; } function read() { require(n == 1); } }';
 
@@ -90,39 +82,8 @@ const FACTORY = `
 `;
 
 describe('a deployment of code no input can spend', () => {
-  it('refuses the message-bus build of TokenPayout on BCH limits, and deploys its direct build there', async () => {
-    const bus = compileString(TOKEN_PAYOUT, { messageBus: true, suppressWarnings: true });
-    const direct = compileString(TOKEN_PAYOUT, { messageBus: false, suppressWarnings: true });
-    const busBytes = codeBytes(bus);
-    // Premises: the explicit bus build is over the limit and says so; the direct build fits.
-    expect(bus.compiler.options?.messageBus).toBe(true);
-    expect(busBytes).toBeGreaterThan(10_000);
-    expect(bus.diagnostics?.map((diagnostic) => diagnostic.code)).toContain('contract-size-limit');
-    expect(codeBytes(direct) + pushPrefixLength(codeBytes(direct))).toBeLessThanOrEqual(10_000);
-
-    const provider = new MockNetworkProvider({ profile: 'production' });
-    const sent = broadcasts(provider);
-    const funding = await seed(provider, 'c1');
-    const genesis = await refusal(() => StatefulContract.deploy(bus, [], deployOptions(provider, funding, {
-      initialState: { sent: 0n },
-    })));
-    expect(genesis).toMatchObject({
-      contractName: 'TokenPayout', codeBytes: busBytes, requiredBytes: busBytes + pushPrefixLength(busBytes),
-      limit: 10_000, limitKind: 'unlocking bytecode',
-    });
-    expect(genesis.message).toMatch(/Nothing was broadcast/);
-    await refusal(() => new ContractFactory(bus, new Signer(alicePriv, provider)).deploy());
-    expect(sent).toHaveLength(0);
-
-    const deployed = await StatefulContract.deploy(direct, [], deployOptions(provider, funding, {
-      initialState: { sent: 0n },
-    }));
-    expect(deployed.categoryId).toBe(funding.txid);
-    expect(sent.length).toBeGreaterThan(0);
-  }, 600_000);
-
   it('refuses every path by the code alone where its push is over the limit, and deploys at BCH limits', async () => {
-    const artifact = compileString(C, { deployer: true, messageBus: false, suppressWarnings: true });
+    const artifact = compileString(C, { deployer: true, suppressWarnings: true });
     expect(artifact.deployer?.code).toBe(binToHex(asmToBytecode(artifact.bytecode)));
     const code = codeBytes(artifact);
     const limit = code + pushPrefixLength(code) - 1;
@@ -152,7 +113,7 @@ describe('a deployment of code no input can spend', () => {
   }, 300_000);
 
   it('refuses a lock its category pin takes over the limit its code alone fits, before the prep is sent', async () => {
-    const artifact = compileString(C, { deployer: true, messageBus: false, suppressWarnings: true });
+    const artifact = compileString(C, { deployer: true, suppressWarnings: true });
     const code = codeBytes(artifact);
     const limit = code + pushPrefixLength(code);
     const provider = new MockNetworkProvider({ profile: 'production', consensusLimits: { maximumInputBytes: limit } });

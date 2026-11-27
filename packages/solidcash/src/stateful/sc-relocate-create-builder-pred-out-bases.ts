@@ -7,7 +7,6 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { legacyLiveValueChunkBandWidth } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import { mintingSwapShift } from './value-chunk-band-helpers.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -51,7 +50,7 @@ export function relocateCreateBuilderPredOutBases(params: {
   const {
     externalCallUtxoGroups, lowLevelCallUtxoGroups, returningExternalGroups,
     nestedMasterIndices, physicalReturnIndexForGroup, delegateReturnOutputBase,
-    lowLevelCallInputBase, entryAbiFunction, tailReturnRank,
+    lowLevelCallInputBase, tailReturnRank,
   } = params;
 
   const relocatedPredOutBase = new Map<number, number>();
@@ -69,10 +68,7 @@ export function relocateCreateBuilderPredOutBases(params: {
     // band is swapped 4-wide to start+width. Its in-block return then occupies
     // postSwapMaster+blockSize-1 (33). Tail witnesses baked against the
     // pre-swap master (29) would still start at 33 and collide with that return.
-    const publishLlcIndex = chunkableWriterGroupIndex(
-      lowLevelCallUtxoGroups,
-      (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
-    );
+    const publishLlcIndex = chunkableWriterGroupIndex(lowLevelCallUtxoGroups);
     if (publishLlcIndex >= 0) {
       const publishLlc = lowLevelCallUtxoGroups[publishLlcIndex];
       const publishFn = physicalExternalCallFunction(publishLlc);
@@ -83,11 +79,8 @@ export function relocateCreateBuilderPredOutBases(params: {
       const chunkBase = publishImpl + (publishFn?.blockLayout?.blockSize ?? 5);
       for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
         if (group.sharedGroupIndex !== undefined) continue;
-        if (!isCompilerDescribedMintingBandWriter(
-          group, true,
-          (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
-        )) continue;
-        const tokenName = group.functionName ?? group.compilerRoute?.abiFunction.name;
+        if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
+        const tokenName = group.functionName;
         const start = nestedMasterIndices[groupIdx];
         if (start === undefined || start < 0) continue;
         let tokenWidth = 0;
@@ -154,7 +147,7 @@ export function relocateCreateBuilderPredOutBases(params: {
         (candidate.sharedGroupIndex ?? index) === groupIdx
         && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
           || (candidate.plannedEntryInserts?.length ?? 0) > 0
-          || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
+          || Object.entries({ ...candidate.internalArgs })
             .some(([name]) => isWriterBatchWitnessName(name))));
       for (const writer of writers) {
         if (!writerBatchPlanMatchesPhysicalCarrier(group, writer)) continue;

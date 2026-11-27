@@ -15,8 +15,7 @@ describe('address mapping key encoding metadata', () => {
           this.raw[key] = 7;
           require(true);
         }
-      }`, {
-      messageBus: false, suppressWarnings: true,
+      }`, { suppressWarnings: true,
       evmCompat: options.evmCompat,
     });
     const collections = artifact.stateLayout!.collections!;

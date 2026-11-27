@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose callee target + argument resolution.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type {
   AbiFunction,
   ArgSource,
@@ -10,21 +10,12 @@ import type {
   ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   connectedContractMatchesExactAddress,
-  exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue,
   findDeploymentByName,
-  registeredAddressValueLockingBytecode,
 } from './deployment-registry.js';
-import {
-  adaptLegacyNestedJobEventArguments,
-  usesLegacyJobEventCompatibility,
-} from './legacy-job-event-wire.js';
-import { providerUnixLocktime } from './soft-state-overlays.js';
-import { readyPersistedCompatibilityValueChunkWidth } from './value-chunk-persist.js';
 
 export type ResolveCreateBuilderNestedComposeCalleeHost = {
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
@@ -43,7 +34,6 @@ export type ResolveCreateBuilderNestedComposeCalleeResult =
     skip: false;
     nestedSources: readonly ArgSource[] | undefined;
     addressValue: FunctionArgument | undefined;
-    resolvedTargetLockingBytecode: Uint8Array | undefined;
     /** Concrete proxy pair when the registry entry is a ConnectedStatefulContract. */
     proxyCallee: any | undefined;
     /** Resolved StatefulContract target for the nested callsite. */
@@ -51,10 +41,9 @@ export type ResolveCreateBuilderNestedComposeCalleeResult =
     resolvedRawFunctionName: string | undefined;
     nestedFunctionName: string;
     nestedArgs: FunctionArgument[];
-    graphNestedArgs: FunctionArgument[];
-    needsExpressionReturns: boolean;
+    callTreeNestedArgs: FunctionArgument[];
     nestedExpressionReturns: Map<string, FunctionArgument> | undefined;
-    graphExpressionReturns: Map<string, FunctionArgument> | undefined;
+    callTreeExpressionReturns: Map<string, FunctionArgument> | undefined;
   };
 
 function usesEmptyArrayElement(
@@ -156,8 +145,8 @@ export async function resolveCreateBuilderNestedComposeCallee(
     onChainState: { state: Record<string, unknown> };
     delegateSelfAddress: FunctionArgument;
     publishedNestedExternalCalls: readonly ExternalCallAbi[];
-    preparedAtomicNodes: unknown[] | undefined;
-    graphPlanningResults: unknown;
+    preparedCallNodes: unknown[] | undefined;
+    callPlanningResults: unknown;
   },
 ): Promise<ResolveCreateBuilderNestedComposeCalleeResult> {
   const {
@@ -169,8 +158,8 @@ export async function resolveCreateBuilderNestedComposeCallee(
     onChainState,
     delegateSelfAddress,
     publishedNestedExternalCalls,
-    preparedAtomicNodes,
-    graphPlanningResults,
+    preparedCallNodes,
+    callPlanningResults,
   } = params;
 
   const nestedSources = nested.rawArgSources ?? nested.argSources;
@@ -209,10 +198,6 @@ export async function resolveCreateBuilderNestedComposeCallee(
     ? resolvedAddress : addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined;
   const typedAddress = typeof addressValue === 'string' || addressValue instanceof Uint8Array
     ? addressValue : undefined;
-  const exactLockHex = typedAddress === undefined ? undefined : exactAddressLockingBytecodeHex(typedAddress);
-  const resolvedTargetLockingBytecode = typedAddress === undefined ? undefined
-    : registeredAddressValueLockingBytecode(host.provider, typedAddress)
-      ?? (exactLockHex ? hexToBin(exactLockHex) : undefined);
   const deploymentAtAddress = typedAddress === undefined ? undefined
     : findDeploymentByAddressValue(host.provider, typedAddress)?.contract;
   // Hardhat-style factories connect externals on the public proxy
@@ -291,11 +276,11 @@ export async function resolveCreateBuilderNestedComposeCallee(
       delegateVisibleInputs,
       delegateSelfAddress,
       publishedNestedExternalCalls,
-      preparedAtomicNodes !== undefined,
-      graphPlanningResults,
+      preparedCallNodes !== undefined,
+      callPlanningResults,
     )
     : undefined;
-  let nestedArgs = nestedExpressionReturns
+  const nestedArgs = nestedExpressionReturns
     ? host.resolveExternalArgs(
       nestedSources,
       delegateVisibleArgs,
@@ -318,51 +303,22 @@ export async function resolveCreateBuilderNestedComposeCallee(
       + 'that cannot yet be resolved by the SDK.',
     );
   }
-  // Historical legacy-unroll artifacts encoded their JobEvent payload after implicitly filling the
-  // timestamp. Keep that wire adapter quarantined to its exact ABI schema. Kernel calls retain their
-  // source arguments and derive mutations by executing the authenticated handler behind OP_INVOKE.
   const nestedFunctionName = resolvedRawFunctionName ?? nested.functionName;
-  const hasLegacyJobEventInput = (callee.inner.artifact.abi as readonly AbiFunction[])
-    .filter((candidate) => candidate.name === nestedFunctionName)
-    .some((candidate) => candidate.inputs.some((input) => usesLegacyJobEventCompatibility(
-      callee.inner.artifact, input.type, callee.inner.artifact.structs,
-    )));
-  if (hasLegacyJobEventInput) {
-    const tip = Number(
-      (host.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
-    );
-    const appending = readyPersistedCompatibilityValueChunkWidth(callee.categoryId) > 0;
-    const locktime = appending
-      ? providerUnixLocktime(host.provider as { getBlockTime?: () => number })
-      : undefined;
-    const now = BigInt(
-      locktime ?? (tip > 0 ? tip : Math.floor(Date.now() / 1000)),
-    );
-    nestedArgs = adaptLegacyNestedJobEventArguments(
-      callee.inner.artifact, nestedFunctionName, nestedArgs, now,
-    );
-  }
-  const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
+  const callTreeExpressionReturns = preparedCallNodes && needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
       returnSources,
-      projectMessageBusHandlerArguments(
-        callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
-        delegateVisibleArgs,
-      ),
+      [...delegateVisibleArgs],
       callInfoContract, onChainState.state,
       delegateVisibleInputs, delegateSelfAddress,
       publishedNestedExternalCalls,
       true,
-      graphPlanningResults,
+      callPlanningResults,
     )
     : nestedExpressionReturns;
-  const graphNestedArgs = preparedAtomicNodes
+  const callTreeNestedArgs = preparedCallNodes
     ? host.resolveExternalArgs(
-      nestedSources, projectMessageBusHandlerArguments(
-        callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
-        delegateVisibleArgs,
-      ), callInfoContract.inner.artifact, onChainState.state,
-      delegateVisibleInputs, graphExpressionReturns, 0, false, delegateSelfAddress,
+      nestedSources, [...delegateVisibleArgs], callInfoContract.inner.artifact, onChainState.state,
+      delegateVisibleInputs, callTreeExpressionReturns, 0, false, delegateSelfAddress,
     ) ?? nestedArgs
     : nestedArgs;
 
@@ -370,15 +326,13 @@ export async function resolveCreateBuilderNestedComposeCallee(
     skip: false,
     nestedSources,
     addressValue,
-    resolvedTargetLockingBytecode,
     proxyCallee,
     callee,
     resolvedRawFunctionName,
     nestedFunctionName,
     nestedArgs,
-    graphNestedArgs,
-    needsExpressionReturns,
+    callTreeNestedArgs,
     nestedExpressionReturns,
-    graphExpressionReturns,
+    callTreeExpressionReturns,
   };
 }

@@ -59,16 +59,16 @@ export function finalizeBuildTail(
   valueChunkBandHost: FinalizeBuildValueChunkBandAndViewsHost,
   stampHost: FinalizeBuildStampHost,
   returnOutputRefs: Map<string, Output>,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): 'rebuild' | 'done' {
   resolveRelocatedDelegateOutputBases(
     relocatedDelegateOutputBases, lowLevelCallUtxoGroups, builder,
   );
   reassertBuildConservationRepairs(conservationHost, builder);
-  debugAtomicOutputStage('conservation-repairs');
+  debugStatefulOutputStage('conservation-repairs');
   if (finalizeBuildValueChunkBandAndViews(valueChunkBandHost, builder, returnOutputRefs) === 'rebuild') {
     return 'rebuild';
   }
-  finalizeBuildStamp(stampHost, builder, debugAtomicOutputStage);
+  finalizeBuildStamp(stampHost, builder, debugStatefulOutputStage);
   return 'done';
 }

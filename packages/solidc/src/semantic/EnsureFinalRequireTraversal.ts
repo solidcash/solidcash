@@ -61,7 +61,6 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   constructor(
     private enforceFinalRequire: boolean = true,
     private allowUnsafeOperations: boolean = false,
-    private lifecycleAuthorization: boolean = true,
     /** A framed body's bare return ends only its frame, whose tail still runs. */
     private framed: boolean = false,
   ) {
@@ -138,9 +137,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     checkUnauthenticatedSelfdestruct(node, this.allowUnsafeOperations);
 
     // An upgrade swaps in caller-supplied bytecode and a deploy emits a child from caller-supplied arguments;
-    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover. The
-    // kernel lane manages lifecycle authority through its own signature policy, so this check is disabled there.
-    checkLifecycleAuthorization(node, this.allowUnsafeOperations, this.lifecycleAuthorization);
+    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover.
+    checkLifecycleAuthorization(node, this.allowUnsafeOperations);
 
     const visibility = node.visibility;
     const hasReturnTypes = node.returnTypes.length > 0;
@@ -196,31 +194,15 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
       // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
       // path is only a warning by default). The selfdestruct statement itself does not authorize the destruction.
-      // Message-bus/kernel routes classify a lifecycle handler as ineligible instead of rejecting it, so there the
-      // selfdestruct statement is terminal and the classifier runs.
       ensureFinalStatementIsRequire(
         node.body.statements,
         this.enforceFinalRequire || (isSelfdestruct && !this.allowUnsafeOperations),
         returnsEndPath,
-        !isSelfdestruct || !this.lifecycleAuthorization,
+        !isSelfdestruct,
       );
     }
 
     return node;
-  }
-}
-
-/**
- * Cheap-admission fail-fast: returning free/library helpers whose source already has an uncovered path
- * (OZ Address.verifyCallResultFromTarget's `_revert` arm) throw here instead of after journal/memory
- * lowering. Public-only rungs prune those helpers first, so they do not refuse. Helpers that only become
- * covered after later lowering are not cheap-admission; the full EnsureFinalRequire pass still runs.
- */
-export function rejectFreeFunctionMissingReturns(ast: SourceFileNode): void {
-  const neverReturn = collectNeverReturnNames(ast.freeFunctions ?? []);
-  for (const fn of ast.freeFunctions ?? []) {
-    if (fn.isAbstract || !fn.body || fn.returnTypes.length === 0) continue;
-    if (!allPathsReturn(fn.body.statements, neverReturn)) throw new MissingReturnError(fn);
   }
 }
 
@@ -303,8 +285,7 @@ function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUns
  * permissionless takeover or topology manipulation. Require an unconditional trusted-key check by default; the
  * explicit unsafe compiler option retains a warning-only escape (mirroring selfdestruct).
  */
-function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: boolean, enabled: boolean): void {
-  if (!enabled) return;
+function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: boolean): void {
   const isUpgrade = node.modifiers.includes(FunctionModifier.UPGRADE);
   const isDeploy = node.modifiers.includes(FunctionModifier.DEPLOY);
   const isSplit = node.modifiers.includes(FunctionModifier.SPLIT);

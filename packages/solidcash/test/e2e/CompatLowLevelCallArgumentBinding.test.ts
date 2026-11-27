@@ -14,7 +14,7 @@ import { createTestProvider, getSigners } from '../test-util.js';
 // and a string/bytes argument the value of the tail its head offset word names. An argument the compiler sees but
 // cannot bind that way - an ABI-dynamic array or struct - is refused at compile time; a payload whose encoding it
 // cannot see keeps the pin alone.
-const OPTIONS = { evmCompat: true, forceStateful: true, messageBus: false } as any;
+const OPTIONS = { evmCompat: true, forceStateful: true } as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 
 const LEDGER = `

@@ -384,15 +384,10 @@ caller should register the concrete callee through connect-time `externals` or `
 find the right collection UTXOs.
 
 :::caution Experimental
-Updating another contract's state through a composed call, and message-bus composition, are experimental in this
-release. Test every composed shape under real limits before relying on it. See
-[Atomic Calls with the Message Bus](/docs/guides/message-bus).
+Updating another contract's state through a composed call is experimental in this release. Test every composed
+shape under real limits before relying on it. See
+[Cross-Contract Calls & Results](/docs/language/cross-contract-calls).
 :::
-
-When several logical invocations of one participant use the same mapping in a message-bus transaction, the
-participant's collection journal preserves sequential semantics: later rows observe earlier pending writes and one
-final list transition is settled. Graphs whose key identities or settlement authority cannot be proved are rejected
-with a message-bus admission diagnostic.
 
 ## Supported and fail-closed shapes
 
@@ -406,8 +401,8 @@ dynamic shapes remain deliberately rejected rather than compiled with weaker pro
   physical entry would need sequential mutation;
 - some consecutive straight-line scalar read-modify-writes to the same entry which cannot be proven to coalesce;
   and
-- cross-contract or message-bus combinations whose key identity, effect summary, or single settlement authority
-  cannot be published by the compiler.
+- cross-contract combinations whose key identity, effect summary, or single settlement authority cannot be
+  published by the compiler.
 
 Supported loop sources include bounded parameter/literal values and aligned key/value arrays for recognized forms.
 Compile the actual application shape and keep a regression test around it; do not infer support for a new loop

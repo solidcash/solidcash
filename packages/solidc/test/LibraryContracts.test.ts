@@ -152,7 +152,7 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     const consumer = 'import { Ledger } from "./ledger.scash"; '
       + 'contract C() { mapping(address => int) balances; '
       + 'function forward(address who, int value) { Ledger.change(who, value); } }';
-    const artifact = compileString(consumer, { importResolver: resolver, messageBus: false });
+    const artifact = compileString(consumer, { importResolver: resolver });
     const forward = artifact.abi.find((entry) => entry.name === 'forward')!;
 
     expect(forward.libraryDelegateCalls).toEqual([{

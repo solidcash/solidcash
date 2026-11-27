@@ -3,8 +3,7 @@
 Status: normative compiler behavior.
 
 The state journal is the generated, transaction-local representation of deferred state writes. It is not a wire
-protocol, an event log, or a separately deployed object. The message bus may carry a journal's final effects across
-a multi-participant composition, but it does not change these rules.
+protocol, an event log, or a separately deployed object.
 
 ## Read and write model
 
@@ -43,11 +42,8 @@ the exact used trailing span. Unused trailing capacity is absent rather than pad
 ## Effects and composition
 
 Events, BCH transfers, token transfers, return events, and sidecars are effects adjacent to the journal, not journal
-values. Their rows are emitted and consumed separately. In a message-bus transaction, each participant still owns
-its local journal and the messageEnvelope authenticates the cross-participant ordering and settlement of those effects.
+values. Their rows are emitted and consumed separately.
 
 ## Required evidence
 
-The normative behavior is exercised by `packages/solidc/test/journal-message-bus` and
-`packages/solidcash/test/journal-message-bus`. The dated discovery, remediation, and independent-review record is
-archived at `archive/journal-message-bus/state-journal-audit-findings.md`.
+The normative behavior is exercised by the compiler and SDK stateful test suites.

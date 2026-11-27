@@ -19,7 +19,6 @@ export interface DeployerChild {
 
 export interface DeployerChildOptions {
   readonly composition?: string;
-  readonly messageBus?: boolean;
   readonly __compiledDeployers?: ReadonlyMap<string, DeployerChild>;
 }
 
@@ -30,5 +29,5 @@ export function deployerChildOf(options: DeployerChildOptions, contractName: str
 
 /** B8.1: the surrounding contract is compiled in the direct convention. */
 export function compilesInDirectConvention(options: DeployerChildOptions): boolean {
-  return options.composition !== 'framed' && options.messageBus !== true;
+  return options.composition !== 'framed';
 }

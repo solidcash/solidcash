@@ -9,19 +9,14 @@ export default defineConfig({
   },
   // The lane's cold runs clear `.marketplace/cache`; only this checkout writes it.
   trustProjectCache: true,
-  // This project composes graph-free ERC-20 leaves into caller-authenticated atomic routes. Explicitly request
-  // leaf participant routes; no marketplace source or test changes are required.
   compiler: {
     // Proxy-owned pointer records need the same tagged header as a singleton implementation's shared record.
     tagSingletonDataNfts: true,
     evmCompat: true,
-    messageBus: true,
-    messageBusKernel: true,
-    messageBusGraphContext: true,
     // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
     // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
     ecrecover: 'p2pkh',
-    // Skip speculative external-handler fallback rungs in this large imported call graph during development.
+    // Compile this large program faster during development, at some cost in bytecode size.
     optimizeForCompilationSpeed: true,
     suppressWarnings: true,
   },

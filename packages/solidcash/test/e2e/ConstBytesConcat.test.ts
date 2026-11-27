@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // bytes.concat in a constant initializer folds to the concatenation of its (constant) args.
 const SRC = `
 bytes constant aaaa = hex"aaaa";

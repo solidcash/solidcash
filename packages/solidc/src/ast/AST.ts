@@ -1,4 +1,4 @@
-import { type Type, PrimitiveType, AddressBytesType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type ConstructedKeyVectorV1Abi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import { type Type, PrimitiveType, AddressBytesType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 import type { AbiFunction, ExternalCallOrdinalAbi } from '@solidcash/utils';
 import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
@@ -327,9 +327,6 @@ export interface EntryAccessInfo {
   // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
   // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
   aliasCondDeleteSlot?: number;
-  // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
-  // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
-  runtimeAliasPriorSlots?: number[];
   // Direct-convention compose-on-alias: earlier fixed batch writes of this collection whose key this write may share
   // at runtime. It is the alias row (predOut -2) iff its slot hash equals one of theirs; it still runs, reading the
   // entry's pending value, and the key's last write in source order pins the earliest such slot's output.
@@ -366,7 +363,7 @@ export interface EntryAccessInfo {
   arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
   /**
    * Optional fixed entry-mutation activation recipe. Absent means the write is unconditional. When present, the
-   * SDK evaluates it against authenticated row arguments and omits inactive write planning (including bands).
+   * SDK evaluates it against the call's authenticated arguments and omits inactive write planning (including bands).
    * A framed write a branch guards publishes the condition it runs under (`framed/master/write-activation.ts`).
    */
   activation?: ExternalCallExpression;
@@ -384,31 +381,6 @@ export interface TokenContainerAccessInfo {
   readsOutput?: boolean;      // the body reads the output side of the amount (`this.outState.tokens[c]`)
 }
 
-// X29. Owner-local effect frames an message-bus batch route reserves on behalf of an effect-carrying graph emission handler
-// it invokes behind OP_INVOKE. Dispatch site `s` owns `[base + s * width, base + s * width + width)` of each
-// kind; the site ordinal rides to the shared subroutine as hidden context.
-export interface GraphEffectFrame {
-  sites: number;
-  eventBase: number;
-  eventWidth: number;
-  eventOffset?: number;
-  transferBase: number;
-  transferWidth: number;
-  transferOffset?: number;
-  tokenTransferBase: number;
-  tokenTransferWidth: number;
-  tokenTransferOffset?: number;
-  tokenNftTransfers: boolean;
-  ecrecoverBase?: number;
-  ecrecoverWidth?: number;
-  ecrecoverOffset?: number;
-  deployBase?: number;
-  /** Output slots per selected row: one child master followed by its data NFTs. */
-  deployWidth?: number;
-  deployOffset?: number;
-  /** Input-relative offset of the first row's vout-0 genesis input. */
-  deployInputOffset?: number;
-}
 
 export interface CustomModifierInvocation {
   name: string;
@@ -416,118 +388,16 @@ export interface CustomModifierInvocation {
   location: Location;
 }
 
-/**
- * Lossless, typed source snapshot for a locally constructed mapping-key vector.
- *
- * This deliberately remains compiler-internal: a later descriptor lowering projects the replayable subset into
- * the SDK ABI. Keeping the complete source program here means that lowering/inlining cannot manufacture a
- * provenance proof after the fact. `sourceFunctionIdentity`, rather than a local variable spelling, is the
- * durable key shared by all physical route clones of the source function.
- */
-export interface MessageBusConstructedKeyVectorProofProgram {
-  version: 1;
-  sourceFunctionIdentity: string;
-  sourceFunctionSignature: string;
-  sourceParameterTypes: string[];
-  /** Ordinals of qualifying `new T[](n)` allocations in source preorder; never local identifiers. */
-  candidateVectorOrdinals: number[];
-  /** Detached typed source body, captured before symbolic-key lowering and helper inlining. */
-  sourceProgram: BlockNode;
-}
-
-/**
- * Compiler-only execution coordinate.  It intentionally contains neither source spellings nor source locations:
- * statement paths give the source execution nesting and preorder gives a deterministic tie-breaker inside a
- * statement.  It is retained solely to bind a future journal witness protocol to the source program which was
- * actually analysed before lowering.
- */
-export interface KernelJournalStreamExecutionCoordinate {
-  readonly statementPath: readonly number[];
-  readonly preorder: number;
-}
-
-/**
- * One exact locally-constructed-vector data-flow edge discovered before kernel admission.
- *
- * This is deliberately not an ABI and must never influence route selection.  In particular, it lets later
- * carrier work distinguish one allocation feeding one producer write and one mapping-key consumer from a
- * merely similar lowered array expression, without using a local variable name as an identity.
- */
-export interface KernelJournalStreamPlanEdge {
-  readonly allocationOrdinal: number;
-  readonly allocation: KernelJournalStreamExecutionCoordinate;
-  readonly producerLoop: KernelJournalStreamExecutionCoordinate;
-  readonly producerWrite: KernelJournalStreamExecutionCoordinate;
-  readonly consumerLoop: KernelJournalStreamExecutionCoordinate;
-  readonly consumerWrite: KernelJournalStreamExecutionCoordinate;
-  readonly consumerKeyComponent: number;
-}
-
-export interface KernelJournalStreamPlan {
-  readonly version: 1;
-  readonly edges: readonly KernelJournalStreamPlanEdge[];
-}
-
-/**
- * Immutable, compiler-private proof that source control/data flow contains one exact read-to-set carrier family.
- * Collection and parameter ordinals deliberately replace source spellings. The concrete class is frozen and is
- * therefore shared (rather than structurally recopied) by `cloneNode`, keeping one authority across route clones.
- */
-export class KernelReadCarrierDiscoveryPlan {
-  readonly version = 1 as const;
-
-  constructor(
-    readonly digest: string,
-    readonly sourceCollectionOrdinal: number,
-    readonly destinationCollectionOrdinals: readonly number[],
-    readonly valueType: string,
-    readonly keyArity: number,
-    readonly executionCoordinate: readonly number[],
-    /** Canonical JSON using parameter/counter roles, never identifiers. */
-    readonly loopShape: string,
-    /** Canonical JSON for the complete mapping-key tuple. */
-    readonly keyShape: string,
-  ) {
-    Object.freeze(destinationCollectionOrdinals);
-    Object.freeze(executionCoordinate);
-    Object.freeze(this);
-  }
-}
-
-/** Late, completed-ABI confirmation of a source-owned carrier discovery. Never serialized or used as capability. */
-export class KernelReadCarrierAuthorization {
-  readonly version = 1 as const;
-
-  constructor(
-    readonly digest: string,
-    readonly discoveryDigest: string,
-    readonly selectorHex: string,
-    /** One digest per journal stream, ordered by its authenticated access-stream index. */
-    readonly streamDescriptorDigests: readonly string[],
-    readonly completedDescriptorDigest: string,
-  ) {
-    Object.freeze(streamDescriptorDigests);
-    Object.freeze(this);
-  }
-}
-
-/** Compiler-owned meaning of a parameter introduced while lowering a read-carrier loop. */
-export type KernelReadCarrierSyntheticParameterRole =
-  | 'counter-permutation'
-  | 'old-values-witness';
-
 export class FunctionDefinitionNode extends Node implements Named {
   /** A framed entry's top-level state writes, as its frame's own facts state them (`framedStateWrites`). */
   framedStateWrites?: readonly { readonly name: string; readonly value: ExternalCallExpression }[];
-  /** Set only on compiler-synthesized helpers whose source/require maps may be rewritten by helper optimization. */
-  compilerGeneratedHelper?: boolean;
   /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
   mappingArrayPagination?: NonNullable<AbiFunction['mappingArrayPagination']>;
   symbolTable?: SymbolTable;
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
   // this is false; undefined remains the conservative value for compiler-synthesized functions created later.
   declare hasContractInstantiation?: boolean;
-  // F1 (caller-attested call edges): a direct, non-framed, non-route stateful entry that reads a contract-caller
+  // F1 (caller-attested call edges): a direct, non-framed stateful entry that reads a contract-caller
   // msg.sender. Its codegen computes the entry's own call digest and the msg.sender minting path requires a
   // co-spent caller-category edge record matching it, so a caller is bound by its call, not merely co-spent.
   declare requiresCallerEdge?: boolean;
@@ -547,62 +417,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   entryAccesses?: EntryAccessInfo[];
   /** Whether shared source-effect ordinals are complete for this straight-line handler. */
   sourceEffectOrder?: 'linear' | 'unsupported-flow';
-  /** Compiler-owned message-bus handler mapping from its function-local entry
-   * slot ordinals to the enclosing route's physical participant slots. */
-  messageBusPhysicalEntrySlots?: number[];
-  /** Route-slot projection for compiler-owned entry witness parameters. A lowered clone can intentionally own
-   * no fixed entry slots while still forwarding the source handler's local witness ABI. */
-  messageBusPhysicalEntryArgumentSlots?: number[];
-  /** Fixed route-slot choices for each function-local entry. The first slot is messageBusPhysicalEntrySlots[i];
-   * later slots are compiler-authenticated tuple alternatives, never maximum-row copies. */
-  messageBusPhysicalEntrySlotAlternatives?: number[][];
-  /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
-  messageBusRouteDynamicResources?: string[];
-  /** Route-wide read-only chunk runs preserved before streamed effects; an empty list is authoritative. */
-  messageBusRouteReadOnlyDynamicResources?: string[];
-  /** Authenticated participant-master offset used by message-bus handler code generation. */
-  messageBusOwnerInputOffset?: number;
-  /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
-  messageBusUpgradeRoute?: boolean;
-  /**
-   * Route synthesis pushed this clone's owner operand as the call's LAST argument, so at body entry it is the top
-   * item (depth 0) and can be captured without depending on any frame-model position.
-   */
-  messageBusOwnerIsLastArgument?: boolean;
-  /** Set on compiler-cloned message-bus handlers; identifies the source handler the clone was made from. */
-  messageBusCloneSourceKey?: string;
-  /**
-   * Set on every compiler-cloned message-bus handler, whatever its name. The route owns the clone's collection
-   * topology, so the clone's sorted records take the scalar path and carry no batch witnesses (ROUTE-SKIP-1).
-   */
-  ownRecordsScalarOnly?: boolean;
-  /**
-   * The message-bus route's declared input names, in push order. A route handler shares the caller's stack, so these
-   * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
-   * makes a deep read address the item the runtime actually has there.
-   */
-  messageBusCallerBandNames?: string[];
-  /**
-   * This OP_DEFINE body captured its authenticated participant owner into the ALT STACK at entry.
-   *
-   * A DEFINE'd route handler shares the caller's stack, so the owner parameter's distance from the bottom depends
-   * on what the caller leaves under the argument band - which the frame model does not know. The owner's distance
-   * from the TOP is exact at entry (the caller pushes the argument vector last), so the value is read once there
-   * and re-read from the alt stack, whose depth no main-stack push can shift.
-   */
-  messageBusOwnerAltAnchor?: boolean;
-  /** The exact named-call closure can execute CHECKSIG/CHECKMULTISIG (excluding data signatures). */
-  messageBusUsesTransactionSignature?: boolean;
-  /** Direct scalar or one-dimensional signature-array parameters constrained to SIGHASH_ALL by the route. */
-  messageBusAllOutputSignatureParameters?: number[];
-  /** Exact OP_INVOKE signing body per detached root parameter and signature leaf. */
-  messageBusSignatureCoveredFunctionKeys?: Record<number, Record<number, string>>;
-  /** Compiler-owned row clone kept as a stable OP_INVOKE signing body on delegate routes. */
-  messageBusDetachedSignatureHandler?: boolean;
-  /** Stable KTS1 identity captured before journal lowering appends physical value-threading parameters. */
-  messageBusSignatureIdentity?: string;
-  /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
-  messageBusHandlerManagedEntrySlots?: number[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];
   /** Number of statically allocated token-transfer output coordinates after branch alternatives share indices. */
   tokenContainerTransferSiteCount?: number;
@@ -614,9 +428,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeLoopEvents?: RuntimeLoopEventInfo[];
   /** Repeated BCH-transfer segments lowered into the runtime trailing stream by a counter loop. */
   runtimeLoopTransfers?: RuntimeLoopTransferInfo[];
-  /** Worst-case trailing outputs across all lowered counter loops and their source-ordered fixed event peers.
-   * Internal layout metadata; each loop independently admits at most 64 iterations. */
-  runtimeCounterLoopOutputCapacity?: number;
   transferInfos?: TransferInfo[];
   deployTargets?: {
     contractName: string; dataNftCount: number; entryNftCount?: number;
@@ -803,64 +614,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Physical stream widths keyed by the compiler-owned permutation parameter. */
   runtimeCounterLoopCardinalityParams?: Map<string, { input: string; output: string }>;
 
-  /** A locally constructed key array has a loop-carried resize/read schedule the bounded replay pass cannot
-   * represent. Kernel admission refuses only this handler rather than letting later route synthesis fail. */
-  messageBusUnboundedConstructedArray?: boolean;
-  /** Pre-admission saw the narrow local-vector shape; final kernel admission still requires emitted provenance. */
-  messageBusConstructedKeyVectorCandidate?: boolean;
-  /**
-   * Normalized compiler-owned vector proof programs ready for artifact publication. Raw AST provenance is never
-   * serialized here: an unsupported expression leaves this absent and preserves the KERNEL_LAYOUT fence.
-   */
-  messageBusConstructedKeyVectorDescriptors?: readonly ConstructedKeyVectorV1Abi[];
-  /** Stable source-level identity used to attach pre-lowering constructed-key proof programs. */
-  messageBusSourceFunctionIdentity?: string;
-  /** Source snapshots indexed exclusively by stable source-function identity. */
-  messageBusConstructedKeyVectorProofPrograms?: Map<string, MessageBusConstructedKeyVectorProofProgram>;
-  /** Internal pre-admission source-flow plan. Never serialized and never an admission capability. */
-  messageBusKernelJournalStreamPlan?: KernelJournalStreamPlan;
-  /** Immutable first-pass read-carrier discovery; source names and locations never cross into this record. */
-  messageBusKernelReadCarrierDiscovery?: KernelReadCarrierDiscoveryPlan;
-  /** Exact source ABI arity captured before any physical/compiler-owned operands are appended. */
-  messageBusKernelReadCarrierSourceParameterCount?: number;
-  /** Explicit roles for carrier operands. Authorization never infers authority from reserved-name prefixes. */
-  messageBusKernelReadCarrierSyntheticParameterRoles?: Map<string, KernelReadCarrierSyntheticParameterRole>;
-  /** Completed-descriptor validation of the discovery. Still compiler-private while the release gate is false. */
-  messageBusKernelReadCarrierAuthorization?: KernelReadCarrierAuthorization;
-  /**
-   * Stable source selector carried by compiler-generated physical clones. This is compiler-private identity:
-   * clone names and locations are never authorization, and the value is useful only beside the binder's exact
-   * completed-descriptor scope.
-   */
-  messageBusKernelReadCarrierSourceSelectorHex?: string;
-  /** Stable selector carried by every generated kernel handler clone for disposition authorization. */
-  messageBusKernelJournalDispositionSelectorHex?: string;
-  /** Exact completed-descriptor families owned by this generated aggregate route. Compiler-private. */
-  messageBusKernelReadCarrierRouteScopes?: readonly {
-    selectorHex: string;
-    completedDescriptorDigest: string;
-    streamDescriptorDigests: readonly string[];
-  }[];
-
-  /** Ordered compiler-private disposition manifest owned by this generated aggregate route. */
-  messageBusKernelJournalDispositions?: readonly {
-    selectorHex: string;
-    completedDescriptorDigest: string;
-    mode: 'carrier' | 'eager-journal' | 'neutral';
-    streams: readonly {
-      journalAccessStreamIndex: number;
-      descriptorDigest: string;
-      disposition: 'carrier' | 'eager-journal' | 'neutral';
-    }[];
-  }[];
-
-  /** Digest emitted only by the authenticated aggregate route as the SCJD v1 bytecode marker. */
-  messageBusKernelJournalDispositionCommitmentDigest?: string;
-
-  /** Names-free affine recursive mapping-frame proof; metadata only, never an admission capability. */
-  messageBusAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
-  /** Idempotence marker for the pre-admission constructed-array replay normalization. */
-  messageBusConstructedArrayKeysNormalized?: boolean;
+  /** Names-free affine recursive mapping-frame proof; published metadata only (ABI `affineRecursiveFrames`). */
+  runtimeLoopAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
+  /** Idempotence marker for the constructed-array replay normalization (`normalizeImmutableDefaultArrayKeys`). */
+  runtimeLoopConstructedArrayKeysNormalized?: boolean;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;
@@ -922,118 +679,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-owned: this entry's reachable scalar-handler call graph contains
   // a direct or mutual recursion cycle and requires SDK VM preflight.
   scalarJournalRecursive?: boolean;
-  /** A recursive varying-key mapping read or write which no authenticated affine stream claimed. Kernel
-   * admission must retain this marker across speculative clones and refuse the generic tail-loop representation.
-   * The name still says read; a write-only shape sets it too, because that loop also has no per-frame key witness. */
-  unloweredVaryingRecursiveMappingRead?: boolean;
-  /** An indirect internal call may reach a journal-context ABI without a statically complete target set. The
-   * kernel must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */
-  kernelJournalContextUnsafeCall?: boolean;
-  /** A source entry reaches an internal effect helper which closes over a contract constructor parameter.
-   * External-call lowering appends a physical settlement frame to that helper, but the constructor-captured
-   * value has no source-row slot from which that frame can be rebuilt. Kernel admission records this before
-   * graph lowering so the handler remains a deterministic KERNEL_LAYOUT refusal rather than reaching type/codegen
-   * with a source-arity helper call. */
-  kernelConstructorCapturedHelperGraphEffect?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
-  /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
-   * single entry, so sibling handlers over the same entry resolve to one pending value and one vmap slot. */
-  forceCollectionJournalPool?: boolean;
-  /** Compiler-owned pooled helper whose independently keyed entries can each alias an earlier route row.
-   * LowerCollectionJournalHelpers selects and updates those physical caches at runtime without expanding the
-   * dispatcher's branches into their Cartesian product. */
-  collectionJournalRuntimeAliases?: boolean;
-  /** Pooled kernel key lanes chosen at one handler call. The decoded row argument is matched to these lane
-   * witnesses with a linear compare, instead of cloning the handler for every combination of pools. */
-  collectionJournalLinearKeyPools?: Array<{ argumentName: string; lanes: string[] }>;
-  // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
-  // omitted from the source ABI.
-  messageBusRoute?: boolean;
-  /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
-  messageBusVerifierLock?: Uint8Array;
-  /**
-   * Bound route, graph and proxy ones included: one route-local row counter per handler whose row may rewrite
-   * records in the participant block, which its selector branch increments. `bandStates`: the dynamic state whose
-   * chunk locks it rewrites in the trailing band; `bandCollections`: the
-   * collections whose entry locks it may consume there; `collections`: the sorted collections it writes, whose `lanes`
-   * (route entry slots, stamped once the handler's physical lanes are known) it may rewrite. Empty when no handler
-   * claims any; absent where the C3 record pin keeps the whole block to the census.
-   */
-  messageBusRecordClaims?: Array<{
-    flag: string; bandStates?: readonly string[]; bandCollections?: readonly string[];
-    collections?: readonly string[]; lanes?: readonly number[];
-  }>;
 
-  /** Eligible handler of a bound route: its row counter in `messageBusRecordClaims`. */
-  messageBusRecordClaimFlag?: string;
-  /** Resolved route dispatch. Stamped at synthesis; published as `artifact.messageBus.convention`. */
-  messageBusDispatch?: 'legacy-unroll' | 'kernel-row-loop';
-  messageBusMaximumRows?: number;
-  /** Compiler-owned message-bus batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
-  messageBusBlockhashReadWidth?: number;
-  messageBusBlockhashReads?: {
-    row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
-  }[];
-
-  messageBusEligible?: boolean;
-  messageBusRejectionReason?: string;
-  /** Kernel route: this handler's emits settle as records on its runtime effect stream, not in event windows. */
-  messageBusEventStream?: true;
-  /** A stream emit can pass one commitment, so every record of the stream is chunked (head, then continuations). */
-  messageBusEventStreamChunked?: true;
-  /** Stable index of this eligible handler in the route's eligible dispatch set, the ordinal witness names use.
-   * Published on the handler so the SDK never re-derives the filtered-list ordering. */
-  messageBusWitnessOrdinal?: number;
-  /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
-  messageBusDispatched?: boolean;
-  /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param
-   * activated). The generated participant route authenticates that at most one row from the complete marked
-   * selector family executes, so its body is the unique terminal continuation producer. This is an occurrence
-   * bound, not permission to chain mutations unless completed lowering additionally proves route pooling. */
-  messageBusFixedChunkableWriteMaxRows?: 1;
-  /** Completed collection-journal lowering proved every access to these resources shares the route cache. */
-  messageBusPooledChunkableWrite?: true;
-  /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
-  messageBusFixedChunkableWriteEffectOrdinal?: number;
-  /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
-  messageBusFixedChunkableResources?: Array<{
-    collection: string;
-    effectOrdinal: number;
-    activation?: ExternalCallExpression;
-  }>;
-
-  /** This handler owns one direct push into a chunkable sorted mapping-array entry (unconditional and/or
-   * bool-param activated with empty else). Kernel route lowering threads the typed pending array through every
-   * selected OP_INVOKE row and flushes it exactly once, so repeated same-key rows compose without intermediate
-   * continuation outputs. */
-  messageBusPooledChunkableArrayPush?: true;
-  /** Optional bool-param activation for the pooled chunkable array push (path-effect activation fold schedule publish). */
-  messageBusPooledChunkableArrayPushActivation?: ExternalCallExpression;
-  /** Mutation effect ordinal for the pooled chunkable array push when activation is published. */
-  messageBusPooledChunkableArrayPushEffectOrdinal?: number;
-  // Release 4 collection rows bind source argument positions to hidden
-  // physical-route key witnesses. The SDK derives these from canonical rows;
-  // the route compares decoded row arguments before any handler executes.
-  messageBusKeyWitnesses?: {
-    routeInput: string;
-    inputIndex: number;
-    source?: 'argument' | 'msgSender' | 'expression';
-    expressionLabel?: string;
-    perRow?: boolean;
-    /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
-    swappable?: boolean;
-    /** Opaque compiler identity shared by every component of one fixed collection-key tuple. */
-    entryTupleGroup?: number;
-    /** Component ordinal within entryTupleGroup; prevents independently mixing nested-mapping coordinates. */
-    keyComponentIndex?: number;
-    /** The same tuple component in the route's one fixed alternate physical lane. */
-    alternateRouteInput?: string;
-    /** Fixed physical key pool, selected by complete tuple identity when entryTupleGroup is present. */
-    keyPool?: string[];
-  }[];
-
-  /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */
+  /** BoringBatchable's canonical `batch(bytes[],bool)` self-delegate loop: its selector fails closed on BCH. */
   nativeSelfBatchDispatcher?: boolean;
 
   /** Codegen: this entry's return carrier is the record of the direct call it answers. */
@@ -1073,8 +722,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Exact signatures of collections whose split facet authenticates complete input and output cardinality.
    * The root excludes only these addresses from its otherwise-strict mutable-NFT conservation. */
   splitDelegateCensusedCollectionSignatures?: string[];
-  /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
-  graphDelegateSlotCount?: number;
   isFallback: boolean = false;
   isReceive: boolean = false;
   isAbstract: boolean = false;
@@ -1093,13 +740,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** This function or a named internal callee reads msg.data. */
   usesMsgData?: boolean;
   usesMsgValue?: boolean;
-  /**
-   * Compiler-owned message-bus batch clone whose one supported tail external call is verified against the authenticated
-   * participant emission frame instead of performing ordinary physical-call settlement.
-   */
-  graphEmissionHandler?: boolean;
-  /** This graph handler owns the admitted raw-call `{ value: ... }` edge. */
-  graphRawCallValueEffect?: boolean;
   /** This function, or a named internal callee, reads chunk-backed dynamic state. Its first physical chunk input
    * is supplied as an authenticated transaction coordinate because compact delegate layouts need not preserve
    * the function's maximum block width. */
@@ -1112,23 +752,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   deployerTemplate?: Uint8Array;
   /** Per-call: the value-witness slots the body reads, recorded when the head takes over their parameters. */
   framedValueWitnessSlots?: number;
-  /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
-  graphRuntimeEmissionHandler?: boolean;
-  /** Runtime emission vector is returned and threaded across this route's repeated local rows. */
-  graphRuntimeEmissionThreaded?: boolean;
-  // X29. Effect frame this graph emission handler owns in the ROUTE's block; also set on the route itself.
-  // Assigned by the route's layout computation, the only place both are visible. See GraphEffectFrame.
-  graphEffectFrame?: GraphEffectFrame;
-  /**
-   * SEC-8. Does THIS handler's subroutine settle the co-spent satoshi container?
-   *
-   * `graphEffectFrame` is ONE object shared by every framed handler, so its `transferWidth` is the group
-   * maximum and says nothing about the handler reached at a given dispatch site. The route's not-reached
-   * container preservation is skipped on the strength of a reached flag, so that flag must be written from a
-   * PER-HANDLER fact - otherwise an emit-only sibling suppresses a guard it never replaces and the co-spent
-   * container gets no identity check and no value check. Set only where frame membership is decided.
-   */
-  graphEffectSettlesTransfers?: boolean;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)
@@ -1216,11 +839,6 @@ export class ParameterNode extends Node implements Named, Typed {
   // reference (a delegate-library forwarded arg `L.f(x)`, or a branded library's `__brand` ctor arg). The
   // unused-variable warning must skip it.
   syntheticallyUsed = false;
-  /**
-   * Physical kernel-journal context copied from a callee solely to keep an internal OP_INVOKE chain's frame
-   * uniform. This operand belongs to the generated route, not to the source entry point's published ABI.
-   */
-  kernelJournalForwardedContext = false;
   /** A contract parameter of a deployer `create`: part of C's redeem arguments A (A4.2), not a constructor arg. */
   deployerContractParameter = false;
 
@@ -1276,8 +894,6 @@ export class StateVariableNode extends Node implements Named, Typed {
 }
 
 export abstract class StatementNode extends Node {
-  /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
-  messageBusFixedChunkableWriteGuard?: string;
   /**
    * Set by the parser on the statements it lowers a state initialiser into (the variable or collection named):
    * A4.1's `ctor-construction-order` tells a contract's initialisers from its constructor body by it.
@@ -1450,7 +1066,7 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // Original literal bytes when LowerMemoryModel rewrites a `bytes memory` declaration into a numeric pointer.
   // Yul create-address lowering still needs the compile-time blob after that representation change.
   memoryLiteralValue?: Uint8Array;
-  // Return temporary produced by InlineReturningStateHelpers. Counter-loop admission uses the callee's declared
+  // Return temporary produced by InlineReturningStateHelpers. The counter-loop lowering uses the callee's declared
   // purity after the surface FunctionCallNode has been normalized into statements plus this SSA result, or the
   // separate proof below when the complete non-pure effect closure contains only source-ordered events.
   inlinedReturningHelperPure?: boolean;
@@ -1583,12 +1199,12 @@ export class BranchNode extends StatementNode {
   /**
    * Compiler-owned entry flush whose absent arm must remain physically inactive. Ordinary source branches may be
    * if-converted to an unconditional preserve/write, but doing that to a lazy journal flush creates trailing
-   * resources (notably chunk NFTs) for handlers which were never selected.
+   * resources (notably chunk NFTs) for helper calls that never ran.
    */
   preserveConditionalEntryWrites?: boolean;
 
   /** Replayable source guard for a compiler-owned dirty-bit flush whose condition is otherwise opaque to the ABI. */
-  kernelEntryActivation?: ExternalCallExpression;
+  entryActivation?: ExternalCallExpression;
 
   /** IfConvertConditionalEntryOp kept this branch's one direct entry write; its access publishes the guarded value. */
   keepsGuardedEntryWrite?: boolean;
@@ -1641,8 +1257,6 @@ export class CatchClauseNode extends Node {
 
 export class DoWhileNode extends StatementNode {
   forLoopUpdateCount: number = 0;
-  /** Retains source-loop provenance across early kernel lowering and pristine binder recompilation. */
-  sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
 
@@ -1662,8 +1276,6 @@ export class WhileNode extends StatementNode {
   // Number of trailing block statements that form a desugared for-loop update (see AstBuilder.visitForStatement).
   // Used by BreakContinueTransformation so `continue` still runs the update.
   forLoopUpdateCount: number = 0;
-  /** Retains source-loop provenance across early kernel lowering and pristine binder recompilation. */
-  sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
   /**
@@ -1824,12 +1436,11 @@ export abstract class ExpressionNode extends Node {
   // from an internal call after getter/helper inlining.
   fromExternalSelfCall?: boolean;
   // The counter-loop lowering has proved this is the same-key old-value read of a compact `+`/`-` mapping
-  // transition. Its value comes from the authenticated runtime journal entry; route admission must not reserve
-  // an additional fixed-key witness for the loop-local identity.
-  messageBusRuntimeLoopTransitionRead?: boolean;
+  // transition. Code generation reads it as the old value of the entry the loop co-spends (`readsOwnEntry`).
+  runtimeLoopTransitionRead?: boolean;
   // A runtime-sized local-array key reconstructed from dominating writes. LowerVMapCounterLoops may treat this
   // expression as counter-derived without broadening that rule to arbitrary source array reads.
-  messageBusDeterministicArrayKey?: boolean;
+  runtimeLoopDeterministicArrayKey?: boolean;
   // One of several builds of a read-modify-write's key that might have a side effect (BindLvalueKeyEffects).
   lvalueKey?: LvalueKeyTag;
 }
@@ -1948,25 +1559,21 @@ export class MappingAssignNode extends StatementNode implements Named {
   /** Function-local program point shared with external-call effects. */
   sourceEffectOrdinal?: number;
   /** Exact argument-only value of a cached final write on its replayable dirty arm. */
-  kernelValueSource?: { expression: string; parameters: string[] };
+  valueSource?: { expression: string; parameters: string[] };
   // A counter-loop general RMW (`m[i] = f(m[i], ...)`) replaces the same-entry read in `expression` with this
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.
-  messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  runtimeLoopOldValueWitness?: ArrayAccessNode;
   /** The old-value witness contains only taken source-path occurrences, in source order. */
-  messageBusRuntimeOldValueWitnessDomain?: 'selected-source';
+  runtimeLoopOldValueWitnessDomain?: 'selected-source';
   /** Source-order replay recipe for a counter-loop mapping-array mutation operand. */
-  messageBusRuntimeMutationValueExpression?: ExpressionNode;
+  runtimeLoopMutationValueExpression?: ExpressionNode;
   /** Source-order replay recipe for a counter-loop mapping-array element index. */
-  messageBusRuntimeMutationIndexExpression?: ExpressionNode;
-  /** Set only after LowerVMapCounterLoops successfully publishes this write's authenticated journal stream. */
-  messageBusJournalTransport?: { collection: string; varyingArrayParam: string };
-  /** A collection journal's flush: it runs exactly where bit `bit` of the route-local dirty word `word` is set. */
-  journalDirtyBit?: { word: string; bit: number };
+  runtimeLoopMutationIndexExpression?: ExpressionNode;
   /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
-  messageBusRuntimeReadOnly?: boolean;
+  runtimeLoopReadOnly?: boolean;
   /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */
-  messageBusRuntimeValueTrace?: {
+  runtimeLoopValueTrace?: {
     witnessParam: string;
     local: string;
     initial: ExpressionNode;
@@ -2086,7 +1693,7 @@ export class CastNode extends ExpressionNode implements Typed {
 }
 
 export class FunctionCallNode extends ExpressionNode {
-  /** Pre-semantic source program point copied if this call lowers to an external graph edge. */
+  /** Pre-semantic source program point copied if this call lowers to an external call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates captured before helper/control-flow lowering. */
   sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
@@ -2110,17 +1717,6 @@ export class FunctionCallNode extends ExpressionNode {
   // A lexical function-pointer variable/parameter may shadow a same-named contract function. Symbol resolution
   // marks that exceptional call so type checking does not consult the contract-wide overload map.
   lexicalIndirectCall?: boolean;
-  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the message-bus batch route body.
-  // The handler is one shared OP_INVOKE subroutine, so its event / transfer OUTPUT indices cannot be compile-time
-  // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
-  // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
-  graphEffectSite?: number;
-  // Kernel row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
-  graphEffectSiteFromRow?: boolean;
-  // Compiler-generated legacy-unroll route: every mutually exclusive handler call emitted for one logical row
-  // carries that row's stable ordinal. Graph-effect planning uses it instead of counting each handler's calls
-  // independently (different handler kinds in distinct rows can both be the Nth call of their kind).
-  messageBusDispatchRow?: number;
   /** Stable first recovery-effect ordinal contributed by this source call within its defining function.
    * A call to a helper contributes the helper's complete formal recovery sequence at this position. */
   recoveryEffectOrdinal?: number;
@@ -2181,9 +1777,9 @@ export class InstantiationNode extends ExpressionNode {
   // Replayable constructor preconditions, rewritten into the deploying function's expression context.
   foldedConstructorPredicates?: ExpressionNode[];
 
-  // Finite collection entries created by a child constructor. The first admitted form is a top-level,
-  // fixed-size scalar array addressed by a literal index; both key and value are rewritten into the parent
-  // handler's expression context so the deploy covenant and SDK can independently reproduce the entry NFT.
+  // Finite collection entries created by a child constructor. The supported form is a top-level, fixed-size
+  // scalar array addressed by a literal index; both key and value are rewritten into the deploying function's
+  // expression context so the deploy covenant and SDK can independently reproduce the entry NFT.
   foldedCollectionEntries?: Array<{
     collection: CollectionNode;
     key: ExpressionNode;
@@ -2446,7 +2042,7 @@ export class ArrayAssignNode extends StatementNode implements Named {
   sourceEffectOrdinal?: number;
   arrayType?: ArrayType;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
-  messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  runtimeLoopOldValueWitness?: ArrayAccessNode;
   /** SDK-only post-write keys proven before this bare mapping assignment is lowered. */
   postWriteKeyExpressions?: ExpressionNode[];
   /** Collections read by this key before any source mutation. */
@@ -3102,8 +2698,6 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   resolvedCallee?: { name: string; parameterTypes: Type[]; stateMutability?: string };
   /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
   resultArrayOutput?: number;
-  /** Ordered row identity within one inferred repeated-callee message-bus batch. */
-  externalBatchLogicalIndex?: number;
   /** Function-local program point shared with mapping-write effects. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
@@ -3124,12 +2718,12 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // are unknown at compile time, the return is read as a single opaque bytes blob, identity-bound to addr.
   opaqueReturn?: boolean;
   // Statement-form `addr.call(payload);` authenticates the same opaque result frame so it can target either a
-  // returning or void handler, but deliberately does not reconstruct `(success, data)` on the source stack.
+  // returning or void callee, but deliberately does not reconstruct `(success, data)` on the source stack.
   discardedOpaqueReturn?: boolean;
   // Expression form whose `data` the body never reads: a direct entry reads no record, so a void callee can answer
   // it, and `data` is empty.
   unreadOpaqueReturn?: boolean;
-  // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing graph invocation. The
+  // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing call. The
   // compiler still reconstructs its Solidity `(success, data)` result, but excludes it from callsite metadata.
   rawValueTransferOnly?: boolean;
   // An option-free empty-calldata call to a constant target that cannot be a P2SH lock: solc's call to an account
@@ -3380,33 +2974,6 @@ export interface ExternalCallSlot {
   // across many fn-ptr calls (each call reads its own index). Identity + runtime selector + preservation are the
   // normal checks. See emitExternalCallVerification.
   fnPtrCall?: boolean;
-  // Release 5 repeated-callee grouping: several straight-line logical calls
-  // share this one physical callee block and are bound to its message-bus batch blob.
-  batchInvocations?: {
-    selector: Uint8Array;
-    parameters: ExpressionNode[];
-    parameterTypes: Type[];
-    logicalIndex: number;
-    /** @internal Traversal-stable source callsite used to prove producer dominance before physical batching. */
-    sourceCallsiteId: number;
-    /** Function-local program point retained independently of physical batch order. */
-    sourceEffectOrdinal?: number;
-    argSources?: ExternalCallArgSource[];
-    /** Runtime cardinality of this source callsite within the grouped physical route. */
-    occurrence?: 'once' | 'conditional' | 'loop';
-    /** Compiler-serialized predicate guarding this logical row. */
-    condition?: ExternalCallExpression;
-    opaqueReturn?: boolean;
-    /** The logical source call carries an effective `{ value: ... }` transfer. */
-    callValueEffect?: boolean;
-    returnTypes?: Type[];
-    /** @internal Conditional row whose arguments are entry-frame derivable and are committed eagerly. */
-    eager?: boolean;
-    /** @internal Source node used to lower an eager row before the body. */
-    sourceCallNode?: ExternalFunctionCallNode;
-  }[];
-  /** @internal Physical representative for a logical row removed by repeated-callee grouping. */
-  batchRepresentative?: ExternalCallSlot;
   /** @internal Source node retained until Release 5 grouping/codegen. */
   sourceCallNode?: ExternalFunctionCallNode;
   /** @internal Callsite may be absent at runtime; its master-index witness is -1 when not reached. */
@@ -3460,9 +3027,9 @@ export interface ExternalOutStateSlot {
 }
 
 export class MethodCallNode extends ExpressionNode {
-  /** Source-level returned-array link copied if this resolves to an external graph call. */
+  /** Source-level returned-array link copied if this resolves to an external call. */
   resultArrayOutput?: number;
-  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  /** Pre-semantic source program point copied if this lowers to an external call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates captured before helper/control-flow lowering. */
   sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
@@ -3475,7 +3042,7 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
-  // Set by the table lowerings for a broadcast call outside a message-bus graph: the called element's selector,
+  // Set by the table lowerings for a broadcast call: the called element's selector,
   // `bytes4(sel[i])`, which its record's digest names; threaded to the external call slot in semantic analysis.
   loopRecordSelector?: ExpressionNode;
   // Set by LowerStaticLowLevelCalls for a framed low-level call it lowered to this typed call; threaded to the
@@ -3611,8 +3178,8 @@ export interface RuntimeLoopTransferInfo {
   permutationParam: string;
   /** Function-local execution segment shared with runtime events in the same source loop. */
   effectSequence?: number;
-  /** Effect kind per source site. Stored on the segment because synthetic route bodies need not retain the
-   * concrete source statement nodes from which this information was first derived. */
+  /** Effect kind per source site. Stored on the segment because a lowered body need not retain the concrete
+   * source statement nodes from which this information was first derived. */
   siteKinds?: RuntimeLoopTransferKind[];
 }
 
@@ -3974,7 +3541,7 @@ export class PlaceholderStatementNode extends StatementNode {
 }
 
 export class LowLevelCallNode extends ExpressionNode {
-  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  /** Pre-semantic source program point copied if this lowers to an external call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
   sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
@@ -4003,7 +3570,7 @@ export class LowLevelCallNode extends ExpressionNode {
 }
 
 export class LowLevelCallStatementNode extends StatementNode {
-  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  /** Pre-semantic source program point copied if this lowers to an external call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
   sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];

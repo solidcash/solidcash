@@ -13,10 +13,7 @@ import {
   permutations,
   scalarTypeKey,
 } from './delegate-event-jobevent-helpers.js';
-import {
-  legacyScalarNameHints,
-  permitsLegacyScalarNameHeuristics,
-} from './legacy-planning-heuristics.js';
+import { legacyScalarNameHints } from './legacy-planning-heuristics.js';
 
 export interface SeedOptimisticScalarWritesHost {
   lastOptimisticPermutationCount: number;
@@ -26,7 +23,6 @@ export interface SeedOptimisticScalarWritesHost {
   readonly stateLayout: StateLayout;
   readonly requiredNftIndices: readonly number[];
   readonly dataNftUtxos: readonly UnlockableUtxo[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   setState(fieldName: string, value: StateValue): void;
 }
 
@@ -119,11 +115,8 @@ export function seedOptimisticScalarWrites(
   const unusedIntArgs = visibleInputs
     .map((input, index) => ({ input, index }))
     .filter(({ input, index }) => !usedArgs.has(index) && isIntegerType(input.type));
-  // Name-regex leftover probes are legacy-only. Kernel convention uses typed arg→field matching above.
-  const allowNameHeuristics = permitsLegacyScalarNameHeuristics(host.messageBusConvention);
-  const hints = allowNameHeuristics
-    ? legacyScalarNameHints(abiFunction.name)
-    : { decrement: false, zero: false, enable: false, disable: false, twice: false };
+  // Name-regex hints seed the leftover fields the typed arg-to-field matching above left unassigned.
+  const hints = legacyScalarNameHints(abiFunction.name);
   // A leftover increment is only a good first-probe guess for a single unassigned counter. Blindly
   // +1-ing every leftover packed field (or zipping a uint256 slot word onto a uint16) aborts
   // derivation when encodePushdataValue rejects the out-of-range value.
@@ -134,7 +127,7 @@ export function seedOptimisticScalarWrites(
     for (const field of leftoverInts) {
       const current = currentState[field.name];
       if (typeof current !== 'bigint') continue;
-      // Kernel path: single leftover int may still +1 without a function-name regex.
+      // A single leftover int may still +1 without a function-name hint.
       const nextInt = hints.zero ? 0n
         : hints.twice ? current * 2n
           : current + (hints.decrement ? -1n : 1n);

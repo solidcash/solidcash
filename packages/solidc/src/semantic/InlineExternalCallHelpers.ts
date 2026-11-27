@@ -70,17 +70,13 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private stateVarTypes: Map<string, Type> = new Map();
   private voidExternalCallHelpers: Set<string> = new Set();
-  // Public helpers among those: inlined where an ordinary function calls them, never into a kernel caller.
+  // Public helpers among those: inlined where another function calls them internally.
   private entryPointHelpers: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private fileUsingForDirectives: { libraryName?: string, targetTypeName?: string }[] = [];
   private interfaceNames: Set<string> = new Set();
   private constNames: Set<string> = new Set(); // qualified names of file-level (library) constants (L.SIG)
   private counter = 0;
-
-  constructor(private readonly earlyRootFilter?: (fn: FunctionDefinitionNode) => boolean) {
-    super();
-  }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFns = node.freeFunctions ?? [];
@@ -107,17 +103,10 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     this.voidExternalCallHelpers = new Set();
     this.entryPointHelpers = new Set();
     for (const fn of all) {
-      // Graph handlers intentionally execute behind OP_INVOKE: their hidden callManifest/caller/result
-      // frame is what makes each reached edge authoritative. Flattening one into __message_bus1 erases that
-      // context and turns its external calls into inert ordinary-call nodes. Compiler-owned route clones are
-      // the same, and so are public entry points inside the kernel row loop: inlining one there makes
-      // SymbolTableTraversal rewrite `token.transfer` against an unbound `__internal__loopTargets` (an entry point
-      // is inlined only where an ordinary, non-kernel function calls it, below). An imported delegate-library
-      // entry runs in its own co-spent input; inlining it would erase the call before
-      // SynthesizeLibraryDelegateCalls lowers it to a delegatecall, duplicating the facet's state covenant in the
-      // consumer and bypassing the intended split boundary.
+      // An imported delegate-library entry runs in its own co-spent input; inlining it would erase the call
+      // before SynthesizeLibraryDelegateCalls lowers it to a delegatecall, duplicating the facet's state covenant
+      // in the consumer and bypassing the intended split boundary.
       if (!fn.modifiers.includes(FunctionModifier.DELEGATE)
-        && !fn.graphEmissionHandler && !fn.name.startsWith('__message_bus_')
         && fn.body && this.canDiscardCallResult(fn) && !this.takesFlattenedStructPointer(fn)
         && (this.makesExternalCall(fn) || this.hasConditionalCollectionAccess(fn))) {
         if (fn.isEntryPoint) this.entryPointHelpers.add(fn.name);
@@ -127,7 +116,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     // A public function is a helper too where an ordinary function calls it internally: its external call then
     // runs in the caller's frame, and only the inlined body can carry the call's covenant parameters there.
     const calledInternally = [...this.entryPointHelpers].filter((name) => all.some((fn) => fn.body
-      && !this.isKernelCaller(fn) && this.callsByStatement(fn.body, name)));
+      && this.callsByStatement(fn.body, name)));
     for (const name of calledInternally) this.voidExternalCallHelpers.add(name);
     if (this.voidExternalCallHelpers.size === 0) return node;
 
@@ -137,25 +126,18 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     // covenant parameters. Inlining the same helper body here leaves L.g with the direct external call and its own
     // correctly discovered witness parameters.
     for (const fn of this.freeFns) {
-      if (this.earlyRootFilter && !this.earlyRootFilter(fn)) continue;
       if (fn.body) {
         this.stampSourceCallActivations(fn.body, []);
         fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name], []);
       }
     }
     for (const fn of node.functions) {
-      if (this.earlyRootFilter && !this.earlyRootFilter(fn)) continue;
       if (fn.body) {
         this.stampSourceCallActivations(fn.body, []);
         fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name], []);
       }
     }
     return node;
-  }
-
-  // A compiler-owned kernel or message-bus function, which keeps the public entry points it calls as calls.
-  private isKernelCaller(fn: FunctionDefinitionNode | undefined): boolean {
-    return fn !== undefined && (fn.graphEmissionHandler === true || fn.name.startsWith('__message_bus'));
   }
 
   // Whether `body` calls `name` as a statement.
@@ -251,14 +233,6 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     let found = false;
     this.walk(fn.body, (n) => {
       if (found) return;
-      // Message-bus admission may run after an earlier syntax-normalization pass has already replaced the
-      // surface method spelling with a dedicated external-call node. Treat the pre- and post-normalization
-      // representations identically so early physical-frame inlining does not depend on pipeline position.
-      if (this.earlyRootFilter && (n instanceof ExternalFunctionCallNode || n instanceof LowLevelCallNode
-        || n instanceof LowLevelCallStatementNode)) {
-        found = true;
-        return;
-      }
       if (n instanceof VariableDefinitionNode) env.set(n.name, n.type);
       if (n instanceof FunctionCallNode) {
         const name = n.identifier.name;
@@ -274,8 +248,6 @@ export default class InlineExternalCallHelpers extends AstTraversal {
           && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
         if (n.object instanceof FunctionCallNode
           && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
-        if (this.earlyRootFilter && n.object instanceof CastNode
-          && this.isInterfaceTyped(n.object.type)) { found = true; return; }
         if (InlineExternalCallHelpers.isLowLevel(n.methodName)) found = true;
       }
     });
@@ -373,8 +345,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
         const helper = this.funcByName.get(name);
         // A qualified library call (`SafeERC20.safeTransfer`) is eligible too - the name is the registered helper.
         if (helper && this.voidExternalCallHelpers.has(name) && !stack.includes(name)
-          && stmt.call.parameters.length === helper.parameters.length
-          && !(this.entryPointHelpers.has(name) && this.isKernelCaller(this.funcByName.get(stack[0]!)))) {
+          && stmt.call.parameters.length === helper.parameters.length) {
           if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
           }

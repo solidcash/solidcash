@@ -60,7 +60,7 @@ describe('a named return the body never assigns', () => {
     expect(unused.some((message) => message.includes("of 'bothAssigned'"))).toBe(false);
     expect(unused.some((message) => message.includes("of 'readOnly'"))).toBe(false);
     expect(unused.some((message) => message.includes("of 'quote'"))).toBe(false);
-    // A compiler-generated copy of an entry (a message-bus handler) repeats nothing.
+    // A compiler-generated copy of an entry (a compiler-owned `__` name) repeats nothing.
     expect(unused.every((message) => !message.includes("of '__"))).toBe(true);
   });
 

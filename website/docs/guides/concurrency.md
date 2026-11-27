@@ -147,7 +147,7 @@ The compiler enforces these rules:
 
 - The modifier argument names an integer parameter of the function.
 - The body needs an unconditional `require(checkSig(s, key))` with a key the caller cannot choose: a constructor
-  argument, state or a constant. A direct compile rejects one without it (`UnauthorizedLifecycleError`).
+  argument, state or a constant. The compiler rejects one without it (`UnauthorizedLifecycleError`).
 - The body follows the `unsafe(1)` restrictions: it cannot write state, touch entries, emit events, move satoshis or
   tokens, call or read other contracts, or deploy.
 - `split` and `merge` combine with no other lifecycle modifier, `unsafe`, `pure`, `view`, `internal` or `private`.
@@ -214,8 +214,7 @@ A master/data partition does not automatically partition every side covenant. Ca
 - the same dynamic chunk NFT;
 - one token container or satoshi container;
 - one external contract master/state input;
-- one oracle-pool coin or computation sidecar instance;
-- one message-bus verifier NFT; or
+- one oracle-pool coin or computation sidecar instance; or
 - any ordinary funding input selected by both clients.
 
 Verified mappings make this especially concrete: two writes to distant keys can use different entry NFTs, while
@@ -232,7 +231,7 @@ Use the smallest concurrency mechanism that removes the actual shared input:
 | Independent scalar/register updates | Master threads with isolated data NFTs |
 | Per-key records | Vmap entries; contention follows keys and predecessor paths |
 | Independent atomic workflows | Child contracts or separate categories |
-| Several known contracts in one atomic action | Message bus; provision verifier instances |
+| Several known contracts in one atomic action | Direct composition: one co-spent input per contract |
 | Globally shared liquidity/counter/order | Serialize, batch, or redesign; extra masters alone do not help |
 
 More masters increase discovery, funding, and operational complexity. Too many partitions can also make an ABI

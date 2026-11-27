@@ -29,7 +29,6 @@ import {
 export interface EnsurePersistedValueChunkInputsHost {
   ownerMasterLock?(): Uint8Array | undefined;
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly builderOptions: TransactionBuilderOptions;
   readonly allInputs: readonly UnlockableUtxo[];
   setPendingValueChunkPredecessors(extras: UnlockableUtxo[]): void;
@@ -40,7 +39,6 @@ export interface EnsurePersistedValueChunkInputsHost {
   isPersistedChunkableValueWriteReady(): boolean;
   persistedValueChunkWrite(categoryId: string): ValueChunkWriteDescriptor | null | undefined;
   hasChunkableValueWriteMetadata(): boolean;
-  permitsLegacyNamedValueChunkFallback(): boolean;
   chunkableValueWriteGroups(): ChunkableValueWriteGroups;
   findMintingInputIndex(categoryId: string): number;
   placeValueChunkPredecessorInputs(extras: UnlockableUtxo[]): void;
@@ -54,7 +52,7 @@ export async function ensurePersistedValueChunkInputs(
   host: EnsurePersistedValueChunkInputsHost,
 ): Promise<void> {
   const tokenWriterPresent = host.externalCallUtxoGroups.some((group) =>
-    isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention));
+    isCompilerDescribedMintingBandWriter(group, true));
   const band = host.getChunkableValueWriteBand();
   const categoryId = host.persistedValueChunkCategory() ?? host.chunkableValueWriteCategory();
   if (!shouldRestorePersistedContinuationInputs({
@@ -68,8 +66,7 @@ export async function ensurePersistedValueChunkInputs(
   if (!band || !categoryId) return;
   const write = host.persistedValueChunkWrite(categoryId);
   const exactState = write ? persistedValueChunkWriteState(write) : undefined;
-  const legacyFallback = write === undefined && !host.hasChunkableValueWriteMetadata()
-    && host.permitsLegacyNamedValueChunkFallback();
+  const legacyFallback = write === undefined && !host.hasChunkableValueWriteMetadata();
   const compatibility = legacyFallback ? persistedCompatibilityContinuation(categoryId) : undefined;
   const persistLock = exactState?.lockingBytecode ?? (legacyFallback
     ? compatibility?.lockingBytecode : undefined);

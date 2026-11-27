@@ -9,26 +9,17 @@ type MultiOptions = NonNullable<Parameters<typeof compileStringMultiRaw>[1]>;
 type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
 
 /**
- * Compile fixtures which exercise the pre-message-bus batch direct transaction APIs.
- *
- * These suites verify language and SDK behavior outside message bus. Atomic
- * composition tests deliberately import the production compiler instead so the
- * inferred message-bus batch route remains under test there.
+ * Compile fixtures which exercise the direct transaction APIs. Options pass through unchanged; the suites keep
+ * this import as the one place that selects their compile defaults.
  */
 export const compileString = (
   source: string, options: StringOptions = {},
-): ReturnType<typeof compileStringRaw> => compileStringRaw(source, {
-  messageBus: false, ...options,
-});
+): ReturnType<typeof compileStringRaw> => compileStringRaw(source, { ...options });
 
 export const compileStringMulti = (
   source: string, options: MultiOptions = {},
-): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, {
-  messageBus: false, ...options,
-});
+): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, { ...options });
 
 export const compileStringSplit = (
   source: string, options: SplitOptions,
-): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, {
-  messageBus: false, ...options,
-});
+): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, { ...options });

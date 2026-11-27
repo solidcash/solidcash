@@ -233,8 +233,7 @@ export function linearSortedBatchEntryBands(group: CompilerTokenWriterGroup & {
 }): LinearSortedBatchEntryBand[] {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
-    ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
+  const abiFunction = artifact?.abi?.find((candidate) => candidate.name === logicalName);
   const layout = abiFunction?.blockLayout ?? group.blockLayout;
   if (!abiFunction?.entryAccesses || !layout) return [];
   return (abiFunction.sortedBatchInfo ?? []).flatMap((batch) => {
@@ -261,8 +260,7 @@ export function linearSortedBatchValueArgument(
 ): unknown {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
-    ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
+  const abiFunction = artifact?.abi?.find((candidate) => candidate.name === logicalName);
   if (!abiFunction || !linearSortedBatchEntryBands(group).some((band) => band.collection === collection)) {
     return undefined;
   }
@@ -318,8 +316,7 @@ export function entryInsertLockRepairs(
 ): EntryInsertLockRepair[] {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
-    ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
+  const abiFunction = artifact?.abi?.find((candidate) => candidate.name === logicalName);
   const layout = abiFunction?.blockLayout ?? group.blockLayout;
   const planned = group.plannedEntryInserts;
   if (planned && planned.length > 0 && layout && abiFunction?.entryAccesses) {
@@ -360,17 +357,7 @@ export function entryInsertLockRepairs(
     }]
   ));
   if (linearRepairs.length > 0) return linearRepairs;
-  const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
-  // Exact compatibility fence for pre-kernel legacy-unroll artifacts which published no resource geometry.
-  if (legacyName === 'transferFrom' && artifact?.messageBus?.convention === 'legacy-unroll'
-    && layout === undefined && abiFunction?.entryAccesses === undefined) {
-    return [{
-      collection: '',
-      predecessorOffset: 2,
-      candidateInsertedOffsets: [4],
-      insertedSlot: '',
-    }];
-  }
+
   // Other descriptor-published functions: empty planned inserts must not invent coordinates.
   if (layout !== undefined || abiFunction?.entryAccesses !== undefined) return [];
   return [];

@@ -53,7 +53,7 @@ describe('import fixtures that no test references', () => {
     const failures: string[] = [];
     for (const name of orphans) {
       try {
-        compileFile(new URL(name, DIR), { messageBus: false });
+        compileFile(new URL(name, DIR), {});
       } catch (error) {
         failures.push(`${name}: ${(error as Error).message.split('\n')[0]}`);
       }

@@ -2,7 +2,7 @@
  * Per-entry framed split (`split: 'func'`).
  *
  * Size split stays on its own packer. This path compiles one framed master per ABI entry, salts the redeem
- * script with that entry's selector, and does not emit a delegate facet or a kernel route wrapper.
+ * script with that entry's selector, and does not emit a delegate facet or a compiler-generated route wrapper.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -179,7 +179,6 @@ export function compileFunctionSplit(request: FunctionSplitRequest): FunctionSpl
     monolith,
   );
   const logical = host.cloneLogical(monolith);
-  stripKernelRoute(logical);
   const loaders = shards.map((shard) => loaderFor(shard));
   return {
     format: 'solidcash-split-v2',
@@ -192,7 +191,6 @@ export function compileFunctionSplit(request: FunctionSplitRequest): FunctionSpl
     shards,
     internalCuts,
     loaders,
-    messageBus: { available: false },
   };
 }
 
@@ -509,7 +507,6 @@ function compileEntryWithinCap(
     }
     const helperEntry = helperArtifact.abi.find((fn) => fn.name === helper.name);
     helperArtifact.abi = helperArtifact.abi.filter((fn) => fn.name !== helper.name);
-    stripKernelRoute(helperArtifact);
     internalCuts.push({
       name: profileKey(helper),
       artifact: helperArtifact,
@@ -519,7 +516,6 @@ function compileEntryWithinCap(
       ...(helperEntry === undefined ? {} : { entry: helperEntry }),
     });
   }
-  stripKernelRoute(artifact);
   return {
     shard: {
       selector,
@@ -599,7 +595,6 @@ function compileGetterShard(
   if (wholeSpendBytes > maxShardBytes) {
     throw capacityError(prepared.name, name, [name], [], wholeSpendBytes, maxShardBytes);
   }
-  stripKernelRoute(artifact);
   return {
     selector,
     function: name,
@@ -1033,14 +1028,6 @@ function replaceSelfCalls(
     }
   };
   visit(root, undefined, undefined);
-}
-
-function stripKernelRoute(artifact: Artifact): void {
-  if (!artifact.messageBus) return;
-  const messageBus = { ...artifact.messageBus, available: false as const };
-  delete messageBus.kernelExecutionPlans;
-  delete messageBus.routeInBytecode;
-  artifact.messageBus = messageBus;
 }
 
 /** The logical ABI entries a bundle claims, used by callers that compare shard count to the ABI. */

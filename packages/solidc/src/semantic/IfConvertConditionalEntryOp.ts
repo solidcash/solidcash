@@ -39,8 +39,8 @@ import { Location } from '../ast/Location.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
-  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
-} from './KernelEntryActivation.js';
+  argumentConditionActivation, booleanArgumentIndices, stableArgumentIndices,
+} from './ArgumentConditionActivation.js';
 
 /** Semantic back-references, which are not executable children of the node that holds them. */
 const BACK_REFERENCES = new Set(['type', 'symbolTable', 'location', 'resolvedFunction', 'functionReference',
@@ -116,12 +116,12 @@ class EntryMutationCounts extends AstTraversal {
  * local array ops stay in a slimmed `if(cond)` / `if(!cond)` block (a stack-neutral local op works in a branch).
  * Result: all entry writes are unconditional (stable output count). The branch is kept as written when an arm writes
  * one target twice, or when the merged order runs two else writes out of source order and one may observe the other.
- * The kernel keeps replayable argument-guarded writes to distinct collections in their original arms, avoiding
+ * The journal keeps replayable argument-guarded writes to distinct collections in their original arms, avoiding
  * creation of an absent entry on the untaken path.
  */
 export default class IfConvertConditionalEntryOp extends AstTraversal {
   constructor(
-    private readonly preserveKernelArgumentConditionalWrites = false,
+    private readonly preserveJournalArgumentConditionalWrites = false,
     private readonly preserveDirectSingletonWrites = false,
   ) { super(); }
 
@@ -161,8 +161,8 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       survey.visit(node.body);
       this.singletonMutations = new Set([...survey.counts].filter(([, count]) => count === 1).map(([name]) => name));
     }
-    this.stableArgumentIndices = stableKernelArgumentIndices(node);
-    this.booleanArgumentIndices = kernelBooleanArgumentIndices(node);
+    this.stableArgumentIndices = stableArgumentIndices(node);
+    this.booleanArgumentIndices = booleanArgumentIndices(node);
     const result = super.visitFunctionDefinition(node);
     this.stableArgumentIndices = previousIndices;
     this.booleanArgumentIndices = previousBooleanIndices;
@@ -170,8 +170,8 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     return result;
   }
 
-  private isReplayableKernelCondition(expression: ExpressionNode): boolean {
-    return kernelArgumentConditionActivation(
+  private isReplayableJournalCondition(expression: ExpressionNode): boolean {
+    return argumentConditionActivation(
       expression, this.stableArgumentIndices, this.booleanArgumentIndices,
     ) !== undefined;
   }
@@ -230,9 +230,9 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       const elseTarget = elseWrite && this.entryOpInfo(elseWrite);
       const ifSignature = ifTarget && this.targetSig(ifTarget.name, ifTarget.keys);
       const elseSignature = elseTarget && this.targetSig(elseTarget.name, elseTarget.keys);
-      // Distinct mapping targets have independent entry slots. Preserve both guarded mutations when the kernel can
+      // Distinct mapping targets have independent entry slots. Preserve both guarded mutations when the journal can
       // replay the branch from its row arguments; predicating either arm would mint a zero-valued phantom node.
-      if (this.preserveKernelArgumentConditionalWrites && this.isReplayableKernelCondition(node.condition)
+      if (this.preserveJournalArgumentConditionalWrites && this.isReplayableJournalCondition(node.condition)
         && ifTarget !== undefined && elseTarget !== undefined
         && ifSignature !== undefined && elseSignature !== undefined && ifSignature !== elseSignature) return undefined;
       return this.tryConvertIfElse(node);
@@ -256,10 +256,10 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       return undefined;
     }
 
-    // The kernel can publish an argument-authenticated activation for this bounded conditional write. Keep the
+    // The journal can publish an argument-authenticated activation for this bounded conditional write. Keep the
     // source branch so a false row owns no mapping mutation; if-converting it would insert an enumerable zero
     // node for an absent key even though the source never executed the write.
-    if (this.preserveKernelArgumentConditionalWrites && this.isReplayableKernelCondition(node.condition)
+    if (this.preserveJournalArgumentConditionalWrites && this.isReplayableJournalCondition(node.condition)
       && stmts.every((statement) => statement instanceof MappingAssignNode
         || statement instanceof ArrayAssignNode || statement instanceof MappingDeleteNode)) return undefined;
 

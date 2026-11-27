@@ -137,5 +137,5 @@ relies on, the consumer's verifier NFT output (by index) or the consumer's `SCB1
   container flows, transfer-window authentication inside graph subroutines.
 - Proxy-forward envelope transport, upgrade (V2) and V4 signature frames, the kernelV2SignatureFence semantics,
   lifecycle (split/merge/selfdestruct) consequences of KB-1's forged code, V5 direct-authority soundness.
-- kernel-capability-schema.ts, kernel-journal-disposition.ts, handler-frame-abi.ts, docs/kernel-diagnostics.md,
+- kernel-capability-schema.ts, kernel-journal-disposition.ts, handler-frame-abi.ts, docs/compiler-diagnostics.md,
   `archive/docs:docs/framed/TRIAGE_SECURITY.md` F2 note.

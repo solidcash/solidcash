@@ -29,7 +29,7 @@ const SOURCE = `contract Ledger {
 
 async function deploy(): Promise<{ provider: MockNetworkProvider; contract: StatefulContract }> {
   const provider = new MockNetworkProvider();
-  const artifact = compileString(SOURCE, { messageBus: false, forceStateful: true, enforceFinalRequire: true });
+  const artifact = compileString(SOURCE, { forceStateful: true, enforceFinalRequire: true });
   const base = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
   return { provider, contract: StatefulContract.withCategory(base, categoryId) };

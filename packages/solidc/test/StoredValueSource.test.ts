@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { AbiFunction } from '@solidcash/utils';
+import { SortedMappingCodegenPendingError } from '../src/index.js';
 import { compileString } from './direct-compile.js';
 
 const options = {
-  forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
+  forceStateful: true, evmCompat: true,
 };
 const compileWriter = (body: string): AbiFunction => compileString(`pragma solidity ^0.8.0;
   struct Record { uint256 amount; bytes payload; uint32 writtenAt; }
@@ -19,22 +20,6 @@ const compileWriter = (body: string): AbiFunction => compileString(`pragma solid
 `, options).abi.find((fn) => fn.name === 'store')!;
 
 describe('computed whole-value mutation recipes', () => {
-  it('publishes an exact incoming-entry read for a partial struct update', () => {
-    const handler = compileWriter('records[key].amount = amount;');
-    const recipe = handler.entryAccesses?.[0].storedValueSource;
-    expect(recipe).toMatchObject({
-      version: 1, execution: 'unconditional-once', valueType: 'Record',
-      expression: { kind: 'call', name: 'Record', args: [
-        { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
-        { kind: 'field', name: 'payload', expression: {
-          kind: 'entryPreValue', name: 'records', type: 'Record',
-          args: [{ kind: 'source', source: { kind: 'forward', paramIndex: 0 } }],
-        } },
-        { kind: 'field', name: 'writtenAt', expression: { kind: 'entryPreValue', name: 'records' } },
-      ] },
-    });
-  });
-
   it('tracks lowered fixed-array updates and scalar pure helper results', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Record { bytes payload; int16[2] marks; }
@@ -125,11 +110,20 @@ describe('computed whole-value mutation recipes', () => {
     'if (measure) records[key] = Record(amount, payload, 0);',
     'if (measure) return; records[key] = Record(amount, payload, 0);',
     'records[key] = Record(amount, payload, 0); records[key + 1] = Record(amount, payload, 0);',
-    'while (measure) { records[key] = Record(amount, payload, 0); }',
   ])('refuses an ambiguous or conditional whole-value producer: %s', (body) => {
     const handler = compileWriter(body);
     expect(handler.entryAccesses?.length).toBeGreaterThan(0);
     for (const access of handler.entryAccesses ?? []) expect(access.storedValueSource).toBeUndefined();
+  });
+
+  it('refuses to compile a whole-value write in a runtime loop: while (measure) { records[key] = ... }', () => {
+    // Only the removed message bus compiled it.
+    expect(() => compileWriter('while (measure) { records[key] = Record(amount, payload, 0); }'))
+      .toThrow(expect.objectContaining({
+        name: SortedMappingCodegenPendingError.name,
+        message: expect.stringContaining("The verified-mapping write on 'records' in runtime loop 'store' does not "
+          + 'match a supported insert or update loop shape'),
+      }));
   });
 
   it('tracks an assignment in an unconditional require before the whole-value write', () => {

@@ -18,11 +18,9 @@ import {
   computeSideCarStandIn,
   hasOutpoint,
 } from './stateful-abi-resolve.js';
-import type { GraphEcrecoverCall } from './sc-batch-raw.js';
 
 // A neutral coin, P2SH32(OP_TRUE) with no token, for a slot no covenant reads, where the host has no coin of its own:
-// a probe that is never sent, or a message-bus graph whose composer funds such slots with this lock. Only a mock
-// provider can register it; a real network holds no such coin.
+// a probe that is never sent. Only a mock provider can register it; a real network holds no such coin.
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const inertFunderUnlocker: Unlocker = {
   generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
@@ -60,8 +58,8 @@ export interface ResolveEcrecoverCoSpendsHost {
    * A coin for a slot of the block no covenant reads, and the output that returns its value at the same index: the
    * middle input of a two-covenant recovery, and each of the three slots of a recovery whose arguments recover no key.
    * The call's wallet fills it; a mock mints a neutral coin where the call has no signer. Undefined when the call has
-   * none. Without this member, a host whose transaction is never sent (a probe) or whose composer funds the slot (a
-   * message-bus graph) takes the neutral P2SH32(OP_TRUE) coin.
+   * none. Without this member, a host whose transaction is never sent (a probe) takes the neutral P2SH32(OP_TRUE)
+   * coin.
    */
   readonly takeMiddleCoin?: () => Promise<RecoverySlotCoin | undefined>;
 }
@@ -77,7 +75,7 @@ export type ResolveEcrecoverCoSpendsResult = {
 
 /**
  * Resolve one A+B recovery side-car pair per ecrecover call, provisioning mock UTXOs when needed and
- * optionally deferring unresolved argument blobs for graph probes.
+ * optionally deferring unresolved argument blobs to be learned from the run.
  *
  * Each call takes three block slots. A two-covenant recovery reads A and B2 and leaves the middle slot to a coin no
  * covenant reads; a width-0 recovery reads A, M and B3. Arguments that recover no key (`ecrecoverRefusal`) have no
@@ -93,20 +91,17 @@ export async function resolveEcrecoverComputeCoSpends(
   host: ResolveEcrecoverCoSpendsHost,
   abiFunction: AbiFunction,
   args: any[],
-  selectedCalls?: readonly GraphEcrecoverCall[],
-  options: { deferUnresolved?: boolean; graphExecution?: boolean } = {},
+  options: { deferUnresolved?: boolean } = {},
 ): Promise<ResolveEcrecoverCoSpendsResult> {
   // A transitive helper has no direct ABI parameter mapping of its own. Its block layout is still authoritative:
   // every consecutive A/M/B triple represents one runtime recovery call to be learned from the complete VM trace.
   const layoutCallCount = Math.floor(
     (abiFunction.blockLayout?.slots.filter((slot) => slot.kind === 'ecrecoverSideCar').length ?? 0) / 3,
   );
-  const calls = selectedCalls ?? abiFunction.ecrecoverArgParams
+  const calls = abiFunction.ecrecoverArgParams
     ?? Array.from({ length: layoutCallCount }, () => [null, null, null, null] as const);
   const evmFlags = abiFunction.ecrecoverEvmFlags ?? Array.from({ length: calls.length }, () => false);
-  const salt = host.sidecarSalt?.slice() ?? (selectedCalls || options.graphExecution
-    ? new Uint8Array(32)
-    : hexToBin(host.categoryId).slice().reverse());
+  const salt = host.sidecarSalt?.slice() ?? hexToBin(host.categoryId).slice().reverse();
   if (calls.length === 0 || !host.categoryId) {
     return { coSpends: [], argBlobs: [], evmPreimages: [], salt, width0Coins: [] };
   }
@@ -119,8 +114,7 @@ export async function resolveEcrecoverComputeCoSpends(
     // `atInfinity` holds the call's own argument blob where the witness recovers from the shifted digest.
     | { kind: 'recover'; wit: ReturnType<typeof computeEcrecoverWitness>; atInfinity?: Uint8Array };
   const plans = calls.map(([hp, vp, rp, sp]): CallPlan => {
-    const [hash, vRaw, r, s] = selectedCalls ? [hp, vp, rp, sp]
-      : [argOf(hp as string | null), argOf(vp as string | null), argOf(rp as string | null), argOf(sp as string | null)];
+    const [hash, vRaw, r, s] = [argOf(hp), argOf(vp), argOf(rp), argOf(sp)];
     if (!(hash instanceof Uint8Array) || !(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
       if (options.deferUnresolved) return { kind: 'deferred' };
       throw new Error('ecrecoverPubKey in a stateful contract requires direct (hash, v, r, s) parameters.');

@@ -4,7 +4,6 @@
  */
 
 import type { AbiFunction, Artifact, FunctionBlockLayout } from '@solidcash/utils';
-import type { TransportedContinuationResourceClaim } from './ValueChunkProducerIdentity.js';
 
 /**
  * The in-block return NFT is owned by one logical callsite. A later write fused onto an earlier read
@@ -18,7 +17,6 @@ export type InBlockReturnGroup = {
   blockLayout?: FunctionBlockLayout;
   functionName?: string;
   logicalFunctionName?: string;
-  compilerRoute?: { abiFunction?: AbiFunction };
   externalContract?: { inner?: { artifact?: Artifact } };
   loopReturnCommitments?: Uint8Array[];
   callBatchUnit?: { readonly physical?: number };
@@ -50,9 +48,7 @@ export function groupOwnsInBlockReturnEvent(
     if (direct) return direct.writesState === true;
     const logical = group.logicalFunctionName === '__forward' ? undefined
       : abiList.find((fn) => fn.name === group.logicalFunctionName);
-    if (logical) return logical.writesState === true;
-    return group.compilerRoute?.abiFunction?.name === group.functionName
-      && group.compilerRoute?.abiFunction?.writesState === true;
+    return logical?.writesState === true;
   };
   // A state-writing logical callsite owns the physical block's return slot. If a later writer is fused onto the
   // same master, earlier views keep dedicated tails so they cannot read that writer's result. A standalone view
@@ -223,7 +219,6 @@ export function isMintingBandSwapFunction(name: string | undefined): boolean {
 export type CompilerTokenWriterGroup = {
   functionName?: string;
   logicalFunctionName?: string;
-  compilerRoute?: { abiFunction?: AbiFunction };
   logicalArtifact?: Artifact;
   externalContract?: { inner?: { artifact?: Artifact } };
 };
@@ -237,24 +232,17 @@ export type CompilerTokenWriterGroup = {
 export function isCompilerDescribedMintingBandWriter(
   group: CompilerTokenWriterGroup,
   requireWideWriter = false,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
-    ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
+  const abiFunction = artifact?.abi?.find((candidate) => candidate.name === logicalName);
   if (abiFunction?.entryAccesses !== undefined) {
     const writtenEntries = abiFunction.entryAccesses.filter((access) => access.operations.includes('write'));
     return abiFunction.writesState === true
       && writtenEntries.length >= (requireWideWriter ? 2 : 1);
   }
-  // Kernel artifacts publish the resource authority used by layout planning. Missing entry effects in that
+  // Compiler-described artifacts publish the resource authority used by layout planning. Missing entry effects in that
   // convention mean "not described", never permission to recover legacy geometry from an ABI name.
-  if (ownerConvention === 'kernel-row-loop') return false;
-  if ([group.logicalArtifact, group.externalContract?.inner?.artifact]
-    .some((candidateArtifact) => candidateArtifact?.messageBus?.convention === 'kernel-row-loop')) {
-    return false;
-  }
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
   return requireWideWriter
     ? isMintingBandSwapFunction(legacyName)
@@ -379,11 +367,10 @@ export function liveChunkSlotsByOwner(
     functionName?: string;
     logicalFunctionName?: string;
   }>,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): Map<number, number> {
   const byOwner = new Map<number, number>();
   for (const [index, group] of groups.entries()) {
-    if (isCompilerDescribedMintingBandWriter(group, true, ownerConvention)) continue;
+    if (isCompilerDescribedMintingBandWriter(group, true)) continue;
     const owner = group.sharedGroupIndex ?? index;
     const nNew = group.valueChunkOutputCount ?? 0;
     byOwner.set(owner, Math.max(byOwner.get(owner) ?? 0, nNew));
@@ -400,23 +387,22 @@ export function liveChunkWidthForGroup(
     logicalFunctionName?: string;
   }>,
   groupIndex: number,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   if (groupIndex < 0 || groupIndex >= groups.length) return 0;
   const owner = groups[groupIndex].sharedGroupIndex ?? groupIndex;
-  return liveChunkSlotsByOwner(groups, ownerConvention).get(owner) ?? 0;
+  return liveChunkSlotsByOwner(groups).get(owner) ?? 0;
 }
 
 /** A direct block that stops at its last slot, a record it does not carry: no input or output holds that slot. */
 function compactsRecordSlot(group: PhysicalReturnGroup, layout: FunctionBlockLayout | undefined): boolean {
-  if (group.compilerRoute !== undefined || group.returnEventInBlock === true || layout === undefined) return false;
+  if (group.returnEventInBlock === true || layout === undefined) return false;
   const slot = layout.slots.find(({ kind }) => kind === 'returnEvent');
   return slot?.offset === layout.blockSize - 1 && group.blockInputs?.length === slot.offset;
 }
 
 /** Complete coordinate span reserved by a participant, including output-only slots. */
 export function physicalParticipantWidth(group: PhysicalReturnGroup): number {
-  const layout = group.blockLayout ?? group.compilerRoute?.abiFunction?.blockLayout;
+  const layout = group.blockLayout;
   const stateWidth = 1 + (group.dataNftUtxos?.length ?? 0);
   const assembledWidth = group.blockInputs?.length ?? 0;
   if (compactsRecordSlot(group, layout)) return Math.max(stateWidth, assembledWidth);
@@ -464,11 +450,10 @@ export function collidingParticipantGroupIndex(
   groups: ReadonlyArray<PhysicalReturnGroup>,
   findMintingInputIndex: (categoryId: string) => number,
   band: { start: number; end: number },
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   for (const [groupIdx, group] of groups.entries()) {
     if (group.sharedGroupIndex !== undefined) continue;
-    if (liveChunkWidthForGroup(groups, groupIdx, ownerConvention) > 0) continue;
+    if (liveChunkWidthForGroup(groups, groupIdx) > 0) continue;
     const master = findMintingInputIndex(group.categoryId);
     if (master < 0) continue;
     const width = physicalParticipantWidth(group);
@@ -487,13 +472,12 @@ export function selectTokenBandRepairOwner(
   groups: ReadonlyArray<PhysicalReturnGroup>,
   findMintingInputIndex: (categoryId: string) => number,
   band: { start: number; end: number } | undefined,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): TokenBandRepairOwnerSelection {
   if (!band) return { status: 'absent' };
   const owners = new Map<string, Extract<TokenBandRepairOwnerSelection, { status: 'exact' }>>();
   for (const [groupIndex, group] of groups.entries()) {
     if (group.sharedGroupIndex !== undefined
-      || liveChunkWidthForGroup(groups, groupIndex, ownerConvention) > 0) continue;
+      || liveChunkWidthForGroup(groups, groupIndex) > 0) continue;
     const masterIndex = findMintingInputIndex(group.categoryId);
     if (masterIndex < 0) continue;
     const width = physicalParticipantWidth(group);
@@ -536,21 +520,6 @@ export function valueChunkBandWidth(parts: {
     ? Math.max(0, parts.derivedEnd - parts.chunkBase + 1)
     : 0;
   return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.entryChunkCount ?? 0, derivedWidth);
-}
-
-/** Total trailing width reserved by ordered per-resource continuation bands. */
-export function valueChunkBandWidthForContinuationClaims(
-  claims: readonly Pick<TransportedContinuationResourceClaim, 'chunkCount'>[],
-  parts: {
-    minimum?: number;
-    planned?: number;
-    entryChunkCount?: number;
-    derivedEnd?: number;
-    chunkBase?: number;
-  } = {},
-): number {
-  const claimed = claims.reduce((width, claim) => width + Math.max(0, claim.chunkCount), 0);
-  return valueChunkBandWidth({ ...parts, planned: Math.max(parts.planned ?? 0, claimed) });
 }
 
 /** First output coordinate available before a reverse-indexed authenticated suffix and its terminal anchor. */

@@ -105,8 +105,8 @@ describe('statements: tuple assignment order', () => {
     'uint x; uint y;', 'x = 1; y = 2; x = y; y = x;', 'x * 10 + y'));
   // Distinct keys: the SDK's vmap batch refuses two writes landing on one mapping key in a transaction.
   // Duplicate stateful input from a shared proof, not a key spelling: from an empty map the read lanes m[1], m[6] and
-  // the write batch all prove absence with the head node, and a direct function gives each read its own input (only
-  // message-bus routes let lanes share one proof). Those reads would also see the pre-state, not the tuple's writes.
+  // the write batch all prove absence with the head node, and a direct function gives each read its own input.
+  // Those reads would also see the pre-state, not the tuple's writes.
   it.fails('mapping element keys see a RHS effect', () => stateful('tuple-mapping-keys',
     'mapping(uint => uint) m; uint n; function k() private returns (uint) { n += 1; return n; }',
     '(m[n], m[n + 5]) = (k(), 7);', 'm[1] * 10 + m[6] + n * 1000'));

@@ -95,14 +95,14 @@ type PreparationParams = Parameters<typeof expandCreateBuilderLateTransitive>[1]
 
 function preparation(groups: ExternalCallUtxoGroup[]): {
   groups: ExternalCallUtxoGroup[];
-  nodes: NonNullable<PreparationParams['preparedAtomicNodes']>;
+  nodes: NonNullable<PreparationParams['preparedCallNodes']>;
   host: ExpandCreateBuilderLateTransitiveHost;
   params: PreparationParams;
   expand: () => ReturnType<typeof expandCreateBuilderLateTransitive>;
 } {
-  const root = { parent: null, active: true, args: [] };
+  const root = { parent: null, args: [] };
   const nodes = [root, ...groups.map((value) => ({
-    parent: 0, active: true, args: value.functionArgs,
+    parent: 0, args: value.functionArgs,
     functionName: value.functionName, contract: value.externalContract,
   }))];
   const host: ExpandCreateBuilderLateTransitiveHost = {
@@ -120,8 +120,8 @@ function preparation(groups: ExternalCallUtxoGroup[]): {
   };
   const params = {
     externalCallUtxoGroups: groups, lowLevelCallUtxoGroups: [],
-    preparedAtomicNodes: nodes,
-    preparedAtomicNodeByExternalGroup: new Map(groups.map((_, index) => [index, index + 1])),
+    preparedCallNodes: nodes,
+    preparedCallNodeByExternalGroup: new Map(groups.map((_, index) => [index, index + 1])),
     publicSelfAddress: new Uint8Array([0x51]),
     bags: {
       allGroupEcSlots: groups.map(() => ({ requiredDataNftIndices: [] })),
@@ -390,13 +390,9 @@ describe('late transitive call preparation', () => {
     ]);
     expect((choice ? right : left)._deriveReturnValue).not.toHaveBeenCalled();
     expect((choice ? left : right)._deriveReturnValue).toHaveBeenCalledTimes(1);
-    const refreshed: ReadonlyMap<number, FunctionArgument> = new Map([
-      [0, choice], [choice ? 1 : 2, [0n, 101n, 0n, 103n, 0n]],
-    ]);
-    expect(reached.map((node) => node.resolveArgsFromResults!(refreshed))).toEqual([[101n], [103n]]);
   });
 
-  it('prepares a late argument from its exact sibling producer and keeps the result refresh callback', async () => {
+  it('prepares a late argument from its exact sibling producer', async () => {
     const result = { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'uint256' } as const;
     const producer = { ...edge('Source', 'read'), hasReturnValues: true, returnTypes: ['uint256'] };
     const consumer = {
@@ -431,7 +427,6 @@ describe('late transitive call preparation', () => {
     ]);
     const node = fixture.nodes.at(-1)!;
     expect(node).toMatchObject({ parent: 1, callsiteId: 1, args: [41n] });
-    expect(node.resolveArgsFromResults(new Map([[0, 73n]]))).toEqual([73n]);
     expect(resolveResults).toHaveBeenCalledWith(
       consumer.argSources, [9n], first, {}, fn.inputs, new Uint8Array([0x51]),
       fn.externalCalls, true, expect.objectContaining({ entries: expect.any(Map) }),
@@ -443,7 +438,7 @@ describe('late transitive call preparation', () => {
     );
   });
 
-  it('refreshes forwarded and expression arguments from the current parent frame without sibling returns', async () => {
+  it('resolves forwarded and expression arguments from the parent frame without sibling returns', async () => {
     const amount = { kind: 'source', source: { kind: 'forward', paramIndex: 0 } } as const;
     const sink = contract(2, [handler('run', [], true)]);
     const sources: ArgSource[] = [
@@ -459,8 +454,6 @@ describe('late transitive call preparation', () => {
     await fixture.expand();
     const node = fixture.nodes.at(-1)!;
     expect(node.args).toEqual([9n, 12n]);
-    expect(node.resolveArgsFromResults(new Map(), [80n])).toEqual([80n, 83n]);
-    expect(node.resolveArgsFromResults(new Map())).toBeUndefined();
   });
 
   it('closes newly appended descendants and keeps their exact logical arguments and parents', async () => {

@@ -60,7 +60,7 @@ interface Case {
 /** Compiles the child and the parent, and returns whether the parent accepts the expected lock. */
 function acceptsMinimalLock(testCase: Case): boolean {
   const child = compileString(`${P} ${testCase.preamble ?? ''} contract Child(${testCase.paramType} v) {`
-    + ' function nop() { require(true); } }', { messageBus: false });
+    + ' function nop() { require(true); } }', {});
   // `Child(v).lockingBytecode` is the redeem the SDK hashes: the parameter's push followed by the code.
   const expected = new Uint8Array([
     ...encodeDataPush(testCase.value),
@@ -69,7 +69,7 @@ function acceptsMinimalLock(testCase: Case): boolean {
   const parent = compileString(`${P} ${testCase.preamble ?? ''} contract Child(${testCase.paramType} v) {`
     + ' function nop() { require(true); } }'
     + ` contract Parent() { function check(${testCase.paramType} v) {`
-    + ` require(Child(v).lockingBytecode == 0x${hex(expected)}); } }`, { messageBus: false });
+    + ` require(Child(v).lockingBytecode == 0x${hex(expected)}); } }`, {});
   return settles(parent, [testCase.value]);
 }
 
@@ -140,13 +140,13 @@ describe('B3.1: a child contract parameter is pushed minimally', () => {
     // parent's comparison: this shows the cases above are not passing vacuously.
     const type = 'bytes1';
     const child = compileString(`${P} contract Child(${type} v) { function nop() { require(true); } }`,
-      { messageBus: false });
+      {});
     const nonMinimal = new Uint8Array([
       ...bytes('0101'), ...scriptToBytecode(asmToScript(child.bytecode)),
     ]);
     const parent = compileString(`${P} contract Child(${type} v) { function nop() { require(true); } }`
       + ` contract Parent() { function check(${type} v) {` 
-      + ` require(Child(v).lockingBytecode == 0x${hex(nonMinimal)}); } }`, { messageBus: false });
+      + ` require(Child(v).lockingBytecode == 0x${hex(nonMinimal)}); } }`, {});
     expect(settles(parent, [bytes('01')])).toBe(false);
   });
 });

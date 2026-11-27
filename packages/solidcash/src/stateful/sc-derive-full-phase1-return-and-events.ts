@@ -11,9 +11,8 @@ import {
   computeEventNameHash,
 } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { StateValueType } from '../types/state-inference.js';
 import { generateLibauthSourceOutputs, scriptToLockingBytecode } from '../utils.js';
-import { isCompilerDescribedRouteEventCommitment } from './compiler-described-route-event.js';
+import { isCompilerDescribedEventCommitment } from './compiler-described-event.js';
 import { calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   extractEvmScalarReturnCommitment,
@@ -34,7 +33,6 @@ import {
   extractExpectedOutputCommitmentFromTrace,
   extractPendingReturnCommitment,
 } from './trace-commitment-helpers.js';
-import { commitmentsToState } from './trace-verified-value-helpers.js';
 import { selectExternalEventProbeInput } from './value-chunk-base-writer-select.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 
@@ -58,9 +56,9 @@ export function deriveFullPhase1ReturnAndEvents(
   bMasterIdx: number,
 ): void {
   const ec = { hasReturnValues };
-  const routeReturnDebugEnabled = (): boolean => {
+  const returnDebugEnabled = (): boolean => {
     const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-    return env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
+    return env?.SOLIDC_DEBUG_TRACE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
   };
   // Return event blob: extract from the dedicated return-event section, whose index is fixed at the
   // tx end and therefore order-independent. The inline data-NFT range only coincides with the return
@@ -95,9 +93,6 @@ export function deriveFullPhase1ReturnAndEvents(
       max: returnEventOutputBase + totalReturnEvents,
     };
     let returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
-    const routeReturnTypes = (group.compilerRoute?.rowArguments ?? []).flatMap(
-      (row) => row.handler.outputs?.map((output) => output.type) ?? [],
-    );
     const calleeReturnArtifact = group.externalContract.inner.artifact;
     const calleeReturnFunction = (calleeReturnArtifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName);
@@ -109,12 +104,8 @@ export function deriveFullPhase1ReturnAndEvents(
         calleeReturnTypes,
         `function '${calleeReturnFunction?.name ?? group.functionName}' result`,
       );
-    const routeReturnPushes = routeReturnTypes.length || 1;
-    let aggregatePending = routeReturnPushes > 1
-      ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
-    if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
-    else if (!returnCommitments?.length) {
-      const pending = extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes);
+    if (!returnCommitments?.length) {
+      const pending = extractPendingReturnCommitment(fullTraceRet);
       if (pending) returnCommitments = [pending];
     }
     let evmScalar = calleeReturnEncoding === 'evm-abi-v1'
@@ -127,11 +118,8 @@ export function deriveFullPhase1ReturnAndEvents(
     if (!returnCommitments?.length && !evmScalar) {
       fullTraceRet = evaluateFaithfulOrDebugTrace(host.inner.provider, returnProgram);
       returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
-      aggregatePending = routeReturnPushes > 1
-        ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
-      if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
-      else if (!returnCommitments?.length) {
-        const pending = extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes);
+      if (!returnCommitments?.length) {
+        const pending = extractPendingReturnCommitment(fullTraceRet);
         if (pending) returnCommitments = [pending];
       }
       evmScalar = calleeReturnEncoding === 'evm-abi-v1'
@@ -180,7 +168,7 @@ export function deriveFullPhase1ReturnAndEvents(
     ));
     // An exact return-output comparison binds the result to the compiler-assigned channel. A schema-shaped
     // stack value is only fallback evidence: mappings and state serialization can leave canonical pushdata
-    // wrappers around unrelated ABI-width words (for example a hashed key) in the same route frame.
+    // wrappers around unrelated ABI-width words (for example a hashed key) in the same trace.
     // Never let that weaker scan replace an authenticated output observation.
     if (evmScalar && !returnCommitments?.length
       && (!fullTraceRet.at(-1)?.error || !/^0+$/.test(evmScalar))) {
@@ -227,7 +215,7 @@ export function deriveFullPhase1ReturnAndEvents(
     // raw caller skip its `data.length == 0` branch and ABI-decode a non-word. A record it does pin (fix B) is the
     // commitment the trace found.
     if (calleePinsNoRecord(group)) returnCommitments = undefined;
-    if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
+    if (['SOLIDC_DEBUG_TRACE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
       (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
       console.error('route-return-derivation', {
         groupIdx,
@@ -237,8 +225,6 @@ export function deriveFullPhase1ReturnAndEvents(
         returnOutputRange,
         configuredReturnOutputIndex: group.returnOutputIndex,
         derivedInBlockIdx,
-        routeReturnTypes,
-        routeReturnPushes,
         returnCommitments,
         traceError: fullTraceRet.at(-1)?.error,
         traceTail: fullTraceRet.slice((globalThis as { process?: { env?: Record<string, string> } })
@@ -263,9 +249,9 @@ export function deriveFullPhase1ReturnAndEvents(
       );
       // A shared ordinary readonly input executes only one selected zero-argument frame. Every active
       // identical alias is bound to that same result by the caller covenant; retain its distinct output channel.
-      if (group.readonlyReturnSelector !== undefined && !group.compilerRoute) {
+      if (group.readonlyReturnSelector !== undefined) {
         for (const [aliasIndex, alias] of externalCallUtxoGroups.entries()) {
-          if (alias.sharedGroupIndex !== groupIdx || alias.compilerRoute
+          if (alias.sharedGroupIndex !== groupIdx
             || alias.readonlyReturnSelector !== group.readonlyReturnSelector
             || alias.callerIdentity?.categoryId !== group.callerIdentity?.categoryId
             || alias.callerIdentity?.lockingBytecode !== group.callerIdentity?.lockingBytecode) continue;
@@ -296,16 +282,9 @@ export function deriveFullPhase1ReturnAndEvents(
       ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
     const bArt = delegateEventGroup?.externalContract.inner?.artifact
       ?? group.externalContract.inner?.artifact ?? group.externalContract.artifact;
-    const bAbiFunc = delegateEventGroup?.compilerRoute?.abiFunction
-      ?? group.compilerRoute?.abiFunction
-      ?? bArt?.abi?.find((f: any) => f.name === (delegateEventGroup?.functionName ?? group.functionName));
-    const routeEventSignatures = delegateEventGroup?.compilerRoute?.eventSignaturesBySlot
-      ?? group.compilerRoute?.eventSignaturesBySlot;
+    const bAbiFunc = bArt?.abi?.find((f: any) => f.name === (delegateEventGroup?.functionName ?? group.functionName));
     const bEmits: Array<{ eventSignature: string; emitIndex: number } | undefined> =
-      routeEventSignatures
-        ? routeEventSignatures.map((eventSignature, emitIndex) => eventSignature
-          ? { eventSignature, emitIndex } : undefined)
-        : bAbiFunc?.emits ?? [];
+      bAbiFunc?.emits ?? [];
 
     if (bEmits.some((emit) => emit !== undefined)) {
     // Delegate callees emit at their implementation-relative offset.
@@ -332,7 +311,7 @@ export function deriveFullPhase1ReturnAndEvents(
         });
 
         const eventCommitments = extractCommitmentMapFromTrace(fullTrace2, undefined, true, false, true);
-        if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
+        if (['SOLIDC_DEBUG_TRACE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
           (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
           console.error('route-event-discovery', {
             groupIdx,
@@ -365,7 +344,7 @@ export function deriveFullPhase1ReturnAndEvents(
           });
         }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_ROUTE === '1') {
+          ?.SOLIDC_DEBUG_TRACE === '1') {
           console.error('route-event-derivation', {
             groupIdx,
             bOutputBase,
@@ -381,7 +360,7 @@ export function deriveFullPhase1ReturnAndEvents(
         for (let ei = 0; ei < eventSlots.length; ei++) {
           const emitInfo = bEmits[ei];
           const commitment = eventCommitments.get(eventOutputBase + eventSlots[ei].offset);
-          if (emitInfo && isCompilerDescribedRouteEventCommitment(commitment, {
+          if (emitInfo && isCompilerDescribedEventCommitment(commitment, {
             compilerOwnedEventSlot: true,
             eventSignature: emitInfo.eventSignature,
           })) {
@@ -432,7 +411,7 @@ export function deriveFullPhase1ReturnAndEvents(
             const commitment = progressiveCommitments.get(
               eventOutputBase + eventSlots[ei].offset,
             );
-            if (isCompilerDescribedRouteEventCommitment(commitment, {
+            if (isCompilerDescribedEventCommitment(commitment, {
               compilerOwnedEventSlot: true,
               eventSignature: emitInfo.eventSignature,
             })) {
@@ -445,7 +424,7 @@ export function deriveFullPhase1ReturnAndEvents(
               eventOutputs[ei] = undefined;
             }
             group.eventOutputs = eventOutputs;
-            if (routeReturnDebugEnabled()) {
+            if (returnDebugEnabled()) {
               console.error('progressive-route-events', {
                 candidate: ei,
                 learned: eventOutputs.map((output, index) => output ? index : undefined)
@@ -492,154 +471,11 @@ export function deriveFullPhase1ReturnAndEvents(
                       return `${item.length}:${hex.slice(0, 64)}`;
                     }),
                   })),
-                handlerPrefix: progressiveTrace.filter((state) =>
-                  state.instructions.length > 300 && state.instructions.length < 2_000
-                  && state.ip < 64)
-                  .slice(-80).map((state) => ({
-                    ip: state.ip,
-                    count: state.instructions.length,
-                    op: state.instructions[state.ip]?.opcode,
-                    stack: state.stack.slice(-24).map((item) => {
-                      const hex = binToHex(item);
-                      return `${item.length}:${hex.slice(0, 64)}`;
-                    }),
-                  })),
-                handlerRequire: progressiveTrace.filter((state) =>
-                  state.instructions.length === 346 && state.ip >= 240)
-                  .slice(-140).map((state) => ({
-                    ip: state.ip,
-                    count: state.instructions.length,
-                    op: state.instructions[state.ip]?.opcode,
-                    stack: state.stack.slice(-24).map((item) => {
-                      const hex = binToHex(item);
-                      return `${item.length}:${hex.slice(0, 64)}`;
-                    }),
-                  })),
               });
             }
           }
         }
       }
-    }
-  }
-
-  // A compiler route can verify conditional events before its deferred collection-entry settlement.
-  // The pre-event entry pass above then legitimately reveals only an event commitment. Once reached
-  // events are installed, converge the entry band again so the route can advance to its return output.
-  if (group.compilerRoute && group.blockLayout && group.blockInputs
-    && group.eventOutputs?.some((output) => output !== undefined)) {
-    const learnedEntries = new Set<number>();
-    const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
-    for (let pass = 0; pass <= entrySlotCount; pass++) {
-      const entryProbe = stb.build();
-      const entryTrace = evaluateProbeTrace(host.inner.provider, {
-        inputIndex: bMasterIdx,
-        sourceOutputs: generateLibauthSourceOutputs(entryProbe.inputs),
-        transaction: entryProbe.buildLibauthTransaction(),
-      });
-      const revealed = extractCommitmentMapFromTrace(entryTrace, {
-        min: bOutputBase,
-        max: bOutputBase + group.blockInputs.length,
-      }, true);
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
-        const transferFromInvokeWindows = entryTrace.flatMap((state, traceIndex) => {
-          if (state.instructions[state.ip]?.opcode !== Op.OP_INVOKE
-            || binToHex(state.stack.at(-1) ?? new Uint8Array()) !== '0d') return [];
-          const returnIndex = entryTrace.findIndex((candidate, candidateIndex) =>
-            candidateIndex > traceIndex
-            && candidate.instructions.length === state.instructions.length
-            && candidate.ip === state.ip + 1);
-          const end = returnIndex < 0 ? Math.min(entryTrace.length, traceIndex + 8) : returnIndex + 48;
-          return [{
-            traceIndex,
-            returnIndex,
-            states: entryTrace.slice(Math.max(0, traceIndex - 4), end).map((candidate, candidateIndex) => ({
-              traceIndex: Math.max(0, traceIndex - 4) + candidateIndex,
-              ip: candidate.ip,
-              count: candidate.instructions.length,
-              op: candidate.instructions[candidate.ip]?.opcode,
-              stack: candidate.stack.slice(-32).map((item) => {
-                const hex = binToHex(item);
-                return `${item.length}:${hex.slice(0, 64)}`;
-              }),
-            })),
-          }];
-        });
-        console.error('post-event-route-entries', {
-          groupIdx,
-          pass,
-          revealed: [...revealed.entries()],
-          learned: [...learnedEntries],
-          error: entryTrace.at(-1)?.error,
-          tail: entryTrace.slice(-10).map((state) => ({
-            ip: state.ip,
-            count: state.instructions.length,
-            op: state.instructions[state.ip]?.opcode,
-            error: state.error,
-            stack: state.stack.slice(-16).map((item) => {
-              const hex = binToHex(item);
-              return `${item.length}:${hex.slice(0, 64)}`;
-            }),
-          })),
-          handlerTail: entryTrace.filter((state) => state.instructions.length >= 330
-            && state.instructions.length <= 360
-            && state.ip >= 300)
-            .slice(-100).map((state) => ({
-              ip: state.ip,
-              op: state.instructions[state.ip]?.opcode,
-              stack: state.stack.slice(-24).map((item) => {
-                const hex = binToHex(item);
-                return `${item.length}:${hex.slice(0, 64)}`;
-              }),
-            })),
-          transferFromInvokeWindows,
-          transferFromCallerTail: entryTrace.filter((state) =>
-            state.instructions.length === 5117 && state.ip >= 1700 && state.ip <= 2100)
-            .map((state) => ({
-              ip: state.ip,
-              op: state.instructions[state.ip]?.opcode,
-              stack: state.stack.slice(-40).map((item) => {
-                const hex = binToHex(item);
-                return `${item.length}:${hex.slice(0, 64)}`;
-              }),
-            })),
-        });
-      }
-      let progressed = false;
-      for (const [outputIndex, commitment] of revealed) {
-        const blockSlot = outputIndex - bOutputBase;
-        const slot = group.blockLayout.slots[blockSlot];
-        if (learnedEntries.has(blockSlot)) continue;
-        if (slot?.kind === 'dataNft' && slot.nftIndex !== undefined) {
-          // A failing progressive probe can expose an intermediate
-          // stack item at a later output index before the complete
-          // data-NFT commitment has been constructed. Only converge a
-          // data slot once it decodes against that participant's state
-          // layout; entry outputs discovered by the same probe remain
-          // useful and can unlock the complete commitment next pass.
-          let state: Record<string, StateValueType>;
-          try {
-            state = commitmentsToState(
-              [commitment], group.stateLayout, [slot.nftIndex],
-            );
-          } catch {
-            continue;
-          }
-          for (const [name, value] of Object.entries(state)) {
-            stb.setExternalCallState(group.categoryId, name, value);
-          }
-          stb.setExternalCallDerivedRecords(group.categoryId, [slot.nftIndex], [commitment]);
-          learnedEntries.add(blockSlot);
-          progressed = true;
-          continue;
-        }
-        if (slot?.kind !== 'entry') continue;
-        learnedEntries.add(blockSlot);
-        stb.setExternalCallEntryOutput(group.categoryId, blockSlot, commitment);
-        progressed = true;
-      }
-      if (!progressed) break;
     }
   }
 
@@ -663,29 +499,20 @@ export function deriveFullPhase1ReturnAndEvents(
     let returnCommitments = extractCommitmentsFromTrace(
       returnTrace, 1, { min: returnOutputIndex, max: returnOutputIndex + 1 }, true,
     );
-    const routeReturnTypes = (group.compilerRoute?.rowArguments ?? []).flatMap(
-      (row) => row.handler.outputs?.map((output) => output.type) ?? [],
-    );
-    const routeReturnPushes = routeReturnTypes.length || 1;
-    let aggregatePending = routeReturnPushes > 1
-      ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;
-    if (!returnCommitments?.length && !aggregatePending) {
+    if (!returnCommitments?.length) {
       returnTrace = evaluateFaithfulOrDebugTrace(host.inner.provider, returnProgram);
       returnCommitments = extractCommitmentsFromTrace(
         returnTrace, 1, { min: returnOutputIndex, max: returnOutputIndex + 1 }, true,
       );
-      aggregatePending = routeReturnPushes > 1
-        ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;
     }
-    if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
-    else if (!returnCommitments?.length) {
-      const pending = extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes);
+    if (!returnCommitments?.length) {
+      const pending = extractPendingReturnCommitment(returnTrace);
       if (pending) returnCommitments = [pending];
     }
     // The same rule as the pre-event derivation: a void callee that pins no record returns no bytes, so the
     // covenant's success push (`01`) or a stack key is not returndata.
     if (calleePinsNoRecord(group)) returnCommitments = undefined;
-    if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
+    if (['SOLIDC_DEBUG_TRACE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
       (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
       console.error('route-return-after-events', {
         groupIdx, returnOutputIndex, returnCommitments,
@@ -710,7 +537,7 @@ export function deriveFullPhase1ReturnAndEvents(
       }
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('progressive-route-return', {
         groupIdx, returnOutputIndex, returnCommitments, error: returnTrace.at(-1)?.error,
         tail: returnTrace.slice(-24).map((state) => ({

@@ -17,7 +17,6 @@ export type ProjectCreateBuilderDelegateSlotsResult = {
   delegateReturnEventOffset: number | undefined;
   returnEmitBlockOffset: number | undefined;
   returnEmitOutputIndex: number;
-  returnMaterializationOutputIndex: number | undefined;
 };
 
 /**
@@ -39,24 +38,19 @@ export function projectCreateBuilderDelegateSlots(params: {
   delegateReturnEventOffset: number | undefined;
   returnEmitOutputIndex: number;
   returnEmitBlockOffset: number | undefined;
-  returnMaterializationOutputIndex: number | undefined;
-  overrides: { blockBase?: number; omitLocalFeeTail?: boolean } | undefined;
   timing?: (label: string) => void;
 }): ProjectCreateBuilderDelegateSlotsResult {
   const {
-    lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel, abiFunction,
-    overrides, timing,
+    lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel, abiFunction, timing,
   } = params;
   const delegateEventSlots = [...params.delegateEventSlots];
   let delegateReturnEventOffset = params.delegateReturnEventOffset;
   let returnEmitBlockOffset = params.returnEmitBlockOffset;
   let returnEmitOutputIndex = params.returnEmitOutputIndex;
-  let returnMaterializationOutputIndex = params.returnMaterializationOutputIndex;
 
   for (const [groupIndex, g] of lowLevelCallUtxoGroups.entries()) {
     if (g.callMode !== 'delegatecall') continue;
     if (nestedDelegateProxyGroupByLowLevel.has(groupIndex)) continue;
-    if (g.compilerRoute?.abiFunction.blockLayout) continue;
     const gFn = (g.externalContract.inner.artifact.abi as readonly {
       name: string; blockLayout?: FunctionBlockLayout;
     }[]).find((f) => f.name === g.functionName);
@@ -88,9 +82,7 @@ export function projectCreateBuilderDelegateSlots(params: {
   timing?.('delegate-slot-projection-complete');
   if (delegateReturnEventOffset !== undefined && returnEmitOutputIndex >= 0) {
     returnEmitBlockOffset = delegateReturnEventOffset;
-    returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
-    returnMaterializationOutputIndex = overrides?.omitLocalFeeTail
-      ? returnEmitBlockOffset : returnEmitOutputIndex;
+    returnEmitOutputIndex = returnEmitBlockOffset;
   }
 
   return {
@@ -98,6 +90,5 @@ export function projectCreateBuilderDelegateSlots(params: {
     delegateReturnEventOffset,
     returnEmitBlockOffset,
     returnEmitOutputIndex,
-    returnMaterializationOutputIndex,
   };
 }

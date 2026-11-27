@@ -11,7 +11,6 @@ import { callRecordDigest } from '../../src/stateful/call-record.js';
 import { getContractFactory, upgrades } from '../../src/stateful/index.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../src/utils.js';
-import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 import { addProvenUtxo, createTestProvider } from '../test-util.js';
 
 /**
@@ -44,16 +43,8 @@ contract Driver {
 const BUILDS = [
   {
     name: 'direct',
-    options: { forceStateful: true, evmCompat: true, messageBus: false, suppressWarnings: true },
+    options: { forceStateful: true, evmCompat: true, suppressWarnings: true },
     provider: createTestProvider,
-  },
-  {
-    name: 'message-bus',
-    options: {
-      forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      maximumInputBytes: 1_000_000, suppressWarnings: true,
-    },
-    provider: createMessageBusSemanticTestProvider,
   },
 ] as const;
 type Build = typeof BUILDS[number];

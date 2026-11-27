@@ -125,7 +125,7 @@ contract Fixed(address a, address b) {
     }
   });
 
-  it('keeps view witnesses for a keccak256 callee the caller chooses and runs a fixed callee\'s views as calls', () => {
+  it('keeps view witnesses for a keccak256 callee the caller chooses and refuses a fixed callee\'s repeated calls', () => {
     const body = (target: string): string => `pragma solidcash >=0.8.0;
 ${IFACE}
 library L { function pairFor(address x, address y) internal pure returns (address) {
@@ -139,18 +139,17 @@ contract Views(address a, address b) {
     this.total = acc;
   }
 }`;
-    const inputs = (target: string, messageBus?: boolean): string[] => compileString(body(target),
-      { messageBus, suppressWarnings: true }).abi.find((entry) => entry.name === 'sum')!.inputs.map((i) => i.name);
+    const inputs = (target: string): string[] => compileString(body(target),
+      { suppressWarnings: true }).abi.find((entry) => entry.name === 'sum')!.inputs.map((i) => i.name);
     // A target the caller chooses through a keccak256 computation: no lock equals it, so the callee is a witness and
     // any answer the view witnesses give, a callee the spender names could return as well. A plain element such as
     // `chosen[i]` names a callee whose answers the contract can read, and the compile refuses several calls through it.
     expect(inputs('L.pairFor(chosen[i], chosen[i + 1])').filter((name) => name.startsWith('__internal__viewReturn')))
       .toHaveLength(2);
-    // The contract's own addresses: each view is a call on that callee, which runs once per spend, so a direct
-    // compile refuses the pair and a default one leaves it to the message bus.
-    expect(() => compileString(body('own[i]'), { messageBus: false, suppressWarnings: true }))
-      .toThrow(/MESSAGE_BUS_REQUIRED.*repeats calls to the same state owner \(IPair\.r0 -> IPair\.r1\)/);
-    expect(inputs('own[i]', undefined).some((name) => name.startsWith('__internal__viewReturn'))).toBe(false);
+    // The contract's own addresses: each view is a call on that callee, which runs once per spend, so the compile
+    // refuses the pair.
+    expect(() => compileString(body('own[i]'), { suppressWarnings: true }))
+      .toThrow(/REPEATED_CALL_UNSUPPORTED.*repeats calls to the same state owner \(IPair\.r0 -> IPair\.r1\)/);
   });
 });
 

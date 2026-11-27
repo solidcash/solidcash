@@ -39,7 +39,6 @@ import { isAuthenticatedEventRepairCommitment } from './delegate-event-jobevent-
 import { chunksFromValue, decodeVmScriptNumber } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
-import type { ComputedChunkRepairResult } from './stb-converged-final-transaction.js';
 import {
   isDisposableAlignmentPad,
   selectExpectedP2sh32OutputLock,
@@ -61,7 +60,17 @@ import {
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { isFillerLockingBytecode } from './filler.js';
 
-export type { ComputedChunkRepairResult };
+export type ComputedChunkRepairResult = {
+  changed: boolean;
+  passed: boolean;
+  repairedOutputs: number[];
+  repairDetails: Array<{
+    outputIndex: number;
+    field: 'commitment' | 'lockingBytecode' | 'token';
+    previous: string;
+    proposed: string;
+  }>;
+};
 
 export interface RepairComputedChunkOutputHost {
   authenticatedEventOutputs: Map<number, Output>;
@@ -166,9 +175,8 @@ export function repairComputedChunkOutput(
     if (llc.callMode !== 'delegatecall') continue;
     const impl = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (impl < 0) continue;
-    const fn = llc.compilerRoute?.abiFunction
-      ?? llc.externalContract?.inner?.artifact.abi.find((candidate: AbiFunction) =>
-        candidate.name === (llc.logicalFunctionName ?? llc.functionName));
+    const fn = llc.externalContract?.inner?.artifact.abi.find((candidate: AbiFunction) =>
+      candidate.name === (llc.logicalFunctionName ?? llc.functionName));
     const proxyGroup = host.externalCallUtxoGroups.find((group) => group.delegateCallGroupIndex === llcIndex);
     const executionCategory = proxyGroup?.categoryId ?? host.categoryId;
     let eventOrdinal = 0;
@@ -284,8 +292,7 @@ export function repairComputedChunkOutput(
         const group = groupIndex === undefined ? undefined : host.externalCallUtxoGroups[groupIndex];
         const slot = group?.blockLayout?.slots.find((candidate) => candidate.kind === 'returnEvent');
         const master = groupIndex === undefined ? -1 : host.getExternalCallMasterInputIndex(groupIndex);
-        const encoded = group?.internalArgs?.__internal__returnOutputIdx
-          ?? group?.compilerRoute?.internalArgs?.__internal__returnOutputIdx;
+        const encoded = group?.internalArgs?.__internal__returnOutputIdx;
         const encodedNumber = typeof encoded === 'bigint' ? Number(encoded)
           : typeof encoded === 'number' ? encoded : -1;
         if (group?.sharedGroupIndex === undefined && slot !== undefined
@@ -651,9 +658,8 @@ export function repairComputedChunkOutput(
     const groupIndex = tokenReturnSlots.get(outputIndex);
     const group = groupIndex === undefined ? undefined : host.externalCallUtxoGroups[groupIndex];
     if (!group) continue;
-    const writerAbi = group.compilerRoute?.abiFunction
-      ?? (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
-        ?.find((fn) => fn.name === (group.functionName ?? group.logicalFunctionName));
+    const writerAbi = (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
+      ?.find((fn) => fn.name === (group.functionName ?? group.logicalFunctionName));
     if (writerAbi?.writesState !== true || writerAbi.outputs?.length !== 1
       || writerAbi.outputs[0].type !== 'bool') continue;
     const artifact = group.logicalArtifact ?? group.externalContract.inner.artifact;
@@ -687,7 +693,6 @@ export function repairComputedChunkOutput(
     const refreshedCarriers = new Set<ExternalCallUtxoGroup>();
     for (const [carrier, outputBase] of computedValueBaseRebases) {
       if (!refreshCapturedValueChunkOutputBase(carrier, outputBase, { shiftPredOut: false })) continue;
-      carrier.argumentsRefreshedDuringConvergence = true;
       refreshedCarriers.add(carrier);
     }
     if (refreshedCarriers.size > 0) {
@@ -730,8 +735,8 @@ export function repairComputedChunkOutput(
       const group = eventSlot
         ? host.externalCallUtxoGroups[eventSlot.groupIndex]
         : host.lowLevelCallUtxoGroups[delegateEventSlot!.groupIndex];
-      const emits = (group.compilerRoute?.abiFunction ?? group.externalContract.inner.artifact.abi
-        .find((fn: { name: string }) => fn.name === (group.logicalFunctionName ?? group.functionName)))?.emits ?? [];
+      const emits = group.externalContract.inner.artifact.abi
+        .find((fn: { name: string }) => fn.name === (group.logicalFunctionName ?? group.functionName))?.emits ?? [];
       const eventOrdinal = eventSlot?.eventOrdinal ?? delegateEventSlot!.eventOrdinal;
       const emitInfo = emits[eventOrdinal];
       if (group && emitInfo) {

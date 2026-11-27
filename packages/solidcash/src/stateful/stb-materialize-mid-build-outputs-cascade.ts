@@ -57,14 +57,14 @@ export function materializeMidBuildOutputsCascade(
   associatedDelegateOutputs: ReadonlySet<number>,
   deferredDelegateReturnEvents: ReturnEventRecord[],
   loopChunkBeforeCallees: boolean,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
   materializeOwnerEntriesContainersTransfers(
     host.ownerEntriesHost,
     builder,
     embeddedEntrySlots,
     delegateTransferSlotsConsumed,
-    debugAtomicOutputStage,
+    debugStatefulOutputStage,
   );
 
   materializeOwnerEventNftOutputs(host.ownerEventHost, builder);

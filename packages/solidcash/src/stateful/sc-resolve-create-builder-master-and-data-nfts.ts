@@ -15,14 +15,11 @@ export interface ResolveCreateBuilderMasterAndDataNftsInput {
     masterUtxo?: Utxo;
     masterSequence?: number;
     dataNftUtxos?: Utxo[];
-    omitLocalFeeTail?: boolean;
-    blockBase?: number;
   };
 }
 
 export interface ResolveCreateBuilderMasterAndDataNftsResult {
   masterUtxo: Utxo;
-  /** Probe-safe master copy with vout 0xffffffff when omitLocalFeeTail is set. */
   derivationMasterUtxo: Utxo;
   allDataNftUtxos: Utxo[];
   filteredDataNftUtxos: Utxo[];
@@ -52,7 +49,6 @@ export function resolveCreateBuilderMasterAndDataNfts(
     const state = onChainState.state as Record<string, unknown> | undefined;
     console.error('dynamic-chunk-master-state', JSON.stringify({
       functionName,
-      blockBase: overrides?.blockBase ?? 0,
       categoryId,
       master: `${masterUtxo.txid.slice(0, 12)}:${masterUtxo.vout}`,
       commitment: masterUtxo.token?.nft?.commitment,
@@ -62,12 +58,7 @@ export function resolveCreateBuilderMasterAndDataNfts(
           ? `${value.length}:${binToHex(value).slice(0, 40)}` : String(value)])),
     }));
   }
-  // Atomic local VM probes run before the canonical verifier region is assembled. An output index of
-  // 0xffffffff cannot identify a real UTXO, so generated message-bus code may bypass only its final binding
-  // check during these probes; the real outpoint is restored before the participant block leaves this builder.
-  const derivationMasterUtxo = overrides?.omitLocalFeeTail
-    ? { ...masterUtxo, vout: 0xffffffff }
-    : masterUtxo;
+  const derivationMasterUtxo = masterUtxo;
   const allDataNftUtxos = overrides?.dataNftUtxos ?? onChainState.dataNftUtxos;
 
   const filteredDataNftUtxos = requiredNftIndices.map((idx) => allDataNftUtxos[idx]);

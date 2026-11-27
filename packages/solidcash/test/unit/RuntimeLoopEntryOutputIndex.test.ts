@@ -27,12 +27,9 @@ describe('runtime loop entry output indices', () => {
       categoryId: '00'.repeat(32), runtimeLoopTrailingSegments: [],
       runtimeLoopEventOutputs: [], runtimeLoopTransferOutputs: [],
       loopEntryCommitments: new Map([['entries', ['11'.repeat(65), '22'.repeat(65)]]]),
-      kernelJournalSettlementOutputPlan: [], kernelJournalEagerOutputPlan: [],
       loopEntriesBeforeDynamicChunks: true, delegateEntriesAfterLowLevel: false,
-      compilerRouteDelegateBlock: false, trailingLoopEntryVars: () => [entry],
-      delegateLoopEntryVars: () => [], validateKernelJournalSettlementOutputPlan: () => {},
-      kernelJournalOutputLayout: () => { throw new Error('unused'); },
-      trailingLoopEntryOutputCount: () => 2, loopEntryTransitionSatoshis: () => 1200n,
+      directCallDelegateBlock: false, trailingLoopEntryVars: () => [entry],
+      delegateLoopEntryVars: () => [], loopEntryTransitionSatoshis: () => 1200n,
       getRequiredLoopEntryCount: () => 0, getLoopEntryOutputBase: () => 4,
     }, {
       outputs: outputs as any,
@@ -80,8 +77,6 @@ describe('runtime loop entry output indices', () => {
       runtimeLoopTrailingSegments: Array<{
         kind: 'entries'; collection: string; offset: number; count: number;
       }>;
-      kernelJournalSettlementOutputPlan: unknown[];
-      kernelJournalEagerOutputPlan: unknown[];
       getLoopEntryOutputBase: () => number;
     };
     builder.categoryId = '00'.repeat(32);
@@ -96,8 +91,6 @@ describe('runtime loop entry output indices', () => {
       { kind: 'entries', collection: 'b', offset: 0, count: 1 },
       { kind: 'entries', collection: 'a', offset: 1, count: 1 },
     ];
-    builder.kernelJournalSettlementOutputPlan = [];
-    builder.kernelJournalEagerOutputPlan = [];
     builder.getLoopEntryOutputBase = () => 10;
 
     expect(builder.getLoopEntryOutputIndex('a', 0)).toBe(12);
@@ -118,9 +111,7 @@ describe('runtime loop entry output indices', () => {
       >;
       runtimeLoopEventOutputs: unknown[];
       runtimeLoopTransferOutputs: unknown[];
-      compilerRouteDelegateBlock: boolean;
-      kernelJournalSettlementOutputPlan: unknown[];
-      kernelJournalEagerOutputPlan: unknown[];
+      directCallDelegateBlock: boolean;
       getLoopEntryOutputBase: () => number;
       getChunkOutputBase: () => number;
     };
@@ -135,9 +126,7 @@ describe('runtime loop entry output indices', () => {
     ];
     builder.runtimeLoopEventOutputs = [{}];
     builder.runtimeLoopTransferOutputs = [{}];
-    builder.compilerRouteDelegateBlock = false;
-    builder.kernelJournalSettlementOutputPlan = [];
-    builder.kernelJournalEagerOutputPlan = [];
+    builder.directCallDelegateBlock = false;
     builder.getLoopEntryOutputBase = () => 7;
     builder.getChunkOutputBase = () => 12;
 
@@ -156,16 +145,12 @@ describe('runtime loop entry output indices', () => {
       runtimeLoopTrailingSegments: Array<{
         kind: 'entries'; collection: string; offset: number; count: number;
       }>;
-      kernelJournalSettlementOutputPlan: unknown[];
-      kernelJournalEagerOutputPlan: unknown[];
       getLoopEntryOutputBase: () => number;
     };
     builder.categoryId = '00'.repeat(32);
     builder.loopEntryVars = [{ collection: 'entries', lockingBytecode: new Uint8Array() }];
     builder.loopEntryCommitments = new Map([['entries', ['a', 'b', 'c']]]);
     builder.getLoopEntryOutputBase = () => 0;
-    builder.kernelJournalSettlementOutputPlan = [];
-    builder.kernelJournalEagerOutputPlan = [];
 
     builder.runtimeLoopTrailingSegments = [
       { kind: 'entries', collection: 'entries', offset: 0, count: 2 },

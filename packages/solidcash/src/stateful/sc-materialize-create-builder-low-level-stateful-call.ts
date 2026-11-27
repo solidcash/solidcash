@@ -14,11 +14,11 @@ import { blockClockState, executingOraclePool } from './block-clock-state.js';
 import { callGuardText } from './call-guard-text.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { createGraphPlanningProducerResultContext } from './graph-planning-producer-result.js';
+import { createCallPlanningProducerResultContext } from './call-planning-producer-result.js';
 import {
-  resolvePreparedKernelDelegateExecution,
-  resolvePreparedKernelDelegateOwnerFrame,
-} from './KernelDelegateForwarding.js';
+  resolvePreparedDelegateExecution,
+  resolvePreparedDelegateOwnerFrame,
+} from './DelegateForwarding.js';
 import { hydrateExternalPredicateState } from './sc-hydrate-external-predicate-state.js';
 import type { ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 
@@ -51,14 +51,14 @@ export type MaterializeCreateBuilderLowLevelStatefulCallResult = {
   delegateCallerIdentity: { categoryId: string; lockingBytecode: string } | undefined;
   /** The state the delegate's own calls are planned in: the owner's, with the clock the implementation reads. */
   delegateState: Record<string, unknown>;
-  graphPlanningResults: ReturnType<typeof createGraphPlanningProducerResultContext>;
-  preparedAtomicNodes: any[] | undefined;
+  callPlanningResults: ReturnType<typeof createCallPlanningProducerResultContext>;
+  preparedCallNodes: any[] | undefined;
   nestedIndices: number[];
   nestedByCallsite: Map<number, number>;
 };
 
 /** Preserve the selector-authenticated logical frame separately from the physical delegatecall payload. */
-export function publishPreparedKernelDelegateOwnerFrame(
+export function publishPreparedDelegateOwnerFrame(
   group: Pick<ExternalCallUtxoGroup, 'logicalFunctionName' | 'logicalFunctionArgs'>,
   frame: { abiFunction: Pick<AbiFunction, 'name'>; args: readonly FunctionArgument[] },
 ): void {
@@ -68,7 +68,7 @@ export function publishPreparedKernelDelegateOwnerFrame(
 
 /**
  * Materialize one stateful LLC into lowLevelCallUtxoGroups. For delegatecall,
- * optionally promote the kernel forwarding frame and filter active nested
+ * optionally promote the forwarding frame and filter active nested
  * external calls. Host continues with nested-compose for each nested call.
  */
 export async function materializeCreateBuilderLowLevelStatefulCall(
@@ -83,7 +83,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     functionName: string;
     args: readonly any[];
     callIndex: number;
-    preparedAtomicNodes: any[] | undefined;
+    preparedCallNodes: any[] | undefined;
     rootProducerPath: ValueChunkProducerPathDisposition;
     publicSelfAddress: Uint8Array;
     authenticatedSelfAddress: Uint8Array;
@@ -98,10 +98,9 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     rootProducerPath, publicSelfAddress, authenticatedSelfAddress, onChainState,
     incomingCallerAddress,
   } = params;
-  let preparedAtomicNodes = params.preparedAtomicNodes;
+  let preparedCallNodes = params.preparedCallNodes;
 
-  const compilerDelegateRoute = callInfo.compilerRoute !== undefined;
-  const bState = callInfo.contract.inner.artifact.delegateOnly || compilerDelegateRoute
+  const bState = callInfo.contract.inner.artifact.delegateOnly
     ? await host.getMasterOnlyState(callInfo.contract)
     : await host.getFullState(callInfo.contract);
   const bStateLayout = callInfo.contract.inner.stateLayout!;
@@ -114,7 +113,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   }
 
   // Include all data NFTs
-  const bRequiredNftIndices = callInfo.contract.inner.artifact.delegateOnly || compilerDelegateRoute
+  const bRequiredNftIndices = callInfo.contract.inner.artifact.delegateOnly
     ? []
     : Array.from({ length: bStateLayout.dataNftCount }, (_, idx) => idx);
   const bDataNfts: UnlockableUtxo[] = [];
@@ -137,19 +136,16 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     masterUtxo: bState.masterUtxo,
     dataNftUtxos: bDataNfts,
     requiredDataNftIndices: bRequiredNftIndices,
-    functionName: callInfo.compilerRoute?.abiFunction.name ?? callInfo.functionName,
-    functionArgs: callInfo.compilerRoute?.args ?? callInfo.args,
+    functionName: callInfo.functionName,
+    functionArgs: callInfo.args,
     externalContract: callInfo.contract,
-    callMode,
+    callMode: callMode as ExternalCallUtxoGroup['callMode'],
     ...(callMode !== 'delegatecall' && { edgeLowLevelCallIndex: callIndex }),
-    ...(callInfo.compilerRoute && { compilerRoute: callInfo.compilerRoute }),
-    ...((callInfo.compilerRoute?.abiFunction.blockLayout
-    ?? (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
-      .find((fn) => fn.name === callInfo.functionName)?.blockLayout)
+    ...((callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
+      .find((fn) => fn.name === callInfo.functionName)?.blockLayout
     && {
-      blockLayout: callInfo.compilerRoute?.abiFunction.blockLayout
-        ?? (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
-          .find((fn) => fn.name === callInfo.functionName)?.blockLayout,
+      blockLayout: (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])
+        .find((fn) => fn.name === callInfo.functionName)?.blockLayout,
     }),
   });
   groupProxyMasterIndices.push(callInfo.proxyMasterIndex ?? 0);
@@ -165,8 +161,8 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       delegateSelfAddress: new Uint8Array(),
       delegateCallerIdentity: undefined,
       delegateState: onChainState.state,
-      graphPlanningResults: createGraphPlanningProducerResultContext(),
-      preparedAtomicNodes,
+      callPlanningResults: createCallPlanningProducerResultContext(),
+      preparedCallNodes,
       nestedIndices: [],
       nestedByCallsite: new Map(),
     };
@@ -174,21 +170,20 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
 
   const delegateGroupIndex = lowLevelCallUtxoGroups.length - 1;
   const delegateAbi = callInfo.contract.inner.artifact.abi as readonly AbiFunction[];
-  let delegateFn = callInfo.compilerRoute?.abiFunction
-  ?? delegateAbi.find((f) => f.name === callInfo.functionName);
+  let delegateFn = delegateAbi.find((f) => f.name === callInfo.functionName);
   let promotedDelegateOwnerFrame: ReturnType<
-  typeof resolvePreparedKernelDelegateOwnerFrame
+  typeof resolvePreparedDelegateOwnerFrame
   > | undefined;
   const nestedIndices: number[] = [];
   const nestedByCallsite = new Map<number, number>();
-  if (!preparedAtomicNodes && abiFunction) {
+  if (!preparedCallNodes && abiFunction) {
   // A compiler-published forwarding frame is the complete semantic criterion: one unconditional,
   // terminal delegatecall of an untouched bytes parameter to an address-committed target. Resolve
   // that payload back to the exact eligible implementation row. Generated-proxy and user-authored
   // forwarding functions therefore take the same path, independent of their source-level names.
-    let promoted: ReturnType<typeof resolvePreparedKernelDelegateExecution>;
+    let promoted: ReturnType<typeof resolvePreparedDelegateExecution>;
     try {
-      promoted = resolvePreparedKernelDelegateExecution({
+      promoted = resolvePreparedDelegateExecution({
         proxyFunction: abiFunction,
         callIndex,
         proxyParameters: args,
@@ -205,7 +200,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     // delegate transaction, whose proxy and implementation covenants remain authoritative.
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
-        console.error('kernel-delegate-promotion-refused', {
+        console.error('journal-delegate-promotion-refused', {
           functionName, requestedFunctionName: callInfo.functionName,
           reason: error instanceof Error ? error.message : String(error),
           payload: args[physicalAbiFunction?.delegateForwarding?.payloadInput ?? -1]
@@ -216,15 +211,15 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       }
     }
     if (promoted) {
-      promotedDelegateOwnerFrame = resolvePreparedKernelDelegateOwnerFrame({
+      promotedDelegateOwnerFrame = resolvePreparedDelegateOwnerFrame({
         execution: promoted,
         implementationAbi: delegateAbi,
       });
-      publishPreparedKernelDelegateOwnerFrame(
+      publishPreparedDelegateOwnerFrame(
         lowLevelCallUtxoGroups[delegateGroupIndex]!, promotedDelegateOwnerFrame,
       );
       delegateFn = promotedDelegateOwnerFrame.abiFunction;
-      preparedAtomicNodes = [{
+      preparedCallNodes = [{
         contract: host.selfContract,
         functionName: promoted.functionName,
         selector: promoted.selector,
@@ -233,14 +228,12 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
         executor: callInfo.contract,
         parent: null,
         producerPath: rootProducerPath,
-        active: true,
       }];
     }
   }
   const publishedNestedExternalCalls: ExternalCallAbi[] = [...(delegateFn?.externalCalls ?? [])];
   // Nested argSources.paramIndex is the logical Solidity function's visible parameter
-  // list (a dynamic-array argument can be third). A compiler-owned route stores [blob, ...witnesses]
-  // on the LLC, so reading callInfo.args[3] is not the tags array.
+  // list (a dynamic-array argument can be third).
   const delegateVisibleCount = (delegateFn?.inputs ?? []).filter(
     (input: any) => !input.name.startsWith('__internal__'),
   ).length;
@@ -251,7 +244,6 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       functionName === delegateFn?.name ? args : undefined,
       named,
       callInfo.args,
-      callInfo.compilerRoute?.args,
     ];
     for (const candidate of candidates) {
       if (candidate && candidate.length === delegateVisibleCount) return candidate;
@@ -271,11 +263,9 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   );
   // One compiler function owns one stable callsite namespace. Share producer work across its predicate,
   // argument, graph-seeding, and return-carrier passes for this build epoch.
-  const graphPlanningResults = createGraphPlanningProducerResultContext();
+  const callPlanningResults = createCallPlanningProducerResultContext();
   // The implementation input authenticates code execution, but Solidity-visible calls execute in the
-  // proxy/state-owner context. New graph routes authenticate the same public CREATE identity for address(this)
-  // and the outgoing caller. Older routes retain their physical self projection. Storage and executor identities
-  // remain separately pinned by the delegate block.
+  // proxy/state-owner context. Storage and executor identities remain separately pinned by the delegate block.
   const storedLogical = host.selfContract?._logicalAddress as string | undefined;
   const logicalCreateLock = storedLogical ? addressToLockScript(storedLogical) : undefined;
   const implementationLock = String(callInfo.contract?.inner?.lockingBytecode ?? '');
@@ -289,16 +279,11 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     && ownerLock !== ''
     && implementationLock.toLowerCase() !== ownerLock.toLowerCase()
     && binToHex(logicalCreateLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase();
-  const routeAuthenticatesPublicSelf = callInfo.contract.inner.artifact.messageBus?.route.inputs.some(
-    (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
-  ) === true;
   const delegateSelfAddress = proxyFacade && logicalCreateLock !== undefined
-    ? logicalCreateLock
-    : routeAuthenticatesPublicSelf ? authenticatedSelfAddress : publicSelfAddress;
+    ? logicalCreateLock : publicSelfAddress;
   const delegateCallerIdentity = Object.freeze({
     categoryId: host.categoryId,
-    // The outgoing caller is exactly the state-owner identity used for address(this). A legacy delegate
-    // without a public-self witness uses the physical proxy; an authenticated CREATE route uses its SCID.
+    // The outgoing caller is exactly the state-owner identity used for address(this).
     lockingBytecode: binToHex(delegateSelfAddress),
   });
   // The implementation's code runs in the owner's state and reads the block from the pool it binds itself. Its guards
@@ -311,7 +296,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       executingOraclePool(implementation, implementation.artifact), publishedNestedExternalCalls),
   };
   // A call the delegate may skip, under a guard no frame can decide, is refused: co-spent on a guess, its callee would
-  // run without being called whenever the guard is false. A compiler route binds the rows it runs instead.
+  // run without being called whenever the guard is false. A route binds the rows it runs instead.
   const refuseUndecided = (nested: ExternalCallAbi, reason?: string): never => {
     const connected = (host.selfContract?._externalRegistry?.get(nested.interfaceName)
       ?? callInfo.contract?._externalRegistry?.get(nested.interfaceName)) as
@@ -346,7 +331,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       if (rejected) continue;
     }
     if (!nested.condition) {
-      if (nested.conditionUnpublished === true && !compilerDelegateRoute) refuseUndecided(nested);
+      if (nested.conditionUnpublished === true) refuseUndecided(nested);
       // Older artifacts and control-flow shapes not yet expressible by ExternalCallExpression retain
       // the existing covenant-driven occurrence handling. Never infer inactivity from a missing guard.
       nestedExternalCalls.push(nested);
@@ -361,7 +346,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       delegateSelfAddress,
       publishedNestedExternalCalls,
       false,
-      graphPlanningResults,
+      callPlanningResults,
       {
         callsiteId: nested.callsiteId,
         resultConsumers: delegateFn?.resultConsumers,
@@ -413,8 +398,8 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     delegateSelfAddress,
     delegateCallerIdentity,
     delegateState,
-    graphPlanningResults,
-    preparedAtomicNodes,
+    callPlanningResults,
+    preparedCallNodes,
     nestedIndices,
     nestedByCallsite,
   };

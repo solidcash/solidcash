@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import type { Artifact } from '@solidcash/utils';
 import {
-  Contract,
   Signer,
 } from '../../src/index.js';
 import {
@@ -13,7 +12,6 @@ import {
 } from '../../src/stateful/index.js';
 import { DEFAULT_PROXY_SOURCE, defaultProxyArtifact } from '../../src/stateful/defaultProxyArtifact.js';
 import { ProxyContract } from '../../src/stateful/upgrades.js';
-import { classifyDelegateParticipant } from '../../src/message-bus/delegate.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { alicePriv } from '../fixture/vars.js';
@@ -50,8 +48,8 @@ const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
 // The own-category conservation still ends with a compare against remaining == 0. Production outlining no
 // longer folds that OP_0 into a shared helper (window 12/10 leaves the output loop inline), so the A/B pair
 // is exactly one opcode apart at the tail: `== 0` against `<= 0`.
-const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_2DROP OP_1';
-const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_2DROP OP_1';
+const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_DROP OP_1';
+const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_DROP OP_1';
 /** A VALID pushdata state commitment (OP_16 -> counter 16), same one byte as the genuine one after an
  *  increment (OP_6 -> 6). Only position tells the two apart. */
 const FORGED_COMMITMENT = '60';
@@ -123,13 +121,12 @@ async function deployPair(
   const implLbc = addressToLockScript(implementation.address);
   const graftedProxy = graft(proxyArtifact, implArtifact);
   // The forward pins its delegate to `activeInputIndex + __proxyBlockSize`, so the constructor argument is the
-  // grafted block the SDK lays the implementation after. The implementation has no message-bus route, so the
-  // route distance is the same block.
+  // grafted block the SDK lays the implementation after.
   const proxyBlockSize = BigInt(
     graftedProxy.abi.find((entry) => entry.name === '__forward')?.blockLayout?.blockSize ?? 1,
   );
   const proxy = await new ContractFactory(graftedProxy, signer)
-    .deploy(implLbc, proxyBlockSize, proxyBlockSize, { initialState: { counter: 5n }, logicalNonce: false });
+    .deploy(implLbc, proxyBlockSize, { initialState: { counter: 5n }, logicalNonce: false });
   return {
     handle: new ProxyContract(
       proxy, implementation as any, { name: '__forward', mode: 'baked' }, () => [], signer,
@@ -154,12 +151,11 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     expect(defaultProxyArtifact.fingerprint).toBe(fresh.fingerprint);
     expect(JSON.parse(JSON.stringify(defaultProxyArtifact))).toEqual(JSON.parse(JSON.stringify(fresh)));
 
-    // The two fields the hand edit desynchronised agree. The forwarder is 387 bytes: 350 before the
-    // delegate-position pin, 362 with it, plus the 20-byte selection of the route distance by the forwarded
-    // selector, the payload pin's two-byte check of the delegate's leading push, and the three-byte exact-stack
-    // check its arm opens with (O8). bytecode, debug.bytecode, and fingerprint still come from one compile.
-    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(387);
-    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(387);
+    // The two fields the hand edit desynchronised agree. The forwarder is 365 bytes: 350 before the
+    // delegate-position pin, 362 with it, plus the three-byte exact-stack check its arm opens with (O8).
+    // bytecode, debug.bytecode, and fingerprint still come from one compile.
+    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(365);
+    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(365);
     expect(defaultProxyArtifact.bytecode.endsWith(STRICT_TAIL)).toBe(true);
   });
 
@@ -172,49 +168,6 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
         target: { kind: 'constructorArg', name: 'implementation' },
       },
     ]);
-  });
-
-  /**
-   * DEFECT 1 AT THE GATE, which is where it was measured. The shipped proxy, instantiated with the real
-   * implementation locking bytecode exactly as `deployProxy` bakes it, is now classified instead of refused.
-   *
-   * GUARD NEGATIVE CONTROL: the same call with `target` stripped back off still refuses as
-   * 'unpublished-target-provenance'. So the admission is credited to the published field and not to the
-   * bytecode change that landed in the same commit.
-   */
-  it('is no longer refused as unpublished-target-provenance', async () => {
-    const { provider } = await fundedSigner();
-    const implArtifact = compileString(DELEGATE_IMPL);
-    const implementationLbc = binToHex(addressToLockScript(new Contract(implArtifact, [], { provider }).address));
-    const grafted = graft(defaultProxyArtifact, implArtifact);
-    const blockSize = BigInt(
-      grafted.abi.find((entry) => entry.name === '__forward')?.blockLayout?.blockSize ?? 1,
-    );
-    const proxy = new Contract(
-      grafted, [hexToBin(implementationLbc), blockSize, blockSize] as never[], { provider },
-    );
-
-    const classified = classifyDelegateParticipant({
-      proxy: { artifact: grafted, functionName: '__forward', bytecode: proxy.bytecode },
-      implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
-    });
-    expect(classified.id).toBe('bytecode-pinned/adjacent-proxy-block/scalar');
-
-    const preX37 = {
-      ...grafted,
-      abi: grafted.abi.map((entry) => (entry.name !== '__forward' ? entry : {
-        ...entry,
-        lowLevelCalls: entry.lowLevelCalls?.map((call) => {
-          const withoutTarget = { ...call };
-          delete withoutTarget.target;
-          return withoutTarget;
-        }),
-      })),
-    } as Artifact;
-    expect(() => classifyDelegateParticipant({
-      proxy: { artifact: preX37, functionName: '__forward', bytecode: proxy.bytecode },
-      implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
-    })).toThrow(/class 'unpublished-target-provenance' is not admitted/);
   });
 
   // HONEST POSITIVE CONTROL. The regenerated proxy still forwards a delegated state write on the VM.

@@ -1,14 +1,10 @@
 import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
-import type { AbiFunction, Artifact, ChildDeploymentValueRecipe, FixedBchTransferAbi } from '@solidcash/utils';
+import type { Artifact, ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { describe, expect, it, vi } from 'vitest';
-import { evaluateChildDeploymentRecipe, materializeFixedBchTransfer } from '../../src/message-bus/compose-recipes.js';
-import { loadFixedEffectEntries } from '../../src/message-bus/fixed-effect-entries.js';
-import { evaluateFixedEffectPredicate } from '../../src/message-bus/message-bus.js';
-import {
-  bindSatoshiContainerSelection, resolveSatoshiContainerRouteAbi, resolveSelectedSatoshiContainerRequired,
-} from '../../src/message-bus/selected-satoshi-container.js';
+import { evaluateChildDeploymentRecipe } from '../../src/stateful/child-deployment-recipes.js';
+import { loadFixedEffectEntries } from '../../src/stateful/fixed-effect-entries.js';
+import { evaluateFixedEffectPredicate } from '../../src/stateful/fixed-effect-predicate.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
-import { createTestProvider } from '../test-util.js';
 
 const collection = { name: 'payments', signature: 'payments:mapping(int256 => Payment)',
   kind: 'mapping', keyType: 'int256', valueType: 'Payment', sorted: true } as const;
@@ -25,61 +21,6 @@ const incoming = { slot: keyToSlotMulti([bigIntToVmNumber(7n)], collection),
   value: { amount: 2_000n, enabled: true, recipient, flags: [false, true] } };
 
 describe('authenticated fixed-effect entry recipes', () => {
-  it('omits a satoshi container when the selected authenticated transfer amount is zero', async () => {
-    const handler: AbiFunction = {
-      name: 'refund', selector: 'aabbccdd', inputs: [{ name: 'key', type: 'int256' }],
-      blockLayout: { blockSize: 2, slots: [{ kind: 'master', offset: 0 },
-        { kind: 'satoshiContainer', offset: 1 }] },
-      transferCount: 1,
-      transfers: [{ transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 },
-        amount: { kind: 'literal', type: 'bigint', value: '1' },
-        amountRecipe: entryRecipe(['amount'], 'int256') }],
-    };
-    const selection = { artifact: { ...artifact, abi: [handler] }, selectors: [handler.selector] };
-    const host = { getState: async () => ({}), getEntries: async () => [incoming] };
-
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [[8n]] }, host)).toBe(false);
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [[7n]] }, host)).toBe(true);
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [undefined] }, host)).toBe(true);
-  });
-
-  it('omits a container only after resolving every exact selected row against incoming entries', async () => {
-    const handler: AbiFunction = { name: 'pay', selector: '11223344', inputs: [{ name: 'key', type: 'int256' }],
-      blockLayout: { blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'satoshiContainer', offset: 1 }] },
-      transferCount: 1, transfers: [{ transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 },
-        amount: { kind: 'literal', type: 'bigint', value: '2000' },
-        condition: { kind: 'fixedEffectRecipe', fixedEffectRecipe: entryRecipe(['enabled'], 'bool') } }] };
-    const selectedArtifact = { ...artifact, abi: [handler] };
-    const host = { getState: async () => ({}), getEntries: async () => [incoming] };
-    const selection = { artifact: selectedArtifact, selectors: [handler.selector], args: [[8n]] };
-    expect(await resolveSelectedSatoshiContainerRequired(selection, host)).toBe(false);
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [[7n]] }, host)).toBe(true);
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection,
-      selectors: [handler.selector, handler.selector], args: [[8n], [7n]] }, host)).toBe(true);
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [undefined] }, host)).toBe(true);
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, selectors: ['ffffffff'] }, host))
-      .toBeUndefined();
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection,
-      artifact: { ...selectedArtifact, abi: [{ ...handler, transferCount: 2 }] } }, host)).toBe(true);
-    const route = { ...handler, transferCount: 8 };
-    bindSatoshiContainerSelection(route, selection);
-    // Later caller annotations cannot change the captured row. The original ABI is not mutated either.
-    selection.args[0][0] = 7n;
-    expect(await resolveSatoshiContainerRouteAbi(route, host)).toMatchObject({
-      transferCount: 0, messageBusActiveSatoshiContainer: false,
-    });
-    expect(route.transferCount).toBe(8);
-    expect(await resolveSatoshiContainerRouteAbi({ ...route }, host)).toEqual(route);
-    const alreadyNarrowedRoute = { ...handler, transferCount: 0, messageBusActiveSatoshiContainer: false };
-    bindSatoshiContainerSelection(alreadyNarrowedRoute, selection);
-    expect(await resolveSatoshiContainerRouteAbi(alreadyNarrowedRoute, host)).toBe(alreadyNarrowedRoute);
-    const logical = { ...handler, transfers: [{ ...handler.transfers![0], condition: {
-      kind: 'fixedEffectRecipe', fixedEffectRecipe: { kind: 'logicalCaller', resultType: 'address' } as const,
-    } }] };
-    expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [[8n]],
-      artifact: { ...selectedArtifact, abi: [logical] } }, host)).toBe(true);
-  });
-
   it('activates address-zero fixed effects across empty and ABI-word forms', () => {
     const zeroAddress: Parameters<typeof evaluateFixedEffectPredicate>[0] = {
       kind: 'binary', operator: '==',
@@ -91,27 +32,6 @@ describe('authenticated fixed-effect entry recipes', () => {
       expect(evaluateFixedEffectPredicate(zeroAddress, [value])).toBe(true);
     }
     expect(evaluateFixedEffectPredicate(zeroAddress, [recipient])).toBe(false);
-  });
-
-  it('materializes Solidity BCH recipients as P2PKH without rewriting native locking bytecode', () => {
-    const transfer: FixedBchTransferAbi = {
-      transferIndex: 0,
-      recipient: { kind: 'forward', paramIndex: 0 },
-      amount: { kind: 'forward', paramIndex: 1 },
-    };
-    const solidityArtifact = { ...artifact, compiler: { options: { evmCompat: true } } } as Artifact;
-    const provider = createTestProvider();
-    const identity = recipient.slice(3, 23);
-    const abiWord = new Uint8Array(32);
-    abiWord.set(identity, 12);
-    const materialize = (address: Uint8Array): Uint8Array => materializeFixedBchTransfer(
-      transfer, [address, 1_000n], ['address', 'uint256'], solidityArtifact, provider,
-    ).lockingBytecode;
-    expect(materialize(identity)).toEqual(recipient);
-    expect(materialize(abiWord)).toEqual(recipient);
-    expect(materialize(recipient)).toEqual(recipient);
-    abiWord[0] = 1;
-    expect(() => materialize(abiWord)).toThrow(/malformed Solidity address word/);
   });
 
   it('resolves captured slot keys and typed leaves with one authenticated collection read', async () => {

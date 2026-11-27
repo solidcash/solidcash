@@ -19,7 +19,6 @@ describe('mockProxyDensityReserveBytes', () => {
         b0367c58: '00'.repeat(10_874),
         '53434231': '00'.repeat(200_000),
       },
-      messageBus: { selector: '53434231' },
     });
     expect(reserve).toBe(520);
   });

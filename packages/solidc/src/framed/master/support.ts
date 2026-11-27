@@ -229,8 +229,8 @@ export function stripFrameParameters(
     contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
   ];
   // The positions each function loses, so an internal call to it drops the arguments those positions took. A call
-  // writes the sender category itself only in a compiler-generated route; any other call leaves it to the hidden
-  // sender context, so its arguments line up with the parameters that are not the category's.
+  // that leaves the sender category to the hidden sender context lines up with the parameters that are not the
+  // category's; one that passes every parameter lines up with all of them.
   const stripped = new Map<FunctionDefinitionNode, ReadonlyMap<number, Set<number>>>();
   for (const fn of functions) {
     if (!fn) continue;
@@ -1143,8 +1143,7 @@ function derivableTargetBatches(
       const access = accesses.find((candidate) => candidate.slotIndex === slot);
       if (access === undefined) return undefined;
       if (!isOneWrite(access.operations)) return undefined;
-      if (access.inLoop === true || aliasesOutsideBatch(access, batch)
-        || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
+      if (access.inLoop === true || aliasesOutsideBatch(access, batch)) return undefined;
     }
     derivable.push({
       slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true,
@@ -1365,7 +1364,7 @@ function unsupportedBatchWriteShape(
       return `the body writes a mapping at slot ${slot} in a loop, so the records it declares are not a fixed set`;
     }
     const batch = batches.find((candidate) => candidate.slotIndices.includes(slot))!;
-    if (aliasesOutsideBatch(access, batch) || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) {
+    if (aliasesOutsideBatch(access, batch)) {
       return `the body writes a mapping at slot ${slot} that can alias another target at run time, so its record `
         + 'is not fixed';
     }
@@ -3936,7 +3935,7 @@ function deriveEntryCallSites(
         + ', so its call records are not a fixed set the head can check' };
     }
     if (slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined
-      || slot.inlineLoopDispatch === true || (slot.batchInvocations?.length ?? 0) > 1) {
+      || slot.inlineLoopDispatch === true) {
       return { calls: [], reason: `the call to '${slot.functionName}' runs repeatedly, so its call records are not `
         + 'a fixed set the head can check' };
     }

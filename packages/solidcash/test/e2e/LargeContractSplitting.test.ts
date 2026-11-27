@@ -1,20 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, hexToBin } from '@bitauth/libauth';
-import { compileString, compileStringSplit } from '@solidcash/solidc';
-import { messageBusVerifierCommitment, parsePushdataCommitment } from '@solidcash/utils';
+import { compileStringSplit } from '@solidcash/solidc';
+import { parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract,
   Signer,
 } from '../../src/index.js';
 import {
-  SplitContract,
   SplitContractBundle,
-  StatefulContract,
   deriveLogicalCreateAddress,
   upgrades,
 } from '../../src/stateful/index.js';
 
-import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, getTxOutputs } from '../test-util.js';
 
 const SOURCE = `
 contract SplitCounter() {
@@ -74,20 +70,15 @@ describe('split contract SDK', () => {
     expect(new Set(Object.values(deployed.facets).map((facet) => facet.categoryId)).size).toBe(1);
     expect(Object.values(deployed.facets).every((facet) => facet.categoryId !== deployed.categoryId)).toBe(true);
 
-    // Each facet genesis contains its minting master but no application mutable data NFT. A facet that publishes a
-    // message-bus verifier program also mints that verifier's NFT, which is mutable but holds no application state,
-    // so the only mutable output allowed is the verifier's own commitment.
+    // Each facet genesis contains its minting master but no application mutable data NFT.
     const facetGeneses = deployed.deploymentTransactions.slice(0, -1) as any[];
     expect(facetGeneses).toHaveLength(compiled.manifest.facets.length);
-    for (const [index, tx] of facetGeneses.entries()) {
-      const facetArtifact = compiled.facets[compiled.manifest.facets[index]!.name]!;
-      const verifierCommitments = facetArtifact.messageBus?.verifierProgram
-        ? [binToHex(messageBusVerifierCommitment(0))] : [];
+    for (const tx of facetGeneses) {
       // Output 0 is the facet category's authhead, whose identity NFT is mutable too.
       const tokenOutputs = getTxOutputs(tx).slice(1).filter((output) => output.token);
       expect(tokenOutputs.filter((output) => output.token?.nft?.capability === 'minting')).toHaveLength(1);
       expect(tokenOutputs.filter((output) => output.token?.nft?.capability === 'mutable')
-        .map((output) => output.token!.nft!.commitment)).toEqual(verifierCommitments);
+        .map((output) => output.token!.nft!.commitment)).toEqual([]);
     }
 
     const setTx = await deployed.call.setX(7n).send();
@@ -170,54 +161,9 @@ describe('split contract SDK', () => {
         constructor(uint initial) { value = initial; }
         function set(uint next) external { value = next + block.timestamp; require(next > 0); }
       }
-    `, { forceSplit: true, evmCompat: true, messageBus: false });
+    `, { forceSplit: true, evmCompat: true });
     const deployed = await SplitContractBundle.from(compiled, signer).deploy([7n]);
     expect((await deployed.root.getState()).value).toBe(7n);
-  });
-
-  it('settles a typed graph call through a verifier-bound split facet', async () => {
-    const signer = await fundedSigner();
-    const provider = signer.provider;
-    // The facet reads Peer's void record by a digest over ping's selector, which each compile mode hashes its own
-    // way: Peer is compiled in the facet's mode.
-    const peerArtifact = compileString(`pragma solidity ^0.8.20;
-      contract Peer {
-        int stored;
-        function ping(int next) public { stored = next; require(next >= 0); }
-      }`, { evmCompat: true, suppressWarnings: true });
-    const peerContract = new Contract(peerArtifact, [], { provider });
-    const { categoryId: peerCategory } = await setupStatefulUtxos(
-      provider, peerContract, peerArtifact.stateLayout!, { stored: 0n }, { saltContract: true },
-    );
-    const peer = StatefulContract.withCategory(peerContract, peerCategory);
-    const bundle = compileStringSplit(`interface IPeer { function ping(int value) external; }
-      contract GraphFacet {
-        int value;
-        function step(address target, int next) public {
-          IPeer(target).ping(next);
-          value = next;
-          require(next >= 0);
-        }
-      }`, {
-      evmCompat: true, messageBus: true, messageBusKernel: true,
-      messageBusGraphContext: true, optimizeForCompilationSpeed: true,
-      suppressWarnings: true, forceSplit: true,
-    });
-    const deployed = await SplitContractBundle.from(bundle, signer).deploy([], {
-      initialState: { value: 0n },
-    });
-    const facetName = bundle.manifest.facets[0].name;
-    const facet = deployed.facets[facetName];
-    const connectedFacet = StatefulContract.withCategory(facet.inner, facet.categoryId, {
-      externals: { IPeer: peer },
-    }).connect(signer);
-    const routed = new SplitContract(bundle, deployed.root, {
-      ...deployed.facets, [facetName]: connectedFacet,
-    }, deployed.deploymentTransactions);
-    const target = peerContract.withCategory(hexToBin(peerCategory)).lockingBytecode;
-    const tx = await routed.call.step(target, 7n).send();
-    expect(stateFromTx(tx, deployed.categoryId, bundle.root.stateLayout).value).toBe(7n);
-    expect((await peer.getState()).stored).toBe(7n);
   });
 
   it('returns a complete fixed array through a split facet on-chain', async () => {
@@ -239,7 +185,7 @@ describe('split contract SDK', () => {
           this.total=amount; require(amount>0);
           return [payments[B],payments[S],payments[M],payments[P],payments[A]];
         }
-      }`, { evmCompat: true, messageBus: false, forceSplit: true });
+      }`, { evmCompat: true, forceSplit: true });
     const deployed = await SplitContractBundle.from(bundle, signer).deploy([], {
       initialState: { total: 0n },
     });

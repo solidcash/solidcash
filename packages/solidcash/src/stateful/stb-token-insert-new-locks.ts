@@ -38,6 +38,10 @@ function traceTokenInsertBalanceSnapshot(label: string, master: number, idxs: nu
   console.error('token-insert-bal-snap', { label, master, idxs });
 }
 
+function sameLock(left: Uint8Array | undefined, right: Uint8Array | undefined): boolean {
+  return !!left && !!right && left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
 /** Reassert compiler-described sorted-batch INSERT and UPDATE entry geometry without shifting output tails. */
 export function reassertTokenInsertNewLocks(
   host: TokenInsertNewLocksHost,
@@ -79,10 +83,7 @@ export function reassertTokenInsertNewLocks(
           commitLen: String(predecessor.commitment).length,
           commit: String(predecessor.commitment).slice(0, 80),
         })),
-        predOutArgs: Object.entries({
-          ...repairGroup.compilerRoute?.internalArgs,
-          ...repairGroup.internalArgs,
-        }).filter(([name]) => name.includes('PredOut')),
+        predOutArgs: Object.entries(repairGroup.internalArgs ?? {}).filter(([name]) => name.includes('PredOut')),
         locks: [2, 3, 4, 8, 9].map((rel) => {
           const output = builder.outputs[master + rel];
           const lock = output?.to instanceof Uint8Array ? binToHex(output.to).slice(0, 28) : '';
@@ -94,10 +95,7 @@ export function reassertTokenInsertNewLocks(
     // A sorted INSERT can lose its trailing-count/planned-insert projection after physical block relocation,
     // leaving NEW on a predecessor output. Restore only coordinates published by the repair descriptor.
     let repaired = false;
-    const predOutArgs = Object.entries({
-      ...repairGroup.compilerRoute?.internalArgs,
-      ...repairGroup.internalArgs,
-    });
+    const predOutArgs = Object.entries(repairGroup.internalArgs ?? {});
     const hasTrailingPred = (repairGroup.batchPredecessorOutputs?.length ?? 0) > 0
       || predOutArgs.some(([, value]) => typeof value === 'bigint' && value >= 0n);
     // A pure UPDATE batch has no trailing predecessor. Skip INSERT surgery for that flow.
@@ -155,8 +153,6 @@ export function reassertTokenInsertNewLocks(
               masterIndex: master,
               batchPredecessorOutputs: repairGroup.batchPredecessorOutputs,
               internalArgs: repairGroup.internalArgs as Record<string, unknown> | undefined,
-              compilerInternalArgs: repairGroup.compilerRoute?.internalArgs as
-                Record<string, unknown> | undefined,
               refreshInternalArgs: repairGroup.refreshInternalArgs as
                 | ((updates: Record<string, unknown>, options?: { shiftPredOut?: boolean }) => void)
                 | undefined,
@@ -171,9 +167,7 @@ export function reassertTokenInsertNewLocks(
         // For 1:1 entry slots overwritten by another collection, restore the authenticated input lock and a
         // value-bearing post-debit UPDATE. Slot||next-only batch seeds are not post-state values.
         const balancesLock = builder.outputs[master + repair.predecessorOffset]?.to;
-        const layoutSlots = repairGroup.compilerRoute?.abiFunction?.blockLayout?.slots
-          ?? repairGroup.blockLayout?.slots
-          ?? [];
+        const layoutSlots = repairGroup.blockLayout?.slots ?? [];
         // INSERT NEW at predecessorOffset credits the compiler-bound mutation value when available.
         if (amount === undefined && balancesLock instanceof Uint8Array) {
           const newCommit = String(
@@ -207,6 +201,8 @@ export function reassertTokenInsertNewLocks(
           const inputIsBalances = !!inLock
             && inLock.length === balancesLock.length
             && inLock.every((byte, index) => byte === balancesLock[index]);
+          // An output still continuing its own entry input under another lock is that collection's update.
+          if (!inputIsBalances && sameLock(inLock, outLock)) continue;
           // Candidate INSERT/UPDATE offsets may be funder placeholders after proof dedup; still restore
           // the balances lock when the output was overwritten by a foreign collection.
           if (!inputIsBalances && offset === repair.predecessorOffset) continue;
@@ -316,6 +312,7 @@ export function reassertTokenInsertNewLocks(
             const inputIsBalances = !!inLock
               && inLock.length === balancesLock.length
               && inLock.every((byte, index) => byte === balancesLock[index]);
+            if (!inputIsBalances && sameLock(inLock, outLock)) continue;
             if (!inputIsBalances && !repair.candidateInsertedOffsets.includes(offset)) continue;
             const commitment = resolveRestoredBalancesEntryCommitment({
               planned: repairGroup.batchEntryCommitments?.get(offset)

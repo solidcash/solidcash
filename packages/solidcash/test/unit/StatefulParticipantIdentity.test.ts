@@ -31,10 +31,9 @@ const layout: StateLayout = {
   ],
 };
 
-function group(name: string, abi: AbiFunction, kernel = false): ExternalCallUtxoGroup {
+function group(name: string, abi: AbiFunction): ExternalCallUtxoGroup {
   const artifact = {
     abi: [abi], stateLayout: layout,
-    ...(kernel && { messageBus: { convention: 'kernel-row-loop' } }),
   } as unknown as Artifact;
   return {
     categoryId: '00'.repeat(32),
@@ -45,13 +44,6 @@ function group(name: string, abi: AbiFunction, kernel = false): ExternalCallUtxo
     functionName: name,
     functionArgs: [],
     externalContract: { inner: { artifact } },
-    compilerRoute: {
-      abiFunction: abi,
-      selector: new Uint8Array(4),
-      blob: new Uint8Array(),
-      args: [],
-      logicalSelectors: [],
-    },
   };
 }
 
@@ -98,7 +90,7 @@ describe('compiler-owned participant identity', () => {
     let proxyRefreshes = 0;
     proxy.refreshInternalArgs = () => { proxyRefreshes += 1; };
 
-    const implementation = group('appendNotice', {
+    const implementationAbi = {
       name: 'appendNotice', selector: 'a826ee9c',
       inputs: [
         { name: 'value', type: 'bytes32' },
@@ -106,7 +98,9 @@ describe('compiler-owned participant identity', () => {
         { name: '__internal__proxyMasterIndex', type: 'int' },
       ],
       outputs: [], writesState: true,
-    } as AbiFunction);
+    } as AbiFunction;
+    const implementation = group('appendNotice', implementationAbi);
+    implementation.masterUtxo = { unlocker: { abiFunction: implementationAbi } } as never;
     let implementationBase: bigint | undefined;
     implementation.refreshInternalArgs = (updates) => {
       implementationBase = updates.__internal__valueChunkOutputBase;
@@ -183,9 +177,6 @@ describe('compiler-owned participant identity', () => {
     expect(chunkableWriterGroupIndex([
       planned('appendNotice', 'notices'), planned('recordHistory', 'history'),
     ])).toBe(-1);
-    expect(chunkableWriterGroupIndex(
-      [planned('publishJobEvent', 'jobEvents')], 'kernel-row-loop',
-    )).toBe(-1);
   });
 
   it('retains the name fallback only when old artifacts publish no entry effects', () => {
@@ -193,41 +184,5 @@ describe('compiler-owned participant identity', () => {
       name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,
     } as AbiFunction);
     expect(computedStateWriterGroupIndex([legacy], [0])).toBe(0);
-  });
-
-  it('does not recover application names from descriptor-free kernel artifacts', () => {
-    const namedComputed = group('transferFrom', {
-      name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,
-    } as AbiFunction, true);
-    const namedChunkable = group('publishJobEvent', {
-      name: 'publishJobEvent', selector: '00000000', inputs: [], outputs: [], writesState: true,
-    } as AbiFunction, true);
-    const renamedChunkable = group('appendNotice', {
-      name: 'appendNotice', selector: '00000000', inputs: [], outputs: [], writesState: true,
-    } as AbiFunction, true);
-
-    expect(computedStateWriterGroupIndex([namedComputed], [0])).toBeUndefined();
-    expect(chunkableWriterGroupIndex([namedChunkable])).toBe(-1);
-    expect(chunkableWriterGroupIndex([renamedChunkable])).toBe(-1);
-  });
-
-  it('keeps descriptor-free legacy children name-independent under a kernel owner', () => {
-    const namedComputed = group('transferFrom', {
-      name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,
-    } as AbiFunction);
-    const renamedComputed = group('applyLedgerDelta', {
-      name: 'applyLedgerDelta', selector: '00000000', inputs: [], outputs: [], writesState: true,
-    } as AbiFunction);
-    const namedChunkable = group('publishJobEvent', {
-      name: 'publishJobEvent', selector: '00000000', inputs: [], outputs: [], writesState: true,
-    } as AbiFunction);
-    const renamedChunkable = group('appendNotice', {
-      name: 'appendNotice', selector: '00000000', inputs: [], outputs: [], writesState: true,
-    } as AbiFunction);
-
-    expect(computedStateWriterGroupIndex([namedComputed], [0], 'kernel-row-loop')).toBeUndefined();
-    expect(computedStateWriterGroupIndex([renamedComputed], [0], 'kernel-row-loop')).toBeUndefined();
-    expect(chunkableWriterGroupIndex([namedChunkable], 'kernel-row-loop')).toBe(-1);
-    expect(chunkableWriterGroupIndex([renamedChunkable], 'kernel-row-loop')).toBe(-1);
   });
 });

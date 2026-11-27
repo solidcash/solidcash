@@ -60,7 +60,7 @@ export type BuildEarlyFrontContext = {
   buildTiming: (stage: string, builder?: TransactionBuilder) => void;
   returnOutputRefs: ReturnType<typeof createBuildSessionPrelude>['returnOutputRefs'];
   addReturnOutput: ReturnType<typeof createBuildSessionPrelude>['addReturnOutput'];
-  debugAtomicOutputStage: (stage: string) => void;
+  debugStatefulOutputStage: (stage: string) => void;
   debugOwnMutableOutputs: (stage: string) => void;
   deferredDelegateReturnEvents: DeferredDelegateReturnEvent[];
   deferredCalleeDynamicChunks: Output[];
@@ -84,7 +84,7 @@ export function runBuildEarlyFront(host: RunBuildEarlyFrontHost): BuildEarlyFron
     builderOptions: opts,
   } = createBuildSessionPrelude(host.createBuildSessionPreludeHost());
 
-  // Compiler-route delegate inputs can live in a leading implementation band while their recreations follow
+  // Route delegate inputs can live in a leading implementation band while their recreations follow
   // all external participant blocks and derived INSERT outputs. Patch the shared unlockers before inputs are
   // registered, using the exact output ordering this build method emits.
   const relocatedDelegateOutputBases = patchRelocatedDelegateOutputBases(
@@ -92,7 +92,7 @@ export function runBuildEarlyFront(host: RunBuildEarlyFrontHost): BuildEarlyFron
   );
   buildTiming('delegate-output-bases');
   const builder = new CovenantTransactionBuilder(opts as TransactionBuilderOptions);
-  const { debugAtomicOutputStage, debugOwnMutableOutputs } = createBuildDebugStages(
+  const { debugStatefulOutputStage, debugOwnMutableOutputs } = createBuildDebugStages(
     host.createBuildDebugStagesHost(),
     builder,
     buildTiming,
@@ -152,7 +152,7 @@ export function runBuildEarlyFront(host: RunBuildEarlyFrontHost): BuildEarlyFron
     buildTiming,
     returnOutputRefs,
     addReturnOutput,
-    debugAtomicOutputStage,
+    debugStatefulOutputStage,
     debugOwnMutableOutputs,
     deferredDelegateReturnEvents,
     deferredCalleeDynamicChunks,

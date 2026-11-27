@@ -39,7 +39,7 @@ describe('vmap numeric key hashes as its canonical VM number', () => {
   };
 
   it('reads back a nested entry written under a JS-number jobId of 0', async () => {
-    const art = compileString(SRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
     const { contract } = await StatefulContract.deploy(art, [], {

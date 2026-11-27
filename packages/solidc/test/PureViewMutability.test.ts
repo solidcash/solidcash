@@ -7,7 +7,7 @@ import { compileString } from '../src/index.js';
 // require a payable context. The shipped compiler entry (`src/index.js`) drives every case; no dist import.
 
 const compile = (src: string): ReturnType<typeof compileString> =>
-  compileString(src, { messageBus: false, enforceFinalRequire: false });
+  compileString(src, { enforceFinalRequire: false });
 
 const STATE_WRITE = /'pure'\/'view' functions cannot modify contract state/;
 const ENV_READ = /'pure' functions cannot read 'msg.sender'/;

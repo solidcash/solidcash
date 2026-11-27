@@ -29,8 +29,8 @@ it, so CashScript examples do not apply.
 7. Respect real limits: 10,000 bytes of unlocking bytecode per input, 128-byte NFT commitments, and an operation
    cost budget per input. The mock network provider can run relaxed limits, so a green mock test does not prove
    a transaction is valid on mainnet. See "Limits and Costs".
-8. Experimental profiles are outside the stable promise: composed external state mutation, custom delegate
-   forwarding beyond the built-in proxy, and message-bus kernel composition. Say so when a design depends on one.
+8. Experimental profiles are outside the stable promise: composed external state mutation and custom delegate
+   forwarding beyond the built-in proxy. Say so when a design depends on one.
 9. 0.52.0 is a beta and security hardening is ongoing. Do not advise putting significant value behind a contract
    without an independent review.
 
@@ -167,7 +167,6 @@ solidc <file> [options]    -- e.g. solidc Counter.scash -o Counter.artifact.ts -
 -c, --opcount | -s, --size -- print the opcode count or byte size (size excludes constructor args)
 --split <off|size|func>    -- size: root + facet bundle for an over-limit contract; func: one framed master per entry
 --suppress-warnings | --no-source-map  -- hide warnings | skip source maps (faster, weaker failure attribution)
---no-message-bus           -- forbid inferred message-bus composition (fails if the contract needs it)
 -S | -L                    -- skip function parameter type enforcement | skip the injected tx.time locktime guard
 --allow-unverified-paths   -- unsafe: a path with no verification and no state covenant warns instead of failing
 --allow-unsafe-operations  -- unsafe: admit caller-controlled delegatecall/selfdestruct authority
@@ -446,7 +445,7 @@ try IRisky(target).compute() returns (int r) { this.last = r; } catch { this.las
   minted it at deployment, so such a copy is never a new event; a provider that cannot serve the transactions this
   needs makes the read throw `EventProvenanceError`.
 - An `emit` in a counter loop creates one output per run. So does an `emit` in a `for` with a literal bound of at most
-  64 runs: a direct or message-bus build unrolls that loop, and a framed body binds each `emit` where it makes it.
+  64 runs: a direct build unrolls that loop, and a framed body binds each `emit` where it makes it.
   Some loops the compiler can neither count from the call nor unroll, for example one that also changes its counter in
   the body. In those, each `emit` has a single output, and a call that runs such an `emit` twice fails.
 - Errors are ABI metadata only: a failed spend carries no revert data; the reason shows in preflight and debug.
@@ -579,7 +578,7 @@ require(this.outState.balance >= floor);     // satoshi-container outputs of thi
   `TransactionBuilder`, a lock passed as `bytes` included (`StatefulMasterPaymentError`, which names the satoshi
   container when the chain shows it); pay the container or call one of its payable functions.
 - A `this.transfer` or token transfer in a counter loop makes one output per run. So does any payment, `send`
-  included, in a `for` with a literal bound of at most 64 runs, which a direct or message-bus build unrolls. In another
+  included, in a `for` with a literal bound of at most 64 runs, which a direct build unrolls. In another
   loop, each payment has a single output, and a call that runs it twice fails. Examples are a loop that also changes its
   counter in the body, and an `addr.send` in a counter loop.
 - `this.payMinerFee(FEE);` (a positive compile-time constant, once, at the top level of a public entry) lets the entry
@@ -587,8 +586,7 @@ require(this.outState.balance >= floor);     // satoshi-container outputs of thi
   the caller needs no coin. Refused in framed composition.
 - `pragma satoshicontainer single;` and `pragma tokencontainer single;` keep one coin per container for every contract
   in the file. The deployment opens it (`initialBalance`, `tokenContainers`); each call spends it, recreates it in
-  place and cannot drain it. Refused in framed contracts, through `upgrade` and in delegatecalling functions; such a
-  contract gets no message-bus route.
+  place and cannot drain it. Refused in framed contracts, through `upgrade` and in delegatecalling functions.
 
 ### Global Variables
 
@@ -665,8 +663,7 @@ bytes32 blobhash(int i)        -- always zero
   coins, but cannot over-report the height or time or rewind them.
 - `blockhash(n)` makes the contract stateful. It returns the hash a slot holds for n, zero when the slot of n's
   residue holds a block at least 256 newer, and fails for a block the pool has not written. Framed contracts do not
-  serve it. A message-bus build refuses a `block.*` or `blockhash` read reached through a function pointer
-  (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`). See https://solidcash.org/docs/guides/block-oracles
+  serve it. See https://solidcash.org/docs/guides/block-oracles
 
 ### Time Locks
 
@@ -850,15 +847,14 @@ bytes code = type(Child).creationCode;         // redeem script (runtimeCode ali
 ```
 
 - `deploy`, `upgrade`, `split` and `merge` entries need an unconditional `require(checkSig(s, key))` with a key the
-  caller cannot choose (constructor argument, state or constant); a direct compile rejects one without it
-  (`UnauthorizedLifecycleError`).
+  caller cannot choose (constructor argument, state or constant); a compile in either convention rejects one without
+  it (`UnauthorizedLifecycleError`).
 - `new` of a stateful child works only in a stateful contract's function. In a direct creator it is a deployer
   `new`. It spends a one-shot coin of the child's generated `Deploy<C>` program, which runs the child's constructor
   on chain. The SDK builds each child's prep transaction first, and the child's category is that prep's txid.
   - The constructor may emit, pay, take `value` (`msg.value`) and call contracts. A callee answers through its call
-    record, so it must be a direct build compiled with `genesisCalls` (the default). Under automatic selection, a
-    callee that makes external calls of its own compiles on the bus; compile it with `messageBus: false`. A callee may
-    pass `msg.sender` (the child) on to a contract it calls. Passing `tx.origin` on is refused.
+    record, so it must be a direct build compiled with `genesisCalls` (the default). A callee may pass `msg.sender`
+    (the child) on to a contract it calls. Passing `tx.origin` on is refused.
   - In a child's constructor, `msg.sender` is the creator, or the deploying wallet at top level. Block fields come
     from the transaction's locktime, which is a lower bound.
   - Contract parameters go in `args`. When the constructor takes none, `new C(a1, ...)` still means
@@ -867,12 +863,10 @@ bytes code = type(Child).creationCode;         // redeem script (runtimeCode ali
     new child in the same function is refused too (call it in a later transaction). So are different child contracts
     created in the branches of one function.
   - Branches and loops that create the same child work.
-- A message-bus or framed creator keeps the older genesis:
+- A framed creator keeps the older genesis:
   - the creator folds the child's constructor into its own check (`ChildGenesisFoldError` names what cannot fold);
   - a straight-line call right after `new` (`c.initialize(x)`) folds into the genesis;
   - `salt` gives a deterministic address, there and on the `new` of a stateless child.
-
-  Under automatic selection, a creator that calls its new child compiles on the bus.
 - SDK: `await factory.call.create(sig)` deploys with the connected signer; `.deploy({ fundingUtxo, funder,
   changeAddress })` funds it explicitly; `.send()` takes the non-deploying path. `StatefulContract.deployFrom({...})`
   is the static form. A top-level deployment of an artifact compiled with `deployer: true` also goes through its
@@ -954,12 +948,6 @@ contract Forwarder(pubkey admin) {
   distance publishes it as a `bigint __proxyBlockSize` constructor input; the forward then also requires
   `delegateIndex == this.activeInputIndex + __proxyBlockSize`. The built-in proxy does this. Without the input the
   forwarder keeps the identity-and-payload pin only, so place the delegate adjacent yourself.
-- A message-bus route call through a forwarder lays the delegate after the implementation's route block instead
-  (`messageBus.route.blockLayout.blockSize` in its artifact). Publish that distance beside the first as a
-  `bigint __proxyRouteBlockSize` constructor input: the forward then requires the route distance when the forwarded
-  selector is the route selector `0x53434231` and `__proxyBlockSize` for any other selector, and it requires the
-  delegate's first push to be that exact four-byte selector. The built-in proxy publishes both and `deployProxy`
-  fills them in. A forwarder with only `__proxyBlockSize` uses that one distance for every call.
 - Deployed libraries (`L.f(...)` on a library function touching library state) use the same delegate co-spend
   (experimental). Not supported in 0.52.0: fallback-only transparent proxies, value or token movement in
   delegate mode.
@@ -1033,8 +1021,8 @@ target.staticcall(payload);                           // low-level read-only; de
   `value to a co-spent callee`), as it refuses any output paying a master lock.
 - A typed value call is refused where nothing could bind its value: in a loop, through a function pointer or a
   runtime selector, or to `msg.sender` (`CALL_VALUE_UNBOUND`, at compile time). The SDK refuses one to a function
-  that takes no value or is compiled with the message bus, one below the dust threshold of the callee's container,
-  and one whose callee sends the value on (`CallValueUnpayableError`).
+  that takes no value, one below the dust threshold of the callee's container, and one whose callee sends the value
+  on (`CallValueUnpayableError`).
 - A low-level `call` a loop may make more than once (run-time turns, or an array of targets) binds each turn to a
   callee run of its own: list one callee per turn with `.withCall()`, in turn order. A contract with state also reads
   the record each turn's callee run settles. A `{value:}` on it pays from one turn per transaction: the SDK refuses,
@@ -1043,34 +1031,14 @@ target.staticcall(payload);                           // low-level read-only; de
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when
   no contract calls it. It is derived from the transaction's inputs, not a call frame: authorize with `checkSig`.
 
-### Composition and the Message Bus
+### Composition
 
-- Direct composition is the default: each contract in the call graph is one co-spent input. When one transaction
-  must invoke the same contract twice, or calls form a cycle (`A -> B -> A`), the compiler infers a message-bus
-  route (experimental): every participant verifies one shared call manifest and settles its state once, and a bus
-  row's `msg.sender` is the caller recorded in that manifest.
-- `messageBus: false` compiles direct-only and fails with `MESSAGE_BUS_REQUIRED` when the source needs a bus. The
-  default convention is the kernel row loop (`artifact.messageBus.convention === 'kernel-row-loop'`);
-  `messageBusKernel: false` (legacy unroll) is for compatibility tests only.
-- Under `messageBus: false`, repeated or looped calls to one fixed target run as frames of the callee's multi-call
-  entry (`artifact.callBatch`), one spend of its master with one call record per frame. Compile the callee with
+- Direct composition is the convention: each contract in the call graph is one co-spent input of one atomic
+  transaction, and a callee's `msg.sender` is the calling contract's address.
+- Repeated or looped calls to one fixed target run as frames of the callee's multi-call entry
+  (`artifact.callBatch`), one spend of its master with one call record per frame. Compile the callee with
   `callBatch: true`, or in one `compileStringMulti` / `compileFileMulti` with its caller. A frame writes at most fixed
   state fields: value, events, token effects, mapping writes and nested calls stay refused.
-- A message-bus build runs an entry that calls one fixed target in a loop only through its route: the ABI entry is
-  `routeOnly` and a direct spend of its own selector runs only with an empty loop (a run that enters the loop is
-  rejected). When the route does not serve that entry, the default build compiles the contract direct, and
-  `messageBus: true` refuses it with `ROUTE_ONLY_ENTRY_UNSERVED`.
-- Compose only when `artifact.messageBus.available` is true and each selected `artifact.messageBus.handlers` entry is
-  `eligible`, and check `artifact.messageBus.deployability` (`assertDeployabilityCertificate` from
-  `@solidcash/utils`) before broadcasting: a compiled route can exceed the 10,000-byte limit. Handlers using `split`,
-  `merge`, `selfdestruct`, `unsafe(0|1)` or a foreign `delegatecall` get a `KERNEL_*` refusal and stay direct-only.
-  Docs: https://solidcash.org/docs/guides/message-bus
-
-```ts
-await messageBus.compose({ calls: [caller.call.prepare(1n), callee.call.settle(1n)],   // from '@solidcash/solidcash/message-bus'
-  funder: feeUtxo, changeAddress }).send();          // calls in depth-first order; the fee input's lock is tx.origin
-await counter.batch([{ function: 'add', args: [1n] }, { function: 'add', args: [2n] }]).send();   // one contract
-```
 
 ### Concurrency: Split, Merge and Threads
 
@@ -1093,8 +1061,8 @@ contract Sharded(pubkey admin) {
 - The modifier argument names an integer parameter. `split` keeps the running master and mints `n` more; `merge`
   burns `n` co-spent masters into the running one. Both follow the `unsafe(1)` body restrictions, need a trusted-key
   `checkSig`, and combine with no other lifecycle modifier, `unsafe`, `pure`, `view`, `internal` or `private`.
-- Threads do not partition mapping entries, chunks, satoshi or token containers, external contract inputs, a bus
-  verifier or shared funding coins: calls sharing any of these still conflict.
+- Threads do not partition mapping entries, chunks, satoshi or token containers, external contract inputs or shared
+  funding coins: calls sharing any of these still conflict.
 
 ```ts
 const threads = await new ThreadManager(sc).discover();     // 'solidcash/stateful'; deploy with { threadCount: 2 }
@@ -1111,7 +1079,7 @@ import { Contract, TransactionBuilder, SignatureTemplate, Signer, Network, rando
 import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';         // not exported from the root
 import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum'; // not exported from the root
 import { StatefulContract, ContractFactory, upgrades } from '@solidcash/solidcash/stateful';
-// Also: solidcash/{hdsigner,contract-factory,message-bus,oracle,bcmr,walletconnect}
+// Also: solidcash/{hdsigner,contract-factory,oracle,bcmr,walletconnect}
 ```
 
 ### Non-stateful contracts
@@ -1173,8 +1141,7 @@ await StatefulContract.split({ ... });  await StatefulContract.merge({ ... });
   becomes the CashToken category). `destroy` returns `{ txs, totalReclaimed, leftBehind }`.
 - Child deploys: `await factory.call.createChild(args).deploy(options)` after `factory.registerChild(childArtifact)`,
   or via `ContractBundle.from(compileFileMulti(file), { provider, signer })`. `upgrade` needs the `upgrade` modifier.
-- Experimental: `messageBus.compose({ calls, funder, changeAddress }).send()` (`@solidcash/solidcash/message-bus`),
-  `sc.batch([...])`, and cross-contract state mutation wired through `externals`.
+- Experimental: cross-contract state mutation wired through `externals`.
 
 ### Providers, signers, debugging
 

@@ -79,8 +79,7 @@ function readersReached(
 
 /**
  * A reader takes the oracle index as a hidden parameter, so every caller has to carry it to forward it.
- * Mark the named-call closure of each reader, which also reaches a generated message-bus route through its
- * handler calls. Runs after the route exists and before SymbolTableTraversal injects the parameter.
+ * Mark the named-call closure of each reader. Runs before SymbolTableTraversal injects the parameter.
  */
 export function markBlockOracleCallers(
   contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],

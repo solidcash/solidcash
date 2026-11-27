@@ -172,9 +172,8 @@ port keeps the identity it already had. What the option does **not** change:
 - the narrowing casts. `uint160(a)` and `bytes20(a)` truncate to 20 bytes and `address(x)` stays a no-op in
   either form, because the cast is the narrowing; a cast that stopped truncating would hand a 35-byte lock to a
   20-byte type;
-- a fixed-width EVM ABI **word**. `abi.encode(<address>)`, a word lane (the message-bus kernel's graph/argument
-  row) and a word-encoded (`evm-abi-v1`) result carry the 20-byte identity in either form, because a 32-byte word
-  cannot hold a variable-length lock.
+- a fixed-width EVM ABI **word**. `abi.encode(<address>)` and a word-encoded (`evm-abi-v1`) result carry the
+  20-byte identity in either form, because a 32-byte word cannot hold a variable-length lock.
 
 An `address` *argument* on the [framed](/docs/guides/framed-composition) wire is not a word: it rides as its whole
 locking bytecode, and the option decides the packing a body does with it. An explicitly chosen form is published on
@@ -238,7 +237,7 @@ BCH-native adapter around the imported core.
 2. Fix parser/type errors without changing protocol behavior; keep source locations from imported diagnostics.
 3. Review every compatibility warning and every use of address, block context, calls, assembly and storage.
 4. Decide whether cross-chain bytes require `evmCompat`; do not enable it merely because the source is `.sol`.
-5. Inspect each artifact's ABI, state layout, external-call metadata, sidecars and message-bus profile.
+5. Inspect each artifact's ABI, state layout, external-call metadata, sidecars and composition profile.
 6. Test state transitions and adversarial substitutions in the BCH VM, then deploy through `ContractBundle` or
    the appropriate split/proxy factory.
 

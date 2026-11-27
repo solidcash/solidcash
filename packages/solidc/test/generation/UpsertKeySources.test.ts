@@ -20,8 +20,6 @@ describe('generic upsert fixed-key recovery', () => {
     `, {
       forceStateful: true,
       evmCompat: true,
-      messageBus: true,
-      messageBusGraphContext: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       suppressWarnings: true,
@@ -50,8 +48,6 @@ describe('generic upsert fixed-key recovery', () => {
     `, {
       forceStateful: true,
       evmCompat: true,
-      messageBus: true,
-      messageBusGraphContext: true,
       optimizeForCompilationSpeed: true,
       maximumInputBytes: 1_000_000,
       suppressWarnings: true,
@@ -64,7 +60,7 @@ describe('generic upsert fixed-key recovery', () => {
     }));
   });
 
-  it('does not inject kernel permutation parameters into a legacy internal helper', () => {
+  it('does not inject journal permutation parameters into a legacy internal helper', () => {
     const artifact = compileString(`contract Registry() {
       mapping(address => bool) flags;
       function update(address[] members) internal {

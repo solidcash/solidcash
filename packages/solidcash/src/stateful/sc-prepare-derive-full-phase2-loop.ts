@@ -10,11 +10,10 @@ import type NetworkProvider from '../network/NetworkProvider.js';
 import type { StateValueType } from '../types/state-inference.js';
 import { boundedDerivationIterations } from './early-value-chunk-helpers.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
-import { buildParticipantProbeProgram } from './participant-probe-program.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 
 export interface DeriveFullPhase2LoopPreludeHost {
-  readonly inner: { provider: NetworkProvider; artifact?: Pick<Artifact, 'messageBus'> };
+  readonly inner: { provider: NetworkProvider; artifact?: Artifact };
   readonly maxDerivationIterations: number;
   lastDerivationIterations: number;
 }
@@ -92,18 +91,6 @@ export function prepareDeriveFullPhase2Loop(
     persistWidth,
     hasLoopOrChunkVars,
   });
-  const messageBus = host.inner.artifact?.messageBus;
-  if (messageBus?.convention === 'kernel-row-loop') {
-    const publishedCeiling = messageBus.resourceBudgets?.maximumSemanticDerivationPasses;
-    if (publishedCeiling === undefined || !Number.isSafeInteger(publishedCeiling) || publishedCeiling < 1) {
-      throw new Error('kernel derivation requires a positive resourceBudgets.maximumSemanticDerivationPasses');
-    }
-    // Each independently verified output can require another faithful probe. The legacy 20-pass default
-    // (or persisted-chunk shortcut) cannot bound a kernel route with a larger published effect frame.
-    // Use the same compiler ceiling as graph settlement; existing fixed-point/cycle checks still stop
-    // no-progress probes early, and final VM validation remains mandatory.
-    maxIterationsDefault = publishedCeiling;
-  }
   const debugTargetsThisDerivation = debugTargetDerivation;
   const maxIterations = configuredDebugIterations > 0
     ? Math.min(maxIterationsDefault, configuredDebugIterations) : maxIterationsDefault;
@@ -151,9 +138,7 @@ export function prepareDeriveFullPhase2Loop(
         ? stb.insertBeforeLateValueSuffix(trialBuilder, { to: dummyLbc, amount: 1000n }, {
           rebindReturnWitnessesOnly: trialBuilder.outputs.length > 30,
         }) : undefined;
-      const { transaction: trialTransaction, sourceOutputs: trialSources } = buildParticipantProbeProgram(
-        trialBuilder, stb.getComposedBlockBase(),
-      );
+      const { transaction: trialTransaction, sourceOutputs: trialSources } = trialBuilder.buildLibauthProgram();
       if (trialParamSnap) stb.restoreBuilderReturnOutputParams(trialBuilder, trialParamSnap, trialInsertion);
       const trialTrace = evaluateProbeTrace(host.inner.provider, {
         inputIndex: delegatecallInputIndex ?? 0,

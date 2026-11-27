@@ -12,7 +12,6 @@ import {
   hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
   isPersistedChunkableValueWriteReady,
-  permitsLegacyNamedValueChunkFallbackForGroups,
   type ChunkableWritePlanningHost,
 } from './stb-chunkable-write-planning.js';
 import { externalCallEventDestinations } from './value-chunk-base-writer-select.js';
@@ -49,8 +48,7 @@ export function scaledPreserveRanges(
     if (group.callMode !== 'delegatecall') continue;
     const impl = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (impl < 0) continue;
-    const dataNfts = (group.compilerRoute?.abiFunction?.blockLayout?.slots
-      ?? group.blockLayout?.slots ?? []).filter((slot) => slot.kind === 'dataNft').length;
+    const dataNfts = (group.blockLayout?.slots ?? []).filter((slot) => slot.kind === 'dataNft').length;
     const scale = Math.max(2, 1 + (dataNfts || 4));
     const endExclusive = scaledInputPreserveExclusiveEnd(impl, scale);
     if (endExclusive < 0) continue;
@@ -72,7 +70,6 @@ export function chunkableValueWriteInputIndex(host: ScaledPreserveEmitHost): num
   const structural = chunkableValueWriteExecution(host);
   if (structural) return structural.inputIndex;
   if (hasChunkableValueWriteMetadata(host)) return -1;
-  if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return -1;
   // Dest is INPUTINDEX+4 of the earliest executing publishJobEvent. Occupied
   // dests are displaced; do not relocate dest because persist sits at +4. Compatibility only: old artifacts
   // without chunkable-write metadata still identify this executor by their historical ABI function name.
@@ -83,7 +80,7 @@ export function chunkableValueWriteInputIndex(host: ScaledPreserveEmitHost): num
     if (legacyIsPublishJobEventName(name)) candidates.push(index);
   }
   for (const [llcIndex, group] of host.lowLevelCallUtxoGroups.entries()) {
-    const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
+    const names = [group.logicalFunctionName, group.functionName];
     if (!names.some((name) => legacyIsPublishJobEventName(name))) {
       continue;
     }
@@ -113,9 +110,9 @@ export function scaledEmitOutputIndex(
 
 export function emitDestinationIndices(host: ScaledPreserveEmitHost): number[] {
   // `blockLayout` is the builder's effective physical layout. It can be a
-  // compiler-selected message-bus route rather than the public entry ABI,
-  // so its root event frame is authoritative even when the executing
-  // delegate implementation declares no events of its own.
+  // delegate execution layout rather than the public entry ABI's, so its
+  // root event frame is authoritative even when the executing delegate
+  // implementation declares no events of its own.
   const dests = (host.blockLayout?.slots ?? [])
     .filter((slot) => slot.kind === 'event')
     .map((slot) => slot.offset);
@@ -129,8 +126,8 @@ export function emitDestinationIndices(host: ScaledPreserveEmitHost): number[] {
     if (llc.callMode !== 'delegatecall') continue;
     const impl = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (impl < 0) continue;
-    const fn = llc.compilerRoute?.abiFunction
-      ?? llc.externalContract?.inner?.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName);
+    const fn = llc.externalContract?.inner?.artifact.abi
+      .find((candidate: AbiFunction) => candidate.name === llc.functionName);
     for (const slot of fn?.blockLayout?.slots ?? []) {
       if (slot.kind === 'event') dests.push(impl + slot.offset);
     }
@@ -146,7 +143,7 @@ export function emitDestinationIndices(host: ScaledPreserveEmitHost): number[] {
 
 export function hasMintingBandTokenWriter(host: ScaledPreserveEmitHost): boolean {
   return host.externalCallUtxoGroups.some((group) =>
-    isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention))
+    isCompilerDescribedMintingBandWriter(group, true))
     || host.mintingOutputSwap !== undefined;
 }
 
@@ -177,7 +174,7 @@ export function reassertScaledPreserveOneToOnes(
   const persistBand = host.getChunkableValueWriteBand();
   const returnWitnesses = returnWitnessOutputIndices(host.externalCallUtxoGroups);
   for (const group of host.externalCallUtxoGroups) {
-    if (!isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)) continue;
+    if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
     const master = host.findMintingInputIndex(group.categoryId);
     if (master >= 0) {
       returnWitnesses.add(tokenWriterReturnIndex(master, group.blockLayout, persistBand));
@@ -225,9 +222,7 @@ export function scidReservedIndices(
     if (group.callMode !== 'delegatecall') continue;
     const impl = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (impl < 0) continue;
-    const blockSize = group.compilerRoute?.abiFunction?.blockLayout?.blockSize
-      ?? group.blockLayout?.blockSize
-      ?? 5;
+    const blockSize = group.blockLayout?.blockSize ?? 5;
     for (let offset = 0; offset < blockSize; offset++) reserved.add(impl + offset);
   }
   const occupancyEnd = writerBlockOccupancyEnd(
@@ -244,7 +239,7 @@ export function scidReservedIndices(
     for (let index = range.start; index < range.endExclusive; index++) reserved.add(index);
   }
   for (const group of host.externalCallUtxoGroups) {
-    if (!isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)) continue;
+    if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
     const master = host.findMintingInputIndex(group.categoryId);
     if (master >= 0) reserved.add(tokenWriterReturnIndex(master, group.blockLayout, band));
   }

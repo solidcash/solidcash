@@ -8,7 +8,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { completeInternalFunctionArguments, materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { completeInternalFunctionArguments, materializeInternalFunctionArgument } from './internal-function-args.js';
 
 export type CreateBuilderOutStateCallInfo = {
   externalContract: {

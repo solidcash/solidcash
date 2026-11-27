@@ -4,46 +4,25 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, type AbiFunction } from '@solidcash/utils';
-import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type { UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { callNamesNoReader } from './call-record.js';
 import { isPoolInfoInput } from '../oracle/pool/reader.js';
-import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
   CALL_ARGUMENT_LIST, CALL_ARGUMENT_WITNESS, leftCallArgumentList, leftCallArgumentWitness,
 } from './call-record.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import { directCallBatchUnlocker } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
+import { defaultInternalFunctionArg } from './internal-function-args.js';
 import { externalReturnParamSlot } from './physical-external-call.js';
-import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
+import { argumentsForPhysicalAbiFrame } from './call-expression-key.js';
+import type { selectorParamSlot } from './physical-external-call.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import { groupLayoutTrailingBase } from './writer-event-delegate-layout.js';
-
-export function selectorParamSlot(
-  paramName: string,
-  externalCalls: ReadonlyArray<{
-    needsSelectorVerification?: boolean;
-    selectorArrayVar?: string;
-  }> | undefined,
-): number {
-  const match = paramName.match(/^__internal__externalCallSelector(\d*)$/);
-  if (!match) return 0;
-  if (match[1] !== '') return Number(match[1]);
-  const explicit = (externalCalls ?? [])
-    .map((call, index) => ({ call, index }))
-    .filter(({ call }) => call.needsSelectorVerification === true && !call.selectorArrayVar);
-  if (explicit.length === 1) return explicit[0].index;
-  const implicit = (externalCalls ?? [])
-    .map((call, index) => ({ call, index }))
-    .filter(({ call }) => call.needsSelectorVerification !== false && !call.selectorArrayVar);
-  return implicit.length === 1 ? implicit[0].index : 0;
-}
-
 
 export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;
@@ -70,23 +49,6 @@ export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   selectorParamSlot: typeof selectorParamSlot;
   isComputedBlockhashKey(readKey: string): boolean;
   noteBhLocktime(locktime: number): void;
-  extractGraphBlockhashRead(
-    contract: any,
-    masterUtxo: Utxo,
-    masterUnlocker: Unlocker,
-    dataNftUtxos: UnlockableUtxo[],
-    prior: Array<{ slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output }>,
-    absoluteBase: number,
-    slotOrdinal: number,
-    slotCount: number,
-    masterInputIndex: number,
-  ): Promise<bigint | null>;
-  paramBlockhashN(
-    contract: any,
-    readKey: string,
-    rowArgs: any[],
-    handler: AbiFunction,
-  ): bigint | null;
 }
 
 /**
@@ -169,19 +131,17 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     // Build hidden args by scanning the function's ABI inputs for hidden param names
     type AbiEntry = AbiFunction;
     const bAbiAll = group.externalContract.inner.artifact.abi as readonly AbiEntry[];
-    const bAbiFunc = group.compilerRoute?.abiFunction
-      ?? bAbiAll.find((f) => f.name === group.functionName);
+    const bAbiFunc = bAbiAll.find((f) => f.name === group.functionName);
     const bAbiInputs = bAbiFunc?.inputs ?? [];
-    const selfIdentityBand = !group.compilerRoute && usesOrdinarySelfIdentity(bAbiFunc)
+    const selfIdentityBand = usesOrdinarySelfIdentity(bAbiFunc)
       ? await host.ensureOrdinarySelfIdentityBand(group.externalContract, bAbiFunc!) : undefined;
-    const routeArgs = argumentsForPhysicalAbiFrame({
+    const frameArgs = argumentsForPhysicalAbiFrame({
       abiFunction: bAbiFunc,
       physicalFunctionArgs: group.functionArgs,
       logicalFunctionName: group.logicalFunctionName ?? group.functionName,
       logicalFunctionArgs: group.logicalFunctionArgs,
-      compilerRoute: group.compilerRoute,
     });
-    const userArgCount = routeArgs.length;
+    const userArgCount = frameArgs.length;
     const callerLock = group.callerIdentity?.lockingBytecode.toLowerCase();
     const rootPhysicalLock = binToHex(host.physicalRootLockingBytecode).toLowerCase();
     const needsRootCallerAnchor = meta.parentGroupIndex < 0
@@ -196,12 +156,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       }
     }
 
-    // Compiler routes may interleave hidden inputs with published witnesses (for example
-    // __internal__msgSenderCategory immediately after batchBlob). Treating all visible args as an ABI prefix
-    // shifts every later witness into the preceding hidden slot. Assemble routed calls in exact ABI order;
-    // ordinary function calls retain their existing visible-prefix behavior.
-    let bFinalArgs = group.compilerRoute ? [] : [...routeArgs];
-    let routeArgIndex = 0;
+    let bFinalArgs = [...frameArgs];
     let bReturningSlotIdx = 0;
 
     // Pre-compute child group indices for transitive param resolution
@@ -221,7 +176,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     // slot of the root's block that a plain send compacts or a published record holds open. The builder re-reads them
     // from the assembled transaction, as it does the root's and a low-level call's nested callers': the masters and
     // records of its callees, the first old chunk its write consumes and its first block-hash slot.
-    const rebindsAssembledCoordinates = !group.compilerRoute && group.callBatch === undefined
+    const rebindsAssembledCoordinates = group.callBatch === undefined
       && group.callBatchUnit === undefined && group.delegateCallGroupIndex === undefined;
     const bindToCoin = (paramName: string, coin: Pick<Utxo, 'txid' | 'vout'>): void => {
       group.inputWitnessOutpoints = {
@@ -235,19 +190,11 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         : children.find((index) => groupMetas[index].ecSlot.callsiteId === callsiteId);
     };
 
-    for (let i = group.compilerRoute ? 0 : userArgCount; i < bAbiInputs.length; i++) {
+    for (let i = userArgCount; i < bAbiInputs.length; i++) {
       const paramName = bAbiInputs[i].name;
       const argumentCountBefore = bFinalArgs.length;
 
-      if (group.compilerRoute && !paramName.startsWith('__internal__')) {
-        if (routeArgIndex >= routeArgs.length) {
-          throw new Error(`Compiler route '${group.functionName}' is missing visible ABI argument '${paramName}'`);
-        }
-        bFinalArgs.push(routeArgs[routeArgIndex++]);
-        continue;
-      }
-
-      if (!group.compilerRoute && usesOrdinarySelfIdentity(bAbiFunc)
+      if (usesOrdinarySelfIdentity(bAbiFunc)
         && paramName === '__internal__graphSelfIdentityInput') {
         bFinalArgs.push(-1n);
         if (selfIdentityBand !== undefined) host.pendingAnchorFills.push({
@@ -257,7 +204,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         });
         continue;
       }
-      const resolvedInternalArgs = group.compilerRoute?.internalArgs ?? group.internalArgs;
+      const resolvedInternalArgs = group.internalArgs;
       if (resolvedInternalArgs
         && Object.prototype.hasOwnProperty.call(resolvedInternalArgs, paramName)) {
         const value = resolvedInternalArgs[paramName];
@@ -350,7 +297,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           (slot) => slot.kind === 'blockhashOracle',
         )?.offset;
         if (firstOracleOffset === undefined) {
-          throw new Error('External message-bus batch graph blockhash plan has no physical oracle band');
+          throw new Error('External call blockhash read has no physical oracle band');
         }
         bFinalArgs.push(BigInt(masterInputIndex + firstOracleOffset));
         const firstOracle = group.blockInputs?.[firstOracleOffset];
@@ -381,7 +328,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           ...group.mintingInputWitnessCategories, [paramName]: reader.categoryId,
         };
       } else if (paramName === '__internal__valueChunkOutputBase') {
-        // Composed computed values are relocated after the complete participant layout is materialized.
+        // Computed values are relocated after the complete layout is materialized.
         bFinalArgs.push(-1n);
       } else if (paramName === '__internal__dynamicChunkInputBase') {
         // Old chunks follow this callee's fixed block. With none, the negative sentinel makes the covenant
@@ -477,7 +424,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           }
         }
       }
-      // Preserve ABI order even when this composed call does not exercise a compiler-owned optional path.
+      // Preserve ABI order even when this call does not exercise a compiler-owned optional path.
       // Any path that actually consumes the sentinel still fails closed in its covenant.
       if (bFinalArgs.length === argumentCountBefore && paramName.startsWith('__internal__')) {
         bFinalArgs.push(defaultInternalFunctionArg(bAbiInputs[i]));
@@ -485,75 +432,11 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     }
 
     // Create master unlocker
-    const hasResolvedHiddenArgs = !group.compilerRoute && bFinalArgs.length !== routeArgs.length;
-    let bMasterUnlocker = group.compilerRoute
-      ? group.externalContract.inner.createCompilerRouteUnlocker(
-        group.compilerRoute.abiFunction, group.compilerRoute.selector,
-      )(...bFinalArgs)
-      : hasResolvedHiddenArgs && bAbiFunc
-        ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...bFinalArgs)
-        : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
+    const hasResolvedHiddenArgs = bFinalArgs.length !== frameArgs.length;
+    let bMasterUnlocker = hasResolvedHiddenArgs && bAbiFunc
+      ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...bFinalArgs)
+      : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
 
-    // The external participant's absolute group base is known only here. Resolve its selected message-bus
-    // rows now, place active oracle co-spends at their exact row-band offsets, and leave every inactive slot as the
-    // already-created funder. Computed n values are recovered from B's own covenant trace at B's real index.
-    if (group.graphBlockhashSelections?.length) {
-      if (!group.blockInputs || !group.blockLayout) {
-        throw new Error('External message-bus batch graph blockhash route has no balanced participant block');
-      }
-      const firstOracleOffset = group.blockLayout.slots.find(
-        (slot) => slot.kind === 'blockhashOracle',
-      )?.offset;
-      const plan = group.compilerRoute?.abiFunction.graphBlockhashOracle;
-      if (firstOracleOffset === undefined || !plan) {
-        throw new Error('External message-bus batch graph blockhash metadata/layout mismatch');
-      }
-      const absoluteBase = masterInputIndex + firstOracleOffset;
-      const bSc = group.externalContract as any;
-      const pool: string | undefined = group.externalContract.inner.oraclePool;
-      if (pool === undefined) {
-        throw new Error(`${group.externalContract.inner.name} reads blockhash(n), and binds no oracle pool`);
-      }
-      const prior: Array<{
-        slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output;
-      }> = [];
-      for (const selection of group.graphBlockhashSelections) {
-        const n = host.isComputedBlockhashKey(selection.readKey)
-          ? await host.extractGraphBlockhashRead(bSc,
-            group.masterUtxo as Utxo, bMasterUnlocker, group.dataNftUtxos,
-            prior, absoluteBase, selection.slotOrdinal, plan.slotCount, masterInputIndex,
-          )
-          : host.paramBlockhashN(bSc, selection.readKey, selection.rowArgs, selection.handler);
-        if (n === null) throw new Error(`blockhash: could not resolve external message-bus batch read "${selection.readKey}"`);
-        const coSpend = await resolveBlockhashCoSpend(host.provider, pool, n, prior.map(({ utxo }) => utxo));
-        if (!coSpend) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
-        const physicalOffset = firstOracleOffset + selection.slotOrdinal;
-        group.blockInputs[physicalOffset] = { ...coSpend.utxo, unlocker: coSpend.unlocker };
-        prior.push({
-          slotOrdinal: selection.slotOrdinal, utxo: coSpend.utxo, unlocker: coSpend.unlocker,
-          recreate: coSpend.recreateOutput,
-        });
-        host.noteBhLocktime(coSpend.locktime);
-      }
-    }
-    if (group.compilerRoute && routeArgIndex !== routeArgs.length) {
-      throw new Error(
-        `Compiler route '${group.functionName}' supplied ${routeArgs.length} visible arguments, `
-        + `but its ABI consumed ${routeArgIndex}`,
-      );
-    }
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_VMAP_PROOF === '1' && group.compilerRoute) {
-      console.error('delegate-route-final-args', {
-        contract: group.externalContract.inner.artifact.contractName,
-        function: group.functionName,
-        args: bAbiInputs.map((input, index) => ({
-          name: input.name,
-          value: bFinalArgs[index] instanceof Uint8Array
-            ? binToHex(bFinalArgs[index] as Uint8Array) : String(bFinalArgs[index]),
-        })),
-      });
-    }
     group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
     const applyMasterUnlocker = (unlocker: Unlocker): void => {
       group.masterUtxo = { ...group.masterUtxo, unlocker } as UnlockableUtxo;
@@ -606,14 +489,10 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           trailing += 1n;
         }
       }
-      const unlocker = group.compilerRoute
-        ? group.externalContract.inner.createCompilerRouteUnlocker(
-          group.compilerRoute.abiFunction, group.compilerRoute.selector,
-        )(...capturedUnlockerArgs)
-        : hasResolvedHiddenArgs && bAbiFunc
-          ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...capturedUnlockerArgs)
-          : (group.externalContract.inner.unlock as Record<string, ((...args: never[]) => Unlocker) | undefined>)
-            [group.functionName]!(...capturedUnlockerArgs as never[]);
+      const unlocker = hasResolvedHiddenArgs && bAbiFunc
+        ? group.externalContract.inner.createAbiUnlocker(bAbiFunc as AbiFunction)(...capturedUnlockerArgs)
+        : (group.externalContract.inner.unlock as Record<string, ((...args: never[]) => Unlocker) | undefined>)
+          [group.functionName]!(...capturedUnlockerArgs as never[]);
       applyMasterUnlocker(unlocker);
     };
     group.refreshFunctionArgs = (nextArgs) => {

@@ -58,7 +58,7 @@ type Bindings = Map<Node, ExternalCallExpression>;
 type Environment = { locals: Bindings; state: Map<string, ExternalCallExpression | undefined> };
 
 /**
- * Publish after external-call indexing and type checking, before backend rewrites the handler body.
+ * Publish after external-call indexing and type checking, before backend rewrites the function body.
  * This is deliberately a per-write proof, not a relaxation of sourceEffectOrder. Branches may compute
  * locals, but the sole whole-value mutation itself must be reached once on every successful invocation.
  * Unknown effects, aliasing memory writes, loops, and early exits before the mutation fail closed.
@@ -70,7 +70,7 @@ export function publishStoredValueSources(contract: ContractNode, fileStructs: S
 function publishFunctionSources(
   contract: ContractNode, fn: FunctionDefinitionNode, fileStructs: StructDefinitionNode[],
 ): void {
-  if (!fn.entryAccesses?.length || fn.messageBusRoute) return;
+  if (!fn.entryAccesses?.length) return;
   for (const access of fn.entryAccesses) delete access.storedValueSource;
   const nodes = [...syntaxNodes(fn.body)];
   const structs = new Map([...fileStructs, ...contract.structDefinitions].map((struct) => [struct.name, struct]));
@@ -165,7 +165,7 @@ function publishFunctionSources(
       if (node instanceof StateAccessNode) {
         return env.state.has(node.name) ? env.state.get(node.name) : { kind: 'state', name: node.name, type };
       }
-      // This collection has exactly one mutation in the entire handler. Its reads before that
+      // This collection has exactly one mutation in the entire function. Its reads before that
       // mutation therefore refer to incoming entries, with keys captured at the read's source point.
       // Other collections may already have been changed and cannot use this pre-state proof.
       if (node instanceof MappingAccessNode && node.name === access.collection && !node.arrayIndex) {

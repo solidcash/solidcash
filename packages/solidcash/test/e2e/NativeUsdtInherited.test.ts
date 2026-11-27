@@ -44,8 +44,8 @@ let bundle: SplitArtifactBundle;
 // The splitter's probe explores facet groupings and recompiles each one, which is ~60 s on an idle machine
 // and several times that when the suite runs in parallel with others - hence the outsized hook budget.
 beforeAll(() => {
-  flat = compileFile(fx('nusdt_inherited.scash'), { messageBus: false }) as Artifact;
-  bundle = compileFileSplit(fx('nusdt_inherited.scash'), { messageBus: false });
+  flat = compileFile(fx('nusdt_inherited.scash'), {}) as Artifact;
+  bundle = compileFileSplit(fx('nusdt_inherited.scash'), {});
 }, 900000);
 
 describe('NativeUsdtInherited / composition', () => {

@@ -1,11 +1,11 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { SplitStateFootprint } from '@solidcash/utils';
 import {
-  AssignNode, BlockNode, BoolLiteralNode, BranchNode, CollectionIterationNode, ContractNode,
+  AssignNode, BlockNode, CollectionIterationNode, ContractNode,
   DeleteLocalNode, EmitStatementNode, FunctionCallNode,
   FunctionCallStatementNode,
   FunctionDefinitionNode, IdentifierNode, IndirectCallNode, Node, TupleAssignmentNode,
-  TryCatchNode, VariableDefinitionNode, WhileNode,
+  TryCatchNode, VariableDefinitionNode,
 } from '../ast/AST.js';
 
 export interface InvocationFunctionSummary {
@@ -62,29 +62,15 @@ export function walkInvocationAst(
   value: unknown,
   visit: (node: Node) => void,
   seen = new Set<object>(),
-  options: { pruneLiteralDeadControlFlow?: boolean } = {},
 ): void {
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
   visit(value);
   if (value instanceof TryCatchNode) {
     // BCH script failure aborts evaluation, so catches are not executable paths. Keep every footprint and
-    // admission survey aligned with code generation by walking only the operation and successful try body.
-    walkInvocationAst(value.expression, visit, seen, options);
-    walkInvocationAst(value.tryBlock, visit, seen, options);
-    return;
-  }
-  if (options.pruneLiteralDeadControlFlow && value instanceof BranchNode
-    && value.condition instanceof BoolLiteralNode) {
-    // Auto-selection asks whether a graph edge can execute. Keep normal analysis conservative; only this
-    // explicit opt-in ignores the arm that a literal condition makes unreachable.
-    const active = value.condition.value ? value.ifBlock : value.elseBlock;
-    if (active) walkInvocationAst(active, visit, seen, options);
-    return;
-  }
-  if (options.pruneLiteralDeadControlFlow && value instanceof WhileNode
-    && value.condition instanceof BoolLiteralNode && value.condition.value === false) {
-    // Unlike do-while, a while loop with a literal-false condition executes zero body iterations.
+    // effect survey aligned with code generation by walking only the operation and successful try body.
+    walkInvocationAst(value.expression, visit, seen);
+    walkInvocationAst(value.tryBlock, visit, seen);
     return;
   }
   // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating
@@ -94,9 +80,9 @@ export function walkInvocationAst(
       || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
       || key === 'collection' || key === 'type' || key === 'location' || key === 'name' || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex' || key === 'abiType') continue;
     const child = value[key as keyof Node];
-    if (child instanceof Node) walkInvocationAst(child, visit, seen, options);
+    if (child instanceof Node) walkInvocationAst(child, visit, seen);
     else if (Array.isArray(child)) {
-      for (const item of child) walkInvocationAst(item, visit, seen, options);
+      for (const item of child) walkInvocationAst(item, visit, seen);
     }
   }
 }
@@ -276,17 +262,14 @@ export function analyseFunctionFootprint(
           ? collectionResourceName(resourceName, shaped.keys) : undefined;
         // X26: a bare element READ `m[k]` is an ArrayAccessNode carrying `array`/`index`, never `name`/`keys`, so
         // the shaped lookup above finds no resource and the read branch below cannot fire. It is the read half of
-        // the same gap X19 closed for writes, and it is NOT harmless: the bus route's collection-eligibility
-        // branch is gated on this footprint, so a handler whose only collection access is a bare read published a
-        // block layout with no entry slot while its covenant still addressed one - the next participant's block
-        // is placed on top of the slot the route reads. Recover the collection the same way the write half does.
+        // the same gap X19 closed for writes. Recover the collection the same way the write half does.
         const bareRead = kind === 'ArrayAccessNode'
           ? (node as unknown as { array?: Node }).array as unknown as { constructor: { name: string }; name?: string }
           : undefined;
         const bareReadName = bareRead?.constructor.name === 'IdentifierNode' ? bareRead.name : undefined;
         if (kind === 'StateAccessNode' && resourceName) directReads.add(`state:${resourceName}`);
         // Before SymbolTableTraversal, Solidity-compatible `x` and `x = value` state syntax is represented as
-        // ordinary identifiers/assignments. Keep footprint admission representation-independent by recognizing
+        // ordinary identifiers/assignments. Keep the footprint representation-independent by recognizing
         // names from the caller-supplied contract state namespace, with the same local-shadow guard used by bare
         // collection analysis. Explicit `this.x` already arrives as StateAccess/StateAssign and needs no context.
         else if (node instanceof AssignNode && node.identifier instanceof IdentifierNode
@@ -312,8 +295,7 @@ export function analyseFunctionFootprint(
         // X19: a BARE element write `m[k] = v` / `delete m[k]` is an ArrayAssign/ArrayDelete until symbol
         // resolution decides state-vs-local (only the `this.`-prefixed spelling is a MappingAssign from the
         // parser). This analysis runs BOTH before and after that resolution, so omitting the bare forms made one
-        // spelling of the same write invisible to every pre-semantic caller - notably the message-bus route's
-        // synthesis point, which then produced a route carrying a write it had reserved no entry descriptor for.
+        // spelling of the same write invisible to every pre-semantic caller.
         // A name bound locally in this function is a LOCAL array element write and stays out of the footprint;
         // the same test is what symbol resolution later applies to choose MappingAssign over ArrayAssign.
         } else if (/^(ArrayAssign|ArrayDelete)/.test(kind) && collectionResource
@@ -323,8 +305,7 @@ export function analyseFunctionFootprint(
         else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode'
           || isPreSemanticAddressValueTransfer(node)) {
           // Solidity `to.transfer(1)` / `to.send(1)` parse as `to.transfer` / `to.send` FunctionCalls until
-          // SymbolTableTraversal rewrites them. Without this, the kernel route never clones the handler as a
-          // satoshi-transfer effect and later inlines the rewrite into `__message_bus1` with no transfer slots.
+          // SymbolTableTraversal rewrites them. Without this, the footprint misses their satoshi-transfer effect.
           directEffects.add('value');
         } else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
           directEffects.add('external-call');
@@ -368,7 +349,7 @@ export function collectionResourceName(name: string, keys: Node[] | undefined): 
 }
 
 /** Build one deterministic resolved call graph for diagnostics, recursion
- * preflight, splitting, and later message-bus eligibility. */
+ * preflight and splitting. */
 export function analyseContractInvocations(contract: ContractNode): InvocationAnalysis {
   const cached = contractInvocationAnalysisCache.get(contract);
   if (cached) return cached;

@@ -30,7 +30,7 @@ contract Owned() {
 }`;
 
 describe('ContractFactory.deploy binds the signer as the msg.sender funder', () => {
-  it('fills the direct constructor sender-anchor witness in kernel mode', async () => {
+  it('fills the direct constructor sender-anchor witness under forceStateful', async () => {
     const provider = createTestProvider();
     const signer = HDSigner.fromPhrase(
       'test test test test test test test test test test test junk',
@@ -50,7 +50,7 @@ describe('ContractFactory.deploy binds the signer as the msg.sender funder', () 
         constructor() { this.balances[msg.sender] = 7; }
       }
     `, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+      forceStateful: true,
       evmCompat: true,
     });
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs)

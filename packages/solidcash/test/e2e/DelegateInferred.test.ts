@@ -350,7 +350,7 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
             this.counter = next;
           }
         }
-      `, { messageBus: true });
+      `, {});
       const proxyContract = new Contract(proxyArtifact, [], { provider });
       const { categoryId: proxyCatId } = await setupStatefulUtxos(
         provider, proxyContract, proxyArtifact.stateLayout!, { counter: 42n }, { saltContract: true },

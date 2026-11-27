@@ -1,4 +1,7 @@
-import { ATOMIC_MESSAGE_BUS_MAX_ROWS, type ExternalCallIterationDomainAbi } from '@solidcash/utils';
+import { type ExternalCallIterationDomainAbi } from '@solidcash/utils';
+
+/** Hard ceiling on one compiler-described external-call iteration domain. */
+const MAX_EXTERNAL_CALL_ITERATIONS = 0xffff;
 import type { FunctionArgument } from '../Argument.js';
 
 /** Exact iteration domain of a compiler-described affine pre-test loop, before filtering call guards. */
@@ -9,7 +12,7 @@ export function externalCallIterationIndices(
   ) => FunctionArgument | undefined,
 ): number[] {
   if (!domain.counterName || !Number.isSafeInteger(domain.maximumIterations)
-    || domain.maximumIterations < 0 || domain.maximumIterations > ATOMIC_MESSAGE_BUS_MAX_ROWS) {
+    || domain.maximumIterations < 0 || domain.maximumIterations > MAX_EXTERNAL_CALL_ITERATIONS) {
     throw new Error('External-call iteration domain has an invalid compiler maximum or counter');
   }
   const empty = new Map<string, bigint>();

@@ -265,9 +265,6 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const checksSignature = (fn: FunctionDefinitionNode): boolean => this.inlineSignatureChecks
       && !fn.modifiers.includes(FunctionModifier.DELEGATE) && checksTransactionSignature(fn, this.funcByName);
     for (const fn of node.functions) {
-      // Compiler-owned graph and detached-signature handlers are physical OP_INVOKE bodies. Their hidden
-      // protocol context belongs to that invocation, so no storage/effect shape may flatten them into the route.
-      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
@@ -280,9 +277,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // `entry -> _checkOwner -> owner()` after the returning getter has been reduced into `_checkOwner`.
       const scalarJournalEligible = !this.inlineDelegateStateHelpers && this.isScalarJournalEligible(fn);
       // OZ `_checkInitializing` / `_checkOwner` often still look context-only after the first IRSH
-      // (ERC-7201 `$._initializing` / `owner()`). A later IRSH exposes the read, but a message-bus
-      // compile can leave the wrapper as OP_INVOKE. Force those guards into the delegate entry so
-      // they inherit proxy-master + pending writes instead of INPUTINDEX+1 on the impl.
+      // (ERC-7201 `$._initializing` / `owner()`). Force those guards into the delegate entry so they inherit
+      // proxy-master + pending writes instead of INPUTINDEX+1 on the impl.
       const delegateGuard = this.inlineDelegateStateHelpers
         && /^(?:_checkInitializing|_checkOwner|_requireNotPaused)$/.test(fn.name);
       // CashToken-container transfers are transaction effects rather than
@@ -329,7 +325,6 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       addedWrapper = false;
       for (const fn of node.functions) {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
-          || fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler
           || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
         for (const candidate of this.nodesOf(fn)) {
@@ -375,7 +370,6 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // position: the call is replaced by the substituted return expression (`m.at(k)` -> `L.at(m, k)` -> `m[k]`).
     this.exprInlinableFns = new Map();
     for (const fn of [...node.functions, ...this.freeFns]) {
-      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
     }
     this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
@@ -711,7 +705,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         let args = stmt.call.parameters;
         // `using L for T; recv.method(x)` is still `recv.method` here. Physical-effect library helpers
         // (`Address.sendValue`) are selected for inlining by their `L.method` name; without rewriting this
-        // spelling the helper is dropped and ST later reports `recv.method` as undefined on the message-bus path.
+        // spelling the helper is dropped and ST later reports `recv.method` as undefined.
         const dot = name.lastIndexOf('.');
         if (!callee && dot > 0) {
           const method = name.slice(dot + 1);
@@ -885,7 +879,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // The callee's source snapshots describe only branches inside its own body. Once it is spliced into the
     // caller, every nested call also inherits the caller's lexical path. Keep that path on the call node before
     // recursively inlining further helpers; otherwise artifact collection mistakes an untaken inner call for
-    // an unconditional graph emission. Stamp after the callee-local rename/substitution so identically named
+    // an unconditional one. Stamp after the callee-local rename/substitution so identically named
     // caller parameters cannot be rewritten as the callee's locals.
     if (callerConditions.length > 0) this.walk(cloned.body, (node) => {
       if (node instanceof FunctionCallNode || node instanceof MethodCallNode
@@ -1287,7 +1281,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         // n.name is a STRUCT FIELD MEMBER, never a variable - never rename it. The base `expression` is still
         // walked as a child, so a renamed receiver is applied there. Without this guard, an inlined local that
         // shares a struct field's name (`string label` vs `items[id].label`) corrupts the field access to
-        // `items[id].__message_bus_arg_*` / `__spN_label` -> "Struct has no field ...", which then fails the
+        // `items[id].__spN_label` -> "Struct has no field ...", which then fails the
         // autoDelegate variant build for pooled Item[] writers that use parameter names matching fields.
       } else if (n instanceof TupleAssignmentNode) {
         // Tuple lvalues are plain element descriptors rather than

@@ -392,10 +392,9 @@ export default {
       enforceFinalRequire: true,
       allowUnsafeOperations: false,
       commitmentLimit: 1000000,
-      messageBus: false,
     },
   },
-  updatedAt: '2026-11-24T16:30:08.290Z',
+  updatedAt: '2026-11-25T16:11:17.728Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [

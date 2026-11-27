@@ -85,7 +85,6 @@ describe('October 2026 class B holes', () => {
   it('CRYPTO-4 a second minting baton cannot rewrite a data record, and a contract-sized master can', () => {
     const artifact = compileString(
       'pragma solidcash ^0.52.0; contract C { int n; function touch() { this.n = this.n + 1; require(true); } }',
-      { messageBus: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'touch');
     if (!fn || !artifact.stateLayout) throw new Error('touch has no layout');
@@ -110,7 +109,7 @@ describe('October 2026 class B holes', () => {
     const honest: VmTransaction = {
       version: 2, locktime: 0,
       inputs: [
-        input(0, redeemUnlock(fn, redeem, values, true)),
+        input(0, redeemUnlock(fn, redeem, values, false)),
         input(1, dataUnlock),
         input(2, new Uint8Array()),
       ],
@@ -230,7 +229,7 @@ describe('October 2026 class B holes', () => {
       outputCount: 1,
     };
     const published = persistValueChunkLock(categoryId, chunkValue, chunkWrite, openerLock);
-    if (!published) throw new Error('message-bus value chunk published no lock');
+    if (!published) throw new Error('bound-master value chunk published no lock');
     const publishedRedeem = scriptToBytecode(buildValueChunkCovenantScript(
       CATEGORY, computeCollectionHash(valueChunkSignature(collection)), chunkSlot,
       sha256.hash(chunkValue), openerLock,
@@ -268,7 +267,7 @@ describe('October 2026 class B holes', () => {
     const artifact = compileString(
       'pragma solidcash ^0.52.0; contract C { enumerable mapping(bytes32 => bytes) rec;'
       + ' function write(bytes32 k, bytes v) { this.rec[k] = v; require(true); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'write');
     if (!fn) throw new Error(`no write; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -358,7 +357,7 @@ describe('October 2026 class B holes', () => {
       + ' enumerable mapping(bytes32 => bytes) a; enumerable mapping(bytes32 => bytes) b;'
       + ' function write(bytes32 k, bytes v, bytes32 k2, bytes w) {'
       + ' this.a[k] = v; this.b[k2] = w; require(true); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'write');
     if (!fn) throw new Error(`no write; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -476,8 +475,7 @@ describe('October 2026 class B holes', () => {
     const proxyDataLock = p2sh32(proxyDataRedeem);
     const recordRedeem = scriptToBytecode(buildDistDataNftCovenant(CATEGORY, delegateLock));
     const recordLock = p2sh32(recordRedeem);
-    // The delegate redeem defines the body and dispatches on a 4-byte selector even when it publishes no
-    // message-bus route. The selector is the bottom witness item.
+    // The delegate redeem defines the body and dispatches on a 4-byte selector, the bottom witness item.
     const dispatch = fn.selector !== undefined;
     const values: Record<string, Uint8Array> = {};
     for (const entry of fn.inputs) {
@@ -516,7 +514,7 @@ describe('October 2026 class B holes', () => {
       ];
       return verdict(sourceOutputs, transaction);
     };
-    expect(spend(record), `DX-8 authorized bus=${dispatch} redeem=${redeem.length}`).toBe(true);
+    expect(spend(record), `DX-8 authorized dispatch=${dispatch} redeem=${redeem.length}`).toBe(true);
     expect(spend(rewritten), 'DX-8 rewritten implementation record').not.toBe(true);
   });
 
@@ -524,9 +522,9 @@ describe('October 2026 class B holes', () => {
     const P = 'pragma solidcash ^0.52.0;';
     const src = `${P} contract Child() { bigint x; function ping() { require(true); } }`
       + ' contract Factory() { function create() { Child c = new Child(); require(c.length > 0); } }';
-    // The kernel route's witness is a composed batch. This spend is the direct deploy epilogue, which holds
-    // the child-category bound. A direct deploy entry needs the unsafe opt-out when it has no signer.
-    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
+    // This spend is the direct deploy epilogue, which holds the child-category bound. A direct deploy entry needs
+    // the unsafe opt-out when it has no signer.
+    const options = { forceStateful: true, allowUnsafeOperations: true };
     const factoryArtifact = compileString(src, { ...options, primaryContractName: 'Factory' });
     const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
     const originalSend = TransactionBuilder.prototype.send;

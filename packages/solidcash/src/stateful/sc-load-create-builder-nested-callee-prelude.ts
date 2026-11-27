@@ -14,17 +14,9 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import { callBatchFrameLayout } from './direct-call-batch.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import {
-  selectGraphBlockhashReads,
-} from './sc-batch-raw.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
-import { isDirectConventionArtifact } from './sc-expand-resolve-create-builder-external-calls.js';
 import type { OnChainState } from './StateReader.js';
-import {
-  deriveValueChunkProducerChildPath,
-  type ValueChunkProducerPathDisposition,
-} from './ValueChunkProducerIdentity.js';
+import { type ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 
 export type NestedCalleeOnChainState = OnChainState & { masterUtxo: Utxo };
 
@@ -44,10 +36,7 @@ export type NestedCalleeCallInfo = {
   args: FunctionArgument[];
 };
 
-export type NestedCalleeCompilerRoute = NonNullable<ExternalCallUtxoGroup['compilerRoute']>;
-
 export interface LoadCreateBuilderNestedCalleePreludeHost {
-  buildRepeatedExternalBatch(...args: any[]): NestedCalleeCompilerRoute | undefined;
   resolveExternalKeccakSideCars(
     bAbiFunc: AbiFunction | undefined,
     args: FunctionArgument[],
@@ -59,8 +48,6 @@ export interface LoadCreateBuilderNestedCalleePreludeHost {
 
 export interface LoadCreateBuilderNestedCalleePreludeResult {
   externalCategoryId: string;
-  compilerRoute: NestedCalleeCompilerRoute | undefined;
-  bGraphBlockhashSelections: ReturnType<typeof selectGraphBlockhashReads>;
   bState: NestedCalleeOnChainState;
   bStatelayout: StateLayout;
   concreteAbi: readonly AbiFunction[];
@@ -101,7 +88,7 @@ export function writtenDynamicChunkInputs(
 }
 
 /**
- * Resolve one direct nested callee's compiler route, on-chain state, required data NFTs,
+ * Resolve one direct nested callee's on-chain state, required data NFTs,
  * ABI/layout selection, pre-known chunkable values, and keccak side-cars — everything needed
  * before assembling that callee's full block inputs.
  */
@@ -110,13 +97,13 @@ export async function loadCreateBuilderNestedCalleePrelude(
   slotIndex: number,
   ec: ExternalCallAbi,
   callInfo: NestedCalleeCallInfo | undefined,
-  args: FunctionArgument[],
-  artifact: Artifact,
-  abiFunction: AbiFunction | undefined,
-  callerStateSnapshot: Record<string, StateValue> | undefined,
-  publicSelfAddress: FunctionArgument | undefined,
-  publicSelfIdentity: { categoryId: string; lockingBytecode: string },
-  rootProducerPath: ValueChunkProducerPathDisposition,
+  _args: FunctionArgument[],
+  _artifact: Artifact,
+  _abiFunction: AbiFunction | undefined,
+  _callerStateSnapshot: Record<string, StateValue> | undefined,
+  _publicSelfAddress: FunctionArgument | undefined,
+  _publicSelfIdentity: { categoryId: string; lockingBytecode: string },
+  _rootProducerPath: ValueChunkProducerPathDisposition,
 ): Promise<LoadCreateBuilderNestedCalleePreludeResult> {
   if (!callInfo) {
     throw new Error(
@@ -128,24 +115,6 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // Resolve external category ID from the resolved external contract (address model: A's args
   // bake the callee address, so its category comes from the registered external instance).
   const externalCategoryId = callInfo.externalContract.categoryId;
-  // A direct caller never builds a bus batch: its repeated calls run as frames of a multi-call spend.
-  const compilerRoute = isDirectConventionArtifact(artifact) ? undefined : host.buildRepeatedExternalBatch(
-    ec, args, callInfo.externalContract,
-    artifact, callerStateSnapshot, undefined, abiFunction?.inputs,
-    false, publicSelfAddress, undefined, publicSelfIdentity,
-    (row: NonNullable<NestedCalleeCompilerRoute['rowArguments']>[number]) => deriveValueChunkProducerChildPath({
-      parent: rootProducerPath,
-      parentExecutionLockingBytecode: host.lockingBytecode,
-      parentSelector: abiFunction?.selector,
-      sourceCallsiteId: row.sourceCallsiteId,
-      sourceLogicalIndex: row.sourceLogicalIndex,
-      occurrenceIndex: row.occurrenceIndex,
-      sourceEffectOrdinal: row.sourceEffectOrdinal,
-    }),
-  );
-  const bGraphBlockhashSelections = compilerRoute
-    ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, compilerRoute.blob)
-    : [];
 
   // Get B's on-chain state
   const loadedState = await callInfo.externalContract.getFullState();
@@ -161,28 +130,17 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // This list is emitted for every callsite. An explicit empty list is authoritative: mapping-only calls
   // do not co-spend fixed-state NFTs, and expanding empty to "all" shifts every later block slot.
   const concreteAbi = callInfo.externalContract.inner.artifact.abi as readonly AbiFunction[];
-  const selectedConcreteAbi = compilerRoute ? undefined : resolveStatefulAbiFunction(
+  const selectedConcreteAbi = resolveStatefulAbiFunction(
     callInfo.externalContract.inner.artifact, callInfo.functionName, callInfo.args,
   );
-  const bRequiredNftIndices = compilerRoute
-    ? [...new Set((compilerRoute.rowArguments ?? []).flatMap((row) => (
-      concreteAbi.find((candidate) => candidate.selector === row.selector)?.requiredNftIndices
-        ?? row.handler.requiredNftIndices ?? []
-    )))]
-    // A low-level callsite cannot publish the callee function's state footprint: only the runtime
-    // `.withExternalCall()` binding identifies that function. Once bound, use the selected concrete ABI's
-    // exact footprint. The callsite list remains the fallback for typed calls and older artifacts.
-    : [...(selectedConcreteAbi?.requiredNftIndices ?? ec.requiredDataNftIndices)];
+  // A low-level callsite cannot publish the callee function's state footprint: only the runtime
+  // `.withExternalCall()` binding identifies that function. Once bound, use the selected concrete ABI's
+  // exact footprint. The callsite list remains the fallback for typed calls and older artifacts.
+  const bRequiredNftIndices = [...(selectedConcreteAbi?.requiredNftIndices ?? ec.requiredDataNftIndices)];
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1' && callInfo.functionName === 'approve') {
     console.error('approve-required-nfts', {
       callsite: ec.requiredDataNftIndices,
-      rows: (compilerRoute?.rowArguments ?? []).map((row) => ({
-        selector: row.selector,
-        handler: row.handler.name,
-        matched: concreteAbi.find((candidate) => candidate.selector === row.selector)?.name,
-        required: concreteAbi.find((candidate) => candidate.selector === row.selector)?.requiredNftIndices,
-      })),
       selected: bRequiredNftIndices,
     });
   }
@@ -203,9 +161,9 @@ export async function loadCreateBuilderNestedCalleePrelude(
 
   // Build B's full block inputs when B's function has entries/events/transfers
   const bSc = callInfo.externalContract;
-  const bAbiFunc = compilerRoute?.abiFunction ?? selectedConcreteAbi;
+  const bAbiFunc = selectedConcreteAbi;
   const bBlockLayout = callBatchFrameLayout(bAbiFunc?.blockLayout, ec);
-  const directDynamicWrites = new Set(compilerRoute ? [] : bAbiFunc?.dynamicWrites ?? []);
+  const directDynamicWrites = new Set(bAbiFunc?.dynamicWrites ?? []);
   const bDynamicChunkInputs = writtenDynamicChunkInputs(
     callInfo.externalContract.inner, externalCategoryId, bStatelayout, directDynamicWrites, bState.dynamicChunkUtxos,
   );
@@ -234,7 +192,7 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them. A loop's side-cars
   // ride the band after B's block instead, one per iteration, from the loop's own probe once the block is assembled
   // (sc-append-create-builder-nested-callee-keccak-loop), as a function's own loop takes no fixed side-car either.
-  const bKeccak = !compilerRoute && bAbiFunc?.keccakLoopReads === true
+  const bKeccak = bAbiFunc?.keccakLoopReads === true
     ? { inputs: [], recreates: [] }
     : await host.resolveExternalKeccakSideCars(
       bAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract,
@@ -242,8 +200,6 @@ export async function loadCreateBuilderNestedCalleePrelude(
 
   return {
     externalCategoryId,
-    compilerRoute,
-    bGraphBlockhashSelections,
     bState,
     bStatelayout,
     concreteAbi,

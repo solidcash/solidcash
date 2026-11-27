@@ -13,7 +13,7 @@ contract ComputeRecipeFixture(IReader reader, ISink sink) {
     sink.submit(digest);
   }
 }`, {
-  evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+  evmCompat: true, forceStateful: true,
   maximumInputBytes: 1_000_000, suppressWarnings: true, optimizeForCompilationSpeed: true,
 });
 
@@ -33,8 +33,6 @@ describe('authenticated compute side-car recipes', () => {
       { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
     ] });
     expect(recipe?.ecrecover).toEqual([]);
-    expect(artifact.messageBus?.handlers.find((fn) => fn.name === 'run')?.computeSideCarRecipes)
-      .toEqual(recipe);
   });
 
   it('publishes typed packed-ABI and cast operands used by a pre-call hash', () => {
@@ -47,7 +45,7 @@ describe('authenticated compute side-car recipes', () => {
           sink.ping();
         }
       }`, {
-      evmCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      evmCompat: true, forceStateful: true,
       maximumInputBytes: 1_000_000, suppressWarnings: true, optimizeForCompilationSpeed: true,
     });
     const recipe = source.PackedRecipeFixture.abi.find((fn) => fn.name === 'run')?.computeSideCarRecipes;
@@ -73,50 +71,6 @@ describe('authenticated compute side-car recipes', () => {
     expect(source.Lengths.abi.find((fn) => fn.name === 'exact')?.directCollectionLengthReturn)
       .toEqual({ collection: 'eventsById', keyParams: ['id'] });
     expect(source.Lengths.abi.find((fn) => fn.name === 'computed')?.directCollectionLengthReturn)
-      .toBeUndefined();
-  });
-
-  it('derives a signature65 candidate only for a reached recovery helper', () => {
-    const sourceCode = `pragma solidity ^0.8.20;
-      library ECDSA {
-        function recover(bytes32 hash, bytes memory signature) internal pure returns (address) {
-          require(signature.length == 65);
-          bytes32 r; bytes32 s; uint8 v;
-          assembly {
-            r := mload(add(signature, 0x20))
-            s := mload(add(signature, 0x40))
-            v := byte(0, mload(add(signature, 0x60)))
-          }
-          return ecrecover(hash, v, r, s);
-        }
-      }
-      interface ISink { function ping() external; }
-      contract RecoveryRecipeFixture(ISink sink) {
-        uint256 marker;
-        function run(bytes32 hash, bytes signature) public {
-          require(ECDSA.recover(hash, signature) != address(0));
-          sink.ping();
-        }
-      }`;
-    const options = { evmCompat: true, ecrecover: 'p2pkh' as const, forceStateful: true,
-      messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
-      suppressWarnings: true, optimizeForCompilationSpeed: true };
-    const source = compileStringMulti(sourceCode, options);
-    const handler = source.RecoveryRecipeFixture.abi.find((fn) => fn.name === 'run');
-    expect(handler?.ecrecoverCompute).toBe(true);
-    expect(handler?.computeSideCarRecipes?.ecrecover).toMatchObject([{
-      kind: 'signature65', hash: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
-      signature: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
-    }]);
-    const swapped = compileStringMulti(sourceCode.replace(
-      'ecrecover(hash, v, r, s)', 'ecrecover(hash, v, s, r)',
-    ), options);
-    expect(swapped.RecoveryRecipeFixture.abi.find((fn) => fn.name === 'run')?.computeSideCarRecipes)
-      .toBeUndefined();
-    const wrongSlice = compileStringMulti(sourceCode.replace(
-      's := mload(add(signature, 0x40))', 's := mload(add(signature, 0x20))',
-    ), options);
-    expect(wrongSlice.RecoveryRecipeFixture.abi.find((fn) => fn.name === 'run')?.computeSideCarRecipes)
       .toBeUndefined();
   });
 });

@@ -10,6 +10,10 @@ chunks, or pending vmap compiler/SDK plumbing predate the completed 2026-07-22 v
 defined only by [`verified-mappings.md`](verified-mappings.md); every mapping is vmap and unsupported shapes fail
 closed. Do not use historical opt-out instructions from this log.
 
+The message bus and its kernel were removed from the compiler and SDK in 2026-11. Entries below that mention
+them describe the tree as it stood when the entry was written; none is a current instruction or a supported
+option.
+
 Related: `bench/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
 `docs/platform-differences.md` (BCH-vs-EVM primitives),
 `archive/docs:packages/solidc/docs/solidity-gap-analysis.md`.
@@ -1854,6 +1858,10 @@ internal vector".
 
 ## Event payloads larger than one 128-byte NFT commitment (2026-08-07)
 
+**Status 2026-11-27:** with the message bus removed, the kernel-route and legacy-route parts below are history, and
+the `Kernel*` tests they cite are gone. Still deferred for framed frames, runtime counter-loop events and nested or
+delegate callees.
+
 **RESOLVED for direct stateful calls (2026-10-13) and for kernel route handlers whose emits all stream (2026-10-13,
 runtime effect stream, narrow emits too since 2026-10-14, see below); STILL DEFERRED on legacy routes, other kernel
 handler shapes, framed frames, runtime counter-loop events and nested / delegate callees.** Before, an event whose
@@ -2082,6 +2090,8 @@ Stage 3 (2026-10-14, the atomic verifier's operation cost):
   these follow-ups; BCHN is excluded by the user's instruction.
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
+
+**Moot 2026-11-27:** the message bus was removed, and this route with it.
 
 **ROOT CAUSE FINALIZED (2026-10-15): the split regression and a zero-trip state-array loop resolver gap are
 fixed; the original `add` preflight OP_VERIFY is re-exposed and traced to the split root's
@@ -2780,6 +2790,10 @@ at the proxy master's lock, `atExecutorLock: 0`), alongside both routed cases.
 
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 
+**Status 2026-11-25:** by 0.52 the refusal below fired only for the kernel's in-place append upgrade route: a direct
+upgrade migrates its data NFTs and containers. The bus removal took that route, and `UpgradeStrandsBoundStateError`
+with it.
+
 **What:** CRYPTO-4 (d6821a812) binds every data NFT, mapping entry, value chunk and satoshi or token container to
 the executing master's exact 35-byte lock, so no second minting baton of the category can rewrite them. A native
 in-place `upgrade` entry moves the master to the replacement bytecode's lock, so every record bound to the old lock
@@ -2916,6 +2930,8 @@ native delegates and routes; record a DECISIONS row superseding large-contract-s
 
 
 ## A streamed route handler reached on the plain call path (closed locally, 2026-10-14)
+
+**Moot 2026-11-27:** the message bus was removed, and streamed route handlers with it.
 
 **What:** since stage 1 (ff51608b8), a kernel handler whose emits all sit at top level streams its records through
 the trailing band and publishes `runtimeLoopEvents: [{ eventSignatures, stream: true }]` instead of `emits`. Compose
@@ -3275,6 +3291,8 @@ run the solc corpus negatives and the `.sol` fixtures once.
 
 ## `OP_RETURN` outputs in framed and the message bus (2026-11-03)
 
+**Status 2026-11-27:** the message bus was removed; the deferral below is framed's alone.
+
 The user's rule (2026-11-03): no `OP_RETURN` output signals anything or fills a slot; a filler is an event-like
 output anyone may sweep after 144 blocks. Asked which shipped uses to remove: "bus is going to be retired so we leave
 it be. fillers should not use OP_RETURN, use the same 144 blocks maturing event-like outputs to stay consistent.
@@ -3293,6 +3311,8 @@ framed will be retired after tre too, so leave op_returns for it in place. but m
 **Revisit if:** framed outlives TRE's release, or BCHN's single-`OP_RETURN` relay rule bites a framed transaction.
 
 ## A message-bus handler whose entry calls an internal function reading a constructor parameter (2026-11-04)
+
+**Moot 2026-11-27:** the message bus was removed; no direct or framed compile builds a handler.
 
 **What:** a stateful contract compiled with `messageBus: true` fails to compile when a public entry calls an internal
 function that reads a constructor parameter: "Expected variable '<parameter>' does not exist on the stack". It fails
@@ -3520,3 +3540,41 @@ the EACC checkout has not changed since 2025-10.
 change that broke it, then fix the framed proxy's `initialize` hop and the framed run-time loop's call site.
 
 **Revisit if:** before the framed convention or the EACC port is claimed to work.
+
+## Shapes only the message bus compiled (2026-11-25)
+
+**What:** with the bus removed, these shapes compile as 0.52.1 compiled them under `messageBus: false`, which refuses
+them; a default 0.52.1 compile reached them through a message-bus route or its kernel:
+- calls to one state owner in mutually exclusive arms (`if (c == 0) i.a(); else if (c == 1) i.b(); ...`), and the
+  OpenZeppelin `SafeERC20.forceApprove` shape (three low-level calls to one target): `REPEATED_CALL_UNSUPPORTED`,
+  although at most one of the exclusive calls runs;
+- a storage-pointer helper that calls one target twice and receives a mapping (Uniswap Router02's `_addLiquidity`):
+  `AssignTypeError: Type 'function(address)returns(uint256)' can not be assigned to variable of type 'mapping(...)'`,
+  a direct-path type-check fault the bus's early helper inlining used to hide;
+- a runtime loop that writes a mapping under keys from a locally built array (`new int[](count)`), the counter-keyed
+  push `for (i < n) m[i].push(v)`, and a runtime loop that rewrites one fixed-key entry (`while (c) m[k] = v`):
+  `SortedMappingCodegenPendingError` in a direct build (a framed body keeps an explicit dead arm for its entry);
+- a call on a child in the transaction that deploys it (`(new C()).getter()`, `C c = new C(); c.m()`,
+  `I(address(new C())).m()`): `DeployedChildCallError`, where the bus folded the call into the child's genesis (the
+  deploy-then-call fold);
+- a deployer `new` with `salt` (`new C{salt: s}(..)`): `DeploySaltError`, as the child's redeem starts with its
+  category pin;
+- MarketplaceV1's `publishJobPost` compiled direct: `REPEATED_CALL_UNSUPPORTED` for its repeated low-level `SafeERC20`
+  calls, the shape of the first item. The marketplace itself compiles framed, as its project configures.
+
+**Why deferred:** each is a direct-convention capability of its own, not part of the removal, which keeps every other
+contract's bytes.
+
+**What it'd take:** a repeated-call check that groups calls by branch exclusivity, and low-level calls run as frames of
+the callee's multi-call entry (the `SafeERC20` shapes); the Router02 type-check fault fixed on the direct path; direct
+lowerings for constructed-key and counter-keyed loop writes (the kernel's `captureConstructedKeyVectorProvenance` and
+`LowerVMapCounterLoops(true)` are the prior art), and one that keeps a loop-invariant entry in a local and writes it
+once; a deployer `new` that binds a call on its child at its creation, folding it into the genesis as the internal
+`__legacyDeployFold` path still does; a salted child identity on the deployer path, so `new C{salt: s}` takes its
+address from the salt.
+
+**Revisit if:** a port hits one of these refusals. The restored tests pin the first and the loop shapes; the Router02
+case is skipped in `solidity-compat/calls-abi.test.ts`. The deploy-then-call, salt, `publishJobPost` and fixed-key
+loop refusals are pinned in `DeployFoldFreshChildGetter`, `DeployFoldInterfaceCast`,
+`framed/master/deploy-then-call-refusal`, `DeployFoldGenesisBalance`, `MarketplacePublishJobPostKeys` and
+`StoredValueSource`.

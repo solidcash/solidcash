@@ -2874,7 +2874,7 @@ export default class AstBuilder
       }
       functionDefinition.modifiers.push(m.getText() as FunctionModifier);
     }
-    // Later delegate/split/external-call lowering may remove `view`/`pure` from the physical handler because
+    // Later delegate/split/external-call lowering may remove `view`/`pure` from the physical function because
     // it must execute with a covenant frame. Preserve the source declaration before those modifiers are
     // rewritten: ABI/SDK read dispatch must still return a value rather than broadcasting a transaction.
     functionDefinition.sourceReadOnly = functionDefinition.modifiers.includes(FunctionModifier.VIEW)
@@ -4644,7 +4644,7 @@ export default class AstBuilder
 
     // Retain the exact progression for syntactically canonical `for` loops. External-call metadata can then
     // describe arguments which depend on the live iteration value without folding `i` back to its initializer.
-    // Semantic replay later decides whether a non-literal step is stable enough for kernel admission.
+    // Semantic replay later decides whether a non-literal step is stable enough to lower.
     if (initNode instanceof VariableDefinitionNode
       && initNode.expression instanceof IntLiteralNode
       && updateNode instanceof AssignNode
@@ -8781,8 +8781,8 @@ export default class AstBuilder
       text = text.slice(1, close) + text.slice(close + 1);
     }
     // `parseType('Rec[]')` yields `ArrayType(undefined)` because `Rec` is not a primitive. Falling through
-    // to `resolveType` (struct/enum/UDVT maps) is required; otherwise the kernel wrapper's
-    // `abi.decodeAt(rowArgs, (Rec[]), 0)` types as `address[]`.
+    // to `resolveType` (struct/enum/UDVT maps) is required; otherwise `abi.decodeAt(data, (Rec[]), 0)` types
+    // as `address[]`.
     if (text.endsWith(']') && text.includes('[')) {
       const bracketIdx = text.lastIndexOf('[');
       const elementTypeStr = text.substring(0, bracketIdx);

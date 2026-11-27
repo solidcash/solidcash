@@ -118,8 +118,8 @@ bytecode rather than as an input, and its deployment writes it in.
 
 The SDK co-spends the coins on every call path: a `Contract` with `TransactionBuilder`, `StatefulContract` calls,
 [framed entries](/docs/guides/framed-composition) and [framed proxies](/docs/guides/framed-composition#proxies)
-(experimental), delegate calls, and [message-bus routes](/docs/guides/message-bus) (experimental), where the readers
-of one pool share one coin. A direct function that reads `block.*` takes the coin's input index from its caller as a
+(experimental) and delegate calls, where the readers of one pool share one coin. A direct function that reads
+`block.*` takes the coin's input index from its caller as a
 hidden argument. A call that cannot forward it is refused at compile time with `BlockOracleIndexNotForwardedError`:
 read `block.*` in the caller as well, or pass the value in as an argument. A framed body takes no index: it reads the
 first block-info coin of its pool among the inputs.
@@ -128,8 +128,7 @@ A body reached through a function pointer takes no index: it reads the first blo
 inputs, and for `blockhash(n)` the first slot there that answers n, with the hash or the zero a direct read gives.
 The artifact marks each entry that may reach such a body (`indirectPoolReads`), and the SDK co-spends what the body
 reads on every call of that entry. A call of it from another contract, a delegate call included, gets the
-block-info coin but no slot. A message-bus route cannot carry such a body, so a message-bus build that reaches one
-is refused with `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`. Call the reader directly.
+block-info coin but no slot.
 
 ### A reader another contract creates
 

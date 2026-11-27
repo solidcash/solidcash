@@ -13,17 +13,15 @@ import {
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { getEntryNftLockingBytecode } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import { legacyNamedJobEventCollectionFallback } from './legacy-planning-heuristics.js';
 import {
   resolveChunkableEntryCollection,
   resolvePublishedEntryBlockOffset,
-} from './kernel-value-chunk-lanes.js';
+} from './value-chunk-lanes.js';
 import {
   extractFailingP2sh32OutputPin,
   lastExtractedComputedValue,
-} from './route-value-chunk-helpers.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+} from './value-chunk-trace-helpers.js';
 import { decodeEntryCommitment, encodeEntryCommitment, keyToSlot } from './SortedList.js';
 import {
   sameDerivedChunkOutputObservation,
@@ -77,8 +75,7 @@ export function applyDeriveFullNestedEntryPins(
   if ((stb.hasStagedValueChunkOutputs() || stb.getValueChunkRedeemLock()) && chunkCategory) {
     const entryPin = extractFailingP2sh32OutputPin(nestedTrace);
     const stagedValueLock = stb.getValueChunkRedeemLock();
-    const nestedEntryAbi = llc.compilerRoute?.abiFunction
-    ?? llc.externalContract?.inner.artifact.abi.find(
+    const nestedEntryAbi = llc.externalContract?.inner.artifact.abi.find(
       (candidate: AbiFunction) => candidate.name === llc.functionName,
     );
     const entryContract = llc.externalContract?.inner
@@ -86,35 +83,20 @@ export function applyDeriveFullNestedEntryPins(
     const entryCollections = nestedEntryAbi
       ? chunkableValueWriteCollections(llc, nestedEntryAbi)
       : [];
-    const convention = host.inner.artifact.messageBus?.convention
-      ?? (nestedEntryAbi as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention
-      ?? llc.logicalArtifact?.messageBus?.convention
-      ?? llc.externalContract?.inner.artifact.messageBus?.convention;
     const legacyGroups = [llc, proxyGroup].filter((group): group is ExternalCallUtxoGroup => group !== undefined);
     const entryCollection = resolveChunkableEntryCollection({
       writes: valueChunkWrites,
       categoryId: chunkCategory,
       publishedCollections: entryCollections,
-      // The enclosing dispatcher owns the convention. A legacy or descriptor-free child nested below
-      // a kernel route must not re-enable the compatibility fallback.
-      convention,
       // Compatibility for a descriptor-free historical publisher only.
-      legacyFallback: legacyNamedJobEventCollectionFallback(
-        legacyGroups, permitsLegacyNamedValueChunkFallback(legacyGroups, convention),
-      ),
+      legacyFallback: legacyNamedJobEventCollectionFallback(legacyGroups),
     });
     const blockSize = nestedEntryAbi?.blockLayout?.blockSize
     ?? llc.blockLayout?.blockSize
     ?? 5;
     const physicalEntrySlot = (
       nestedEntryAbi as { physicalEntrySlots?: number[] } | undefined
-    )?.physicalEntrySlots?.[0]
-    ?? (llc.compilerRoute as { physicalEntrySlots?: number[] } | undefined)
-      ?.physicalEntrySlots?.[0]
-    ?? (llc.externalContract?.inner.artifact.messageBus?.handlers?.find(
-      (handler: { name?: string }) => handler.name === llc.functionName,
-    ) as { physicalEntrySlots?: number[] } | undefined)?.physicalEntrySlots?.[0];
+    )?.physicalEntrySlots?.[0];
     // The covenant addresses its entry output as INPUTINDEX + the published block-slot offset of that
     // entry (see emitEntryOutputIndex). `blockSize` is the coordinate just PAST the block, so using it
     // as an offset names a trailing slice instead of the entry slot whenever the block carries any slot

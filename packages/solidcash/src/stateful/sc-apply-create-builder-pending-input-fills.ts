@@ -9,7 +9,6 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -19,7 +18,6 @@ import {
 import {
   groupLayoutTrailingBase,
   inheritWriterBatchPlan,
-  inheritWriterBatchWitnesses,
   isWriterBatchWitnessName,
   materializedPredOutBase,
   remapInsertPredOuts,
@@ -39,7 +37,6 @@ export type ApplyCreateBuilderPendingInputFillsResult = {
  */
 export function applyCreateBuilderPendingInputFills(params: {
   builder: StatefulTransactionBuilder;
-  overrides: any;
   functionName: string;
   entryAbiFunction: AbiFunction | undefined;
   externalCallUtxoGroups: ExternalCallUtxoGroup[];
@@ -54,8 +51,7 @@ export function applyCreateBuilderPendingInputFills(params: {
 }): ApplyCreateBuilderPendingInputFillsResult {
   const {
     builder,
-    overrides,
-    entryAbiFunction,
+
     externalCallUtxoGroups,
     lowLevelCallUtxoGroups,
     pendingDynamicChunkInputFills,
@@ -78,7 +74,7 @@ export function applyCreateBuilderPendingInputFills(params: {
       if (target !== undefined && inputIndex < 0) {
         throw new Error('Selected dynamic-storage chunk input is absent from the finalized transaction');
       }
-      const next = BigInt(inputIndex < 0 ? -1 : (overrides?.blockBase ?? 0) + inputIndex);
+      const next = BigInt(inputIndex < 0 ? -1 : inputIndex);
       if (fill.group.internalArgs?.__internal__dynamicChunkInputBase === next) continue;
       fill.group.refreshInternalArgs({ __internal__dynamicChunkInputBase: next });
       changed = true;
@@ -152,10 +148,7 @@ export function applyCreateBuilderPendingInputFills(params: {
     }
     for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined) continue;
-      if (!isCompilerDescribedMintingBandWriter(
-        group, true,
-        (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
-      )) continue;
+      if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
       const master = builder.findMintingInputIndex(group.categoryId);
       if (master < 0) continue;
       const band = builder.getChunkableValueWriteBand();
@@ -262,18 +255,14 @@ export function applyCreateBuilderPendingInputFills(params: {
           (candidate.sharedGroupIndex ?? index) === physicalIdx
         && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
           || (candidate.plannedEntryInserts?.length ?? 0) > 0
-          || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
-            .some(([name]) => isWriterBatchWitnessName(name))));
+          || Object.keys(candidate.internalArgs ?? {}).some((name) => isWriterBatchWitnessName(name))));
         for (const writer of writers) {
           if (!writerBatchPlanMatchesPhysicalCarrier(fill.tokenGroup, writer)) continue;
           inheritWriterBatchPlan(fill.tokenGroup, writer);
         }
         const hasPred = (fill.tokenGroup.batchPredecessorOutputs?.length ?? 0) > 0
-        || Object.entries({
-          ...fill.tokenGroup.internalArgs,
-          ...fill.tokenGroup.compilerRoute?.internalArgs,
-        }).some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
-          && typeof value === 'bigint' && value >= 0n);
+        || Object.entries(fill.tokenGroup.internalArgs ?? {}).some(([name, value]) => (
+          /^__internal__vmapBatchPredOut_\d+$/.test(name) && typeof value === 'bigint' && value >= 0n));
         if (hasPred && tokenMaster >= 0) {
           fill.tokenGroup.relocatedPredOutBase = materializedPredOutBase(
             fill.tokenGroup,
@@ -285,8 +274,7 @@ export function applyCreateBuilderPendingInputFills(params: {
       // INSERT P' sits at the participant's first live trailing slot. View tails are packed after that
       // band; do not push PredOut past them (that lands on a SCID / OP_TRUE).
         const predBase = fill.tokenGroup.relocatedPredOutBase;
-        const tokenFn = fill.tokenGroup.compilerRoute?.abiFunction
-        ?? (fill.tokenGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        const tokenFn = (fill.tokenGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((fn) => fn.name === fill.tokenGroup!.functionName
             || fn.name === fill.tokenGroup!.logicalFunctionName);
         const insertBudget = Math.max(1, fill.tokenGroup.batchPredecessorOutputs?.length ?? 0);
@@ -299,9 +287,7 @@ export function applyCreateBuilderPendingInputFills(params: {
           .filter((input: any) => /^__internal__vmapBatchPredOut_\d+$/.test(input.name))
           .flatMap((input: any) => {
             const current = writerGroup?.internalArgs?.[input.name]
-            ?? writerGroup?.compilerRoute?.internalArgs?.[input.name]
-            ?? fill.tokenGroup?.internalArgs?.[input.name]
-            ?? fill.tokenGroup?.compilerRoute?.internalArgs?.[input.name];
+            ?? fill.tokenGroup?.internalArgs?.[input.name];
             return typeof current === 'bigint' ? [{ name: input.name, value: current }] : [];
           });
         const remapped = remapInsertPredOuts(
@@ -315,15 +301,6 @@ export function applyCreateBuilderPendingInputFills(params: {
           ...fill.tokenGroup.internalArgs,
           ...remapped,
         };
-        if (fill.tokenGroup.compilerRoute) {
-          fill.tokenGroup.compilerRoute = {
-            ...fill.tokenGroup.compilerRoute,
-            internalArgs: inheritWriterBatchWitnesses(
-              fill.tokenGroup.compilerRoute.internalArgs,
-              remapped,
-            ),
-          };
-        }
       }
       fill.tokenGroup?.refreshInternalArgs?.(tokenUpdates);
     }

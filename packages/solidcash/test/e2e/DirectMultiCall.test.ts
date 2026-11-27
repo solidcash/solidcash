@@ -13,10 +13,10 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 /**
  * Direct multi-call (docs/wip/call-records/DESIGN.md, sections 3, 4 and 7): a direct caller's calls to one callee
  * run in one spend of the callee's master through its multi-call entry, each call reading its own frame's record.
- * Every contract here is a direct compile, and no transaction carries a message-bus input.
+ * Every contract here is a direct compile.
  */
 
-const DIRECT = { forceStateful: true, messageBus: false, evmCompat: true, suppressWarnings: true } as const;
+const DIRECT = { forceStateful: true, evmCompat: true, suppressWarnings: true } as const;
 const CALLEE = { ...DIRECT, callBatch: true } as const;
 const CALL_BATCH = { selector: '53434442' };
 const PRAGMA = 'pragma solidity ^0.8.0;\n';
@@ -240,11 +240,6 @@ const edges = (builder: TransactionBuilder, categoryId: string): number => build
   .filter((output) => output.token !== undefined && binToHex(output.token.category) === categoryId
     && binToHex(output.lockingBytecode) === '5161').length;
 
-/** (f) Inputs running a message-bus route: none, in every transaction here. */
-const busInputs = (builder: TransactionBuilder): string[] => builder.inputs.flatMap((input) => (
-  'contract' in input.unlocker && input.unlocker.abiFunction.name.startsWith('__message_bus')
-    ? [input.unlocker.abiFunction.name] : []));
-
 describe('direct multi-call', () => {
   it('(a) reads each iteration of a loop over one callee in one spend, for 0, 1 and 2 iterations', async () => {
     const provider = createTestProvider();
@@ -255,7 +250,6 @@ describe('direct multi-call', () => {
     await source.call.seed(0n, 10n).send();
 
     const collectorArtifact = compileString(NUMBER_COLLECTOR, DIRECT);
-    expect(collectorArtifact.messageBus).toBeUndefined();
     expect(collectorArtifact.abi.find((fn) => fn.name === 'collect')!.externalCalls!
       .map((call) => [call.functionName, call.callOrdinal])).toEqual([
       ['size', { group: 0, counted: true }], ['read', { group: 0, counted: true }],
@@ -270,7 +264,6 @@ describe('direct multi-call', () => {
     const builder = await collector.call.collect(0n).build() as TransactionBuilder;
     expect(masterSpends(builder, 'NumberSource')).toEqual(['callBatch']);
     expect(records(builder, source.categoryId)).toBe(3);
-    expect(busInputs(builder)).toEqual([]);
     expect(vmAccepts(builder)).toBe(true);
   }, 300_000);
 
@@ -280,7 +273,6 @@ describe('direct multi-call', () => {
     const values = await deploy(provider, valuesArtifact, [], {});
     for (const [index, value] of [11n, 22n, 33n].entries()) await values.call.put(BigInt(index), value).send();
     const readerArtifact = compileString(READER, DIRECT);
-    expect(readerArtifact.messageBus).toBeUndefined();
     const reader = await deploy(provider, readerArtifact, [lockOf(values)], {}, { IValues: values });
 
     await expect(reader.call.many(0n, 0n).staticCall()).resolves.toEqual([]);
@@ -292,7 +284,6 @@ describe('direct multi-call', () => {
     const builder = await reader.call.many(0n, 3n).build() as TransactionBuilder;
     expect(masterSpends(builder, 'Values')).toEqual(['callBatch']);
     expect(records(builder, values.categoryId)).toBe(3);
-    expect(busInputs(builder)).toEqual([]);
     expect(vmAccepts(builder)).toBe(true);
   }, 300_000);
 
@@ -301,7 +292,6 @@ describe('direct multi-call', () => {
     // Compiled together, the callee takes its multi-call entry from the caller that repeats calls to it.
     const artifacts = compileStringMulti(`${PRAGMA}${BOOK_INTERFACE}${BOOK}${SPREAD}`, DIRECT);
     expect(artifacts.Book.callBatch).toEqual(CALL_BATCH);
-    expect(artifacts.Spread.messageBus).toBeUndefined();
     expect(artifacts.Spread.abi.find((fn) => fn.name === 'spread')!.externalCalls!
       .map((call) => [call.functionName, call.callOrdinal])).toEqual([
       ['totalOf', { group: 0, ordinal: 0 }], ['priceOf', { group: 0, ordinal: 1 }],
@@ -317,7 +307,6 @@ describe('direct multi-call', () => {
     const builder = await spread.call.spread(1n, 2n).build() as TransactionBuilder;
     expect(masterSpends(builder, 'Book')).toEqual(['callBatch']);
     expect(records(builder, book.categoryId)).toBe(3);
-    expect(busInputs(builder)).toEqual([]);
     expect(vmAccepts(builder)).toBe(true);
 
     await spread.call.spread(1n, 2n).send();
@@ -329,7 +318,6 @@ describe('direct multi-call', () => {
     const sinkArtifact = compileString(SINK, CALLEE);
     const sink = await deploy(provider, sinkArtifact, [], { total: 0n });
     const coordinatorArtifact = compileString(COORDINATOR, DIRECT);
-    expect(coordinatorArtifact.messageBus).toBeUndefined();
     const coordinator = await deploy(
       provider, coordinatorArtifact, [lockOf(sink)], { observed: 0n }, { ISink: sink },
     );
@@ -338,7 +326,6 @@ describe('direct multi-call', () => {
     const builder = await coordinator.call.runReturning([2n, 0n, 3n]).build() as TransactionBuilder;
     expect(masterSpends(builder, 'Sink')).toEqual(['callBatch']);
     expect(records(builder, sink.categoryId)).toBe(2);
-    expect(busInputs(builder)).toEqual([]);
     expect(vmAccepts(builder)).toBe(true);
     await coordinator.call.runReturning([2n, 0n, 3n]).send();
     expect((await coordinator.getState()).observed).toBe(23n);
@@ -346,7 +333,6 @@ describe('direct multi-call', () => {
     // One reached call keeps the standalone spend, with the reached iteration's own argument.
     const single = await coordinator.call.runReturning([0n, 0n, 3n]).build() as TransactionBuilder;
     expect(masterSpends(single, 'Sink')).toEqual(['echo']);
-    expect(busInputs(single)).toEqual([]);
     expect(vmAccepts(single)).toBe(true);
     await coordinator.call.runReturning([0n, 0n, 3n]).send();
     expect((await coordinator.getState()).observed).toBe(3n);
@@ -389,7 +375,6 @@ describe('direct multi-call', () => {
     )!);
     expect(recordCommitments(builder, values.categoryId).map((record) => binToHex(parseCallRecord(record)!.digest)))
       .toEqual([0n, 2n, 1n, 3n].map((index, ordinal) => digestOf(index, ordinal)));
-    expect(busInputs(builder)).toEqual([]);
     expect(vmAccepts(builder)).toBe(true);
 
     await pairs.call.pairs(2n).send();
@@ -403,7 +388,6 @@ describe('direct multi-call', () => {
     expect(counterArtifact.callBatch).toEqual(CALL_BATCH);
     const counter = await deploy(provider, counterArtifact, [], { count: 0n });
     const tallyArtifact = compileString(TALLY, DIRECT);
-    expect(tallyArtifact.messageBus).toBeUndefined();
     const tally = await deploy(provider, tallyArtifact, [lockOf(counter)], { total: 0n }, { ICounter: counter });
     return { counter, tally, counterArtifact, tallyArtifact };
   }
@@ -417,7 +401,6 @@ describe('direct multi-call', () => {
     const builder = await tally.call.tally(3n).build() as TransactionBuilder;
     expect(masterSpends(builder, 'Counter')).toEqual(['callBatch']);
     expect(records(builder, counter.categoryId)).toBe(3);
-    expect(busInputs(builder)).toEqual([]);
     const master = builder.inputs.findIndex((input) => 'contract' in input.unlocker
       && input.unlocker.abiFunction.name === 'callBatch');
     expect(master).toBeGreaterThanOrEqual(0);
@@ -452,7 +435,6 @@ describe('direct multi-call', () => {
     const commitments = recordCommitments(builder, counter.categoryId).map((record) => binToHex(record));
     expect(commitments).toHaveLength(3);
     expect(commitments.slice(0, 2)).toEqual([voidRecord(2n, 0), voidRecord(5n, 1)]);
-    expect(busInputs(builder)).toEqual([]);
     expect(vmAccepts(builder)).toBe(true);
 
     await tally.call.bump(2n, 5n).send();
@@ -485,7 +467,6 @@ describe('direct multi-call', () => {
     const builder = await tally.call.around(5n).build() as TransactionBuilder;
     expect(masterSpends(builder, 'Counter')).toEqual(['callBatch']);
     expect(records(builder, counter.categoryId)).toBe(3);
-    expect(busInputs(builder)).toEqual([]);
     expect(vmAccepts(builder)).toBe(true);
 
     await tally.call.around(5n).send();
@@ -508,7 +489,6 @@ describe('direct multi-call', () => {
     const builder = await mixed.call.run(2n).build() as TransactionBuilder;
     expect(masterSpends(builder, 'Counter')).toEqual(['callBatch']);
     expect(edges(builder, mixed.categoryId)).toBe(2);
-    expect(busInputs(builder)).toEqual([]);
     expect(vmAccepts(builder)).toBe(true);
 
     await mixed.call.run(2n).send();

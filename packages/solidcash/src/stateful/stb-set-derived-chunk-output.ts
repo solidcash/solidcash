@@ -21,7 +21,6 @@ export interface SetDerivedChunkOutputHost {
   readonly allInputs: readonly UnlockableUtxo[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly derivedChunkOutputs: Map<number, DerivedChunkOutputObservation>;
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   valueChunkWriteCategorySelection(): ValueChunkWriteCategorySelection;
   getLowLevelCallMasterInputIndex(groupIndex: number): number;
   rememberJobEventsChunks(
@@ -33,7 +32,7 @@ export interface SetDerivedChunkOutputHost {
 /**
  * Reconcile a probe/compiler observation into derivedChunkOutputs: resolve category, refuse minting/
  * delegate false pins, relocate same resource-part, prefer authenticated commitments, and remember
- * non-kernel jobEvents chunk runs.
+ * non-journal jobEvents chunk runs.
  */
 export function setDerivedChunkOutput(
   host: SetDerivedChunkOutputHost,
@@ -153,7 +152,7 @@ export function setDerivedChunkOutput(
   if (!ownedChunk.fixedIndex && valueChunkPin && ownedChunk.commitment.length >= 3
     && ownedChunk.commitment !== '00' && !isEmptyValueChunkCommitment(ownedChunk.commitment)) {
     const categoryId = resolvedCategoryId;
-    if (host.messageBusConvention !== 'kernel-row-loop' || ownedChunk.resourceIdentity === undefined) {
+    {
       host.rememberJobEventsChunks(categoryId, [
         ...host.derivedChunkOutputs.values(),
       ].filter((entry) => (entry.categoryId ?? host.categoryId) === categoryId

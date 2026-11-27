@@ -13,7 +13,7 @@ import {
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { generateLibauthSourceOutputs, scriptToLockingBytecode } from '../utils.js';
-import { isCompilerDescribedRouteEventCommitment } from './compiler-described-route-event.js';
+import { isCompilerDescribedEventCommitment } from './compiler-described-event.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import {
@@ -107,9 +107,8 @@ export function learnFinalizedDelegateEvents(
     );
     const owner = owners.find((group) => group.sharedGroupIndex === undefined) ?? owners[0];
     if (!owner) continue;
-    const fn = delegate.compilerRoute?.abiFunction
-      ?? (delegate.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
-        ?.find((candidate) => candidate.name === delegate.functionName);
+    const fn = (delegate.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
+      ?.find((candidate) => candidate.name === delegate.functionName);
     const eventSlots = fn?.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
     const emits = fn?.emits ?? [];
     if (eventSlots.length === 0 || emits.length === 0) continue;
@@ -137,7 +136,7 @@ export function learnFinalizedDelegateEvents(
         const actual = String(builder.outputs[outputIndex]?.token?.nft?.commitment ?? '');
         const commitment = observations.get(outputIndex)
           ?? extractExpectedOutputCommitmentFromTrace(trace, outputIndex, actual);
-        if (!isCompilerDescribedRouteEventCommitment(commitment, {
+        if (!isCompilerDescribedEventCommitment(commitment, {
           compilerOwnedEventSlot: true,
           eventSignature: emit.eventSignature,
         })) continue;
@@ -261,10 +260,8 @@ export function applyLearnedWriterEvents(
           blockSize: groupLayoutBlockSize(group),
           relocatedPredOutBase: group.relocatedPredOutBase,
           batchPredecessorOutputs: group.batchPredecessorOutputs,
-          predOutArgs: Object.fromEntries(Object.entries({
-            ...group.compilerRoute?.internalArgs,
-            ...group.internalArgs,
-          }).filter(([name]) => /^__internal__vmapBatchPredOut_\d+$/.test(name))
+          predOutArgs: Object.fromEntries(Object.entries(group.internalArgs ?? {})
+            .filter(([name]) => /^__internal__vmapBatchPredOut_\d+$/.test(name))
             .map(([name, value]) => [name, String(value)])),
           learned: learned ? {
             eventSignature: learned.eventSignature,

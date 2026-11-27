@@ -15,7 +15,7 @@ const creator = (body: string, hook?: string): unknown => compileString(`${P} ${
 } as never);
 const journal = (hook?: string): any => compileString(`${P} contract C { mapping(int => int) m; int n;
   constructor() { m[1] = 2; n = m[1]; } function f() public { n = n + 1; } }`, {
-  deployer: true, messageBus: false, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
+  deployer: true, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
 } as never);
 
 describe('O10: every check of a deployer `new` site, and its value in every conservation check', () => {
@@ -50,7 +50,7 @@ describe('O9: the journal sites', () => {
 
   const fields = (hook?: string): any => compileString(`${P} contract C { struct S { uint64 a; bool c; } mapping(int => S) m;
     uint64 n; constructor() { m[1].a = 2; m[1].c = true; n = m[1].a; } function f() public { n = n + 1; } }`, {
-    deployer: true, messageBus: false, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
+    deployer: true, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
   } as never);
 
   it('compiles a constructor whose field writes each take the value they change from the journal', () => {
@@ -72,7 +72,7 @@ describe('O9: the journal sites', () => {
 describe('O2: every step of create, and V grown only by event pins', () => {
   const events = (hook?: string): any => compileString(`${P} contract C { int n; event E(int v);
     constructor() { n = 1; emit E(7); } function f() public { n = n + 1; } }`, {
-    deployer: true, messageBus: false, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
+    deployer: true, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
   } as never);
 
   it('compiles a create that emitted every step and pinned every event', () => {
@@ -93,7 +93,7 @@ describe('O2: every step of create, and V grown only by event pins', () => {
 describe('O7: an OP_INPUTINDEX in genesis mode passes only with a reason from A5\'s list (B7.6, B7.14)', () => {
   const plain = (body: string, hook?: string): any => compileString(`${P} contract C { int n; bytes32 h;
     constructor() { ${body} } function f() public { n = n + 1; } }`, {
-    deployer: true, messageBus: false, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
+    deployer: true, ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
   } as never);
 
   it('keeps the reads A5 lists: the source\'s own input, which at birth is the deployer coin, its lock and code', () => {
@@ -192,8 +192,7 @@ describe('O3: every arm but __construct of a marked creator checks its stack and
 describe('O5 and O6: record-sound callees', () => {
   const callee = (hook?: string): unknown => compileString(`${P} contract T { int n;
     function f(int x) external returns (int) { n = x; return n; }
-    function g() public { n = n + 1; } }`, {
-    messageBus: false, genesisCalls: true,
+    function g() public { n = n + 1; } }`, { genesisCalls: true,
     ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
   });
 
@@ -210,7 +209,7 @@ describe('O5 and O6: record-sound callees', () => {
     const reverting = `${P} contract T { int n;
       function f(int x) external returns (int) { n = x; return n; }
       function g() public returns (int) { n = 1; revert(); } }`;
-    expect((compileString(reverting, { messageBus: false, genesisCalls: true }) as { recordSound?: boolean })
+    expect((compileString(reverting, { genesisCalls: true }) as { recordSound?: boolean })
       .recordSound).toBe(true);
     const bundle = compileStringSplit(
       'contract BrokenRewarder { uint touched;'
@@ -224,10 +223,9 @@ describe('O5 and O6: record-sound callees', () => {
   it('O5: still stops when an arm that ends in a revert may return before it', () => {
     const mayReturn = `${P} contract T { int n;
       function g(int x) public returns (int) { if (x > 0) { n = x; return n; } revert(); } }`;
-    expect((compileString(mayReturn, { messageBus: false, genesisCalls: true }) as { recordSound?: boolean })
+    expect((compileString(mayReturn, { genesisCalls: true }) as { recordSound?: boolean })
       .recordSound).toBe(true);
-    expect(() => compileString(mayReturn, {
-      messageBus: false, genesisCalls: true, __deployerTestBox: { obligationHook: 'skip-carrier-count' },
+    expect(() => compileString(mayReturn, { genesisCalls: true, __deployerTestBox: { obligationHook: 'skip-carrier-count' },
     } as never)).toThrow(/O5: the arm 'g' does not count/);
   });
 
@@ -237,8 +235,7 @@ describe('O5 and O6: record-sound callees', () => {
 
   it('O6: stops when a body that also runs as a multi-call frame does not require its genesis call empty there', () => {
     const framed = (hook?: string): unknown => compileString(`${P} contract T { int n;
-      function f(int x) external returns (int) { n = x; return n; } }`, {
-      messageBus: false, callBatch: true,
+      function f(int x) external returns (int) { n = x; return n; } }`, { callBatch: true,
       ...(hook === undefined ? {} : { __deployerTestBox: { obligationHook: hook } }),
     } as never);
     expect((framed() as { callBatch?: unknown }).callBatch).toEqual({ selector: '53434442' });

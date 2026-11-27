@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
 
 const options = {
-  forceStateful: true, messageBus: true, messageBusKernel: true,
-  messageBusGraphContext: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+  forceStateful: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
 } as const;
 
 const compilePay = (body: string): ReturnType<typeof compileString> => compileString(`contract Vault() {
@@ -17,32 +16,6 @@ const compilePay = (body: string): ReturnType<typeof compileString> => compileSt
 }`, options);
 
 describe('fixed BCH transfer struct projections', () => {
-  it('preserves known fields when a sibling becomes opaque', () => {
-    const artifact = compilePay('payment.marker = tx.locktime;');
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
-      .toMatchObject({ eligible: true, transfers: [{
-        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
-        amountRecipe: { kind: 'handlerInput', inputIndex: 1 },
-      }] });
-  });
-
-  it('joins a changed field in source order while retaining its sibling', () => {
-    const artifact = compilePay('if (alternate) payment.amount = amount + 1; payment.marker = tx.locktime;');
-    // `amount + 1` already has the int256 field width, so the true arm is the addition. The false arm keeps
-    // the authenticated input, and the sibling marker write does not drop either recipe.
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
-      .toMatchObject({ eligible: true, transfers: [{
-        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
-        amountRecipe: { kind: 'conditional', condition: { kind: 'handlerInput', inputIndex: 2 },
-          ifTrue: {
-            kind: 'binary', operator: '+', resultType: 'int256',
-            left: { kind: 'handlerInput', inputIndex: 1 },
-            right: { kind: 'intLiteral', value: '1' },
-          },
-          ifFalse: { kind: 'handlerInput', inputIndex: 1 } },
-      }] });
-  });
-
   it('does not retain a field after an opaque overwrite or loop mutation', () => {
     for (const body of ['payment.amount = tx.locktime;',
       'while (payment.amount < amount + 3) { payment.amount = payment.amount + 1; }']) {
@@ -90,24 +63,6 @@ describe('fixed BCH transfer struct projections', () => {
     }`, options);
     expect(artifact.abi.find((handler) => handler.name === 'pay')?.transfers?.[0]?.amountRecipe)
       .toBeUndefined();
-  });
-
-  it('projects nested fields and fixed-array elements independently of dynamic siblings', () => {
-    const artifact = compileString(`contract Vault() {
-      struct Payment { bytes25 recipient; int[2] amounts; string note; }
-      struct Envelope { Payment payment; int marker; }
-      function pay(bytes25 recipient, int amount, string note) public {
-        Envelope memory envelope = Envelope(Payment(recipient, [amount, 1], note), 0);
-        envelope.marker = tx.locktime;
-        this.transfer(envelope.payment.recipient, envelope.payment.amounts[0]);
-        require(true);
-      }
-    }`, options);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
-      .toMatchObject({ eligible: true, transfers: [{
-        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
-        amountRecipe: { kind: 'handlerInput', inputIndex: 1 },
-      }] });
   });
 
   it('does not reuse a fixed-array projection after an element write', () => {

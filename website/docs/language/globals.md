@@ -56,7 +56,7 @@ builder.addInput(utxo, unlocker, { sequence: oneTimeUnit });
 
 In a stateful contract, `this.age` checks the contract's master input. Set that input's sequence on the call with
 `setSequence()`, for example `await sc.call.claim().setSequence(144).send()`. A value with the disable flag (bit 31)
-is refused. Only an ordinary call takes it: split and merge functions and composed calls (message-bus batches and
+is refused. Only an ordinary call takes it: split and merge functions and composed calls (multi-call batches and
 typed callbacks) refuse a call that sets it. `this.age` inside a co-spent callee checks that callee's own master,
 which this option does not reach.
 

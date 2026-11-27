@@ -38,7 +38,7 @@ function settleDirect(artifact: Artifact, args: readonly Uint8Array[]): boolean 
 }
 
 const P = 'pragma solidcash ^0.52.0;';
-const compile = (members: string): Artifact => compileString(`${P} contract C { ${members} }`, { messageBus: false });
+const compile = (members: string): Artifact => compileString(`${P} contract C { ${members} }`, {});
 
 /** A `count ++ tight-elements` array blob for a fixed-width numeric element type. */
 function arrayBlob(count: number, elementWidth: number, ...elements: bigint[]): Uint8Array {

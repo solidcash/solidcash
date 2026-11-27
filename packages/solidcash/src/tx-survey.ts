@@ -1,5 +1,5 @@
 /**
- * One JSON line per broadcast transaction, appended to the file `SOLIDCASH_TX_SURVEY` names (docs/kernel-diagnostics.md).
+ * One JSON line per broadcast transaction, appended to the file `SOLIDCASH_TX_SURVEY` names (docs/compiler-diagnostics.md).
  *
  * The line states what a real chain weighs the transaction by, whatever limits the network it was sent on relaxes:
  * its byte length, its inputs and outputs, and for every input the length of its unlocking and locking bytecode,

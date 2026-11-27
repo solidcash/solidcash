@@ -8,8 +8,8 @@
 import { URL } from 'url';
 import { getSubdirectories, readCashFiles } from '../test-utils.js';
 import * as Errors from '../../src/Errors.js';
-import { compileString as _csRawSolidc } from '../../src/index.js';
 import { compileString } from '../direct-compile.js';
+import { compileString as compileSolidc } from '../../src/index.js';
 import type { SolidCashErrorListener } from '../../src/index.js';
 
 const VALID_SOURCE = `
@@ -29,56 +29,6 @@ describe('Compiler', () => {
       });
     });
 
-    it('keeps an explicit opt-in enabled while refusing an unbounded repeated token transfer', () => {
-      const artifact = _csRawSolidc(`contract RepeatedTokenContainerSend() {
-        mapping(int => int) m;
-        function sendRepeated(int n, bytes32 category, bytes to) public {
-          for (int i = 0; i < n; i = i + 1) {
-            this.m[i] = 1;
-            this.tokens[category].transfer(to, 1);
-          }
-          require(true);
-        }
-      }`, { messageBus: true });
-
-      expect(artifact.messageBus?.available).toBe(false);
-      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sendRepeated'))
-        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-      expect(artifact.compiler.options?.messageBus).toBe(true);
-    });
-
-    it('infers message-bus synthesis without an opt-in flag', () => {
-      // Inference keys off a source-level graph edge, so the subject needs one; a graph-free contract is
-      // narrowed to direct-only by design (see MessageBusSelection.test.ts).
-      const source = `interface ISink { function set(int value) external; }
-      contract Caller(address sink) {
-        int calls;
-        function run(int value) public {
-          ISink(sink).set(value);
-          calls = calls + 1;
-          require(value >= 0);
-        }
-      }`;
-
-      const inferred = _csRawSolidc(source);
-      const legacyExplicit = _csRawSolidc(source, { messageBus: true });
-
-      expect(inferred.messageBus).toBeDefined();
-      expect(legacyExplicit.bytecode).toBe(inferred.bytecode);
-      expect(legacyExplicit.messageBus).toEqual(inferred.messageBus);
-      expect(legacyExplicit.compiler.options).toEqual(inferred.compiler.options);
-    });
-
-    it('does not advertise a participant route without a stateful master identity', () => {
-      const source = 'contract Stateless() { function check(int x) { require(x > 0); } }';
-      const inferred = _csRawSolidc(source);
-      const direct = _csRawSolidc(source, { messageBus: false });
-
-      expect(inferred.stateLayout).toBeUndefined();
-      expect(inferred.messageBus).toBeUndefined();
-      expect(inferred.bytecode).toBe(direct.bytecode);
-      expect(inferred.functionBodies).toEqual(direct.functionBodies);
-    });
   });
 
   describe('Compilation errors', () => {
@@ -148,7 +98,7 @@ describe('Compiler', () => {
         },
       };
 
-      const artifact = _csRawSolidc(VALID_SOURCE, { enforceLocktimeGuard: false, errorListener });
+      const artifact = compileSolidc(VALID_SOURCE, { enforceLocktimeGuard: false, errorListener });
 
       expect(artifact.compiler.options).toEqual({
         enforceFunctionParameterTypes: true,
@@ -156,8 +106,6 @@ describe('Compiler', () => {
         enforceFinalRequire: true,
         allowUnsafeOperations: false,
         commitmentLimit: 128,
-        // Graph-free source: auto selection narrows to direct-only and the artifact publishes the resolved value.
-        messageBus: false,
       });
     });
   });

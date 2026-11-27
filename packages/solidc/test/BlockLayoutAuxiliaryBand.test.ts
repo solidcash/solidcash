@@ -92,7 +92,7 @@ describe('block layout: a recovery loop reads its triples after the block', () =
   const P = 'pragma solidcash ^0.52.0;';
   const compileT = (body: string, params = 'pubkey owner'): ReturnType<typeof compileString> => compileString(
     `${P} contract T(${params}) { int n; mapping(int => int) m; ${body} }`,
-    { messageBus: false, primaryContractName: 'T' } as never,
+    { primaryContractName: 'T' } as never,
   );
   const loopArgs = 'bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k';
   const recover = (projection = 'ecrecoverPubKey', compare = '== owner'): string => (

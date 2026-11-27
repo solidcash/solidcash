@@ -73,7 +73,7 @@ describe('B6.4: the code tail (O4)', () => {
 
 describe('B6.4: record-sound classification and the marker', () => {
   it('a record-sound contract ends with the marker whose flag byte has bit 1', () => {
-    const artifact = compileString(`${P} contract C { int s; function v(int x) { s = s + x; } }`, { messageBus: false });
+    const artifact = compileString(`${P} contract C { int s; function v(int x) { s = s + x; } }`);
     expect(artifact.recordSound).toBe(true);
     const script = scriptToBytecode(asmToScript(artifact.bytecode));
     expect(markerAt(script, script.length - 23)).toBe(true);
@@ -81,8 +81,7 @@ describe('B6.4: record-sound classification and the marker', () => {
   });
 
   it('a contract with an unsafe entry is not record-sound and carries no marker', () => {
-    const artifact = compileString(`${P} contract C { int s; function a() { s = s + 1; } function u() unsafe { s = s + 2; } }`,
-      { messageBus: false });
+    const artifact = compileString(`${P} contract C { int s; function a() { s = s + 1; } function u() unsafe { s = s + 2; } }`);
     expect(artifact.recordSound).toBe(false);
     const script = scriptToBytecode(asmToScript(artifact.bytecode));
     expect(markerAt(script, script.length - 23)).toBe(false);
@@ -94,28 +93,22 @@ describe('B6.4: record-sound classification and the marker', () => {
       `${P} contract C { int s; function a() { s = s + 1; } fallback() external { s = s + 2; } }`,
     ];
     for (const source of cases) {
-      const artifact = compileString(source, { messageBus: false, allowUnsafeOperations: true });
+      const artifact = compileString(source, { allowUnsafeOperations: true });
       expect(artifact.recordSound).toBe(false);
       const script = scriptToBytecode(asmToScript(artifact.bytecode));
       expect(markerAt(script, script.length - 23)).toBe(false);
     }
   });
 
-  it('a message-bus route makes the master unsound', () => {
-    const artifact = compileString(`${P} contract C { int s; function a() { s = s + 1; } function b() { s = s + 2; } }`,
-      { messageBus: true });
-    expect(artifact.recordSound).toBe(false);
-  });
-
   it('a non-record-sound contract is byte-identical with genesisCalls on and off', () => {
     const source = `${P} contract C { int s; function u() unsafe { s = s + 1; } }`;
-    const on = compileString(source, { messageBus: false, genesisCalls: true });
-    const off = compileString(source, { messageBus: false, genesisCalls: false });
+    const on = compileString(source, { genesisCalls: true });
+    const off = compileString(source, { genesisCalls: false });
     expect(on.bytecode).toBe(off.bytecode);
   });
 
   it('a contract with no record-publishing entry has no recordSound field', () => {
-    const artifact = compileString(`${P} contract C { int s; function u() unsafe { s = s + 1; } }`, { messageBus: false });
+    const artifact = compileString(`${P} contract C { int s; function u() unsafe { s = s + 1; } }`);
     expect(artifact.recordSound).toBeUndefined();
   });
 });
@@ -126,7 +119,7 @@ describe('B6.4 (O5): the carrier count', () => {
   it('accepts the honest run and refuses a second carrier of the contract category', async () => {
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const artifact = compileString(SOURCE, { messageBus: false });
+    const artifact = compileString(SOURCE);
     const funding = { txid: 'd1c0'.repeat(16), vout: 0, satoshis: 300000n };
     await provider.addUtxo(p2pkh.address, funding);
     const deployed = await StatefulContract.deploy(artifact, [], {

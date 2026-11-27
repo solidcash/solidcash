@@ -1,10 +1,9 @@
-import { readFileSync } from 'fs';
 import { describe, expect, it } from 'vitest';
 import {
   encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256, Opcodes,
 } from '@bitauth/libauth';
 import {
-  asmToBytecode, buildKernelCapabilitySchema, chainCategory, encodeTranscript, encodeWitnessBlock,
+  asmToBytecode, chainCategory, encodeTranscript, encodeWitnessBlock,
   FrameKind, functionSplitLoaderLock, functionSplitLoaderScript, isRejectedFunctionLoader, sha256,
   TokenCapability, validatorAddress, validatorRedeemScript, type WitnessBlock,
 } from '@solidcash/utils';
@@ -241,11 +240,6 @@ describe('split: off | size | func', () => {
     const omitted = diagnostic(() => compileStringSplit(direct, { split: 'func', suppressWarnings: true }));
     expect(omitted.code).toBe('SPLIT_FUNC_REQUIRES_FRAMED');
     expect(omitted.message).toContain("'direct'");
-    const kernel = diagnostic(() => compileStringSplit(LEDGER, {
-      split: 'func', composition: 'kernel', suppressWarnings: true,
-    }));
-    expect(kernel.code).toBe('SPLIT_FUNC_REQUIRES_FRAMED');
-    expect(kernel.message).toContain("'kernel'");
     const sized = diagnostic(() => compileStringSplit(LEDGER, { split: 'size', ...FRAMED }));
     expect(sized.code).toBe('SPLIT_SIZE_REFUSES_FRAMED');
     expect(sized.message).toContain("'framed'");
@@ -255,13 +249,10 @@ describe('split: off | size | func', () => {
     const sized = compileStringSplit(LEDGER, { split: 'size', forceSplit: true, suppressWarnings: true });
     expect(sized.format).toBe('solidcash-split-v1');
     expect(sized.manifest.algorithm).toBe('state-affinity-best-fit-v2');
-    expect(sized.root.messageBus?.available === true).toBe(false);
     const off = compileStringSplit(LEDGER, { split: 'off', suppressWarnings: true });
     const plain = compileString(LEDGER, { suppressWarnings: true });
     expect(off.contractName).toBe(plain.contractName);
     expect(off.bytecode).toBe(plain.bytecode);
-    const docs = readFileSync(new URL('../../../website/docs/compiler/large-contracts.md', import.meta.url), 'utf8');
-    expect(docs).toContain('over-cap message-bus kernel route is outside function split');
   });
 
   it('emits one salted framed shard per ABI entry, including view, pure, and external', () => {
@@ -271,9 +262,6 @@ describe('split: off | size | func', () => {
     expect(bundle.algorithm).toBe('per-entry-v1');
     expect(bundle.composition).toBe('framed');
     expect(bundle.internalCuts).toEqual([]);
-    expect(bundle.messageBus).toEqual({ available: false });
-    expect(bundle.logical.messageBus?.kernelExecutionPlans).toBeUndefined();
-    expect(bundle.logical.messageBus?.available === true).toBe(false);
     const abiEntries = bundle.abi.filter((fn) => fn.name !== 'constructor');
     expect(bundle.shards).toHaveLength(abiEntries.length);
     expect(bundle.loaders).toHaveLength(bundle.shards.length);
@@ -287,7 +275,6 @@ describe('split: off | size | func', () => {
       const script = Buffer.from(asmToBytecode(shard.artifact.bytecode)).toString('hex');
       expect(script).toContain(selectorPush(shard.selector));
       expect(script).not.toContain('0453434231');
-      expect(shard.artifact.messageBus?.kernelExecutionPlans).toBeUndefined();
       for (const other of bundle.shards) {
         if (other.selector === shard.selector) continue;
         expect(script).not.toContain(selectorPush(other.selector));
@@ -303,8 +290,6 @@ describe('split: off | size | func', () => {
     expect(loaderLocks.size).toBe(bundle.loaders.length);
     expect(isRejectedFunctionLoader('00'.repeat(35), bundle.loaders)).toBe(true);
     expect(isRejectedFunctionLoader(bundle.loaders[0]!.lock, bundle.loaders)).toBe(false);
-    const schema = JSON.stringify(buildKernelCapabilitySchema({ available: false }));
-    expect(schema).not.toMatch(/shardLock|shard-lock|functionLock/);
   });
 
   it('names the helper and emits no internal shard when the closure exceeds the cap', () => {
@@ -454,46 +439,6 @@ contract Ledger {
       const script = Buffer.from(asmToBytecode(shard.artifact.bytecode));
       expect(script.includes(emptyCommitment)).toBe(true);
     }
-  });
-
-  it('still refuses a delegate entry when a size-split bus route is requested', () => {
-    const source = `contract C(address impl) {
-      function denied(bytes input) public {
-        impl.delegatecall(input);
-        require(true);
-      }
-      function control() public { require(true); }
-    }`;
-    // Admission publishes the raw reason when the kernel catalog is off, and KERNEL_FOREIGN_DELEGATE when it is
-    // on. A size-split root is compiled with the bus off. No facet of this source admits `denied`.
-    const admitted = compileString(source, {
-      forceStateful: true, messageBus: true, messageBusKernel: false, suppressWarnings: true,
-    });
-    expect(admitted.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'atomic-delegate-context-unpreservable',
-    });
-    const catalog = compileString(source, {
-      forceStateful: true, messageBus: true, suppressWarnings: true,
-    });
-    expect(catalog.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_FOREIGN_DELEGATE',
-    });
-    const delegateSplit = compileStringSplit(source, {
-      split: 'size', forceSplit: true, messageBus: true, suppressWarnings: true,
-    });
-    expect(delegateSplit.root.messageBus?.available === true).toBe(false);
-    const moved = Object.values(delegateSplit.facets)
-      .flatMap((facet) => facet.messageBus?.handlers ?? []);
-    expect(moved.find((handler) => handler.name === 'denied' && handler.eligible === true)).toBeUndefined();
-    const bundle = compileStringSplit(`contract C() {
-      int n;
-      function left() public { this.n = 1; require(true); }
-      function right() public { this.n = 2; require(true); }
-    }`, { split: 'size', forceSplit: true, messageBus: true, suppressWarnings: true });
-    expect(bundle.root.messageBus?.available === true).toBe(false);
-    expect(Object.keys(bundle.facets).length).toBeGreaterThan(0);
   });
 
   it('keeps the historical head unless INTERNAL is admitted', () => {

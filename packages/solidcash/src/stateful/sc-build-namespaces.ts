@@ -13,7 +13,7 @@ import { addressMappingKeyCandidates } from './sc-address-mapping-key-candidates
 import {
   canonicalAbiFunctionSignature,
   visibleHandlerInputs,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
 import { decorateStateAccessorResult, indexStateAccessorValue } from './public-result.js';
 import type { DeployFunctionCall, StatefulFunctionCall, TokenContainerAccessor } from './StatefulContract.js';
@@ -108,8 +108,8 @@ export function buildNamespaces<TArtifact extends Artifact>(
       const entries = await host.getEntries(coll.name);
       const keyTypes = coll.keyTypes ?? [coll.keyType];
       const mappingKeys = keys.slice(0, keyTypes.length);
-      // A stored address key is the peer's value identity (a plain contract's physical locking bytecode, or a
-      // kernel participant's public CREATE identity). A caller may name the same contract by its logical address,
+      // A stored address key is the peer's value identity (a plain contract's physical locking bytecode, or its
+      // public CREATE identity when it has one). A caller may name the same contract by its logical address,
       // so expand each address key into its authenticated deployment aliases before comparing slots.
       const candidateRows = keyTypes.reduce<Array<Array<MappingKey>>>(
         (rows, keyType, index) => rows.flatMap((row) => {

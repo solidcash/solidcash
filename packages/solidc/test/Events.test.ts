@@ -162,9 +162,9 @@ describe('qualified event emit from a library or sibling contract', () => {
 describe('file-level event declarations', () => {
   it('resolves `emit E()` for a file-level event, byte-identical to the contract-level form', () => {
     const fileLevel = compileString('event E(uint x); contract C { function f() external { emit E(7); require(true); } }',
-      { evmCompat: true, messageBus: false });
+      { evmCompat: true });
     const contractLevel = compileString('contract C { event E(uint x); function f() external { emit E(7); require(true); } }',
-      { evmCompat: true, messageBus: false });
+      { evmCompat: true });
     expect(fileLevel.bytecode).toBe(contractLevel.bytecode);
     expect(fileLevel.events?.find((e) => e.name === 'E')?.signature).toBe(contractLevel.events?.find((e) => e.name === 'E')?.signature);
     // The proxy-implementation variant as well: an emitted file-level event makes the contract stateful.

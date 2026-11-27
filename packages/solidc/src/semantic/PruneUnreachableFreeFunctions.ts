@@ -73,7 +73,7 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
   }
 
   // Reachable = named anywhere in the contract, in any using-for binding, or transitively from a reached fn.
-  // Keep this one authority for the pruning pass and the explicit message-bus opt-out guard.
+  // Keep this one authority for the pruning pass and the symbol pass's repeated-call refusal.
   reachableFreeFunctions(
     node: SourceFileNode,
     byName = this.indexByName(node.freeFunctions ?? []),

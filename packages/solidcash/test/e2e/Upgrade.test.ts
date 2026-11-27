@@ -969,15 +969,5 @@ describe('StatefulContract.upgrade()', () => {
       const tokenArtifact = compileString(TOKEN_CONTAINER_UPGRADE, MASTER_ONLY);
       expect(tokenArtifact.stateLayout!.dataNftCount).toBe(0);
     });
-
-    // The kernel message-bus lane never synthesizes its in-place-append upgrade route for a participant that keeps
-    // records (there is no data NFT to append into), so a record-keeping participant still compiles: its direct
-    // entry migrates the data NFTs and the message-bus route simply offers no upgrade for it.
-    it('admits the kernel lane\'s compile of a contract with data NFTs', () => {
-      const artifact = compileString(DATA_NFT_UPGRADE, {
-        forceStateful: true, messageBus: true, messageBusKernel: true,
-      });
-      expect(artifact.stateLayout!.dataNftCount).toBe(1);
-    });
   });
 });

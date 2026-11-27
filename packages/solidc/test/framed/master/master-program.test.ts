@@ -8,6 +8,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { mastersRecreatedInPlaceScript } from '../../../src/framed/master/lifecycle.js';
+import { findPlaceholderOffsets } from '../../../src/framed/master/master-program.js';
 import {
   ADDRESS_SLOT_LENGTH, CATEGORY_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, assertPlaceholders, fillPlaceholders,
 } from '../../../src/framed/master/placeholders.js';
@@ -144,36 +145,21 @@ describe('a compiled framed master', () => {
     expect(contains(script, [0x82, 0x8c, 0x7f, 0x77, 0x01, 0xdf, 0x84, 0x01, 0x41, 0x88])).toBe(true);
   });
 
-  // A body's mapping access proves the journal record's clean synthetic form, whose zero successor is a 32-byte
-  // zero push. The compiled master therefore contains the reserved category pattern a third time beside the head's
-  // own two slots; the published offsets must still name the head's slots.
-  const BODY_ZERO_PUSH_SOURCE = 'pragma solidcash ^0.52.0;'
-    + ' contract Tagged {'
-    + '   mapping(string => string) tags;'
-    + '   function init() public { this.tags["DA"] = "DIGITAL_AUDIO"; require(true); }'
-    + '   function readTag(string k) public { string v = this.tags[k]; require(v.length > 0); }'
-    + ' }';
-
   it('publishes the head\'s slots when a body carries a 32-byte zero push of its own', () => {
-    const artifact = compileString(BODY_ZERO_PUSH_SOURCE, { composition: 'framed' });
+    // The head's category and validator-program-hash slots are 32-byte zero pushes, as is any a body carries. A
+    // body's pushes lie either side of the head: one on each side displaces neither published offset.
+    const artifact = compile();
     const script = scriptBytes(artifact);
     const { categoryOffset, addressOffset, templateHashOffset } = artifact.composition!.placeholders;
     expect(templateHashOffset).toBeTypeOf('number');
-    assertPlaceholders(script, artifact.composition!.placeholders);
-    // The published offsets are the head's reserved pushes, byte for byte.
-    expect(script.subarray(categoryOffset, categoryOffset + 33))
-      .toEqual(reservedPush(CATEGORY_SLOT_LENGTH));
-    expect(script.subarray(addressOffset, addressOffset + 36))
-      .toEqual(reservedPush(ADDRESS_SLOT_LENGTH));
-    expect(script.subarray(templateHashOffset!, templateHashOffset! + 33))
-      .toEqual(reservedPush(TEMPLATE_HASH_SLOT_LENGTH));
-    // The reserved category pattern genuinely recurs beyond the head's own two slots, and the third occurrence
-    // sits after the head; the published offsets sit on the head's slots regardless.
-    const occurrences = offsetsOf(script, reservedPush(CATEGORY_SLOT_LENGTH));
-    expect(occurrences.length).toBeGreaterThan(2);
-    expect(occurrences).toContain(categoryOffset);
-    expect(occurrences).toContain(templateHashOffset!);
-    expect(occurrences.some((offset) => offset > templateHashOffset!)).toBe(true);
+    const bodyPush = reservedPush(CATEGORY_SLOT_LENGTH);
+    expect(offsetsOf(script, bodyPush)).toEqual([categoryOffset, templateHashOffset]);
+    const withBodyPushes = new Uint8Array([...bodyPush, ...script, ...bodyPush]);
+    expect(findPlaceholderOffsets(withBodyPushes, true)).toMatchObject({
+      categoryOffset: categoryOffset + bodyPush.length,
+      addressOffset: addressOffset + bodyPush.length,
+      templateHashOffset: templateHashOffset! + bodyPush.length,
+    });
   });
 
   it('refuses a descriptor whose offset does not sit on a reserved push', () => {

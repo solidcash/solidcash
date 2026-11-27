@@ -45,22 +45,23 @@ const deploy = (
 describe('A12: paths and refusals', () => {
   it('an artifact without a deployer refuses viaDeployer', async () => {
     const { provider, fundingUtxo } = await funded();
-    const artifact = compileString(C, { messageBus: false });
+    const artifact = compileString(C, {});
     await expect(deploy(provider, artifact, fundingUtxo, { viaDeployer: true }))
       .rejects.toBeInstanceOf(DeployerPathError);
   });
 
   it('an unsupported deployer refuses viaDeployer and names the reason', async () => {
     const { provider, fundingUtxo } = await funded();
-    const artifact = compileString(C, { deployer: true, messageBus: true });
-    expect(artifact.deployerUnsupported).toBeDefined();
+    // A deployer exists only for a direct stateful contract.
+    const artifact = compileString(C, { deployer: true, composition: 'framed' });
+    expect(artifact.deployerUnsupported).toBe('not-stateful-direct');
     await expect(deploy(provider, artifact, fundingUtxo, { viaDeployer: true }))
       .rejects.toThrow(new RegExp(artifact.deployerUnsupported!));
   });
 
   it('a fallback case falls back to today\'s genesis with one warning', async () => {
     const { provider, fundingUtxo } = await funded();
-    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const artifact = compileString(C, { deployer: true });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await deploy(provider, artifact, fundingUtxo, { salt: Uint8Array.of(1, 2, 3) });
@@ -75,7 +76,7 @@ describe('A12: paths and refusals', () => {
 
   it('an explicit viaDeployer turns a fallback into DeployerPathError', async () => {
     const { provider, fundingUtxo } = await funded();
-    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const artifact = compileString(C, { deployer: true });
     await expect(deploy(provider, artifact, fundingUtxo, {
       salt: Uint8Array.of(1, 2, 3), viaDeployer: true,
     })).rejects.toThrow(/salt/);
@@ -83,7 +84,7 @@ describe('A12: paths and refusals', () => {
 
   it('a constructor that writes a collection never takes today\'s genesis', async () => {
     const source = `${P} contract C { mapping(int => int) m; constructor() { m[1] = 2; } function bump() { m[1] = 3; } }`;
-    const artifact = compileString(source, { deployer: true, messageBus: false });
+    const artifact = compileString(source, { deployer: true });
     expect(artifact.constructorWritesCollections).toBe(true);
     // A4.4: the deployer keeps a journal of the constructor's writes and verifies its rows, so the deployer path
     // creates C. A12 forbids today's genesis for C: it would mint rows nothing checks.
@@ -102,7 +103,7 @@ describe('A12: paths and refusals', () => {
     // DeployerCreation.e2e asserts the publication's shape; this path-table entry pins that a stated publication is
     // built rather than silently omitted.
     const { provider, fundingUtxo } = await funded();
-    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const artifact = compileString(C, { deployer: true });
     const result = await deploy(provider, artifact, fundingUtxo, { bcmr: { name: 'C' } });
     expect(result.registry).toBeDefined();
   });

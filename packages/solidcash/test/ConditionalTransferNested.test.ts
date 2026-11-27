@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { compileString as compileMessageBus } from '@solidcash/solidc';
 import { compileString } from './direct-compile.js';
 
 // A value-transfer in a NESTED/else-if branch used to CRASH codegen with an internal error ("__internal__transfer_lb_N
@@ -29,13 +28,15 @@ describe('value-transfer in a nested/else-if branch compiles (was an internal st
   it('deeply nested else-if with a single transfer at the tail', () => {
     ok('if (c==0){} else if (c==1){} else if (c==2){} else if (c==3){ dst.transfer(1000); } else if (c==4){}');
   });
-  it('the original corpus shape: mixed value/non-value external calls in a 6-branch else-if chain', () => {
+  // Only the removed message bus composed this shape; the direct convention refuses it by name. Its arms are
+  // mutually exclusive, so at most one call runs: a deferral (packages/solidc/docs/deferrals.md).
+  it('refuses the original corpus shape by name: mixed value/non-value external calls in a 6-branch else-if chain', () => {
     const src = 'interface I { function a() external pure; function b() external; function c() external payable;'
       + ' function x() external returns (uint); }'
       + ' contract C { I i = I(address(0xcafecafe)); constructor() payable {}'
       + ' function f(uint c) external returns (uint) { if (c==0) i.a(); else if (c==1) i.b(); else if (c==2) i.c();'
       + ' else if (c==3) i.c{value: 1}(); else if (c==4) i.x(); return 1 + c; } }';
-    expect(compileMessageBus(src, { evmCompat: true }).contractName).toBe('C');
+    expect(() => compileString(src, { evmCompat: true })).toThrow(/REPEATED_CALL_UNSUPPORTED/);
   });
 
   it('fails with a stable source diagnostic when a modifier guard cannot preserve a send frame', () => {

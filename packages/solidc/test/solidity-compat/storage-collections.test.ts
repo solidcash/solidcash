@@ -1111,7 +1111,7 @@ describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EA
     expect(compileString(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
       + ' function pay(uint256 id) public { ITok(jobs[id].token).transfer(msg.sender, 1);'
       + ' ITok(jobs[id].token).transfer(msg.sender, 2); require(true); } }', {
-      evmCompat: true, messageBus: true,
+      evmCompat: true,
     }).contractName).toBe('C');
   });
 });
@@ -1528,28 +1528,6 @@ describe('low-level .call target through inlined-local aliases traced to a self-
     expect(compileString(direct, {}).abi.find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn)
       ?.addressStateVar).toBe('ll_config_token');
   });
-  it('pins every conditional forceApprove fallback to the same stable state-chain target', () => {
-    const force = 'pragma solidcash >=0.8.0;'
-      + ' interface IEcho { function ping(pubkey o, sig s); } struct Config { address token; }'
-      + ' library Address { function functionCall(address target, bytes data) internal returns (bytes) {'
-      + ' bool ok, bytes ret = target.call(data); require(ok); return ret; } }'
-      + ' library Safe { using Address for address;'
-      + ' function _callBool(IEcho tok, bytes data) internal returns (bool) {'
-      + ' bool ok, bytes r = address(tok).call(data); return ok; }'
-      + ' function _callVoid(IEcho tok, bytes data) internal {'
-      + ' bytes r = address(tok).functionCall(data); require(r.length >= 0); }'
-      + ' function force(IEcho tok, bytes data) internal {'
-      + ' if (!_callBool(tok, data)) { _callVoid(tok, data); _callVoid(tok, data); } } }'
-      + ' contract C() { Config config; int calls;'
-      + ' function f(bytes data, pubkey pk, sig s) { require(checkSig(s, pk));'
-      + ' IEcho token = IEcho(config.token); Safe.force(token, data); this.calls = this.calls + 1; } }';
-    const calls = compileString(force, { messageBus: true }).abi.find((f) => f.name === 'f')?.externalCalls
-      ?.filter((call) => call.opaqueReturn) ?? [];
-    expect(calls).toHaveLength(3);
-    expect(calls.map((call) => call.addressStateVar)).toEqual([
-      'll_config_token', 'll_config_token', 'll_config_token',
-    ]);
-  });
 
 });
 
@@ -1778,49 +1756,6 @@ describe('flattening-forced mapping-value nested struct write (mapping(uint => P
     // flattened `jobs__roles[id].creator` field, so the direct and storage-pointer forms emit identical code.
     expect(bytecodeOf('jobs[id].roles.creator = msg.sender;'))
       .toBe(bytecodeOf('Post storage p = jobs[id]; p.roles.creator = msg.sender;'));
-  });
-});
-
-describe('message-bus mapping struct-field writes', () => {
-  it('derives the route key from a MappingFieldAssignNode', () => {
-    const artifact = compileString(`
-      contract C {
-        struct Record { address owner; uint16 fee; bool ready; }
-        mapping(uint256 => Record) records;
-        function set(uint256 id, address owner, uint16 fee) external {
-          records[id].owner = owner;
-          records[id].fee = fee;
-          records[id].ready = true;
-        }
-      }
-    `, { evmCompat: true, messageBus: true });
-    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set');
-    expect(handler?.eligible).toBe(true);
-    expect(handler?.batchKeyWitnesses).toEqual([{
-      routeInput: '__message_bus_key_records_0',
-      inputIndex: 0,
-      source: 'argument',
-    }]);
-  });
-
-  it('journals a push into a mapping dynamic-array value', () => {
-    const artifact = compileString(`
-      contract C {
-        struct Event { uint8 kind; bytes data; }
-        mapping(uint256 => Event[]) events;
-        function publish(uint256 id, Event memory event_) external {
-          events[id].push(event_);
-        }
-      }
-    `, {
-      evmCompat: true,
-      messageBus: true,
-      messageBusHandlers: ['publish'],
-      maximumInputBytes: 10_000_000,
-    });
-    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'publish');
-    expect(handler?.eligible).toBe(true);
-    expect(artifact.messageBus?.route.entryAccesses?.some((entry) => entry.collection === 'events')).toBe(true);
   });
 });
 

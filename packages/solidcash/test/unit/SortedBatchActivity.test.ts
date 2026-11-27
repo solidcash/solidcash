@@ -2,8 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assignSortedBatchProofOwners,
   planActiveSortedBatchMutation,
-  routeCollectionValueWriteIsActive,
-  selectMessageBusRouteEntryActivity,
   selectSortedBatchTraceCommitment,
   sortedBatchTraceCommitmentsShareNode,
   sortedBatchNoOutputReadSlots,
@@ -102,23 +100,6 @@ describe('active sorted-batch mutation planning', () => {
     })).toThrow(/slot 4 has no compiler-published entry offset/);
   });
 
-  it('allocates value continuations only for concrete route writer lanes', () => {
-    const activeOperations = new Map<number, readonly string[]>([
-      [0, ['read']],
-      [2, ['read', 'write']],
-    ]);
-
-    expect(routeCollectionValueWriteIsActive(
-      0, 'accounts', ['read', 'write'], activeOperations, ['records'],
-    )).toBe(false);
-    expect(routeCollectionValueWriteIsActive(
-      1, 'records', ['read', 'write'], activeOperations, ['records'],
-    )).toBe(false);
-    expect(routeCollectionValueWriteIsActive(
-      2, 'records', ['read', 'write'], activeOperations, ['records'],
-    )).toBe(true);
-  });
-
   it('retains an authenticated value tail over a later structural batch observation', () => {
     const slot = '11'.repeat(32);
     const next = '22'.repeat(32);
@@ -133,100 +114,5 @@ describe('active sorted-batch mutation planning', () => {
     expect(sortedBatchTraceCommitmentsShareNode(withValue, structural)).toBe(true);
     expect(sortedBatchTraceCommitmentsShareNode(withValue, `${structural}2b`)).toBe(false);
     expect(sortedBatchTraceCommitmentsShareNode(structural, `${'33'.repeat(32)}${next}`)).toBe(false);
-  });
-});
-
-describe('message-bus route entry activity', () => {
-  it('projects concrete rows onto their compiler-published physical entry lanes', () => {
-    const activity = selectMessageBusRouteEntryActivity(
-      [
-        { collection: 'accounts', keyParams: ['__message_bus_key_accounts_0_r0'], operations: ['read', 'write'] },
-        { collection: 'accounts', keyParams: ['__message_bus_key_accounts_0_r1'], operations: ['read', 'write'] },
-        { collection: 'records', keyParams: ['__message_bus_key_records_0'], operations: ['read', 'write'] },
-      ],
-      [
-        {
-          name: 'readAccount', selector: '01020304', physicalEntrySlots: [0],
-          batchKeyWitnesses: [{ routeInput: '__message_bus_key_accounts_0', perRow: true }],
-        },
-        {
-          name: 'writeRecord', selector: '05060708', physicalEntrySlots: [2],
-          batchKeyWitnesses: [{ routeInput: '__message_bus_key_records_0' }],
-        },
-      ],
-      [
-        {
-          name: 'readAccount', selector: '01020304',
-          entryAccesses: [{ collection: 'accounts', keyParams: ['account'], operations: ['read'] }],
-        },
-        {
-          name: 'writeRecord', selector: '05060708',
-          entryAccesses: [{ collection: 'records', keyParams: ['record'], operations: ['read', 'write'] }],
-        },
-      ],
-    );
-
-    expect(activity.inactiveSlotIndices).toEqual([1]);
-    expect([...activity.activeOperations.entries()]).toEqual([
-      [0, ['read']],
-      [2, ['read', 'write']],
-    ]);
-    expect(activity.activeWriteCollections).toEqual(['records']);
-  });
-
-  it('marks unselected bounded row lanes inactive', () => {
-    const activity = selectMessageBusRouteEntryActivity(
-      [
-        { collection: 'items', keyParams: ['__message_bus_key_items_0_r0'], operations: ['read', 'write'] },
-        { collection: 'items', keyParams: ['__message_bus_key_items_0_r1'], operations: ['read', 'write'] },
-      ],
-      [{
-        name: 'readItem', selector: '01020304', physicalEntrySlots: [0],
-        batchKeyWitnesses: [{ routeInput: '__message_bus_key_items_0', perRow: true }],
-      }],
-      [{
-        name: 'readItem', selector: '01020304',
-        entryAccesses: [{ collection: 'items', keyParams: ['item'], operations: ['read'] }],
-      }],
-    );
-
-    expect(activity.inactiveSlotIndices).toEqual([1]);
-    expect([...activity.activeOperations.entries()]).toEqual([[0, ['read']]]);
-    expect(activity.activeWriteCollections).toEqual([]);
-  });
-
-  it('marks unowned expression-backed union lanes inactive', () => {
-    const activity = selectMessageBusRouteEntryActivity(
-      [
-        { collection: 'events', keyParams: ['__message_bus_key_events_0'], operations: ['read', 'write'] },
-        {
-          collection: 'events',
-          keyParams: ['AbiDecodeAtNode{data=id:rowArgs,index=0,schema=[,]}'],
-          operations: ['read'],
-        },
-      ],
-      [{
-        name: 'append', selector: '01020304', physicalEntrySlots: [0],
-        batchKeyWitnesses: [{ routeInput: '__message_bus_key_events_0' }],
-      }],
-      [{
-        name: 'append', selector: '01020304',
-        entryAccesses: [{ collection: 'events', keyParams: ['id'], operations: ['read', 'write'] }],
-      }],
-    );
-
-    expect(activity.inactiveSlotIndices).toEqual([1]);
-    expect([...activity.activeOperations.entries()]).toEqual([[0, ['read', 'write']]]);
-  });
-
-  it('refuses an active handler whose compiler entry projection is incomplete', () => {
-    expect(() => selectMessageBusRouteEntryActivity(
-      [{ collection: 'events', keyParams: ['key'], operations: ['read'] }],
-      [{ name: 'read', selector: '01020304' }],
-      [{
-        name: 'read', selector: '01020304',
-        entryAccesses: [{ collection: 'events', keyParams: ['key'], operations: ['read'] }],
-      }],
-    )).toThrow(/missing a complete physical entry projection/);
   });
 });

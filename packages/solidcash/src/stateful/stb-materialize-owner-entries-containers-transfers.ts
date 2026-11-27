@@ -61,7 +61,7 @@ export function materializeOwnerEntriesContainersTransfers(
   builder: TransactionBuilder,
   embeddedEntrySlots: ReadonlySet<number>,
   delegateTransferSlotsConsumed: number,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
   // Create entry NFT outputs (written/preserved entries, excluding deleted ones). Entry outputs occupy
   // consecutive block-layout offsets; the covenant reads each existing/written slot's output at its FIXED
@@ -168,7 +168,7 @@ export function materializeOwnerEntriesContainersTransfers(
   } else {
     for (const entry of sortedEntries) emitEntryOutput(entry);
   }
-  debugAtomicOutputStage('layout-entries');
+  debugStatefulOutputStage('layout-entries');
 
   // Create satoshi container preservation output (after entries, before transfers)
   // Skip when fully drained (all satoshis transferred out)
@@ -286,7 +286,7 @@ export function materializeOwnerEntriesContainersTransfers(
     });
   }
 
-  // Create transfer outputs (plain BCH, no tokens). A graph route reserves a fixed per-row transfer frame;
+  // Create transfer outputs (plain BCH, no tokens). The block layout reserves a fixed transfer frame;
   // inactive sites remain OP_TRUE outputs so later participant blocks cannot slide into the gaps.
   const reservedTransferSlots = host.blockLayout?.slots.filter((slot) => slot.kind === 'transfer').length
     ?? host.pendingTransfers.length;

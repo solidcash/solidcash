@@ -13,7 +13,7 @@ const entryLayout = (fn: AbiFunction, slot: number): { conditional?: boolean; so
 
 /** Whether the compiler settles this function's sorted batch targets by what ran. */
 export function settlesSortedTargetsByActivity(fn: AbiFunction | undefined): boolean {
-  if (fn === undefined || fn.name.startsWith('__message_bus')
+  if (fn === undefined
     || fn.inputs.some((input) => input.name === 'batchBlob')) return false;
   const softDelete = (slot: number): boolean => entryLayout(fn, slot)?.softDelete === true;
   // A write a shared batch settles alone: one a branch guards, with no alias of its own bar the batch's delete.
@@ -52,7 +52,7 @@ export function activityBatchWriteSlots(fn: AbiFunction | undefined): Set<number
  * The batch transition settles one only where it ran; elsewhere its slot keeps the node it spends.
  */
 export function guardedBatchWriteSlots(fn: AbiFunction | undefined): Set<number> {
-  if (fn === undefined || fn.name.startsWith('__message_bus') || fn.inputs.some((input) => input.name === 'batchBlob')
+  if (fn === undefined || fn.inputs.some((input) => input.name === 'batchBlob')
     || settlesSortedTargetsByActivity(fn)) return new Set();
   const slots = fn.blockLayout?.slots ?? [];
   const batches = fn.sortedBatchInfo ?? [];

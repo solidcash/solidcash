@@ -170,7 +170,7 @@ async function deployed(artifact: Artifact): Promise<{
   };
 }
 
-const COMPILE = { deployer: true, genesisCalls: true, messageBus: false } as const;
+const COMPILE = { deployer: true, genesisCalls: true } as const;
 
 /** The scalars of an input as the native builtins take them: little-endian words. */
 const native = ({ h, v, r, s }: EvmInput): unknown[] => [

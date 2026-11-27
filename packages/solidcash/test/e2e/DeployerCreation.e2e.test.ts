@@ -28,7 +28,7 @@ const C = `${P} contract C { int n; constructor() { n = 1; } function read() { r
 describe('a top-level deployment through Deploy<C>', () => {
   it('creates the contract from its prep coin and mints it at the prep category', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
-    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const artifact = compileString(C, { deployer: true });
     expect(artifact.deployer).toBeDefined();
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     // A14 item 3: the funding coin need not sit at vout 0; the category is the prep's txid.
@@ -55,7 +55,7 @@ describe('a top-level deployment through Deploy<C>', () => {
 
   it('puts the category identity at output 0 and resolves it (B7.12, A14 item 3)', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
-    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const artifact = compileString(C, { deployer: true });
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const fundingUtxo: Utxo = { txid: '13'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -80,7 +80,7 @@ describe('a top-level deployment through Deploy<C>', () => {
   it('uses a prep built beforehand and reads its category', async () => {
     clearGenesisReservations();
     const provider = new MockNetworkProvider({ profile: 'production' });
-    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const artifact = compileString(C, { deployer: true });
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const fundingUtxo: Utxo = { txid: '44'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -113,7 +113,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const artifact = compileString(
       `${P} contract Self { bytes32 self; constructor(bytes32 c) { self = c; } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const fundingUtxo: Utxo = { txid: '18'.repeat(32), vout: 0, satoshis: 500_000n };
@@ -143,7 +143,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const artifact = compileString(
       `${P} contract E { int n; event Ping(int x); constructor() { n = 1; emit Ping(5); } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const fundingUtxo: Utxo = { txid: '19'.repeat(32), vout: 0, satoshis: 500_000n };
@@ -170,7 +170,7 @@ describe('a top-level deployment through Deploy<C>', () => {
 
   it('ContractFactory.deploy takes the deployer path and the born contract is callable', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
-    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const artifact = compileString(C, { deployer: true });
     const signer = await provider.getSigner(0);
     await provider.seedUtxo(signer.getAddress(), {
       txid: '22'.repeat(32), vout: 0, satoshis: 1_000_000n,
@@ -184,7 +184,7 @@ describe('a top-level deployment through Deploy<C>', () => {
   it('funds a payable constructor\'s satoshi row with initialBalance (B9.7)', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const artifact = compileString(`${P} contract Pay { int n; constructor() payable { n = 1; } }`,
-      { deployer: true, messageBus: false });
+      { deployer: true });
     expect(artifact.deployer!.satoshiContainer).toBe('optional');
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const fundingUtxo: Utxo = { txid: '31'.repeat(32), vout: 0, satoshis: 500_000n };
@@ -208,7 +208,7 @@ describe('a top-level deployment through Deploy<C>', () => {
   it('deploys a payable constructor without initialBalance, with a filler at its empty row (A14 item 11)', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const artifact = compileString(`${P} contract Pay { int n; constructor() payable { n = 1; } }`,
-      { deployer: true, messageBus: false });
+      { deployer: true });
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const fundingUtxo: Utxo = { txid: '32'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -225,7 +225,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const artifact = compileString(
       `${P} contract C { bytes32 h; constructor(bytes b) { h = keccak256(b); } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     expect(artifact.deployer!.sidecars.keccak).toBeGreaterThan(0);
     const sharedLock = keccakComputeLockingBytecode(new Uint8Array(32), true);
@@ -247,7 +247,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const artifact = compileString(
       `${P} contract C { bytes32 h; constructor(bytes b) { h = keccak256(b); } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const fundingUtxo: Utxo = { txid: '35'.repeat(32), vout: 0, satoshis: 500_000n };
@@ -265,7 +265,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const artifact = compileString(
       `${P} pragma satoshicontainer single; contract Pay { int n; constructor() payable { n = 1; } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     expect(artifact.deployer!.satoshiContainer).toBe('required');
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
@@ -286,7 +286,7 @@ describe('a top-level deployment through Deploy<C>', () => {
 
   it('publishes a BCMR registry after the identity (A10, G6)', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
-    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const artifact = compileString(C, { deployer: true });
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const fundingUtxo: Utxo = { txid: '36'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -312,7 +312,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
     if (typeof change === 'string') throw new Error(change);
     const deploy = async (source: string, txid: string): Promise<any> => {
-      const artifact = compileString(source, { deployer: true, messageBus: false });
+      const artifact = compileString(source, { deployer: true });
       const fundingUtxo: Utxo = { txid, vout: 0, satoshis: 500_000n };
       await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
       return { artifact, result: await StatefulContract.deploy(artifact, [], {
@@ -353,7 +353,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const artifact = compileString(`${P} contract C { mapping(int => int) m;
       constructor() { }
       function put(int k, int v) { m[k] = v; }
-      function read(int k) { require(m[k] == 2); } }`, { deployer: true, messageBus: false });
+      function read(int k) { require(m[k] == 2); } }`, { deployer: true });
     const fundingUtxo: Utxo = { txid: '39'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
     const result = await StatefulContract.deploy(artifact, [], {
@@ -379,7 +379,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const artifact = compileString(`${P} contract C { mapping(int => int) m; int n;
       constructor() { m[1] = 10; m[2] = 20; m[1] = 11; n = m[1]; }
       function put(int k, int v) { m[k] = v; }
-      function read(int k, int v) { require(m[k] == v); } }`, { deployer: true, messageBus: false });
+      function read(int k, int v) { require(m[k] == v); } }`, { deployer: true });
     const fundingUtxo: Utxo = { txid: '40'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
     const result = await StatefulContract.deploy(artifact, [], {
@@ -420,11 +420,11 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const tArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never);
     const tResult = await deploy(tArtifact);
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     const cResult = await deploy(cArtifact, [addressToLockScript(tResult.contract.address)], {
       constructorCallees: [{ contract: tResult.contract, args: [5n] }],
@@ -463,13 +463,13 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const t1 = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T1',
+      deployer: true, genesisCalls: true, primaryContractName: 'T1',
     } as never));
     const t2 = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T2',
+      deployer: true, genesisCalls: true, primaryContractName: 'T2',
     } as never));
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     expect(cArtifact.deployer?.callSlots).toBe(2);
     const cResult = await deploy(cArtifact, [], {
@@ -510,10 +510,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const t = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never), { fee: 1_000_000n });
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     const c = await deploy(cArtifact, {
       initArgs: [addressToLockScript(t.contract.address)],
@@ -549,10 +549,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const r = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, callRecords: 'all', messageBus: false, primaryContractName: 'R',
+      deployer: true, genesisCalls: true, callRecords: 'all', primaryContractName: 'R',
     } as never));
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     const c = await deploy(cArtifact, {
       initArgs: [addressToLockScript(r.contract.address)],
@@ -589,10 +589,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const t = await deploy(compileString(source, {
-      deployer: true, genesisCalls: false, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: false, primaryContractName: 'T',
     } as never));
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     await expect(deploy(cArtifact, {
       initArgs: [addressToLockScript(t.contract.address)],
@@ -626,10 +626,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const r = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'R',
+      deployer: true, genesisCalls: true, primaryContractName: 'R',
     } as never));
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     await expect(deploy(cArtifact, {
       initArgs: [addressToLockScript(r.contract.address)],
@@ -659,12 +659,12 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const r = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never));
     let cArtifact: any;
     try {
       cArtifact = compileString(source, {
-        deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+        deployer: true, genesisCalls: true, primaryContractName: 'C',
       } as never);
     } catch (error) {
       expect(String((error as Error).message)).toMatch(/unsafe|record/);
@@ -684,7 +684,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     if (typeof change === 'string') throw new Error(change);
     const artifact = compileString(
       `${P} contract C { int n; constructor() { n = int(block.number); } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const fundingUtxo: Utxo = { txid: '66'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -704,7 +704,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     if (typeof change === 'string') throw new Error(change);
     const artifact = compileString(
       `${P} contract C { int t; constructor() { t = int(block.timestamp); } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const fundingUtxo: Utxo = { txid: '67'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -749,7 +749,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const artifact = compileString(
       `${P} contract C(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expected) {
         int n; constructor() { require(ecrecoverPubKey(h, v, r, s) == expected); n = 1; } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     expect(artifact.deployer?.sidecars.ecrecover).toBe(1);
     const fundingUtxo: Utxo = { txid: '6b'.repeat(32), vout: 0, satoshis: 500_000n };
@@ -795,7 +795,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       const artifact = compileString(
         `${P} contract C(bytes32 h, int v, bytes32 r, bytes32 s) {
           address who; int n; constructor() { who = ecrecoverP2pkh(h, v, r, s); n = 1; } }`,
-        { deployer: true, messageBus: false },
+        { deployer: true },
       );
       const cases: Array<[unknown[], string]> = [
         [[h, 0n, r, s], ''], [[h, v, r, word(order)], ''], [[h, 27n, word(offCurve), s], ''],
@@ -858,7 +858,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const artifact = compileString(
       `${P} contract C(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expected) {
         int n; constructor() { require(ecrecoverPubKey(h, v, r, s) == expected); n = 1; } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const fundingUtxo: Utxo = { txid: '6e'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(binToHex(authorLock), fundingUtxo);
@@ -886,7 +886,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const artifact = compileString(
       `${P} contract C(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expected) {
         int n; constructor() { require(ecrecoverPubKey(h, v, r, s) == expected); n = 1; } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const fundingUtxo: Utxo = { txid: '6c'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -907,7 +907,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     if (typeof change === 'string') throw new Error(change);
     const artifact = compileString(
       `${P} contract C { int n; constructor() payable { n = 1; payable(msg.sender).send(600); } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const fundingUtxo: Utxo = { txid: '68'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -929,7 +929,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       `${P} pragma tokencontainer single;
        contract C(bytes32 asset) { int n; constructor() { n = int(this.tokens[asset].tokenAmount); }
          function spend(address to, int amount) { this.tokens[asset].transfer(to, amount); n = 2; } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     const fundingUtxo: Utxo = { txid: '69'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -974,7 +974,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const artifact = compileString(
       `${P} contract C { int n; constructor() { n = 1; }
         function read() { require(int(block.number) >= 0); n = 2; } }`,
-      { deployer: true, messageBus: false },
+      { deployer: true },
     );
     expect(artifact.deployer).toBeDefined();
     expect(artifact.deployer?.readsBlockData).toBe(true);
@@ -1021,10 +1021,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const t = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never), { fee: 1_000_000n });
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     const c = await deploy(cArtifact, {
       initArgs: [addressToLockScript(t.contract.address)],
@@ -1058,10 +1058,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const r = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, callRecords: 'all', messageBus: false, primaryContractName: 'R',
+      deployer: true, genesisCalls: true, callRecords: 'all', primaryContractName: 'R',
     } as never));
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     const c = await deploy(cArtifact, {
       initArgs: [addressToLockScript(r.contract.address)],
@@ -1095,10 +1095,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const u = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, callRecords: 'all', messageBus: false, primaryContractName: 'U',
+      deployer: true, genesisCalls: true, callRecords: 'all', primaryContractName: 'U',
     } as never));
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     const c = await deploy(cArtifact, {
       initArgs: [addressToLockScript(u.contract.address)],
@@ -1140,10 +1140,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const t = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never));
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     const c = await deploy(cArtifact, {
       initArgs: [addressToLockScript(t.contract.address)],
@@ -1181,10 +1181,10 @@ describe('a top-level deployment through Deploy<C>', () => {
       });
     };
     const t = await deploy(compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+      deployer: true, genesisCalls: true, primaryContractName: 'T',
     } as never));
     const cArtifact = compileString(source, {
-      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     expect((cArtifact.deployer?.code.length ?? 0) / 2).toBeGreaterThan(6_000);
     const c = await deploy(cArtifact, {

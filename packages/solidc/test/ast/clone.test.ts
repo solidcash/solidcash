@@ -1,9 +1,6 @@
-import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BlockNode, BoolLiteralNode, RequireNode } from '../../src/ast/AST.js';
 import { cloneNode, cloneNodeGraph } from '../../src/ast/clone.js';
-import { compileFileMulti } from '../../src/index.js';
-import { effectiveAccelerationContractsRoot } from '../effectiveacceleration-corpus.js';
 
 describe('AST clone alias semantics', () => {
   it('preserves graph aliases only for whole-program snapshots', () => {
@@ -16,21 +13,5 @@ describe('AST clone alias semantics', () => {
     const snapshot = cloneNodeGraph(root);
     expect(snapshot.statements?.[0]).toBe(snapshot.statements?.[1]);
     expect(snapshot.statements?.[0]).not.toBe(shared);
-  });
-
-  const contractsRoot = effectiveAccelerationContractsRoot();
-
-  it.skipIf(contractsRoot === undefined)('compiles a routed type-only dependency diamond without expanding shared import subtrees', () => {
-    const fixture = path.join(contractsRoot!, 'MockSablierLockup.sol');
-    const artifacts = compileFileMulti(fixture, {
-      evmCompat: true,
-      messageBus: true,
-      messageBusKernel: true,
-      messageBusGraphContext: true,
-      optimizeForCompilationSpeed: true,
-      suppressWarnings: true,
-      compileDeclarations: ['MockSablierLockup'],
-    });
-    expect(artifacts.MockSablierLockup.messageBus?.route).toBeDefined();
   });
 });

@@ -6,11 +6,10 @@ import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 /**
  * X175 THROW CENSUS, for the four stateful lifecycle-admin broadcast sites.
  *
- * WHY A SEPARATE INSTRUMENT FROM `message-bus-throw-census.ts`. That one wraps `TransactionBuilder.debug/send` and
- * the provider. These four sites call NEITHER: they call `builder.build()` and hand the hex straight to
- * `provider.sendRawTransaction`, so a refusal at one of them never reaches any method that census observes -
- * the gate throws first and the provider is never called. Their throws are only visible at the public entry
- * points, which is what this wraps.
+ * WHY IT WRAPS THE PUBLIC ENTRY POINTS. These four sites call neither `TransactionBuilder.debug` nor `send`: they
+ * call `builder.build()` and hand the hex straight to `provider.sendRawTransaction`, so a refusal at one of them
+ * never reaches either method - the gate throws first and the provider is never called. Their throws are only
+ * visible at the public entry points, which is what this wraps.
  *
  * A PURE OBSERVER. Every wrapper rethrows the original error unchanged and returns the original result
  * unchanged. Inert unless `L3_X175_OUT` names an output file, so an ordinary `yarn test` never loads it.

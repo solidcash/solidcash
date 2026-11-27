@@ -34,7 +34,7 @@ function settleDirect(artifact: Artifact, args: readonly bigint[]): boolean {
 
 const P = 'pragma solidcash ^0.52.0;';
 const compile = (params: string, body: string): Artifact =>
-  compileString(`${P} contract C { function f(${params}) ${body} }`, { messageBus: false });
+  compileString(`${P} contract C { function f(${params}) ${body} }`, {});
 
 describe('a bounded int declared from a computed expression', () => {
   it('reverts when generic int arithmetic overflows the declared width', () => {
@@ -66,7 +66,7 @@ describe('the internal-helper boundary range-checks its parameters and returns',
   it('reverts when a bigint argument narrows into a uint256 helper parameter', () => {
     const source = `${P} contract C { function clamp(uint256 x) internal pure returns (uint256) { return x; } `
       + 'function f(bigint amount) { uint256 a = clamp(amount); require(a == amount); } }';
-    const artifact = compileString(source, { messageBus: false });
+    const artifact = compileString(source, {});
     expect(settleDirect(artifact, [100n])).toBe(true);
     expect(settleDirect(artifact, [-100n])).toBe(false);
   });
@@ -74,7 +74,7 @@ describe('the internal-helper boundary range-checks its parameters and returns',
   it('reverts when a helper return narrows a bigint into a uint256 result', () => {
     const source = `${P} contract C { function get() internal pure returns (uint256) { bigint b = -100; return b; } `
       + 'function f() { uint256 a = get(); require(a == a); } }';
-    const artifact = compileString(source, { messageBus: false });
+    const artifact = compileString(source, {});
     expect(settleDirect(artifact, [])).toBe(false);
   });
 });
@@ -82,7 +82,7 @@ describe('the internal-helper boundary range-checks its parameters and returns',
 describe('a cast to a non-contiguous enum verifies exact membership', () => {
   it('rejects a gap value that a range check would admit', () => {
     const source = `${P} enum E { A, B = 5 } contract C { function f(uint8 v) { E e = E(v); require(e == e); } }`;
-    const artifact = compileString(source, { messageBus: false });
+    const artifact = compileString(source, {});
     expect(settleDirect(artifact, [0n])).toBe(true);
     expect(settleDirect(artifact, [5n])).toBe(true);
     expect(settleDirect(artifact, [3n])).toBe(false);

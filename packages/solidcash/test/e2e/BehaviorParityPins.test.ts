@@ -15,7 +15,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 const preflightFailure = (reason: string): string =>
-  `messageBus: BCH-2026 preflight failed at input 0: ${reason}`;
+  `BCH-2026 preflight failed at input 0: ${reason}`;
 
 describe('function types', () => {
   // functionTypes/ corpus files VM-run against their Solidity `// ----` outputs (the bench is

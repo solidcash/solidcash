@@ -78,9 +78,9 @@ const artifacts = compileStringMulti(SOURCE, { evmCompat: true, composition: 'fr
 const escrow = artifacts.Escrow!;
 const ledger = artifacts.Ledger!;
 
-/** The options a framed project build compiles with, a message-bus route among them, which it then discards. */
+/** The options a framed project build compiles with. */
 const PROJECT_OPTIONS = {
-  evmCompat: true, commitmentLimit: 128, maximumInputBytes: 10_000_000, messageBus: true,
+  evmCompat: true, commitmentLimit: 128, maximumInputBytes: 10_000_000,
   optimizeForCompilationSpeed: true, suppressWarnings: true, ecrecover: 'p2pkh', sortedMappingsAll: false,
   composition: 'framed',
 } as const;

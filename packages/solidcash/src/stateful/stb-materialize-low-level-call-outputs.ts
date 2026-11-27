@@ -19,7 +19,7 @@ export interface MaterializeLowLevelCallOutputsHost {
   readonly lowLevelCallRawInputs: readonly UnlockableUtxo[];
   readonly blockLayout?: FunctionBlockLayout;
   readonly delegateEntriesAfterLowLevel: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly externalCallStateUpdates: ReadonlyMap<string, Map<string, StateValue>>;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, Map<number, string>>;
   /** The records each callee's run derived, by category: they spell its rebuilt records' unchanged values. */
@@ -51,7 +51,7 @@ export function materializeLowLevelCallOutputs(
     if (host.delegateEntriesAfterLowLevel && group.callMode === 'delegatecall') continue;
     // A compiler-owned route's complete balanced block (including dynamic resources) precedes its physical
     // implementation. Recreate that executor only after the trailing band has been filled below.
-    if (host.compilerRouteDelegateBlock && group.callMode === 'delegatecall') continue;
+    if (host.directCallDelegateBlock && group.callMode === 'delegatecall') continue;
     const bMaster = group.masterUtxo as UnlockableUtxo;
     builder.addOutput({
       to: bMaster.unlocker.generateLockingBytecode(),

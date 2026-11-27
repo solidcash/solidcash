@@ -16,7 +16,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyPreflight = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyPreflight = 'BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // SAME-GAP CHAIN: 2+ NEW recipients landing in ONE gap (a forward reference the single re-point can't express).
 // Handled by chain-defer: each new node is DEFERRED after re-pointing its predecessor, so the next new key folds into

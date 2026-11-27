@@ -474,11 +474,8 @@ describe('inherited modifier override and declaration namespace collisions', () 
         function set(uint256 next) public { value = next; emit Changed(next); }
       }
       contract NoticeLeaf is NoticeBase {}
-    `, { evmCompat: true, messageBus: true });
+    `, { evmCompat: true });
     const leaf = artifacts.NoticeLeaf;
-    // The top-level emit settles on the handler's runtime stream, which names the resolved signature.
-    expect(leaf.messageBus?.handlers.find((handler) => handler.name === 'set')?.runtimeLoopEvents)
-      .toEqual([expect.objectContaining({ eventSignatures: ['Changed(uint256)'], stream: true })]);
     expect(leaf.events).toEqual([
       expect.objectContaining({ name: 'Changed', signature: 'Changed(uint256)' }),
     ]);
@@ -488,7 +485,7 @@ describe('inherited modifier override and declaration namespace collisions', () 
       interface A { event E(uint256 x); }
       interface Unrelated { event E(string x); }
       contract C is A { function f(uint256 x) public { emit E(x); } }
-    `, { evmCompat: true, messageBus: true });
+    `, { evmCompat: true });
     // The handler selected E(uint256); sibling overload E(string) must not reach the artifact's event inventory.
     expect(artifacts.C.events?.map((event) => event.signature)).toEqual(['E(uint256)']);
   });
@@ -636,31 +633,6 @@ describe('vmap-default: an inherited method accessing its OWN contract private m
     expect(() => compileString('pragma solidity ^0.8.20; contract Base { mapping(address => uint256) private _balances; }'
       + ' contract Derived is Base { function poke(address a, uint256 v) public { _balances[a] = v; } }',
     { evmCompat: true })).toThrow(/Cannot access private collection '_balances'/);
-  });
-
-  it('preserves the base scope when a generated batch route journals inherited private mappings', () => {
-    const artifact = compileString(`pragma solidity ^0.8.20;
-      contract Base {
-        mapping(address => uint256) private balances;
-        event Changed(address account, uint256 value);
-        function balanceOf(address account) public view returns (uint256) { return balances[account]; }
-        function set(address account, uint256 value) public {
-          balances[account] = value;
-          emit Changed(account, value);
-          require(balanceOf(account) == value);
-        }
-      }
-      contract Derived is Base {}
-    `, {
-      evmCompat: true,
-      forceStateful: true,
-      messageBus: true,
-      messageBusGraphContext: true,
-      maximumInputBytes: 1_000_000,
-      optimizeForCompilationSpeed: true,
-    });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
-      .toEqual(expect.objectContaining({ eligible: true }));
   });
 });
 

@@ -83,7 +83,7 @@ interface Deployed {
 }
 
 async function deploy(callBatch: boolean): Promise<Deployed> {
-  const artifact = compileString(SOURCE, { messageBus: false, callBatch });
+  const artifact = compileString(SOURCE, { callBatch });
   expect(artifact.stateLayout?.dataNftCount).toBe(2);
   const provider = new MockNetworkProvider();
   const contract = new Contract(artifact, [], { provider });

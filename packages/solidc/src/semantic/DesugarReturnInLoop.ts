@@ -1,7 +1,7 @@
 import {
   FunctionDefinitionNode, BlockNode, StatementNode, Node, WhileNode, DoWhileNode, BranchNode,
   ReturnNode, BreakNode, VariableDefinitionNode, AssignNode, IdentifierNode, BoolLiteralNode,
-  SourceFileNode, ContractNode, FunctionCallNode, SwitchNode,
+  SourceFileNode, ContractNode, SwitchNode,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -31,10 +31,6 @@ export default class DesugarReturnInLoop extends AstTraversal {
   private retCount = 0;
   private returnNames: readonly string[] = [];
 
-  constructor(private readonly onlySelfRecursiveFunctions = false) {
-    super();
-  }
-
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.importedContracts = node.importedContracts.map((c) => this.visit(c) as ContractNode);
@@ -54,7 +50,6 @@ export default class DesugarReturnInLoop extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body) return node;
-    if (this.onlySelfRecursiveFunctions && !this.hasSelfCall(node.body, node.name)) return node;
     // Entry-points AND internal/private functions both need this: an in-loop raw return NIPs locals below the
     // value and corrupts the loop's balanced OP_BEGIN/OP_UNTIL stack. (The old entry-point "blob-stash" path was
     // broken - a public `for/while (..) { if (c) return X; }` crashed at runtime.) Desugaring to a flag + break +
@@ -73,16 +68,6 @@ export default class DesugarReturnInLoop extends AstTraversal {
     const [stmts] = this.transformStatements(node.body.statements ?? [], 0);
     node.body.statements = [...decls, ...stmts];
     return node;
-  }
-
-  private hasSelfCall(node: Node, name: string): boolean {
-    if (node instanceof FunctionCallNode && node.identifier.name === name) return true;
-    return Object.entries(node).some(([key, child]) => {
-      if (['resolvedFunction', 'definition', 'symbolTable', 'location'].includes(key)) return false;
-      if (child instanceof Node) return this.hasSelfCall(child, name);
-      return Array.isArray(child) && child.some((item) =>
-        item instanceof Node && this.hasSelfCall(item, name));
-    });
   }
 
   // Stamp a synthesized node subtree with a source location (only where missing - existing sub-expressions keep

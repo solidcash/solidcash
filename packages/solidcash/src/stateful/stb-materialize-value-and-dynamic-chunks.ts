@@ -9,7 +9,6 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { claimedFixedContinuationCoverage } from './stb-claimed-fixed-continuations.js';
 
 export interface MaterializeValueAndDynamicChunksHost {
   readonly categoryId: string;
@@ -28,8 +27,8 @@ export interface MaterializeValueAndDynamicChunksHost {
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
   readonly delegateDynamicChunksAtSuffix: boolean;
-  /** Runtime-loop outputs or a composed block base move the run by what the transaction carries. */
-  readonly runtimeLoopOrComposed: boolean;
+  /** Runtime-loop outputs move the run by what the transaction carries. */
+  readonly hasRuntimeLoopOutputs: boolean;
   /** The executing input's current unlocker: its witnesses name the coordinates its covenant reads. */
   masterUnlocker(): Unlocker;
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
@@ -48,12 +47,6 @@ export function appendValueChunks(
   builder: TransactionBuilder,
 ): void {
   const band = host.getChunkableValueWriteBand();
-  const claimed = claimedFixedContinuationCoverage({
-    staged: host.valueChunkOutputs,
-    derived: host.derivedChunkOutputs,
-    groups: [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups],
-    blockLayout: host.blockLayout,
-  });
   const fixedBandPins = band
     ? [...host.derivedChunkOutputs.entries()].filter(([index, chunk]) => (
       chunk.fixedIndex === true
@@ -65,11 +58,10 @@ export function appendValueChunks(
     ))
     : [];
   const isFixedContinuation = (lockingBytecode: Uint8Array, category: string, commitment: string): boolean => (
-    claimed.tuples.has(JSON.stringify([category.toLowerCase(), binToHex(lockingBytecode), commitment.toLowerCase()]))
-    || fixedBandPins.some(([, chunk]) => (chunk.categoryId ?? host.categoryId).toLowerCase() === category.toLowerCase()
+    fixedBandPins.some(([, chunk]) => (chunk.categoryId ?? host.categoryId).toLowerCase() === category.toLowerCase()
       && binToHex(chunk.lockingBytecode) === binToHex(lockingBytecode) && chunk.commitment === commitment)
   );
-  const unpinnedOutputs = host.valueChunkOutputs.filter((output, index) => !claimed.stagedIndices.has(index) && !(
+  const unpinnedOutputs = host.valueChunkOutputs.filter((output) => !(
     output.token?.nft?.capability === 'mutable'
       && isFixedContinuation(
         output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to),
@@ -151,7 +143,7 @@ export function returningCallChunkRunBase(
   if (!isContractUnlocker(unlocker)) return undefined;
   const { abiFunction: fn, params } = unlocker;
   if (params.length !== fn.inputs.length || unlocker.contract.artifact.composition !== undefined
-    || fn.name.startsWith('__message_bus') || !writes.every((name) => fn.dynamicWrites?.includes(name))
+    || !writes.every((name) => fn.dynamicWrites?.includes(name))
     || fn.inputs.some((input) => input.name.startsWith('__internal__vmapCounterPerm_'))) return undefined;
   const valueOf = (name: string): bigint | undefined => {
     const value = params[fn.inputs.findIndex((input) => input.name === name)];
@@ -200,7 +192,7 @@ export function appendDynamicChunks(
     }
   }
   // Each written var's run follows the runs of the vars declared before it.
-  const runBase = host.delegateDynamicChunksAtSuffix || host.runtimeLoopOrComposed ? undefined
+  const runBase = host.delegateDynamicChunksAtSuffix || host.hasRuntimeLoopOutputs ? undefined
     : returningCallChunkRunBase(host.masterUnlocker(), host.dynamicChunkVars.map((dv) => dv.name),
       host.iterationEntryInputs.length);
   let priorRunChunks = 0;
@@ -249,7 +241,7 @@ export function appendDynamicChunks(
       });
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' && commitments.length > 0) {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1' && commitments.length > 0) {
       console.error('append-dynamic-chunks', {
         name: dv.name,
         lockingBytecode: binToHex(dv.lockingBytecode),

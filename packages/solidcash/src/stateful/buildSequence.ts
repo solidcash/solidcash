@@ -3,7 +3,7 @@
  *
  * The provisioning decisions that decide whether a fixed block slot receives a real resource, an alias skip, or a
  * funder placeholder live in `StatefulTransactionBuilder`, while the entry-access plan that produces them is built
- * in `StatefulContract`. The composer observes only the assembled aggregate, so a stall diagnostic emitted there
+ * in `StatefulContract`. The transaction builder observes only the assembled block, so a stall diagnostic emitted there
  * cannot say which plan produced the offending slot. Sharing one counter through this leaf module lets every
  * participant-side record carry the same id without introducing an import cycle between those modules.
  */

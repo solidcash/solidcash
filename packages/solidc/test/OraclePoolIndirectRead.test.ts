@@ -89,9 +89,7 @@ function redeemOf(artifact: Artifact, pool: Uint8Array): Uint8Array {
 
 /** As the SDK: a sole function with no compiler route or multi-call entry in the redeem takes no selector. */
 function dispatchesBySelector(artifact: Artifact): boolean {
-  const route = artifact.messageBus !== undefined && artifact.messageBus.available !== false
-    && artifact.messageBus.routeInBytecode !== false;
-  return artifact.abi.length > 1 || route || typeof artifact.callBatch === 'object';
+  return artifact.abi.length > 1 || typeof artifact.callBatch === 'object';
 }
 
 /** The selector at the bottom, then the ABI arguments with the first on top, then the redeem. */
@@ -136,7 +134,7 @@ function readSpend(artifact: Artifact, bound: Uint8Array, coin: Coin, values: Re
 }
 
 describe('a block.* read in a function-pointer target', () => {
-  const artifact = compileString(INDIRECT, { messageBus: false });
+  const artifact = compileString(INDIRECT);
   const pointerRead = { t: num(TIME), b: num(1n) };
 
   it('compiles, and no input its caller fills carries a binding or a coin index', () => {
@@ -168,7 +166,7 @@ describe('a block.* read in a function-pointer target', () => {
 });
 
 describe('an ordinary reader', () => {
-  const artifact = compileString(READER, { messageBus: false });
+  const artifact = compileString(READER);
   const directRead = { t: num(TIME), n: num(HEIGHT), __internal__blockOracleInputIndex: num(1n) };
 
   it('keeps its direct read: no binding helper and no coin search', () => {

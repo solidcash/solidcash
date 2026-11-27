@@ -24,20 +24,19 @@ describe('FinalRequire: error by default, warning only under explicit opt-out', 
   ];
 
   it.each(unverifiedPaths)('throws FinalRequireStatementError by default: %s', (_label, src) => {
-    expect(() => compileStringRaw(src, { messageBus: false })).toThrow(Errors.FinalRequireStatementError);
+    expect(() => compileStringRaw(src, {})).toThrow(Errors.FinalRequireStatementError);
   });
 
   it.each(unverifiedPaths)('compiles only with enforceFinalRequire false (warning): %s', (_label, src) => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
-    expect(compileStringRaw(src, { messageBus: false, enforceFinalRequire: false }).contractName).toBeTruthy();
+    expect(compileStringRaw(src, { enforceFinalRequire: false }).contractName).toBeTruthy();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('unconditionally-spendable'));
     warn.mockRestore();
   });
 
   it('emits the unconditionally-spendable warning under the explicit opt-out', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
-    compileStringRaw('contract C() { function f(int i) pure { if (i <= 100) { revert("x"); } } }', {
-      messageBus: false, enforceFinalRequire: false,
+    compileStringRaw('contract C() { function f(int i) pure { if (i <= 100) { revert("x"); } } }', { enforceFinalRequire: false,
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('unconditionally-spendable'));
     warn.mockRestore();
@@ -46,7 +45,6 @@ describe('FinalRequire: error by default, warning only under explicit opt-out', 
   it('suppresses non-fatal warnings only when requested', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     expect(compileStringRaw('contract C() { function f() pure {} }', {
-      messageBus: false,
       enforceFinalRequire: false,
       suppressWarnings: true,
     }).contractName).toBe('C');
@@ -65,7 +63,7 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
     expect(() => compileStringRaw(`contract P() { bigint counter;
       function up(bytes input, address impl) external {
         impl.delegatecall(input); require(input.length > 0);
-      } }`, { messageBus: false })).toThrow(Errors.UntrustedDelegatecallTargetError);
+      } }`, {})).toThrow(Errors.UntrustedDelegatecallTargetError);
   });
 
   it('does not mistake a length check for an implementation identity binding', () => {
@@ -73,39 +71,39 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
       function up(bytes input, bytes target) external {
         require(target.length == 35); address impl = address(target);
         impl.delegatecall(input); require(input.length > 0);
-      } }`, { messageBus: false })).toThrow(Errors.UntrustedDelegatecallTargetError);
+      } }`, {})).toThrow(Errors.UntrustedDelegatecallTargetError);
   });
 
   it('allows an unconditional equality binding to stored implementation identity', () => {
     expect(compileStringRaw(`contract P(address trusted) { bigint counter;
       function up(bytes input, address impl) external {
         require(impl == trusted); impl.delegatecall(input); require(input.length > 0);
-      } }`, { messageBus: false }).contractName).toBe('P');
+      } }`, {}).contractName).toBe('P');
   });
 
   it('rejects permissionless selfdestruct to a caller-selected recipient', () => {
     expect(() => compileStringRaw(`contract C() { int n;
       function kill(address to) { require(true); selfdestruct(to); }
-    }`, { messageBus: false })).toThrow(Errors.UnauthenticatedSelfdestructError);
+    }`, {})).toThrow(Errors.UnauthenticatedSelfdestructError);
   });
 
   it('follows aliases and casts to a caller-selected selfdestruct recipient', () => {
     expect(() => compileStringRaw(`contract C() { int n;
       function kill(bytes target) { address to = address(target); require(true); selfdestruct(to); }
-    }`, { messageBus: false })).toThrow(Errors.UnauthenticatedSelfdestructError);
+    }`, {})).toThrow(Errors.UnauthenticatedSelfdestructError);
   });
 
   it('allows selfdestruct to a recipient fixed in state', () => {
     expect(compileStringRaw(`contract C() { address beneficiary; int n;
       function kill() { require(true); selfdestruct(this.beneficiary); }
-    }`, { messageBus: false }).contractName).toBe('C');
+    }`, {}).contractName).toBe('C');
   });
 
   it('retains a loud, explicit migration escape hatch', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     expect(compileStringRaw(`contract C() { int n;
       function kill(address to) { require(true); selfdestruct(to); }
-    }`, { messageBus: false, allowUnsafeOperations: true }).contractName).toBe('C');
+    }`, { allowUnsafeOperations: true }).contractName).toBe('C');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('caller-supplied address'));
     warn.mockRestore();
   });
@@ -117,7 +115,7 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
   ])('does not accept a %s signature check before caller-selected delegation', (_label, body) => {
     expect(() => compileStringRaw(`contract P(pubkey owner) { bigint counter;
       function up(bytes input, address impl, sig s, bool ok) external { ${body} }
-    }`, { messageBus: false })).toThrow(Errors.UntrustedDelegatecallTargetError);
+    }`, {})).toThrow(Errors.UntrustedDelegatecallTargetError);
   });
 
   it.each([
@@ -127,13 +125,13 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
   ])('does not accept a %s signature check for caller-directed destruction', (_label, body) => {
     expect(() => compileStringRaw(`contract C(pubkey owner) { int n;
       function kill(address to, sig s, bool ok) { ${body} }
-    }`, { messageBus: false })).toThrow(Errors.UnauthenticatedSelfdestructError);
+    }`, {})).toThrow(Errors.UnauthenticatedSelfdestructError);
   });
 
   it('allows a required trusted signature that dominates the operation', () => {
     expect(compileStringRaw(`contract C(pubkey owner) { int n;
       function kill(address to, sig s) { require(checkSig(s, owner)); selfdestruct(to); }
-    }`, { messageBus: false }).contractName).toBe('C');
+    }`, {}).contractName).toBe('C');
   });
 
   it.each([
@@ -143,14 +141,14 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
   ])('rejects nested selfdestruct lifecycle placement: %s', (body) => {
     expect(() => compileStringRaw(`contract C { int n;
       function kill(address to, bool ok) { ${body} }
-    }`, { messageBus: false })).toThrow(Errors.NestedSelfdestructError);
+    }`, {})).toThrow(Errors.NestedSelfdestructError);
   });
 
   it('infers selfdestruct lifecycle semantics after modifier expansion', () => {
     const artifact = compileStringRaw(`contract C(pubkey owner) { int n;
       modifier destroys(address to, sig s) { require(checkSig(s, owner)); selfdestruct(to); _; }
       function kill(address to, sig s) destroys(to, s) { require(true); }
-    }`, { messageBus: false });
+    }`, {});
     expect(artifact.abi.find((entry) => entry.name === 'kill')?.modifiers).toContain('selfdestruct');
   });
 
@@ -158,14 +156,14 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
     expect(() => compileStringRaw(`contract C { int n;
       modifier destroys(address to) { if (true) { selfdestruct(to); } _; }
       function kill(address to) destroys(to) { require(true); }
-    }`, { messageBus: false })).toThrow(Errors.NestedSelfdestructError);
+    }`, {})).toThrow(Errors.NestedSelfdestructError);
   });
 
   it('records disabled checks in compiler metadata', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const artifact = compileStringRaw(`contract C { int n;
       function kill(address to) { require(true); selfdestruct(to); }
-    }`, { messageBus: false, allowUnsafeOperations: true, enforceFinalRequire: false });
+    }`, { allowUnsafeOperations: true, enforceFinalRequire: false });
     expect(artifact.compiler?.options?.allowUnsafeOperations).toBe(true);
     expect(artifact.compiler?.options?.enforceFinalRequire).toBe(false);
     warn.mockRestore();
@@ -223,7 +221,7 @@ describe('Synthesized empty bodies are self-preserving no-ops', () => {
     // private state var: a public one synthesizes a getter that pushes the contract over the subroutine-extraction
     // threshold, hex-encoding these opcodes (still present, just not as names). Visibility is irrelevant here.
     const empty = compileString('contract C() { int private n; function f() {} }', {
-      evmCompat: true, messageBus: false,
+      evmCompat: true,
     });
     expect(empty.bytecode).toContain('OP_UTXOBYTECODE');
     expect(empty.bytecode).toContain('OP_OUTPUTBYTECODE');

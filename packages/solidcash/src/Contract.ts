@@ -1,19 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-import {
-  type AbiFunction,
-  type Artifact,
-  asmToScript,
-  CALL_RECORD_NO_READER,
-  CALL_RECORD_READER_INPUT,
-  bytecodeToScript,
-  countOpcodes,
-  generateContractBytecodeScript,
-  hash256,
-  Op,
-  scriptToBytecode,
-  type StateLayout,
-} from '@solidcash/utils';
+import { type AbiFunction, type Artifact, asmToScript, CALL_RECORD_NO_READER, CALL_RECORD_READER_INPUT, countOpcodes, generateContractBytecodeScript, hash256, Op, scriptToBytecode, type StateLayout } from '@solidcash/utils';
 import {
   type ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, type FunctionArgument,
   isDeferredSignatureArgument,
@@ -36,243 +23,7 @@ import {
   bindArtifactOraclePool, boundOraclePool, isPoolInfoOutput, isPoolSlotOutput, withOraclePoolArgument,
 } from './oracle/pool/reader.js';
 import semver from 'semver';
-import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
-import { decodeKernelEntryJournalAccesses } from './stateful/KernelEntryJournal.js';
-
-const KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES = 520;
-// Each target/predecessor selector scans exactly through its zero-based record ordinal. The emitted selector uses
-// at most 25 priced scan/decode operations per visited record at BCH's 100-unit base operation price. The fixed
-// header, identity, ordinal, and commitment checks fit in a conservative 17,000-unit envelope per access.
-const KERNEL_ROUTE_OPERATION_COST_PER_RECORD_SCAN = 25 * 100;
-const KERNEL_ROUTE_FIXED_OPERATION_COST_PER_ACCESS = 17_000;
-const KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES = ConsensusBch2026.maximumStackItemLength;
-
-/**
- * Size the existing discarded kernel-route reserve from the physical access program the composer supplied.
- * Record selection cost grows with these fixed-width entries, while a constant 520-byte reserve does not. The
- * route covenant still authenticates every stream and its declared count; malformed public arguments cannot gain
- * authority by increasing this budget, and the result is capped at BCH-2026's stack-item limit.
- */
-/** @internal Exported for exact boundary tests; not re-exported from the package API. */
-export function kernelRouteDensityReserveBytes(accessStreams: FunctionArgument | undefined): number {
-  if (!Array.isArray(accessStreams)) return KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES;
-  let accessCount = 0;
-  let recordScanCount = 0;
-  const visit = (value: FunctionArgument): void => {
-    if (value instanceof Uint8Array) {
-      try {
-        const accesses = decodeKernelEntryJournalAccesses(value);
-        accessCount += accesses.length;
-        for (const access of accesses) {
-          recordScanCount += access.targetRecordOrdinal + 1;
-          if (access.predecessorRecordOrdinal !== undefined) {
-            recordScanCount += access.predecessorRecordOrdinal + 1;
-          }
-        }
-      } catch {
-        // Malformed public arguments have no authority and fail in the route covenant. They must not allocate
-        // density padding merely because their byte length resembles an access stream.
-      }
-      return;
-    }
-    if (Array.isArray(value)) value.forEach(visit);
-  };
-  accessStreams.forEach(visit);
-  const operationCost = accessCount * KERNEL_ROUTE_FIXED_OPERATION_COST_PER_ACCESS
-    + recordScanCount * KERNEL_ROUTE_OPERATION_COST_PER_RECORD_SCAN;
-  return Math.min(
-    KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES,
-    KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES
-      + Math.ceil(operationCost / ConsensusBch2026.operationCostBudgetPerByte),
-  );
-}
-
-// A kernel row-loop route reserves its complete effect band up front and walks the frame's whole dispatch loop
-// on every invocation, so its input-0 operation cost is a property of the reserved site count, not of the rows
-// actually dispatched. MEASURED on the kernel event route (sites 255): the complete input-0 cost is ~3.86M
-// against a 1.91M budget, so the density length must grow by ~2.4 KB for the program to finish at all; a
-// one-byte reserve (the size the reported overrun suggests) does not. The journal-access reserve above does not
-// apply here because an effect-only route publishes no access streams. Size an envelope per reserved site, like
-// the access reserve, so only a route that reserves an effect band is padded by this much.
-// Each site also brings a pad input and an output that the per-entry hardening scans (satoshi-container sums,
-// foreign-token and mutable-output listings) step through. MEASURED on the same route with those scans: 5.27M
-// input-0 cost, so finishing needs 11,448 per site.
-const KERNEL_ROUTE_EFFECT_OPERATION_COST_PER_SITE = 12_000;
-
-/**
- * Size the discarded density reserve for a kernel row-loop effect route from its reserved effect band. Only a
- * route that reserves events, BCH transfers, token transfers or child deployments needs it; every other route
- * keeps the zero-length reserve, so unrelated pinned unlocking-bytecode lengths are unaffected.
- */
-/** @internal Exported for exact boundary tests; not re-exported from the package API. */
-export function kernelRouteEffectDensityReserveBytes(
-  abiFunction: AbiFunction, convention: string | undefined,
-): number {
-  if (convention !== 'kernel-row-loop') return 0;
-  const frame = abiFunction.graphEffectFrame;
-  if (frame === undefined) return 0;
-  const reservesEffectBand = frame.eventWidth > 0 || frame.transferWidth > 0
-    || frame.tokenTransferWidth > 0 || (frame.deployWidth ?? 0) > 0;
-  if (!reservesEffectBand || !Number.isSafeInteger(frame.sites) || frame.sites < 1) return 0;
-  return Math.min(
-    KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES,
-    Math.ceil((frame.sites * KERNEL_ROUTE_EFFECT_OPERATION_COST_PER_SITE)
-      / ConsensusBch2026.operationCostBudgetPerByte),
-  );
-}
-
-// A kernel row-loop route that reserves signature-row witness leaves carries the reconstruction and CHECKSIG
-// program for those leaves, and that program IS the input's density control length. The framed outline pass
-// shrinks the program, so a route can lose budget without losing the reserved verification work it must still
-// perform. MEASURED on the composite-signature route (2 reserved leaves): the outline removed 14 script bytes,
-// i.e. 11,200 units of budget, for only 8,957 units of cost, leaving input 0 53 units over; a one-byte reserve
-// does not help because turning the discarded OP_0 slot into a non-empty push costs about 800 units by itself.
-// Price one reserved signature check per leaf instead, as the journal and effect reserves price their work.
-const KERNEL_ROUTE_SIGNATURE_ROW_INPUT = /^__message_bus_sig_\d+_\d+(?:_\d+)?_rows$/;
-
-/**
- * Size the discarded density reserve for a kernel row-loop route that reserves signature-row witness leaves.
- * Only a route whose ABI declares those leaves needs it; every other route keeps the zero-length reserve, so
- * unrelated pinned unlocking-bytecode lengths are unaffected.
- */
-/** @internal Exported for exact boundary tests; not re-exported from the package API. */
-export function kernelRouteSignatureDensityReserveBytes(
-  abiFunction: AbiFunction, convention: string | undefined,
-): number {
-  if (convention !== 'kernel-row-loop') return 0;
-  const leaves = abiFunction.inputs
-    .filter((input) => KERNEL_ROUTE_SIGNATURE_ROW_INPUT.test(input.name)).length;
-  if (leaves < 1) return 0;
-  return Math.min(
-    KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES,
-    Math.ceil((leaves * ConsensusBch2026.signatureCheckCost)
-      / ConsensusBch2026.operationCostBudgetPerByte),
-  );
-}
-
-// Category, container and master scans visit the whole transaction, including sibling participants' bands.
-// Their cost does not follow this route's own effect count. Reserve a density length of eight bytes per
-// physical input/output slot (6,400 cost units), alongside the existing journal/effect/signature reserves.
-// This is a capacity allowance, not a proof of arbitrary handler cost: finalized-byte VM validation remains
-// authoritative, and the reserve cannot grow the complete unlocking script beyond the consensus byte limit.
-function kernelRouteScanDensityReserveBytes(
-  routeBytesWithoutReserve: number, existingReserve: number, physicalSlots: number, convention: string | undefined,
-): number {
-  if (convention !== 'kernel-row-loop') return existingReserve;
-  const desired = Math.max(existingReserve, physicalSlots * 8 - routeBytesWithoutReserve);
-  // A nonempty large reserve uses PUSHDATA2's three-byte header; conservatively leave that header even when
-  // a shorter reserve would use a smaller push. An already oversized route still fails its normal size gate.
-  const room = Math.max(0, ConsensusBch2026.maximumBytecodeLength - routeBytesWithoutReserve - 3);
-  return Math.min(room, KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES, desired);
-}
-
-/** Attach the V5 canonical manifest to the root compiler-route frame, without changing its ABI arguments. */
-export function withCompilerRouteMessageEnvelope(
-  unlocker: ContractUnlocker, messageEnvelope: Uint8Array, maximumInputBytes: number,
-  executorInputIndex = 0,
-): ContractUnlocker {
-  const capability = unlocker.contract.artifact.messageBus;
-  const envelopeLocation = capability?.atomicMessageBus?.messageEnvelope as
-    | { region?: string; canonicalInput?: string; unlockingPush?: number } | undefined;
-  const directRoot = executorInputIndex === 0;
-  const transport = directRoot ? 'root-route' : 'proxy-forward';
-  const canonicalInput = directRoot ? 'root-participant-master' : 'root-proxy-master';
-  if (capability?.verifierProgram?.envelopeTransport !== transport
-    || envelopeLocation?.region !== transport
-    || envelopeLocation.canonicalInput !== canonicalInput
-    || envelopeLocation.unlockingPush !== 1
-    || !Number.isSafeInteger(executorInputIndex) || executorInputIndex < 0
-    || !Number.isSafeInteger(maximumInputBytes) || maximumInputBytes < 1
-    || messageEnvelope.length < 1
-    || messageEnvelope.length > 0xffff
-    || messageEnvelope.length > ConsensusBch2026.maximumStackItemLength) {
-    throw new Error('messageBus: compiler-route envelope requires a supported V5 artifact and bounded carrier');
-  }
-  // The selector is a fixed push4 at bytes 0..4. Inserting exactly one PUSHDATA2 at byte 5 leaves the
-  // historical positional batch and reserve pushes, followed by the ABI frame, in their original order.
-  const carrier = new Uint8Array(3 + messageEnvelope.length);
-  carrier[0] = 0x4d;
-  carrier[1] = messageEnvelope.length & 0xff;
-  carrier[2] = messageEnvelope.length >>> 8;
-  carrier.set(messageEnvelope, 3);
-  return {
-    ...unlocker,
-    generateUnlockingBytecode(options): Uint8Array {
-      if (options.inputIndex !== executorInputIndex) {
-        throw new Error(`messageBus: V5 route envelope must occupy input ${executorInputIndex}`);
-      }
-      const ordinary = unlocker.generateUnlockingBytecode(options);
-      if (ordinary.length < 5 || ordinary[0] !== 4
-        || binToHex(ordinary.slice(1, 5)) !== '53434231') {
-        throw new Error('messageBus: V5 root input 0 must use the SCB1 compiler route');
-      }
-      const length = ordinary.length + carrier.length;
-      if (length > maximumInputBytes) {
-        throw new Error(
-          `messageBus: V5 root carrier requires ${length} unlocking-bytecode bytes; maximum is ${maximumInputBytes}`,
-        );
-      }
-      const result = new Uint8Array(length);
-      result.set(ordinary.slice(0, 5), 0);
-      result.set(carrier, 5);
-      result.set(ordinary.slice(5), 5 + carrier.length);
-      return result;
-    },
-  };
-}
-
-/** Mirror the root executor's SCB1 + envelope prefix in an unchanged baked proxy's `__forward(bytes)` arg. */
-export function withProxyForwardMessageEnvelope(
-  unlocker: ContractUnlocker, messageEnvelope: Uint8Array, maximumInputBytes: number,
-  executorInputIndex: number,
-): ContractUnlocker {
-  const inputs = unlocker.abiFunction?.inputs ?? [];
-  const maximumStackItemBytes = unlocker.contract.provider.consensusLimits?.maximumStackItemBytes
-    ?? ConsensusBch2026.maximumStackItemLength;
-  if (unlocker.abiFunction?.name !== '__forward'
-    || inputs.length !== 2 || inputs[0]?.name !== 'input' || inputs[0].type !== 'bytes'
-    || inputs[1]?.name !== '__internal__delegateInputIndex' || inputs[1].type !== 'bigint'
-    || !Number.isSafeInteger(executorInputIndex) || executorInputIndex < 1
-    || !Number.isSafeInteger(maximumInputBytes) || maximumInputBytes < 1
-    || messageEnvelope.length < 1 || messageEnvelope.length > 0xffff
-    || messageEnvelope.length + 7 > Math.min(
-      maximumStackItemBytes, ConsensusBch2026.maximumStackItemLength,
-    )) {
-    throw new Error('messageBus: proxy-forward envelope requires a bounded baked __forward(bytes) frame');
-  }
-  const payload = new Uint8Array(7 + messageEnvelope.length);
-  payload.set([0x53, 0x43, 0x42, 0x31, 0x4d,
-    messageEnvelope.length & 0xff, messageEnvelope.length >>> 8]);
-  payload.set(messageEnvelope, 7);
-  const expectedIndex = scriptToBytecode([bigIntToVmNumber(BigInt(executorInputIndex))]);
-  let cachedOrdinary: Uint8Array | undefined;
-  let cachedForward: Uint8Array | undefined;
-  return {
-    ...unlocker,
-    generateUnlockingBytecode(options): Uint8Array {
-      if (options.inputIndex !== 0) {
-        throw new Error('messageBus: proxy-forward envelope must occupy input 0');
-      }
-      const ordinary = unlocker.generateUnlockingBytecode(options);
-      if (ordinary === cachedOrdinary && cachedForward !== undefined) return cachedForward;
-      const frame = bytecodeToScript(ordinary);
-      if (frame.length !== 3 || !(frame[1] instanceof Uint8Array)
-        || binToHex(frame[1]) !== '53434231' || !(frame[2] instanceof Uint8Array)
-        || binToHex(scriptToBytecode([frame[0]!])) !== binToHex(expectedIndex)) {
-        throw new Error('messageBus: proxy-forward root must pin SCB1 to its actual executor input');
-      }
-      const result = scriptToBytecode([frame[0]!, payload, frame[2]]);
-      if (result.length > maximumInputBytes) {
-        throw new Error(
-          `messageBus: proxy-forward carrier requires ${result.length} unlocking-bytecode bytes; maximum is ${maximumInputBytes}`,
-        );
-      }
-      cachedOrdinary = ordinary;
-      cachedForward = result;
-      return result;
-    },
-  };
-}
+import { refuseMessageBusArtifact } from './legacy-artifact.js';
 
 // Large generated contracts can carry multi-megabyte ASM listings. Stateful deployment and proxy wiring create
 // several Contract instances from the exact same artifact (withCategory, logical-address attachment, delegates).
@@ -395,6 +146,7 @@ export class Contract<
     if (!expectedProperties.every((property) => property in artifact)) {
       throw new Error('Invalid or incomplete artifact provided');
     }
+    refuseMessageBusArtifact(artifact);
 
     if (!semver.satisfies(artifact.compiler.version, '>=0.7.0', { includePrerelease: true })) {
       throw new Error(`Artifact compiled with unsupported compiler version: ${artifact.compiler.version}, required >=0.7.0`);
@@ -433,16 +185,9 @@ export class Contract<
     const soleFn = artifact.abi.length === 1 ? artifact.abi[0] : undefined;
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!artifact.isLibrary || artifact.delegateOnly === true);
-    // A compiler-owned message-bus route is intentionally absent from the public ABI, but it is still a second
-    // executable selector in the redeem script. Treating the sole source function as selectorless then places its
-    // first argument in the dispatch-selector position and the covenant rejects before either function executes.
-    // `available` is additive metadata. Older artifacts with `messageBus` omitted the field but still contain the
-    // executable SCB1 selector, so only an explicit false means there is no hidden route in the redeem script.
-    // The multi-call entry is a second selector too.
-    const soleFnSharesCompilerRoute = (artifact.messageBus !== undefined
-      && artifact.messageBus.available !== false
-      && artifact.messageBus.routeInBytecode !== false) || typeof artifact.callBatch === 'object';
-    if (soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute) {
+    // The multi-call entry is a second selector in the redeem script.
+    const soleFnSharesCallBatch = typeof artifact.callBatch === 'object';
+    if (soleFn && !soleFnIsProxyImpl && !soleFnSharesCallBatch) {
       // @ts-ignore TODO: see if we can use generics to make TypeScript happy
       this.unlock[soleFn.name] = this.createUnlocker(soleFn);
     } else {
@@ -785,30 +530,6 @@ export class Contract<
       const signingBytecode = (selectorHex && this.artifact.functionBodies?.[selectorHex])
         ? parsedFunctionBody(this.artifact.functionBodies[selectorHex])
         : bytecode;
-      const signingBytecodeForArgument = (inputName: string): Uint8Array => {
-        const match = /^__message_bus_sig_(\d+)_(\d+)(?:_(\d+))?(?:_r\d+|_rows)$/.exec(inputName);
-        if (!match) return signingBytecode;
-        // Witness handler ordinals index the route's eligible dispatch set. The compiler publishes each eligible
-        // handler's stable ordinal, so this never re-derives (and disagrees on) the filtered eligible ordering.
-        const ordinal = Number(match[1]);
-        const handlers = this.artifact.messageBus?.handlers ?? [];
-        const handler = handlers.find((candidate) => candidate.witnessOrdinal === ordinal)
-          ?? handlers.filter((candidate) => candidate.eligible)[ordinal];
-        const parameterBody = handler?.transactionSignaturePolicy?.coveredBytecodes
-          ?.find((candidate) => candidate.parameterIndex === Number(match[2])
-            && candidate.leafIndex === Number(match[3] ?? 0))?.bytecode;
-        if (parameterBody) return parsedFunctionBody(parameterBody);
-        const handlerBody = handler?.signatureBytecode;
-        if (!handlerBody) {
-          // A signature parameter may only be forwarded by this participant;
-          // its child owns the CHECKSIG and receives its own per-input
-          // signature. The forwarding route still needs a well-typed 65-byte
-          // witness, so sign its ordinary route body. If this participant
-          // performs CHECKSIG, the compiler always publishes signatureBytecode.
-          return signingBytecode;
-        }
-        return parsedFunctionBody(handlerBody);
-      };
 
       const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
       // Coerce ethers-v5 BigNumber / wrapEthersBN objects before encode (MistSwap removeCollateral share).
@@ -880,7 +601,7 @@ export class Contract<
           if (!isDeferredSignatureArgument(arg)) return arg;
 
           // Generate transaction signature from SignatureTemplate
-          const coveredBytecode = signingBytecodeForArgument(argInputs[index].name);
+          const coveredBytecode = signingBytecode;
           const sign = (template: SignatureTemplate): Uint8Array => template.generateSignature(hash256(
             createSighashPreimage(
               transaction, sourceOutputs, inputIndex, coveredBytecode, template.sighashType,
@@ -965,73 +686,7 @@ export class Contract<
     return this.createUnlocker(abiFunction, abiFunction.selector ? hexToBin(abiFunction.selector) : undefined);
   }
 
-  /** @internal Construct an unlocker for a compiler-owned physical route
-   * which is advertised outside the source ABI (for example message-bus batch). */
-  createCompilerRouteUnlocker(
-    abiFunction: AbiFunction, selector: Uint8Array,
-  ): ContractFunctionUnlocker {
-    const base = this.createUnlocker(abiFunction, selector);
-    const batchBlobIndex = abiFunction.inputs.findIndex((input) => input.name === 'batchBlob');
-    if (binToHex(selector) !== '53434231' || batchBlobIndex < 0) return base;
-    return (...args: FunctionArgument[]) => {
-      const unlocker = base(...args);
-      const blob = args[batchBlobIndex];
-      if (!(blob instanceof Uint8Array)) throw new Error('message-bus batch batchBlob must encode as bytes');
-      const positionalPush = scriptToBytecode([blob]);
-      // Preserve the historical positional frame without carrying the callManifest in the master. The
-      // artifact-specialized verifier inputs carry the canonical callManifest. Kernel routes retain a
-      // bounded payload in this already-discarded slot: their transaction scans can otherwise exceed BCH-2026's
-      // operation-density budget despite remaining below every absolute operation and script-size limit.
-      const kernelJournalRoute = abiFunction.inputs.some(
-        (input) => input.name === '__internal__kernelJournalAccessStreams',
-      );
-      const kernelJournalAccessIndex = abiFunction.inputs.findIndex(
-        (input) => input.name === '__internal__kernelJournalAccessStreams',
-      );
-      const existingReserve = kernelJournalRoute
-        ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
-        : kernelRouteEffectDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)
-          + kernelRouteSignatureDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention);
-      let cachedOrdinary: Uint8Array | undefined;
-      let cachedCompilerRoute: Uint8Array | undefined;
-      let cachedReserveBytes: number | undefined;
-      const generateUnlockingBytecode = (
-        options: GenerateUnlockingBytecodeOptions,
-      ): Uint8Array => {
-        const ordinary = unlocker.generateUnlockingBytecode(options);
-        const reserveBytes = kernelRouteScanDensityReserveBytes(
-          ordinary.length + positionalPush.length, existingReserve,
-          options.transaction.inputs.length + options.transaction.outputs.length,
-          this.artifact.messageBus?.convention,
-        );
-        // The base unlocker returns the same byte-array instance when its witnesses are transaction-independent.
-        // Reuse the corresponding compiler-route frame too; otherwise every probe recopies the complete P2SH
-        // redeem script merely to insert two small positional pushes.
-        if (ordinary === cachedOrdinary && reserveBytes === cachedReserveBytes
-          && cachedCompilerRoute !== undefined) return cachedCompilerRoute;
-        const reservedPositionalPush = scriptToBytecode([new Uint8Array(reserveBytes)]);
-        // The selector is always the minimal push4 frame (5 bytes). Duplicate
-        // the executable blob here as the canonical positional second push;
-        // the message-bus batch covenant proves this copy equals its decoded batchBlob arg. Both historical
-        // positional items stay below the complete ABI frame, so the route can discard them uniformly before
-        // any hidden argument is addressed.
-        cachedOrdinary = ordinary;
-        cachedReserveBytes = reserveBytes;
-        cachedCompilerRoute = new Uint8Array([
-          ...ordinary.slice(0, 5),
-          ...positionalPush,
-          ...reservedPositionalPush,
-          ...ordinary.slice(5),
-        ]);
-        return cachedCompilerRoute;
-      };
-      // message-bus batch is a compiler-owned covenant even when the source handler has no state slots. Mark the master
-      // unlocker itself so zero-state participant blocks receive the same best-effort artifact-debug treatment
-      // as routes which happen to include a data/container covenant input; finalized-byte preflight remains the
-      // authoritative broadcast gate in both cases.
-      return { ...unlocker, generateUnlockingBytecode, covenantUnlocker: true };
-    };
-  }
+
 
   /**
    * An unlocker for the multi-call entry (`artifact.callBatch`): one spend of the master runs `frames` in order,
@@ -1082,10 +737,8 @@ export class Contract<
     const soleFn = this.artifact.abi.length === 1 ? this.artifact.abi[0] : undefined;
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!this.artifact.isLibrary || this.artifact.delegateOnly === true);
-    const soleFnSharesCompilerRoute = (this.artifact.messageBus !== undefined
-      && this.artifact.messageBus.available !== false
-      && this.artifact.messageBus.routeInBytecode !== false) || typeof this.artifact.callBatch === 'object';
-    const selector = soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute
+    const soleFnSharesCallBatch = typeof this.artifact.callBatch === 'object';
+    const selector = soleFn && !soleFnIsProxyImpl && !soleFnSharesCallBatch
       ? undefined
       : abiFunction.selector ? hexToBin(abiFunction.selector) : undefined;
     return this.createUnlocker(abiFunction, selector);

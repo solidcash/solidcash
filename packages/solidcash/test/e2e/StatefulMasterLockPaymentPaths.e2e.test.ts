@@ -2,7 +2,7 @@
  * A8 beyond a stateful call: a payment to a stateful master lock is refused wherever the SDK sends it, and recognised
  * for every master form whose lock spends only a coin carrying its minting NFT.
  *
- * - a plain TransactionBuilder send, and a message-bus composition, which never reach the stateful call path;
+ * - a plain TransactionBuilder send, which never reaches the stateful call path;
  * - a framed master, whose prologue requires the minting NFT as a direct master's pin(X) does, and a master compiled
  *   for P2SH20, whose records and container bind the category alone;
  * - a framed contract's address, its validator lock, whose program requires the category's mutable NFT.
@@ -16,23 +16,19 @@ import {
 } from '@bitauth/libauth';
 import {
   buildDataNftCovenantScript, buildSatoshiContainerCovenantScript, validatorAddress, validatorRedeemScript,
-  type Artifact,
 } from '@solidcash/utils';
 import { compileStringMulti } from '@solidcash/solidc';
 import { framedValidator } from '@solidcash/solidc/runtime';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
-import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
+import { SignatureTemplate, TransactionBuilder } from '../../src/index.js';
 import {
   StatefulContract, StatefulMasterPaymentError, refusePaymentsToStatefulMasters,
 } from '../../src/stateful/index.js';
-import * as messageBus from '../../src/message-bus/index.js';
 import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import { framedContractAddress } from '../../src/framed/deploy/stateful.js';
 import { satoshiContainerLockingBytecode } from '../../src/framed/deploy/records.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../../src/utils.js';
 import { compileString } from '../direct-compile.js';
-import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
-import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
 
@@ -73,40 +69,6 @@ describe('a payment to a stateful master lock, beyond the stateful call path (A8
     await expect(pay(master, 'f2')).rejects.toThrow(StatefulMasterPaymentError);
     await expect(pay(master, 'f3')).rejects.toThrow(containerAddress);
     await expect(pay(containerAddress, 'f4')).resolves.toBeDefined();
-  }, 300_000);
-
-  it('refuses a composed call that pays a master lock', async () => {
-    const provider = createMessageBusCapstoneTestProvider();
-    const artifacts = compileStringMulti(`interface IPayer { function pay(bytes recipient, int amount); }
-contract Payer() {
-  int n;
-  function pay(bytes recipient, int amount) public { this.transfer(recipient, amount); require(true); }
-}
-contract Driver(address payer) {
-  function run(bytes recipient, int amount) public { IPayer(payer).pay(recipient, amount); require(true); }
-}`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000, suppressWarnings: true });
-    const connect = async (artifact: Artifact, args: Uint8Array[] = []): Promise<StatefulContract> => {
-      const base = new Contract(artifact, args, { provider });
-      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
-      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
-    };
-    const payer = await connect(artifacts.Payer);
-    const driver = await connect(artifacts.Driver, [hexToBin(payer.inner.lockingBytecode)]);
-    await provider.addUtxo(getSatoshiContainerAddress(payer.inner, payer.categoryId), {
-      txid: 'd6'.repeat(32), vout: 1, satoshis: 30_000n,
-    });
-    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
-    const wallet = fee.unlocker.generateLockingBytecode();
-    const send = (recipient: Uint8Array): Promise<unknown> => messageBus.compose({
-      preparedCalls: [
-        { contract: driver, functionName: 'run', args: [recipient, 2_000n] },
-        { contract: payer, functionName: 'pay', args: [recipient, 2_000n] },
-      ],
-      funder: fee, changeAddress: wallet,
-    }).send();
-    // The payer's own master lock, which the composition spends: the transaction shows it is a master.
-    await expect(send(hexToBin(payer.inner.lockingBytecode))).rejects.toThrow(StatefulMasterPaymentError);
-    await expect(send(wallet)).resolves.toBeDefined();
   }, 300_000);
 
   it('recognises a framed master and names its container', async () => {

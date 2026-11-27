@@ -144,7 +144,7 @@ describe('Release 0 shared invocation analysis', () => {
           if (!probe(target, payload)) { require(false); }
           require(true);
         }
-      }`, { evmCompat: true, messageBus: true, messageBusKernel: true });
+      }`, { evmCompat: true });
     const call = artifact.invocationAnalysis!.functions
       .find((fn) => fn.name === 'run')!.externalCalls![0];
     expect(call).toMatchObject({ callsiteId: 0, occurrence: 'once', maximumOccurrences: 1 });
@@ -164,7 +164,7 @@ describe('Release 0 shared invocation analysis', () => {
           return 0;
         }
       }`, {
-      forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
+      forceStateful: true, evmCompat: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
     expect(calls).toHaveLength(2);
@@ -275,7 +275,7 @@ describe('Release 0 shared invocation analysis', () => {
           IConsumer(consumer).settle(IProducer(producer).quote(n));
           require(n >= 0);
         }
-      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+      }`, { forceStateful: true, suppressWarnings: true });
     const calls = artifact.invocationAnalysis!.functions
       .find((fn) => fn.name === 'run')!.externalCalls!;
     expect(calls.map((call) => [call.callsiteId, call.functionName])).toEqual([
@@ -388,7 +388,7 @@ describe('Release 0 shared invocation analysis', () => {
           }
           require(n >= 0);
         }
-      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+      }`, { forceStateful: true, suppressWarnings: true });
     const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'dispatch')!;
     expect(fn.externalCalls?.map((call) => call.occurrence)).toEqual([
       'once', 'conditional', 'conditional',
@@ -406,69 +406,6 @@ describe('Release 0 shared invocation analysis', () => {
     ]);
     expect(artifact.abi.find((candidate) => candidate.name === 'dispatch')!.resultConsumers)
       .toEqual(fn.resultConsumers);
-  });
-
-  it('preserves sibling call activation across inlined helper postconditions', () => {
-    const artifact = compileString(`pragma solidity >=0.8.0;
-      interface ITarget { function act(bigint n) external returns (bool); }
-      contract InlinedConditionalResultFlow() {
-        function optional(address target, bigint n) private returns (bool) {
-          bool success, bytes result = target.call(abi.encodeCall(ITarget.act, (n)));
-          return success && (result.length == 0 || abi.decode(result, (bool)));
-        }
-        function checked(address target, bigint n) private {
-          bool success, bytes result = target.call(abi.encodeCall(ITarget.act, (n)));
-          require(success && (result.length == 0 || abi.decode(result, (bool))));
-        }
-        function dispatch(address target, bigint n) public {
-          if (!optional(target, n)) {
-            checked(target, 0);
-            checked(target, n);
-          }
-          require(n >= 0);
-        }
-      }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
-    });
-    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'dispatch')!;
-    expect(fn.externalCalls?.map((call) => call.occurrence)).toEqual([
-      'once', 'conditional', 'conditional',
-    ]);
-    expect(fn.externalCalls?.[1].condition).toBeDefined();
-    expect(fn.externalCalls?.[1].condition).toEqual(fn.externalCalls?.[2].condition);
-    expect(JSON.stringify(fn.externalCalls?.[2].condition)).not.toContain('"callsiteId":1');
-  });
-
-  it('publishes early-return fallthrough guards for later external calls', () => {
-    const artifact = compileString(`pragma solidity >=0.8.0;
-      interface ISink { function publish(uint256 value) external; }
-      contract EarlyReturnCall() {
-        ISink sink;
-        function run(uint256 n) public {
-          if (n <= 10) return;
-          if (n == 11) return;
-          sink.publish(n - 10);
-          require(n > 11);
-        }
-      }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
-    });
-    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
-    expect(fn.externalCalls?.[0]).toMatchObject({
-      occurrence: 'conditional',
-      condition: {
-        kind: 'binary',
-        operator: '&&',
-        left: {
-          kind: 'unary', operator: '!',
-          expression: { kind: 'binary', operator: '<=' },
-        },
-        right: {
-          kind: 'unary', operator: '!',
-          expression: { kind: 'binary', operator: '==' },
-        },
-      },
-    });
   });
 
   it('preserves early-return call guards when an external-call helper is inlined', () => {
@@ -489,7 +426,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(n >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
+      forceStateful: true, suppressWarnings: true, evmCompat: true,
     });
     const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
     const call = fn.externalCalls?.find((candidate) => candidate.functionName === 'publish');
@@ -514,55 +451,10 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
+      forceStateful: true, suppressWarnings: true, evmCompat: true,
     });
     const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
     expect(fn.externalCalls?.[0].iterationDomain).toMatchObject({ maximumIterations: 3 });
-  });
-
-  it('resolves a state-array read in an early-return call guard', () => {
-    const artifact = compileString(`pragma solidity >=0.8.0;
-      interface ISink { function publish(uint256 value) external; }
-      contract StateArrayGuard() {
-        uint256[] limits;
-        ISink sink;
-        function run(uint256 n) public {
-          if (n <= limits[0]) return;
-          sink.publish(n);
-          require(n > 0);
-        }
-      }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
-    });
-    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
-    expect(fn.externalCalls?.[0].condition).toMatchObject({
-      kind: 'unary', operator: '!',
-      expression: {
-        kind: 'binary', operator: '<=',
-        right: { kind: 'arrayAccess', left: { kind: 'state', name: 'limits' } },
-      },
-    });
-  });
-
-  it('keeps an early-return guard on a call through a struct field', () => {
-    const artifact = compileString(`pragma solidity >=0.8.0;
-      interface IProbe { function balanceOf(address account) external returns (uint256); }
-      contract FieldTargetGuard() {
-        struct Pool { IProbe token; uint256 limit; }
-        Pool[] pools;
-        function run(uint256 n) public {
-          if (n <= pools[0].limit) return;
-          uint256 balance = pools[0].token.balanceOf(address(this));
-          require(balance >= 0);
-        }
-      }`, {
-      forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true,
-    });
-    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
-    expect(fn.externalCalls?.[0].condition).toMatchObject({
-      kind: 'unary', operator: '!',
-      expression: { kind: 'binary', operator: '<=' },
-    });
   });
 
   it('publishes nested returning-helper branches as an exact external argument', () => {
@@ -587,7 +479,7 @@ describe('Release 0 shared invocation analysis', () => {
           sink.publish(amount);
           require(true);
         }
-      }`, { forceStateful: true, messageBus: true, suppressWarnings: true, evmCompat: true });
+      }`, { forceStateful: true, suppressWarnings: true, evmCompat: true });
     const expression = artifact.abi.find((candidate) => candidate.name === 'run')
       ?.externalCalls?.find((call) => call.functionName === 'publish')?.argSources?.[0].expression;
     expect(expression?.kind).toBe('ternary');
@@ -617,7 +509,7 @@ describe('Release 0 shared invocation analysis', () => {
           data.publish(id, job.flag, job.amount);
           require(n > 0);
         }
-      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+      }`, { forceStateful: true, suppressWarnings: true });
     const fn = artifact.abi.find((candidate) => candidate.name === 'post')!;
     const sources = fn.externalCalls!.find((call) => call.functionName === 'publish')!.argSources!;
     expect(sources[1]).toMatchObject({
@@ -656,7 +548,7 @@ describe('Release 0 shared invocation analysis', () => {
           data.publish(id, jobs[id].flag, jobs[id].state);
           require(n > 0);
         }
-      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+      }`, { forceStateful: true, suppressWarnings: true });
     const fn = artifact.abi.find((candidate) => candidate.name === 'post')!;
     const sources = fn.externalCalls!.find((call) => call.functionName === 'publish')!.argSources!;
     expect(sources[1]).toMatchObject({
@@ -694,7 +586,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(n >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const call = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls![0];
     expect(call.iterationDomain).toMatchObject({
@@ -730,7 +622,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(values.length >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0].iterationDomain)
       .toMatchObject({
@@ -762,7 +654,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(first.length + second.length >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
     expect(calls).toHaveLength(2);
@@ -772,36 +664,6 @@ describe('Release 0 shared invocation analysis', () => {
     expect(calls?.[1].iterationDomain?.continueCondition).toMatchObject({
       right: { expression: { source: { paramIndex: 2 } } },
     });
-  });
-
-  it('threads collection cardinality across unlowered sibling mutation loops', () => {
-    const artifact = compileString(`pragma solidcash >=0.8.0;
-      interface ITarget { function step(int value); }
-      contract SiblingMappingLoops() {
-        mapping(int => bool) public flags;
-        function relay(address target, int value) internal { ITarget(target).step(value); }
-        function update(address target, int[] added, int[] removed) public {
-          for (int i = 0; i < added.length; i = i + 1) {
-            flags[added[i]] = true;
-            relay(target, added[i]);
-          }
-          for (int j = 0; j < removed.length; j = j + 1) {
-            flags[removed[j]] = false;
-            relay(target, removed[j]);
-          }
-          require(true);
-        }
-      }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
-    });
-    const names = [
-      '__internal__vmapRuntimeInputCount_flags',
-      '__internal__vmapRuntimeOutputCount_flags',
-    ];
-    const inputs = artifact.abi.find((fn) => fn.name === 'update')?.inputs.map((input) => input.name);
-    const routeInputs = artifact.messageBus?.route.inputs.map((input) => input.name);
-    expect(inputs).toEqual(expect.arrayContaining(names));
-    expect(routeInputs).toEqual(expect.arrayContaining(names));
   });
 
   it('publishes a later loop domain across a prior abort-only branch', () => {
@@ -816,7 +678,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(values.length >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0].iterationDomain)
       .toMatchObject({
@@ -846,7 +708,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(bound >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
     expect(calls).toHaveLength(2);
@@ -870,7 +732,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
     expect(calls).toHaveLength(2);
@@ -894,7 +756,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
     expect(calls).toHaveLength(1);
@@ -917,7 +779,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
     expect(calls).toHaveLength(1);
@@ -941,7 +803,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const steps = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls
       ?.filter((call) => call.functionName === 'step') ?? [];
@@ -962,7 +824,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(values.length >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const edge = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0];
     expect(edge?.iterationDomain).toBeUndefined();
@@ -990,7 +852,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(bound >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const edge = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0];
     expect(edge?.iterationDomain).toBeUndefined();
@@ -1013,7 +875,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true,
+      forceStateful: true,
       evmCompat: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
@@ -1042,7 +904,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true,
+      forceStateful: true,
       evmCompat: true, suppressWarnings: true,
     });
     const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
@@ -1064,7 +926,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(true);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true,
+      forceStateful: true,
       evmCompat: true, suppressWarnings: true,
     });
     const domain = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls![0].iterationDomain;
@@ -1090,7 +952,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(seed >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
     expect(fn.externalCalls?.map((call) => [call.callsiteId, call.functionName])).toEqual([
@@ -1136,8 +998,8 @@ describe('Release 0 shared invocation analysis', () => {
           return result;
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true,
-      messageBusGraphContext: true, evmCompat: true, suppressWarnings: true,
+      forceStateful: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const fn = artifact.abi.find((candidate) => candidate.name === 'collect')!;
     expect(fn.externalCalls?.map((call) => [call.callsiteId, call.functionName])).toEqual([
@@ -1161,8 +1023,8 @@ describe('Release 0 shared invocation analysis', () => {
           require(observed == 3);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true,
-      messageBusGraphContext: true, evmCompat: true, suppressWarnings: true,
+      forceStateful: true,
+      evmCompat: true, suppressWarnings: true,
     });
     const fn = artifact.abi.find((candidate) => candidate.name === 'validate')!;
     expect(fn.externalCalls?.[0]).toMatchObject({ occurrence: 'loop', hasReturnValues: true });
@@ -1182,7 +1044,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(bound >= 0);
         }
       }`, {
-      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+      forceStateful: true, suppressWarnings: true,
     });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0].iterationDomain)
       .toBeUndefined();

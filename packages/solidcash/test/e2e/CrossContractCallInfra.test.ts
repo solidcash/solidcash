@@ -4,8 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { compileStringMulti } from '@solidcash/solidc';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import * as messageBus from '../../src/message-bus/index.js';
-import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 
 describe('unbounded bytes return', () => {
@@ -121,93 +120,6 @@ describe('unbounded bytes return', () => {
         '8f33bbbe76e4f01dd1b24499fc6ab72e92f704f9444722cd3805ba8cc18fd2c6',
       );
       expect(state.seen).toBe(73n);
-    });
-
-    // Two distinct returning methods cannot both execute from the callee's one master input without an
-    // authenticated batch route: the second return output would only be a placeholder. Refused by name;
-    // messageBus.compose authenticates both logical invocations.
-    it('CROSS-CONTRACT: refuses two returning calls to one participant without a batch route', async () => {
-      const src = `
-        interface IA {
-          function echo(bytes b) external returns (bytes);
-          function wide(uint n, bytes39 value) external returns (uint, bytes39);
-        }
-        contract A { bigint marker;
-          function echo(bytes b) public returns (bytes) { return b; }
-          function pair(uint n, bytes39 value) internal pure returns (uint, bytes39) { return (n, value); }
-          function wide(uint n, bytes39 value) public returns (uint, bytes39) { return pair(n, value); }
-        }
-        contract B { bytes32 digest; bytes39 saved; uint seen;
-          function use(address a, bytes b, uint n, bytes39 wideValue) public {
-            this.digest = sha256(IA(a).echo(b));
-            (uint returned, bytes39 value) = IA(a).wide(n, wideValue);
-            this.seen = returned; this.saved = value;
-          }
-        }`;
-      const arts = compileStringMulti(src, {
-        evmCompat: true, messageBus: true, messageBusGraphContext: true,
-      });
-      const a = new Contract(arts.A, [], { provider });
-      const { categoryId: ac } = await setupStatefulUtxos(
-        provider, a, arts.A.stateLayout!, { marker: 0n }, { saltContract: true },
-      );
-      const aAddr = a.withCategory(hexToBin(ac)).lockingBytecode;
-      const b = new Contract(arts.B, [], { provider });
-      const wide = hexToBin(`11223344aa20${'55'.repeat(32)}87`);
-      const { categoryId: bc } = await setupStatefulUtxos(
-        provider, b, arts.B.stateLayout!,
-        { digest: new Uint8Array(32), saved: new Uint8Array(39), seen: 0n },
-        { saltContract: true },
-      );
-      const aSc = StatefulContract.withCategory(a, ac);
-      const bSc = StatefulContract.withCategory(b, bc);
-      await expect(bSc.use(hexToBin(aAddr), VAL, 73n, wide)
-        .withExternalCall(aSc, 'echo', [VAL])
-        .withExternalCall(aSc, 'wide', [73n, wide])
-        .send()).rejects.toThrow(/calls to echo and wide share one state owner but both return values.*compose/);
-      const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
-      await messageBus.compose({
-        calls: [
-          bSc.call.use(hexToBin(aAddr), VAL, 73n, wide),
-          aSc.call.echo(VAL),
-          aSc.call.wide(73n, wide),
-        ],
-        funder: fee,
-        changeAddress: fee.unlocker.generateLockingBytecode(),
-      }).send();
-      const state = await bSc.getState();
-      expect(binToHex(state.digest as Uint8Array)).toBe(
-        '8f33bbbe76e4f01dd1b24499fc6ab72e92f704f9444722cd3805ba8cc18fd2c6',
-      );
-      expect(state.seen).toBe(73n);
-      expect(binToHex(state.saved as Uint8Array)).toBe(binToHex(wide));
-    });
-
-    it('CROSS-CONTRACT: settles two non-returning calls to one participant as one batch', async () => {
-      const src = `
-        interface IA { function note(uint n) external; }
-        contract A { bigint marker; function note(uint n) public { this.marker = this.marker + n; } }
-        contract B { uint seen;
-          function use(address a, uint n) public { IA(a).note(n); IA(a).note(n + 1); this.seen = n; }
-        }`;
-      const arts = compileStringMulti(src, { evmCompat: true, messageBus: true });
-      const a = new Contract(arts.A, [], { provider });
-      const { categoryId: ac } = await setupStatefulUtxos(
-        provider, a, arts.A.stateLayout!, { marker: 0n }, { saltContract: true },
-      );
-      const aAddr = a.withCategory(hexToBin(ac)).lockingBytecode;
-      const b = new Contract(arts.B, [], { provider });
-      const { categoryId: bc } = await setupStatefulUtxos(
-        provider, b, arts.B.stateLayout!, { seen: 0n }, { saltContract: true },
-      );
-      const aSc = StatefulContract.withCategory(a, ac);
-      const bSc = StatefulContract.withCategory(b, bc);
-      await bSc.use(hexToBin(aAddr), 5n)
-        .withExternalCall(aSc, 'note', [5n])
-        .withExternalCall(aSc, 'note', [6n])
-        .send();
-      expect((await aSc.getState()).marker).toBe(11n);
-      expect((await bSc.getState()).seen).toBe(5n);
     });
 
   });

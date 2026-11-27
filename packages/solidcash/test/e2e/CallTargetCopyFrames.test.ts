@@ -16,7 +16,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * callee's master, through its multi-call entry. A local of the copy's own would name a second callee, for which the
  * builder has no second master.
  */
-const DIRECT = { forceStateful: true, messageBus: false, evmCompat: true, suppressWarnings: true } as const;
+const DIRECT = { forceStateful: true, evmCompat: true, suppressWarnings: true } as const;
 
 const source = (second: string): string => `pragma solidity ^0.8.0;
 interface IToken {

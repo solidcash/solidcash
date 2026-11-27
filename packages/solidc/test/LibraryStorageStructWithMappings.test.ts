@@ -112,11 +112,6 @@ describe('library storage pointer to a struct with mappings and a dynamic array'
   it('compiles a mapping-only struct through using-for', () => {
     expect(compileString(MAPPING_ONLY, { evmCompat: true }).contractName).toBe('Holder');
   });
-
-  it('compiles with automatic message-bus selection', () => {
-    expect(compileString(usingFor('book'), { evmCompat: true, messageBus: undefined }).contractName)
-      .toBe('Holder');
-  });
 });
 
 // A storage-pointer library fn called with a MAPPING-ELEMENT argument (`L.f(m[k])` / `m[k].f()`, the BentoBox

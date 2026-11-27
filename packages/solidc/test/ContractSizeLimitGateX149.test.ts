@@ -73,7 +73,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    * file is measuring something else.
    */
   it('MEASURED: debug.bytecode is the exact byte count and bytecode is a longer listing', () => {
-    const artifact = compileString(bulk(40), { messageBus: false }) as Compiled;
+    const artifact = compileString(bulk(40)) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
     expect(scriptBytes, 'debug.bytecode is not the same script as bytecode')
       .toBe(artifact.debug.bytecode.length / 2);
@@ -88,7 +88,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('REGRESSION: a contract whose listing is over and whose script is under is NOT diagnosed', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(240), { messageBus: false }) as Compiled;
+    const artifact = compileString(bulk(240)) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
 
     expect(listingHalfChars, 'premise: the LISTING must be over the limit, or this is not the false-positive row')
@@ -106,7 +106,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('MEASURED: a contract over the limit in real bytes is diagnosed and announced', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(300), { messageBus: false }) as Compiled;
+    const artifact = compileString(bulk(300)) as Compiled;
     const { scriptBytes } = lengths(artifact);
 
     expect(scriptBytes, 'premise: the SCRIPT must be over the limit').toBeGreaterThan(MAX_INPUT_BYTESIZE);
@@ -129,7 +129,6 @@ describe('X149: the size gate measures the script, not its listing', () => {
   it('uses an explicitly configured permissive input limit', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const artifact = compileString(bulk(300), {
-      messageBus: false,
       maximumInputBytes: 1_000_000,
     }) as Compiled;
 
@@ -144,106 +143,12 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('CONTROL: a contract under the limit on both renderings is silent', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(150), { messageBus: false }) as Compiled;
+    const artifact = compileString(bulk(150)) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
     expect(scriptBytes).toBeLessThan(MAX_INPUT_BYTESIZE);
     expect(listingHalfChars, 'premise: this control must be under on the LISTING too')
       .toBeLessThan(MAX_INPUT_BYTESIZE);
     expect(sizeDiagnostics(artifact)).toHaveLength(0);
     expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).not.toContain('input-script limit');
-  }, 120_000);
-
-  /**
-   * THE SIZE DIAGNOSTIC APPENDS. It is the only site on this path that used to ASSIGN `artifact.diagnostics`,
-   * which meant the contract most in need of its other diagnostics was the one that would lose them. The
-   * absence channel (`message-bus-route-not-synthesized`) is published after it, so an over-limit contract
-   * with no route must carry BOTH - and the assertion is on the SET, not on either one's index. `unsafe` is
-   * what denies this contract a route (`lifecycle-or-unsafe-handler`); without it the sole entry point is
-   * admitted and there is no second diagnostic to lose.
-   */
-  it('MEASURED: an over-limit contract with no route keeps both diagnostics', () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(
-      bulk(300, 'unsafe '), { forceStateful: true, messageBus: true },
-    ) as Compiled;
-    const codes = (artifact.diagnostics ?? []).map((entry) => entry.code).sort();
-    expect(codes).toEqual(['contract-size-limit', 'message-bus-route-not-synthesized']);
-  }, 120_000);
-
-  it('MEASURED: post-stamp kernel bytes drive the certificate and configured size diagnostic', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const limit = MAX_INPUT_BYTESIZE;
-    // Keep this a genuinely over-limit kernel even after inactive event frames become a compact loop.
-    const distinctChecks = Array.from({ length: 180 }, (_, index) =>
-      `require(seed != 0x${(index + 1).toString(16).padStart(64, '0')});`).join('\n');
-    const artifact = compileString(`contract Stamped() {
-      event Changed(uint key);
-      uint count;
-      function one(uint key, bytes32 seed) public {
-        ${distinctChecks}
-        this.count = this.count + 1;
-        emit Changed(key);
-        require(this.count > 0);
-      }
-      function two() public returns (uint) { return this.count; }
-    }`, { forceStateful: true, messageBus: true });
-    const scriptBytes = asmToBytecode(artifact.bytecode).length;
-
-    expect(artifact.messageBus?.kernelExecutionPlans?.plans).toHaveLength(2);
-    expect(scriptBytes).toBeGreaterThan(limit);
-    expect(artifact.messageBus?.deployability?.measuredBytecodeBytes).toBe(scriptBytes);
-    const found = sizeDiagnostics(artifact);
-    expect(found).toHaveLength(1);
-    expect(found[0].message).toContain(`${scriptBytes} bytes`);
-    expect(found[0].message).toContain(`limit by ${scriptBytes - limit}`);
-    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toContain(`${scriptBytes} bytes`);
-  }, 120_000);
-
-  /**
-   * A kernel route streams the emits of a handler whose emits all sit at its top level onto the trailing band, so
-   * an emitting handler no longer implies the 255-site event band. A conditional emit cannot stream: it keeps the
-   * band, which is what the first pin measures; the second pins the streamed form of the same contract.
-   */
-  const routedEvent = (emit: string): string => `contract RoutedEvent() {
-      event Appended(uint256 key);
-      mapping(uint256 => bigint[]) items;
-      function itemsLength(uint256 key) public returns (uint256) {
-        return this.items[key].length;
-      }
-      function append(uint256 key) public {
-        this.items[key].push(bigint(4) << 160);
-        ${emit}
-        require(this.items[key].length > 0);
-      }
-    }`;
-  const expectRoutedEventFits = (artifact: ReturnType<typeof compileString>): void => {
-    const scriptBytes = asmToBytecode(artifact.bytecode).length;
-    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
-    expect(artifact.messageBus?.maximumRows).toBe(255);
-    expect(artifact.messageBus?.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
-      .toEqual(['itemsLength', 'append']);
-    expect(artifact.messageBus?.deployability?.status).toBe('asserted');
-    expect(artifact.messageBus?.deployability?.measuredBytecodeBytes).toBe(scriptBytes);
-    expect(scriptBytes).toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
-    expect(sizeDiagnostics(artifact)).toHaveLength(0);
-  };
-
-  it('keeps a 255-site event and return kernel redeem script within the P2SH limit', () => {
-    const artifact = compileString(routedEvent('if (key > 0) emit Appended(key);'), {
-      forceStateful: true, messageBus: true, messageBusGraphContext: true,
-    });
-    expectRoutedEventFits(artifact);
-    expect(artifact.messageBus?.route.blockLayout?.slots.filter((slot) => slot.kind === 'event')).toHaveLength(255);
-  }, 120_000);
-
-  it('keeps a streamed event and return kernel redeem script within the P2SH limit, with no event band', () => {
-    const artifact = compileString(routedEvent('emit Appended(key);'), {
-      forceStateful: true, messageBus: true, messageBusGraphContext: true,
-    });
-    expectRoutedEventFits(artifact);
-    expect(artifact.messageBus?.route.blockLayout?.slots.some((slot) => slot.kind === 'event')).toBe(false);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append')).toMatchObject({
-      runtimeLoopEvents: [{ repeatCount: 1, eventSignatures: ['Appended(uint256)'], stream: true }],
-    });
   }, 120_000);
 });

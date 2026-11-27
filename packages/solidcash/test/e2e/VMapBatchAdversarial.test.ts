@@ -42,21 +42,21 @@ describe('vmap atomic batch adversarial soundness', () => {
     const wrongProof = await deploy();
     wrongProof._setRawVMapBatchWitness(0, { proof: 2n }); // points at the other logical/funder block slot
     await expect(wrongProof.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+      .rejects.toThrow(/^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
 
     const wrongNext = await deploy();
     wrongNext._setRawVMapBatchWitness(1, { next: new Uint8Array(32) });
     await expect(wrongNext.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+      .rejects.toThrow(/^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
 
     const wrongPredOut = await deploy();
     wrongPredOut._setRawVMapBatchWitness(0, { predOut: 1n }); // collides with a target output
     await expect(wrongPredOut.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+      .rejects.toThrow(/^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
 
     // Rank 3 is outside 0..2. Empty, reordered, duplicated, and bit-flipped rows fail the general linear checks.
     const call3 = async (sc: StatefulContract): Promise<unknown> => sc.getFunction('batch3')(1n, 2n, 3n).send();
-    const verifyFail = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+    const verifyFail = /^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
     const invalidRank = await deploy3();
     invalidRank._setRawVMapBatchWitness(1, { rank: 3n });

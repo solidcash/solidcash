@@ -49,13 +49,11 @@ type FacetName = keyof typeof FACETS;
 let masterArt: Artifact;
 const facetArt = {} as Record<FacetName, Artifact>;
 
-// `messageBus: false` mirrors test/direct-compile.ts: this suite exercises direct facet calls, and the
-// default `auto` mode spends its time building message-bus routes this contract never takes.
 // Compiling the master and facets can overrun the suite's 10 s hookTimeout, hence the explicit budget.
 beforeAll(() => {
-  masterArt = compileFile(fx('nusdt.scash'), { messageBus: false }) as Artifact;
+  masterArt = compileFile(fx('nusdt.scash')) as Artifact;
   for (const [name, file] of Object.entries(FACETS)) {
-    facetArt[name as FacetName] = compileFile(fx(file), { brandLibrary: true, messageBus: false }) as Artifact;
+    facetArt[name as FacetName] = compileFile(fx(file), { brandLibrary: true }) as Artifact;
   }
 }, 180000);
 
@@ -276,7 +274,7 @@ describe('NativeUsdt / structural: the split is what makes the contract deployab
   // to under 1 KB. Asserting a fixed multiple of the cap would re-rot, so assert
   // the shape that actually matters - over the cap, no single body responsible.
   it('the single-file monolith compiles but is unspendable, which is why we split', () => {
-    const mono = compileFile(fx('native_usdt.scash'), { messageBus: false }) as Artifact;
+    const mono = compileFile(fx('native_usdt.scash')) as Artifact;
     expect(scriptSize(mono)).toBeGreaterThan(MAX_INPUT_BYTESIZE);
     // No individual function is the problem - the sum is.
     const bodies = Object.values(mono.functionBodies ?? {}) as string[];

@@ -42,7 +42,7 @@ describe('conditional deploy (new C() inside a branch/loop)', () => {
   it('refuses different child contract types when direct deployFrom cannot derive them', () => {
     const two = 'contract Child { int x; constructor() { x = 1; } } contract Other { int y; constructor() { y = 2; } }';
     expect(() => compileString(`${two} contract C { function f(uint c) external { Child a = new Child();`
-      + ' if (c==1) { Other b = new Other(); } require(true); } }', { ...compat, messageBus: false }))
+      + ' if (c==1) { Other b = new Other(); } require(true); } }', { ...compat }))
       .toThrow(/different child contract types.*not SDK-derivable in the direct route/);
   });
   it('an unconditional deploy still compiles', () => {
@@ -495,7 +495,7 @@ describe('type(X).creationCode constructor-args warning', () => {
   it('warns when the child has constructor parameters', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     compileString(child('constructor(uint _x) { x = _x; }') + use, {
-      evmCompat: true, messageBus: false,
+      evmCompat: true,
     });
     const w = spy.mock.calls.filter((c) => String(c[0]).includes('does not include constructor'));
     spy.mockRestore();

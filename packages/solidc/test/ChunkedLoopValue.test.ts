@@ -11,7 +11,7 @@ describe('chunked (>60 B) value in a sorted per-iteration loop', () => {
           require(true);
         }
       }
-    `, { messageBus: false, suppressWarnings: true });
+    `, { suppressWarnings: true });
 
     const collection = artifact.stateLayout?.collections?.find((c) => c.name === 'm');
     expect(collection?.sorted).toBe(true);
@@ -34,7 +34,7 @@ describe('chunked (>60 B) value in a sorted per-iteration loop', () => {
           require(true);
         }
       }
-    `, { messageBus: false, suppressWarnings: true });
+    `, { suppressWarnings: true });
 
     const fill = artifact.abi.find((f) => f.name === 'fill')!;
     expect(fill.sortedUpsertLoopInfo).toBeDefined();

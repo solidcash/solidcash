@@ -8,12 +8,10 @@ import {
   Op,
   buildEventNftCovenantScript,
   computeEventNameHash,
-  type Artifact,
 } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { usesLegacyJobEventTraceCompatibility } from './legacy-job-event-wire.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   decodeScriptNumber,
@@ -80,14 +78,7 @@ export function applyDeriveFullNestedCommitsEventPins(params: {
     : writeSelection.status === 'absent'
       ? undefined
       : null;
-  const traceArtifacts = [llc, ...(proxyGroup ? [proxyGroup] : [])].flatMap((group) => [
-    group.logicalArtifact,
-    group.logicalContract?.inner?.artifact,
-    group.externalContract?.inner?.artifact,
-  ]).filter((artifact): artifact is Artifact => artifact !== undefined);
-  const failingCommits = extractFailingValueChunkCommitments(
-    nestedTrace, exactAuthority, usesLegacyJobEventTraceCompatibility(traceArtifacts),
-  );
+  const failingCommits = extractFailingValueChunkCommitments(nestedTrace, exactAuthority);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process
     ?.env?.SOLIDC_DEBUG_CHUNK_SCAN === '1') {
     console.error('failing-otc-commits', {
@@ -154,9 +145,7 @@ export function applyDeriveFullNestedCommitsEventPins(params: {
       commitmentProgressDelta += 1;
     }
   }
-  const nestedFn = llc.compilerRoute?.abiFunction
-  ?? proxyGroup?.compilerRoute?.abiFunction
-  ?? llc.externalContract?.inner.artifact.abi.find(
+  const nestedFn = llc.externalContract?.inner.artifact.abi.find(
     (candidate: { name: string }) => candidate.name === llc.functionName,
   )
   ?? proxyGroup?.externalContract?.inner.artifact.abi.find(
@@ -174,7 +163,7 @@ export function applyDeriveFullNestedCommitsEventPins(params: {
     const nestedEventOutputBase = implInputIndex;
     // `commits` is deliberately first-write-wins for computed value chunks: several disjoint covenant
     // families can inspect the same speculative output coordinate while the routed layout converges.
-    // An event slot is different. An empty message-bus identity carrier can be preservation-checked at
+    // An event slot is different. An empty identity carrier can be preservation-checked at
     // the event's eventual coordinate before the delegate reaches its event covenant; the event check
     // is the later, authoritative write for that coordinate. Reusing the first-write map published the
     // carrier's `SCID` commitment as the event and made the final delegate fail against its real blob.

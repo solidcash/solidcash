@@ -38,49 +38,30 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_USER_FUNCTION_CALL_TARGET', class: 'observation' },
   { name: 'SOLIDC_DEBUG_USER_FUNCTION_CALL_STACK', class: 'observation' },
   { name: 'SOLIDC_DEBUG_COMPUTE_BASE', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_COMPUTE_BASE_MARKERS', class: 'observation' },
   { name: 'SOLIDC_DEBUG_ENTRY_INPUT_INDEX', class: 'observation' },
   { name: 'SOLIDC_DEBUG_EMIT_TRAP', class: 'observation' },
   { name: 'SOLIDC_DEBUG_EMIT_TRAP_WINDOW', class: 'observation' },
   { name: 'SOLIDC_DEBUG_INPUTS', class: 'observation' },
   { name: 'SOLIDC_DEBUG_ADMISSION_REASONS', class: 'observation' },
-  // production SOLIDC env hot-set production observation / dump / oracle (do not alter default bytecode by themselves)
-  { name: 'SOLIDC_DUMP_ROUTE', class: 'observation' },
-  { name: 'SOLIDC_ROUTE_PARSE_ORACLE', class: 'observation' },
+  // production SOLIDC env hot-set observations (do not alter default bytecode by themselves)
   { name: 'SOLIDC_COMPILE_CACHE_DIR', class: 'observation' },
   { name: 'SOLIDC_COMPILE_CACHE_MAX_ENTRIES', class: 'observation' },
   { name: 'SOLIDC_DEBUG_CACHE_ID', class: 'observation' },
   { name: 'SOLIDC_DEBUG_ENTRY_OUTPUT', class: 'observation' },
   { name: 'SOLIDC_DEBUG_LOOP', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_OWNER_TOP_HANDLER', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RAW_TARGET', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RECOVERY_CLOSURE', class: 'observation' },
   { name: 'SOLIDC_DEBUG_RECOVERY_PRE', class: 'observation' },
-  { name: 'SOLIDC_DEBUG_ROUTE', class: 'observation' },
+  { name: 'SOLIDC_DEBUG_TRACE', class: 'observation' },
   { name: 'SOLIDC_DEBUG_STREAM_PICK_OFFSET', class: 'observation' },
   { name: 'SOLIDC_DEBUG_UPSERT_WITNESS', class: 'observation' },
   { name: 'SOLIDC_DEBUG_UPSERT_WITNESS_DEFINE_ONLY', class: 'observation' },
   { name: 'SOLIDC_DEBUG_UPSERT_WITNESS_TARGET', class: 'observation' },
-  { name: 'SOLIDC_ROUTE_ABI_TAIL', class: 'observation' },
   // Instrumented (change codegen shape) — must not affect default release compile
   { name: 'SOLIDC_DEBUG_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDCASH_NO_OUTLINE', class: 'instrumented' },
   { name: 'SOLIDC_NO_OPTIMISE', class: 'instrumented' },
-  { name: 'SOLIDC_SKIP_MESSAGE_BUS_BINDER', class: 'instrumented' },
-  // Explicit features — identity-bearing when enabled
-  {
-    name: 'SOLIDC_OWNER_ALT_ANCHOR',
-    class: 'feature',
-    identityKey: 'ownerAltAnchor',
-  },
-  {
-    name: 'SOLIDC_HANDLER_BAND_MODEL',
-    class: 'feature',
-    identityKey: 'handlerBandModel',
-  },
-  // production SOLIDC env hot-set production cache / binder identity knobs
+  // production SOLIDC env hot-set: compile cache identity knobs
   {
     name: 'SOLIDC_COMPILE_CACHE',
     class: 'feature',
@@ -104,42 +85,6 @@ export function classifySolidcEnv(name: string): SolidcEnvClass {
 
 export function solidcEnvEntry(name: string): SolidcEnvEntry | undefined {
   return BY_NAME.get(name);
-}
-
-export type SolidcFeatureFlags = {
-  ownerAltAnchor: boolean;
-  handlerBandModel: boolean;
-};
-
-/**
- * Resolve production-semantics feature flags.
- * When `releaseMode` is true, instrumented and unknown vars are ignored; only explicit features apply.
- */
-export function resolveSolidcFeatureFlags(
-  env: Record<string, string | undefined> | undefined,
-  options?: { releaseMode?: boolean; allowInstrumented?: boolean },
-): SolidcFeatureFlags {
-  const releaseMode = options?.releaseMode !== false;
-  const allowInstrumented = options?.allowInstrumented === true;
-  const read = (name: string): boolean => env?.[name] === '1';
-
-  // Instrumented switches never affect release/default compilation.
-  if (releaseMode && !allowInstrumented) {
-    /* intentionally ignore SOLIDC_DEBUG_NO_OUTLINE / SOLIDCASH_NO_OUTLINE */
-  }
-
-  return {
-    ownerAltAnchor: read('SOLIDC_OWNER_ALT_ANCHOR'),
-    handlerBandModel: read('SOLIDC_HANDLER_BAND_MODEL'),
-  };
-}
-
-/** Feature bits that must be folded into artifact/cache identity when enabled. */
-export function solidcFeatureIdentityBits(flags: SolidcFeatureFlags): Record<string, boolean> {
-  const bits: Record<string, boolean> = {};
-  if (flags.ownerAltAnchor) bits.ownerAltAnchor = true;
-  if (flags.handlerBandModel) bits.handlerBandModel = true;
-  return bits;
 }
 
 /**
@@ -231,13 +176,10 @@ export function enforceSolidcEnvPolicy(
 
 /** Production hot-set names that must stay registered (subset of the full SOLIDC env registration). */
 export const PRODUCTION_SOLIDC_ENV_HOT_SET: readonly string[] = Object.freeze([
-  'SOLIDC_SKIP_MESSAGE_BUS_BINDER',
   'SOLIDC_COMPILE_CACHE',
   'SOLIDC_COMPILE_CACHE_BUILD_ID',
   'SOLIDC_COMPILE_CACHE_DIR',
   'SOLIDC_COMPILE_CACHE_MAX_ENTRIES',
   'SOLIDC_NO_OPTIMISE',
-  'SOLIDC_ROUTE_PARSE_ORACLE',
-  'SOLIDC_DUMP_ROUTE',
   'SOLIDC_STRICT_UNKNOWN_ENV',
 ]);

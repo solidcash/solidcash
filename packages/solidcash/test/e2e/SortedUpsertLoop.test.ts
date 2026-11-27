@@ -17,7 +17,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
 const WRONG_BALANCE_PREFLIGHT = new RegExp(
-  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+  '^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
 );
 
 // Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (the multitransfer CREDIT half to EXISTING recipients). Each

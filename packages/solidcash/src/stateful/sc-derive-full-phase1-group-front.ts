@@ -9,7 +9,7 @@ import type NetworkProvider from '../network/NetworkProvider.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
-import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
+import { valueChunkOutputWitnessCarrier } from './value-chunk-trace-helpers.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { ownsCapturedValueChunkOutputBase } from './value-chunk-base-writer-select.js';
 import { selectValueChunkOutputBase } from './value-chunk-geometry.js';
@@ -56,7 +56,7 @@ export function deriveFullPhase1GroupFront(
   // participant masters and return tails cannot collide with the recovered chunks.
   const valueChunkWitness = valueChunkOutputWitnessCarrier(stb, group);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('route-probe-build-start', { groupIdx, functionName: group.functionName });
   }
   let probeBuilder = stb.build();
@@ -100,7 +100,7 @@ export function deriveFullPhase1GroupFront(
     ms: Date.now() - debugGroupStartedAt,
   });
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('route-probe-build-finish', { groupIdx, inputs: probeBuilder.inputs.length });
     console.error('route-probe-output-window', probeBuilder.outputs.slice(38, 50).map((output, offset) => ({
       index: 38 + offset,
@@ -133,15 +133,10 @@ export function deriveFullPhase1GroupFront(
     && input.vout === expectedMaster.vout);
   const builtStateMasterIdx = probeBuilder.inputs.findIndex((input) => input.txid === group.masterUtxo.txid
     && input.vout === group.masterUtxo.vout);
-  const bMasterIdx = group.compilerRoute && group.delegateCallGroupIndex !== undefined
-    // Routed proxy state follows its implementation in the input band. The group's provisional master
-    // outpoint can still alias the implementation during probe convergence, so derive this coordinate
-    // from the already-final low-level implementation position.
-    ? stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex) + 1
-    : builtMasterIdx >= 0 ? builtMasterIdx
-      : group.delegateCallGroupIndex === undefined
-        ? stb.getExternalCallMasterInputIndex(groupIdx)
-        : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
+  const bMasterIdx = builtMasterIdx >= 0 ? builtMasterIdx
+    : group.delegateCallGroupIndex === undefined
+      ? stb.getExternalCallMasterInputIndex(groupIdx)
+      : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
   if (debugTargetDerivation) console.error('derive-phase1-master-index', {
     groupIdx, functionName: group.functionName, bMasterIdx, builtMasterIdx, builtStateMasterIdx,
     computedExternalMaster: stb.getExternalCallMasterInputIndex(groupIdx),
@@ -163,7 +158,7 @@ export function deriveFullPhase1GroupFront(
 
   // Run VM on B's master input
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     const tail = sourceOutputs.at(-1);
     console.error('route-derive-start', {
       groupIdx, functionName: group.functionName, bMasterIdx,

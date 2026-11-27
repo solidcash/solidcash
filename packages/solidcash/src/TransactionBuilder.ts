@@ -1189,7 +1189,7 @@ export class TransactionBuilder {
 
     this.addOutput(changeOutput);
     try {
-      // A compiler-route density reserve depends on the complete input/output population. Measure with the
+      // A route density reserve depends on the complete input/output population. Measure with the
       // change output present: adding only its serialized size misses growth in those unlocking scripts
       // (and output-count varint boundaries). Satoshi amounts themselves always occupy eight bytes.
       const transactionSize = this.getTransactionSize();
@@ -1578,9 +1578,7 @@ export class TransactionBuilder {
     //
     // MEASURED BEFORE LANDING, not assumed: 1,170 sends through this site across the whole SDK e2e population,
     // 1,159 of which the provider accepted, and the byte rules refuse NONE of them. See
-    // `test/journal-message-bus/e2e/message-bus-gatesite-probe.ts` for the per-site table and
-    // `test/e2e/X131SendFinalizedBytesGate.test.ts`
-    // for the throw census that confirms it after the gate was applied.
+    // `test/e2e/X131SendFinalizedBytesGate.test.ts` for the throw census that confirms it after the gate was applied.
     //
     // IT DOES NOT READ `provider.policy`, AND MUST NOT START (X157, decided). The observation that prompted the
     // question - `addOutput` admits a below-dust output when `enforceDust` is false, so the dust rule is only
@@ -1589,9 +1587,8 @@ export class TransactionBuilder {
     // policy refuses exactly the set the gate refuses, to the satoshi; `enforceDust: false` sets
     // `standard: false` and `dustRelayFeePerKb: 0n`, which is a harness that models no relay policy at all.
     // `MockNetworkProvider` is also the only provider in `src/network/` that publishes `policy`, so wiring it
-    // in here would soften the gate on the test harness and on nothing else. Only an exact preflight receipt
-    // from a protocol composer may suppress a relay rule in this second, final byte check; a send without one
-    // judges consensus by the provider's published limits (see below) and relay by the rules themselves.
+    // in here would soften the gate on the test harness and on nothing else. A send judges consensus by the
+    // provider's published limits (see below) and relay by the rules themselves.
     //
     // X158. THE OVER-LIMIT REFUSAL LIVES HERE, and this is the only place it can. `solidc` warns when the
     // un-constructed script passes 10,000 bytes and cannot do better: it does not know the constructor
@@ -1609,17 +1606,15 @@ export class TransactionBuilder {
     // ordering decides nothing. It costs nothing on the admitted path: the bytes are assessed first and an
     // admitted verdict returns before the VM is touched, so all 1,159 accepted sends the X126 probe measured
     // through this site are byte-for-byte unaffected.
-    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('./message-bus/preflight.js');
-    const { finalizedByteGateReceiptOf } = await import('./message-bus/finalized-byte-gate.js');
-    // A send that never ran an exact message-bus preflight has no receipt. The destination provider's consensus
-    // limits are then the only consensus profile available, and they are the authority a real provider would judge
-    // the bytes against; a provider that publishes none gets the empty profile, BCH's own limits. Its limits reach
-    // the consensus rules only: the relay rules stay on, because a provider's profile says nothing about relay.
+    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('./finalization.js');
+    // The destination provider's consensus limits are the authority a real provider would judge the bytes against;
+    // a provider that publishes none gets the empty profile, BCH's own limits. Its limits reach the consensus rules
+    // only: the relay rules stay on, because a provider's profile says nothing about relay.
     assertFinalizedBytesWithCovenant(
       this,
       transaction,
       inputSubjectsOfBuilder(this),
-      finalizedByteGateReceiptOf(this) ?? { consensusLimits: this.provider.consensusLimits },
+      { consensusLimits: this.provider.consensusLimits },
     );
 
     // A8: a payment to a stateful contract's master lock could never be spent.

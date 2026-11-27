@@ -5,7 +5,7 @@ import type { FunctionArgument } from '../../src/Argument.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
 import { encodeStoredValueSource, type StoredValueIncomingEntry } from '../../src/stateful/sc-encode-stored-element-source.js';
 import { evaluateExternalExpression } from '../../src/stateful/sc-evaluate-external-expression.js';
-import { foldRouteStoredValues, type StoredValueMutationRow } from '../../src/stateful/fold-route-stored-values.js';
+import { foldStoredValues, type StoredValueMutationRow } from '../../src/stateful/fold-stored-values.js';
 
 const artifact = {
   structs: [{ name: 'Record', fields: [{ name: 'amount', type: 'int256' }, { name: 'payload', type: 'bytes' }] }],
@@ -55,7 +55,7 @@ describe('stored incoming-entry recipes', () => {
     const write = (amount: bigint, key = 7n): StoredValueMutationRow => ({
       row: { handler: increment, args: [key, amount] }, access: increment.entryAccesses![0],
     });
-    const fold = (writes: readonly StoredValueMutationRow[]): Uint8Array | undefined => foldRouteStoredValues({
+    const fold = (writes: readonly StoredValueMutationRow[]): Uint8Array | undefined => foldStoredValues({
       writes, collection: artifact.stateLayout!.collections![0], targetSlot: incoming.slot,
       incomingEntries: [incoming], artifact,
       encode: ({ row, access }, entries) => encodeStoredValueSource(

@@ -6,14 +6,11 @@ import { Contract, TransactionBuilder } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
 import { standInToken, standInVoidRecord, trivialCallee } from '../trivial-callee.js';
 
-// A message-bus build only route-binds a looped call to a FIXED target (the route re-derives it row by row and the
-// entry body carries a fail-closed guard). An array-element loop `IFoo(targets[i]).m(x)` over a parameter array is
-// bound per row INLINE in the entry body instead (every reached targets[i] is co-spent and identity-checked), so it
-// must carry NO such guard and a direct spend must settle. The eleventh review found the call-site guard over-firing
-// on this shape, making an honest direct spend fail at the VM. The guard is now excluded for loopArrayVar slots, so a
-// bus build of this shape is byte-identical to the direct build and the direct spend passes as it does there. Both
-// read each target's void record at the record base plus the iteration's index, which the spends lay out for the
-// stand-in targets (standInVoidRecord).
+// An array-element loop `IFoo(targets[i]).m(x)` over a parameter array is bound per iteration INLINE in the entry
+// body (every reached targets[i] is co-spent and identity-checked), so a direct spend settles. The eleventh review
+// found the removed message bus's route-only call-site guard over-firing on this shape, making an honest direct spend
+// fail at the VM. Each iteration reads its target's void record at the record base plus its index, which the spends
+// lay out for the stand-in targets (standInVoidRecord).
 const SRC = `pragma solidcash >=0.8.0;
 contract C() {
     function run(address[] targets, int x) {
@@ -27,12 +24,10 @@ const CALLEE = trivialCallee([7n]);
 const M = hexToBin(compileString(`pragma solidcash >=0.8.0;
   contract D() { bigint c; function m(int x) { this.c = this.c + x; } function n() { this.c = this.c + 1; } }`)
   .abi.find((entry) => entry.name === 'm')!.selector!);
-const hex = (bytecode: unknown): string => (typeof bytecode === 'string' ? bytecode
-  : Buffer.from(bytecode as Uint8Array).toString('hex'));
 
-/** The bus build's loop over `targetsArg`, each target's record naming the reader `readers[i]`. */
-async function buildBusLoopTx(targetsArg: Uint8Array[], callee = CALLEE, readers = [0, 0]): Promise<TransactionBuilder> {
-  const art = compileString(SRC, { messageBus: true });
+/** The loop's spend over `targetsArg`, each target's record naming the reader `readers[i]`. */
+async function buildLoopTx(targetsArg: Uint8Array[], callee = CALLEE, readers = [0, 0]): Promise<TransactionBuilder> {
+  const art = compileString(SRC);
   const provider = createTestProvider();
   const contract = new Contract(art, [], { provider });
 
@@ -57,32 +52,22 @@ async function buildBusLoopTx(targetsArg: Uint8Array[], callee = CALLEE, readers
   return tb;
 }
 
-describe('a bus-build array-element loop binds per row with no route-only guard', () => {
-  it('compiles the bus build without the spurious guard (byte-identical to the direct build)', () => {
-    const bus = compileString(SRC, { messageBus: true });
-    const direct = compileString(SRC, { messageBus: false });
-    expect(bus.abi.find((entry) => entry.name === 'run')?.routeOnly).toBeUndefined();
-    // A bus build's direct entry binds its calls as a direct build does, each iteration's void record included.
-    expect(bus.abi.find((entry) => entry.name === 'run')!.inputs.map((input) => input.name))
-      .toContain('__internal__externalReturnOutputIdx');
-    expect(hex(bus.bytecode)).toBe(hex(direct.bytecode));
-  });
-
+describe('an array-element loop binds each target per iteration in the entry body', () => {
   it('co-spends N witness targets + every input passes the VM on an honest direct spend', async () => {
-    const tb = await buildBusLoopTx([CALLEE.lock, CALLEE.lock]);
+    const tb = await buildLoopTx([CALLEE.lock, CALLEE.lock]);
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);
   });
 
-  it('rejects a co-spent input whose bytecode != the claimed target[i] (per-row identity binding is live)', async () => {
+  it('rejects a co-spent input whose bytecode != the claimed target[i] (identity bound per iteration)', async () => {
     const wrong = hexToBin('5152'); // OP_1 OP_2 - not the co-spent callee
-    const tb = await buildBusLoopTx([wrong, CALLEE.lock]);
+    const tb = await buildLoopTx([wrong, CALLEE.lock]);
     expect(() => verifyTransaction(tb)).toThrow();
   });
 
   it('rejects a target whose record names another reader (one run answers one caller)', async () => {
     // The second target's run answered input 1, so this caller, at input 0, takes no record of it.
-    const tb = await buildBusLoopTx([CALLEE.lock, CALLEE.lock], CALLEE, [0, 1]);
+    const tb = await buildLoopTx([CALLEE.lock, CALLEE.lock], CALLEE, [0, 1]);
     expect(() => verifyTransaction(tb)).toThrow();
   });
 });

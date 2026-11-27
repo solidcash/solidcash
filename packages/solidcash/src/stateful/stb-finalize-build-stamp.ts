@@ -4,7 +4,6 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { FunctionBlockLayout } from '@solidcash/utils';
-import type { Contract } from '../Contract.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -12,10 +11,6 @@ import type { EntryNftInfo } from './external-call-utxo-group.js';
 import { reconcileDynamicChunkOutputWitnesses } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
 
 export interface FinalizeBuildStampHost {
-  readonly categoryId: string;
-  /** The contract whose master spends the root state; its lock binds the root's records. */
-  readonly rootStateContract: Contract | undefined;
-  readonly composedParticipant: boolean;
   readonly allInputs: readonly UnlockableUtxo[];
   readonly entryNfts: readonly EntryNftInfo[];
   readonly entryDeletes: ReadonlySet<number>;
@@ -29,7 +24,7 @@ export interface FinalizeBuildStampHost {
   readonly valueChunkOutputs: readonly unknown[];
   readonly lateValueChunkOutputs: readonly unknown[];
   readonly delegateDynamicChunksAtSuffix: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly delegateEntriesAfterLowLevel: boolean;
   readonly authenticatedViewReturnByGroup: ReadonlyMap<number, { categoryId: string; commitment: string }>;
   applyDerivedValueChunks(builder: TransactionBuilder): boolean | void;
@@ -50,7 +45,7 @@ export interface FinalizeBuildStampHost {
 export function finalizeBuildStamp(
   host: FinalizeBuildStampHost,
   builder: TransactionBuilder,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
 // earlier derived-chunk pass. Re-apply once at the end so OUTPUTBYTECODE pins stay authoritative.
   host.applyDerivedValueChunks(builder);
@@ -60,7 +55,7 @@ export function finalizeBuildStamp(
   // The final output passes above can relocate the balanced input twins which carry dynamic storage chunks.
   // Rebuild the master unlocker against that settled physical input order even when no other witness changed.
   host.syncBuilderUnlockers(builder);
-  debugAtomicOutputStage('final');
+  debugStatefulOutputStage('final');
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1' && (host.blockLayout?.blockSize ?? 0) > 100) {
     console.error('atomic-stateful-output-components', {
@@ -81,7 +76,7 @@ export function finalizeBuildStamp(
       valueChunks: host.valueChunkOutputs.length,
       lateValueChunks: host.lateValueChunkOutputs.length,
       delegateDynamicChunksAtSuffix: host.delegateDynamicChunksAtSuffix,
-      compilerRouteDelegateBlock: host.compilerRouteDelegateBlock,
+      directCallDelegateBlock: host.directCallDelegateBlock,
       delegateEntriesAfterLowLevel: host.delegateEntriesAfterLowLevel,
     });
   }
@@ -94,10 +89,9 @@ export function finalizeBuildStamp(
     if (!stamped && !reconciled) break;
   }
   // View-return placement can insert a pad before the dynamic suffix. Publish the exact direct-dynamic
-  // output coordinate only after those insertions settle. Composed locals defer this to aggregate assembly,
-  // which is the first phase that knows their transaction-global output prefix.
-  const refreshedDynamicCarriers = host.composedParticipant ? [] : reconcileDynamicChunkOutputWitnesses(
-    host.externalCallUtxoGroups, host.lowLevelCallUtxoGroups, host.categoryId, builder, host.rootStateContract,
+  // output coordinate only after those insertions settle.
+  const refreshedDynamicCarriers = reconcileDynamicChunkOutputWitnesses(
+    host.externalCallUtxoGroups, host.lowLevelCallUtxoGroups, builder,
   );
   if (refreshedDynamicCarriers.length > 0) {
     host.syncRefreshedCarrierMasters(builder, refreshedDynamicCarriers);

@@ -9,7 +9,7 @@ import { compileString } from './direct-compile.js';
 // change cannot quietly narrow an introspection value or re-domain an address comparison.
 
 const size = (source: string, addressForm: 'hash' | 'bytecode', extra: Record<string, unknown> = {}): number =>
-  compileString(source, { evmCompat: true, messageBus: false, addressForm, ...extra }).debug.bytecode.length / 2;
+  compileString(source, { evmCompat: true, addressForm, ...extra }).debug.bytecode.length / 2;
 
 describe('addressForm and the address introspection values', () => {
   it('packs msg.sender, tx.origin and address(this) as the identity under hash and whole under bytecode', () => {
@@ -38,7 +38,7 @@ describe('addressForm and the address introspection values', () => {
       + 'function who() external returns (address) { return msg.sender; } '
       + 'function many() external returns (uint256) { return this.count; } }';
     const encodings = (addressForm: 'hash' | 'bytecode'): Record<string, string | undefined> => Object.fromEntries(
-      compileString(source, { evmCompat: true, messageBus: false, addressForm }).abi
+      compileString(source, { evmCompat: true, addressForm }).abi
         .filter((entry: { outputs?: unknown[] }) => (entry.outputs?.length ?? 0) > 0)
         .map((entry: { name: string; resultEncoding?: string }) => [entry.name, entry.resultEncoding]),
     );
@@ -69,10 +69,10 @@ describe('addressForm and the address introspection values', () => {
     // forms because the cast, not the form, is the narrowing.
     const source = 'contract C() { function f() returns (bytes) { return abi.encodePacked(uint160(msg.sender)); } }';
     const hash = bytecodeToAsm(hexToBin(compileString(source, {
-      evmCompat: true, messageBus: false, addressForm: 'hash',
+      evmCompat: true, addressForm: 'hash',
     }).debug.bytecode));
     const bytecode = bytecodeToAsm(hexToBin(compileString(source, {
-      evmCompat: true, messageBus: false, addressForm: 'bytecode',
+      evmCompat: true, addressForm: 'bytecode',
     }).debug.bytecode));
     expect(hash).toBe(bytecode);
   });

@@ -46,7 +46,7 @@ export function runBuildMidLateThroughTail(
     builder,
     returnOutputRefs,
     addReturnOutput,
-    debugAtomicOutputStage,
+    debugStatefulOutputStage,
     debugOwnMutableOutputs,
     deferredDelegateReturnEvents,
     deferredCalleeDynamicChunks,
@@ -66,7 +66,7 @@ export function runBuildMidLateThroughTail(
     associatedDelegateOutputs,
     deferredDelegateReturnEvents,
     loopChunkBeforeCallees,
-    debugAtomicOutputStage,
+    debugStatefulOutputStage,
   );
 
   materializeLateBuildChunkFrame(
@@ -76,14 +76,14 @@ export function runBuildMidLateThroughTail(
     appendDelegateGroupOutputs,
     deferredCalleeDynamicChunks,
     debugOwnMutableOutputs,
-    debugAtomicOutputStage,
+    debugStatefulOutputStage,
   );
 
   finalizeBuildDerivedSuffix(
-    host.finalizeBuildDerivedSuffixHost(), builder, debugAtomicOutputStage,
+    host.finalizeBuildDerivedSuffixHost(), builder, debugStatefulOutputStage,
   );
 
-  // Output materialization is authoritative: shared/compiler-routed groups can expand into balanced blocks
+  // Output materialization is authoritative: shared/routed groups can expand into balanced blocks
   // whose physical width is not known from their logical call record. Resolve each delegate's preservation
   // coordinate now; the input unlocker closures above read these references when the final transaction encodes.
   if (finalizeBuildTail(
@@ -94,7 +94,7 @@ export function runBuildMidLateThroughTail(
     host.finalizeBuildValueChunkBandAndViewsHost(),
     host.finalizeBuildStampHost(),
     returnOutputRefs,
-    debugAtomicOutputStage,
+    debugStatefulOutputStage,
   ) === 'rebuild') {
     return 'rebuild';
   }

@@ -83,7 +83,7 @@ const withoutSize = ({ size: _size, ...rest }) => rest;
 const IN_TARGET_LAYOUT = 'in-target: layout at';
 const IN_TARGET_RETRIES = [
   [/^UnauthorizedLifecycleError: /, 'in-target: lifecycle refusal'],
-  [/\[MESSAGE_BUS_REQUIRED\]/, 'in-target: message bus required'],
+  [/\[REPEATED_CALL_UNSUPPORTED\]/, 'in-target: repeated call unsupported'],
   [/^UndefinedReferenceError: /, 'in-target: undefined reference'],
   [/^AssignTypeError: /, 'in-target: assign type'],
 ];
@@ -762,7 +762,7 @@ function checkFunction(check, name, selfCall) {
 
 // The check functions go into a derived `contract __Check is <Target>`, or (`inTarget`) into a copy of the
 // target's own body: solc forbids inheriting from a custom storage layout (`layout at`), and the compiler's
-// message-bus auto-selection reads only the root contract's own functions, so a derived wrapper hides the target's
+// compiler-route auto-selection reads only the root contract's own functions, so a derived wrapper hides the target's
 // call-graph edges. `requireLine` is the source line of the body's last `require(`.
 function wrapSource(edited, target, body, inTarget) {
   const head = inTarget ? `${edited.slice(0, target.close).trimEnd()}\n\n`

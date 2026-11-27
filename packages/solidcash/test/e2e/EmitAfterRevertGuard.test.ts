@@ -4,7 +4,7 @@ import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const inputZeroVerifyFailure = /^BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 // A named-return function with a revert guard before an emit. EarlyReturnTransformation nests the
 // post-revert statements (the emit + state write + implicit return) into the else branch; codegen

@@ -18,7 +18,6 @@ import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { calleeConsumedInputs, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
 import { cloneToken } from './stb-output-utils.js';
-import { permitsLegacyDelegateEventRepair } from './chunkable-value-write-selection.js';
 import {
   encodeJobEventEmitCommitment,
   isLearnedEventEmitCommitment,
@@ -56,8 +55,7 @@ export interface RepairNestedCalleeOutputsHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly allInputs: readonly UnlockableUtxo[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  readonly compilerRouteDelegateBlock: boolean;
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
+  readonly directCallDelegateBlock: boolean;
   readonly builderOptions: TransactionBuilderOptions;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly delegateDynamicChunksAtSuffix: boolean;
@@ -81,7 +79,7 @@ export interface RepairNestedCalleeOutputsHost {
 export function repairNestedCalleeOutputs(
   host: RepairNestedCalleeOutputsHost,
   builder: TransactionBuilder,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
   // A callee's identity anchor is permissionless to spend, so consuming it without recreating it would destroy
   // that contract's logical identity. Recreate each one verbatim, mirroring the input ordering.
@@ -145,7 +143,7 @@ export function repairNestedCalleeOutputs(
       builder.addOutput(entryOutput);
     }
   }
-  // A compiler route can settle a nested delegate's runtime mapping loop alongside the root's own dynamic
+  // A route can settle a nested delegate's runtime mapping loop alongside the root's own dynamic
   // storage. Its covenant addresses NEW after callee identity preservation but before the caller's own logical
   // identity anchor. The distinct token category is the ownership boundary that keeps these outputs out of the
   // root's reserved trailing capacity.
@@ -165,7 +163,7 @@ export function repairNestedCalleeOutputs(
   if (host.logicalIdentityUtxo) {
     restoreIdentity(host.logicalIdentityUtxo);
   }
-  debugAtomicOutputStage('identity-anchors');
+  debugStatefulOutputStage('identity-anchors');
 
   // Nested callee entry NFTs can sit outside that callee's published input block.
   // Recreate any
@@ -210,7 +208,7 @@ export function repairNestedCalleeOutputs(
       token: cloneToken(input.token),
     });
   }
-  debugAtomicOutputStage('nested-mutable-recreation');
+  debugStatefulOutputStage('nested-mutable-recreation');
 
   // Nested publishJobEvent emits at implInput+event.offset (delegate output-only
   // slots are implementation-relative). Identity anchors that landed on that
@@ -218,22 +216,18 @@ export function repairNestedCalleeOutputs(
   const displacedDelegateIdentities: Array<{
     to: Uint8Array; amount: bigint; token: NonNullable<Output['token']>;
   }> = [];
-  const permitsLegacyNestedDelegateEventRepair = permitsLegacyDelegateEventRepair([
-    ...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups,
-  ], host.compilerRouteDelegateBlock, host.messageBusConvention);
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
-    // Compiler-owned delegate routes materialize every declared event and entry inside their balanced frame.
+    // Compiler-owned delegate blocks materialize every declared event and entry inside their balanced frame.
     // The legacy nested-delegate repair below is only for layouts without that physical ownership boundary.
-    if (!permitsLegacyNestedDelegateEventRepair) continue;
+    if (host.directCallDelegateBlock) continue;
     if (llc.callMode !== 'delegatecall') continue;
     const implIndex = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (implIndex < 0) continue;
     const proxyGroup = host.externalCallUtxoGroups.find(
       (group) => group.delegateCallGroupIndex === llcIndex,
     );
-    const fn = llc.compilerRoute?.abiFunction
-      ?? proxyGroup?.compilerRoute?.abiFunction
-      ?? llc.externalContract?.inner.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName)
+    const fn = llc.externalContract?.inner.artifact.abi
+      .find((candidate: AbiFunction) => candidate.name === llc.functionName)
       ?? proxyGroup?.externalContract?.inner.artifact.abi.find(
         (candidate: AbiFunction) => candidate.name === (llc.functionName ?? proxyGroup.functionName),
       );
@@ -410,16 +404,16 @@ export function repairNestedCalleeOutputs(
       else builder.outputs[outputIndex] = placed;
     }
   }
-  debugAtomicOutputStage('delegate-events-and-entries');
+  debugStatefulOutputStage('delegate-events-and-entries');
 
   // Nested publishJobEvent pins value chunks at the covenant's trailing base
   // (proxy/master + blockSize), which is below impl+blockSize when the
   // implementation sits after the proxy block. Materialize every recovered
-  // pin; extractRouteChunkPin already rejected non-chunk OUTPUTBYTECODE checks.
+  // pin; extractValueChunkPin already rejected non-chunk OUTPUTBYTECODE checks.
   for (const [llcIndex, llc] of host.lowLevelCallUtxoGroups.entries()) {
-    // The balanced compiler route owns its trailing dynamic-resource frame. Replaying the legacy absolute
+    // The balanced route owns its trailing dynamic-resource frame. Replaying the legacy absolute
     // delegate placement would duplicate those chunks beyond the route block.
-    if (host.compilerRouteDelegateBlock) continue;
+    if (host.directCallDelegateBlock) continue;
     if (llc.callMode !== 'delegatecall') continue;
     const implIndex = host.getLowLevelCallMasterInputIndex(llcIndex);
     if (implIndex < 0) continue;
@@ -429,8 +423,8 @@ export function repairNestedCalleeOutputs(
     const masterIndex = proxyGroupIndex >= 0
       ? host.getExternalCallMasterInputIndex(proxyGroupIndex)
       : implIndex;
-    const fn = llc.compilerRoute?.abiFunction
-      ?? llc.externalContract?.inner.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName);
+    const fn = llc.externalContract?.inner.artifact.abi
+      .find((candidate: AbiFunction) => candidate.name === llc.functionName);
     const blockSize = fn?.blockLayout?.blockSize ?? 1;
     // Executing impl verifies chunks at INPUTINDEX+trailingBase (15+5=20).
     // min(impl, proxy)+blockSize is 17 and overwrites meceTags.
@@ -480,13 +474,13 @@ export function repairNestedCalleeOutputs(
       else builder.outputs[outputIndex] = placed;
     }
   }
-  debugAtomicOutputStage('delegate-derived-chunk-placement');
+  debugStatefulOutputStage('delegate-derived-chunk-placement');
   host.applyDerivedValueChunks(builder);
-  debugAtomicOutputStage('derived-value-chunk-placement');
+  debugStatefulOutputStage('derived-value-chunk-placement');
   for (const identity of displacedDelegateIdentities) {
     builder.addOutput(identity);
   }
-  debugAtomicOutputStage('displaced-delegate-identities');
+  debugStatefulOutputStage('displaced-delegate-identities');
   for (let index = 0; index < Math.min(host.allInputs.length, builder.outputs.length); index++) {
     const input = host.allInputs[index];
     const output = builder.outputs[index];
@@ -536,5 +530,5 @@ export function repairNestedCalleeOutputs(
       if (candidates[0].token?.nft?.commitment !== sourceHex) candidates[0].token = cloneToken(source.token);
     }
   }
-  debugAtomicOutputStage('nested-state-restoration');
+  debugStatefulOutputStage('nested-state-restoration');
 }

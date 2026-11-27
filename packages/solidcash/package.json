@@ -46,14 +46,6 @@
       "types": "./dist/stateful/index.d.ts",
       "default": "./dist/stateful/index.js"
     },
-    "./message-bus": {
-      "types": "./dist/message-bus/index.d.ts",
-      "default": "./dist/message-bus/index.js"
-    },
-    "./kernel": {
-      "types": "./dist/stateful/kernel/index.d.ts",
-      "default": "./dist/stateful/kernel/index.js"
-    },
     "./framed": {
       "types": "./dist/framed/index.d.ts",
       "default": "./dist/framed/index.js"
@@ -115,9 +107,9 @@
     "test:e2e": "vitest run test/e2e",
     "test:e2e:changed": "vitest run --config vitest.e2e.config.ts --changed --passWithNoTests",
     "test:e2e:watch": "vitest --config vitest.e2e.config.ts",
-    "test:fast": "vitest run --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
-    "test:changed": "vitest run --maxWorkers='60%' --changed --passWithNoTests --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
-    "test:watch": "vitest --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
+    "test:fast": "vitest run --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**'",
+    "test:changed": "vitest run --maxWorkers='60%' --changed --passWithNoTests --exclude 'test/e2e/**' --exclude 'test/conformance/**'",
+    "test:watch": "vitest --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**'",
     "test:regtest": "node scripts/run-regtest-matrix.mjs"
   },
   "dependencies": {

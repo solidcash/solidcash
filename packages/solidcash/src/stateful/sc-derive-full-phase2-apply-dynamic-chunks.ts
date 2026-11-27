@@ -94,9 +94,8 @@ export function deriveFullPhase2ApplyDynamicChunks(
   // nNew = ceil(len/CHUNK). Ensure the builder creates nNew chunk outputs (placeholders until
   // their commitments are extracted), then extract the real commitments the covenant built.
   const chunkVars = stb.getDynamicChunkVars();
-  // StatefulTransactionBuilder already incorporates the composed delegate block base. Dynamic chunks
-  // are inserted before later composed output families, so they are not generally at the transaction
-  // tail (message-bus and event outputs may follow this region).
+  // Dynamic chunks are inserted before later output families, so they are not generally at the transaction
+  // tail (return and event outputs may follow this region).
   const getPhysicalChunkOutputBase = (): number => {
     if (chunkVars.length === 0) return stb.getChunkOutputBase();
     const suffixVar = chunkVars.find((variable) => variable.delegateSuffix === true);
@@ -126,7 +125,7 @@ export function deriveFullPhase2ApplyDynamicChunks(
     for (const dv of chunkVars) {
       const existing = stb.getChunkRawCommitments(dv.name);
       const derivedLength = derivedAState[`${dv.name}$len`];
-      // A composed delegate variable may not exist in the caller's decoded A-state. Missing is not zero:
+      // A delegate variable may not exist in the caller's decoded A-state. Missing is not zero:
       // retain the speculative region so the delegate covenant can reveal its chunk commitment by trace.
       const lengthIsNumeric = typeof derivedLength === 'bigint' || typeof derivedLength === 'number';
       const hasDerivedLength = lengthIsNumeric

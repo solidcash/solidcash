@@ -48,8 +48,6 @@ const SETTLER = `0x${binToHex(addressOf(SETTLER_CATEGORY))}`;
 const ID = 1n;
 const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 
-// The ledger reaches the settler through an interface-typed local, which leaves its body graph-free, so the
-// message-bus lowering does not rewrite the field updates in place first and they reach the entry cache.
 const SOURCE = [
   'pragma solidcash ^0.52.0;',
   'interface ISettler { function settle(address ledger, int id, int stage) returns (int); }',

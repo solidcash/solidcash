@@ -15,11 +15,7 @@ import type {
 import { computeCollectionHash } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
-import { absoluteValueChunkOutputBaseFromResolve } from '../message-bus/layout-resolver.js';
-import {
-  groupChunkableValueWriteCollections,
-  permitsLegacyNamedValueChunkFallback,
-} from './chunkable-value-write-selection.js';
+import { groupChunkableValueWriteCollections } from './chunkable-value-write-selection.js';
 import {
   type EntryNftInfo,
   type ExternalCallUtxoGroup,
@@ -27,42 +23,9 @@ import {
   type TokenContainerInfo,
 } from './external-call-utxo-group.js';
 import {
-  type KernelEntryJournalEagerOutputPlanEntry,
-  type KernelEntryJournalSettlementOutputPlanEntry,
-} from './KernelEntryJournal.js';
-import {
   legacyNamedJobEventCollectionFallback,
 } from './legacy-planning-heuristics.js';
 import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
-
-/** Keep participant builders local until their continuation descriptors are exported. */
-export function selectBuilderValueChunkOutputBase(
-  localOutputBase: number,
-  publishedOutputBase: number | undefined,
-  composedBlockBase: number,
-): number {
-  if (composedBlockBase > 0) {
-    if (publishedOutputBase === undefined) return localOutputBase;
-    return publishedOutputBase < composedBlockBase
-      ? publishedOutputBase : publishedOutputBase - composedBlockBase;
-  }
-  return publishedOutputBase ?? localOutputBase;
-}
-
-/** A transported claim is usable only for one resource at the observed physical width. */
-export function transportedContinuationLocalBase(
-  claims: readonly {
-    bandOffset: number;
-    chunkCount: number;
-    producerClaim: { resourceIdentity: string };
-  }[],
-  resourceIdentity: string,
-  observedWidth: number,
-): number | undefined {
-  const matches = claims.filter((claim) => claim.producerClaim.resourceIdentity === resourceIdentity
-    && claim.chunkCount === observedWidth);
-  return matches.length === 1 ? matches[0]!.bandOffset : undefined;
-}
 
 /** Shift every resolved lane with its carrier while preserving relative spacing. */
 export function rebaseValueChunkWriteDescriptors(
@@ -80,8 +43,7 @@ export function rebaseValueChunkWriteDescriptors(
 
 /** Rebind a continuation coordinate only on the concrete unlocker ABI which captured that hidden argument. */
 export function ownsCapturedValueChunkOutputBase(group: ExternalCallUtxoGroup): boolean {
-  const inputNames = group.internalArgNames
-    ?? group.compilerRoute?.abiFunction.inputs.map((input) => input.name);
+  const inputNames = group.internalArgNames;
   if (inputNames?.includes('__internal__valueChunkOutputBase') === true) return true;
   const masterUnlocker = (group.masterUtxo as UnlockableUtxo | undefined)?.unlocker as {
     abiFunction?: { inputs?: readonly { name: string }[] };
@@ -110,18 +72,6 @@ export function refreshCapturedValueChunkOutputBase(
 ): boolean {
   if (!ownsCapturedValueChunkOutputBase(group)) return false;
   let absolute = outputBase;
-  if (options.resolveAuthority !== undefined) {
-    absolute = absoluteValueChunkOutputBaseFromResolve({
-      ...options.resolveAuthority,
-      valueChunkCollection: options.resolveAuthority.valueChunkCollection
-        ?? group.valueChunkWrites?.[0]?.collection,
-    });
-    if (absolute !== outputBase) {
-      throw new Error(
-        `layout-authority: valueChunkOutputBase ${outputBase} !== resolve ${absolute}`,
-      );
-    }
-  }
   group.valueChunkOutputBase = absolute;
   group.internalArgs = {
     ...group.internalArgs,
@@ -133,35 +83,6 @@ export function refreshCapturedValueChunkOutputBase(
   return true;
 }
 
-/**
- * Assign absolute valueChunkOutputBase from ResolvedLayout only (item 2 sole authority).
- * Prefer this over inventing publishedBase+local outside the resolver.
- */
-export function assignValueChunkOutputBaseFromResolve(
-  group: ExternalCallUtxoGroup,
-  resolveAuthority: {
-    publishedBase: number;
-    blockSize: number;
-    trailingBase: number;
-    trailingCapacity?: number;
-    valueChunkBandOffset?: number;
-    valueChunkCollection?: string;
-    valueChunkCount?: number;
-  },
-  options: { shiftPredOut?: boolean } = { shiftPredOut: false },
-): number {
-  const absolute = absoluteValueChunkOutputBaseFromResolve({
-    ...resolveAuthority,
-    valueChunkCollection: resolveAuthority.valueChunkCollection
-      ?? group.valueChunkWrites?.[0]?.collection,
-  });
-  refreshCapturedValueChunkOutputBase(group, absolute, {
-    ...options,
-    resolveAuthority: { ...resolveAuthority, valueChunkCollection: resolveAuthority.valueChunkCollection
-      ?? group.valueChunkWrites?.[0]?.collection },
-  });
-  return absolute;
-}
 
 export type ProtectedLoopEntryCollectionSelection =
   | { status: 'absent'; collections: readonly string[] }
@@ -171,9 +92,8 @@ export type ProtectedLoopEntryCollectionSelection =
 /** Select collection locks which same-index INSERT repair must not use as disposable relocation pads. */
 export function selectProtectedLoopEntryCollections(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
+  'functionName' | 'logicalFunctionName' | 'logicalArtifact' | 'externalContract'
   | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites' | 'stateLayout'>>,
-  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): ProtectedLoopEntryCollectionSelection {
   let described = false;
   let ambiguous = false;
@@ -199,8 +119,7 @@ export function selectProtectedLoopEntryCollections(
     described = true;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
-    const abiFunction = group.compilerRoute?.abiFunction
-      ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
+    const abiFunction = artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
     const layout = abiFunction?.blockLayout ?? group.blockLayout;
     if (!abiFunction?.entryAccesses || !layout) {
       if (group.plannedEntryInserts.length > 0) ambiguous = true;
@@ -222,12 +141,11 @@ export function selectProtectedLoopEntryCollections(
     const declared = [...new Set(groups.flatMap(groupChunkableValueWriteCollections))];
     if (declared.length > 0) return { status: 'exact', collections: declared };
     // Descriptor-free legacy artifacts retain their historical adapter, but unrelated or empty group sets
-    // cannot claim this application's collection merely because the owner uses legacy-unroll.
+    // cannot claim this application's collection merely because the owner uses the legacy layout.
     return {
       status: 'absent',
-      collections: [legacyNamedJobEventCollectionFallback(
-        groups, permitsLegacyNamedValueChunkFallback(groups, ownerConvention),
-      )].filter((collection): collection is string => collection !== undefined),
+      collections: [legacyNamedJobEventCollectionFallback(groups)]
+        .filter((collection): collection is string => collection !== undefined),
     };
   }
   return {
@@ -253,7 +171,7 @@ export function selectExternalEventProbeInput(
 }
 
 export type CompilerWriterEventCandidate = Pick<ExternalCallUtxoGroup,
-'categoryId' | 'blockLayout' | 'compilerRoute' | 'eventOutputs'>;
+'categoryId' | 'blockLayout' | 'eventOutputs'>;
 
 export type CompilerWriterEventSelection =
   | { status: 'absent' }
@@ -269,17 +187,10 @@ export function selectCompilerWriterEvent(
 ): CompilerWriterEventSelection {
   const claims = new Map<string, Extract<CompilerWriterEventSelection, { status: 'exact' }>>();
   for (const candidate of candidates) {
-    const fn = candidate.compilerRoute?.abiFunction;
-    const layout = fn?.blockLayout ?? candidate.blockLayout;
-    const slots = layout?.slots.filter((slot) => slot.kind === 'event') ?? [];
-    const routedSignatures = candidate.compilerRoute?.eventSignaturesBySlot;
+    const slots = candidate.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
     for (const [ordinal, slot] of slots.entries()) {
-      const declared = routedSignatures !== undefined
-        ? routedSignatures[ordinal]
-        : fn?.emits?.find((emit) => emit.emitIndex === ordinal)?.eventSignature;
       const observed = candidate.eventOutputs?.[ordinal];
-      if (declared && observed && declared !== observed.eventSignature) return { status: 'ambiguous' };
-      const eventSignature = declared ?? observed?.eventSignature;
+      const eventSignature = observed?.eventSignature;
       if (!eventSignature) continue;
       const key = `${candidate.categoryId.toLowerCase()}:${slot.offset}:${eventSignature}`;
       const prior = claims.get(key);
@@ -309,9 +220,6 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   delegateBlockInfoOracle?: boolean;  // that reader is the delegated implementation, so its recreate rides its band
   /** Pool coins a function-pointer target finds itself, no block slot places: each is recreated at its own index. */
   unslottedPoolCoSpends?: UnlockableUtxo[];
-  /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph message-bus batch
-   * routes reserve a fixed row band, so active reads are sparse and the inactive slots must remain funders. */
-  blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos?: UnlockableUtxo[]; // keccak256 compute side-cars (one per call) at keccakSideCar slots
   keccakComputeCommitments?: string[];        // parallel: R_i = keccak256(preimage_i) hex, committed to recreation i
   /** Compute resources were declared by the routed delegate ABI, so their 1:1 input/output coordinates are
@@ -356,7 +264,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
    * before and after it. These live after runtime mapping entries and before dynamic-storage chunks. */
   runtimeLoopEventOutputs?: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
-    /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
+    /** Source row of this occurrence; -1 for a direct call. */
     rowIndex: number;
     /** Record of a chunked site: its head, or (`continuation`) a later chunk under the continuation covenant. */
     chunked?: true;
@@ -371,10 +279,6 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   | { kind: 'events'; offset: number; count: number }
   | { kind: 'transfers'; offset: number; count: number }
   >;
-  /** Canonical global-record to physical-entry ordering for a kernel carrier settlement. */
-  kernelJournalSettlementOutputPlan?: KernelEntryJournalSettlementOutputPlanEntry[];
-  /** Source/materialization-ordered outputs which precede the route-final carrier settlement band. */
-  kernelJournalEagerOutputPlan?: KernelEntryJournalEagerOutputPlanEntry[];
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -401,9 +305,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   delegateReturnEventAfterEvents?: boolean;
   /** Absolute input offset selected by the caller's encoded low-level-call index. */
   lowLevelCallInputBase?: number;
-  /** The first low-level input is a compiler-route delegate implementation placed after the balanced root block. */
-  compilerRouteDelegateBlock?: boolean;
-  /** Preserve every compiler-published block coordinate, including inactive union-route resource slots. */
+  /** The first low-level input is a delegate implementation placed after the balanced root block. */
+  directCallDelegateBlock?: boolean;
+  /** Preserve every compiler-published block coordinate: a missing input fails instead of being compacted away. */
   preserveBlockLayoutWidth?: boolean;
   /** Place runtime mapping-entry outputs before newly written dynamic-storage chunks in the trailing frame. */
   loopEntriesBeforeDynamicChunks?: boolean;
@@ -417,18 +321,10 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   checkMinRelayFee?: boolean; // enforce fee >= feePerByte * txSize
   minRelayFeePerKb?: bigint;  // satoshis per 1000 bytes; default 1000n (1 sat/byte)
   blockLayout?: FunctionBlockLayout;
-  /** Convention of the ABI body currently driving this builder. Historical application-name fallbacks must
-   * never run for a kernel-owned route, even if every nested group is legacy or descriptor-free. */
-  messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
-  /** Building one balanced participant of an atomic composition: its block is concatenated after others, so
-   * absolute coordinates in route witnesses are not local output indices. */
-  composedParticipant?: boolean;
-  /** Absolute output index this composed participant's local block starts at (0 when standalone). */
-  composedBlockBase?: number;
   /** Per-build mutable chunk candidates. Omitted by directly constructed legacy builders. */
   valueChunkWriteStagingSession?: ValueChunkWriteStagingSession;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
-  /** Funding inputs already positioned inside composed participant blocks. These contribute value/change but
+  /** Funding inputs already positioned inside nested participant blocks. These contribute value/change but
    * must never be appended or repositioned by this builder's local block assembly. */
   embeddedFunderUtxos?: UnlockableUtxo[];
   /** Immutable SCID anchor co-spent outside every fixed participant block to authenticate a stable logical
@@ -443,7 +339,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
 /** Absolute event coordinates owned by materialized external-call blocks. */
 export function externalCallEventDestinations(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'sharedGroupIndex' | 'blockLayout' | 'compilerRoute' | 'streamedEventPlan'>>,
+  'sharedGroupIndex' | 'blockLayout'>>,
   outputBaseForGroup: (groupIndex: number) => number,
 ): number[] {
   const destinations: number[] = [];
@@ -453,11 +349,9 @@ export function externalCallEventDestinations(
     if (group.sharedGroupIndex !== undefined) continue;
     const base = outputBaseForGroup(groupIndex);
     if (base < 0) continue;
-    const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
-    for (const slot of layout?.slots ?? []) {
+    for (const slot of group.blockLayout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'eventChunk') destinations.push(base + slot.offset);
     }
-    for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) destinations.push(base + offset);
   }
   return destinations;
 }
@@ -467,16 +361,9 @@ export type ParticipantImmutableEventDestination = {
   destination: number;
 };
 
-/** Event signatures follow compiler-published physical slot identities when present. */
-export function groupEventSignatures(
-  group: Pick<ExternalCallUtxoGroup, 'compilerRoute'>,
-  abiFunction?: Pick<AbiFunction, 'emits'>,
-): Array<string | undefined> {
-  const published = group.compilerRoute?.eventSignaturesBySlot ?? [];
-  const declared = abiFunction?.emits ?? [];
-  return Array.from({ length: Math.max(published.length, declared.length) }, (_, index) => (
-    published[index] ?? declared[index]?.eventSignature
-  ));
+/** Event signatures in the function's declared emit order. */
+export function groupEventSignatures(abiFunction?: Pick<AbiFunction, 'emits'>): Array<string | undefined> {
+  return (abiFunction?.emits ?? []).map((emit) => emit.eventSignature);
 }
 
 /** Delegate execution mutates the physical proxy's state, not the implementation's. */
@@ -510,7 +397,7 @@ export function lowLevelCallStateOwnerCategory(
  */
 export function lowLevelCallImmutableEventDestinations(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-  'categoryId' | 'callMode' | 'blockLayout' | 'compilerRoute'>>,
+  'categoryId' | 'callMode' | 'blockLayout'>>,
   proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
   'categoryId' | 'delegateCallGroupIndex' | 'sharedGroupIndex'>>,
   inputBaseForGroup: (groupIndex: number) => number,
@@ -520,8 +407,7 @@ export function lowLevelCallImmutableEventDestinations(
     const base = inputBaseForGroup(groupIndex);
     if (base < 0) continue;
     const categoryId = lowLevelCallStateOwnerCategory(groupIndex, group, proxyGroups);
-    const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
-    for (const slot of layout?.slots ?? []) {
+    for (const slot of group.blockLayout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'returnEvent') {
         destinations.push({ categoryId, destination: base + slot.offset });
       }

@@ -9,13 +9,10 @@ import {
   type SortedUpsertLoopAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
-import {
-  vmapCounterPermutationSpec,
-  type VmapCounterPermutationSpec,
-} from './sc-batch-raw.js';
+import { defaultInternalFunctionArg } from './internal-function-args.js';
+import { vmapCounterPermutationSpec, type VmapCounterPermutationSpec } from './internal-function-args.js';
 import { bytesToSlotValue, keyToSlotMulti } from './SortedList.js';
-import { visibleHandlerInputs } from './route-expression-key.js';
+import { visibleHandlerInputs } from './call-expression-key.js';
 
 export interface MaterializeCreateBuilderVmapPermutationsHost {
   hydrateExternalPredicateState(...args: any[]): Promise<Record<string, unknown>>;
@@ -59,7 +56,7 @@ export async function materializeCreateBuilderVmapPermutations(
     const permutationSpec = vmapCounterPermutationSpec(input.name);
     if (!permutationSpec) continue;
     const hiddenIdx = abiFunction!.inputs.findIndex((p) => p.name === input.name);
-    // A compiler route derives this row-owned witness before entering the ordinary builder. It is already in
+    // A route derives this row-owned witness before entering the ordinary builder. It is already in
     // the complete route argument frame, so do not look for the source bound on the wrapper ABI (`n` lives in
     // the authenticated row blob, not as a route parameter).
     if (Array.isArray(nextArgs[hiddenIdx])) continue;

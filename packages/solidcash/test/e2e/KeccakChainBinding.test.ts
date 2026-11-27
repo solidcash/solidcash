@@ -251,15 +251,6 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
     await expect(hasher.getFunction('check')(keccak_256(second)).send()).resolves.toBeDefined();
   }, 300_000);
 
-  it('keeps a message-bus participant on its fixed compute slot, so no chain sits past its published block', () => {
-    const bus = compileString(RETURNING_SOURCE, { forceStateful: true, enforceFinalRequire: false, messageBus: true });
-    expect(bus.abi.find((fn) => fn.name === 'record')!.keccakChainReads).toBe(true);
-    const route = bus.messageBus!.route;
-    expect(bus.messageBus!.admittedHandlerIds).toContain('record');
-    expect(route.keccakChainReads).toBeUndefined();
-    expect(route.blockLayout!.slots.some((slot) => slot.kind === 'keccakSideCar')).toBe(true);
-  });
-
   it('leaves contracts that do not hash long preimages byte-identical', () => {
     const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
     const fixed = compileString(`contract FixedHasher {

@@ -104,8 +104,6 @@ export interface DeployOptions {
    * bytes for it. Costs: a larger script, a different contract address, and the 520-byte cap.
    */
   salt?: Uint8Array;
-  /** Independently spendable, category-branded message bus verifier covenants minted by genesis. */
-  messageBusVerificationInputCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
   /** Fungible token coins the genesis moves whole into their containers, one coin per category. */
   tokenContainers?: Array<{ utxo: Utxo; unlocker: Unlocker }>;

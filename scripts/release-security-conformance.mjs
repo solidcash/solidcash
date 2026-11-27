@@ -22,7 +22,7 @@ const cases = [
   ['shipped proxy artifact consistency', 'solidcash', 'test/e2e/X50DefaultProxyRegenerated.test.ts',
     'matches a fresh compile field for field'],
   ['message-envelope and return forgery', 'solidcash',
-    'test/journal-message-bus/e2e/MessageBusEnvelopeBindingAudit.test.ts'],
+    'test/e2e/EnvelopeBindingAudit.test.ts'],
 ];
 
 if (process.argv.includes('--list')) {

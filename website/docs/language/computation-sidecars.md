@@ -102,8 +102,8 @@ Sidecar locking bytecode includes a 32-byte salt:
 - A **direct stateful** sidecar is branded to the consuming contract's category. The salt is the category in the
   VM's internal byte order, and the sidecar requires that owning master at input zero.
 - A **stateless** sidecar normally uses the all-zero shared salt.
-- A sidecar used inside an atomic external-call/message-bus participant can also use the shared salt because that
-  participant's master is not transaction input zero. Argument binding and covenant integrity still secure the
+- A sidecar used inside an atomic external-call participant can also use the shared salt because that participant's
+  master is not transaction input zero. Argument binding and covenant integrity still secure the
   result, but the shared UTXO is not isolated to one application category.
 - Keccak has separate self-preservation layouts for ordinary last-region use and stateful/forward slot use. Create
   the variant required by the call path.

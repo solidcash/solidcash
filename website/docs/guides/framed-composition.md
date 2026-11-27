@@ -26,26 +26,24 @@ const artifact = compileString(source, { composition: 'framed' });
 artifact.composition?.convention; // 'framed'; absent on a direct artifact
 ```
 
-## Three ways to compose
+## Two ways to compose
 
 Bitcoin Cash has no call opcode. A call between contracts is a set of inputs in one transaction, each running its own
 script and checking the others through introspection (see
 [Cross-Contract Calls & Results](/docs/language/cross-contract-calls)). SolidCash lays those inputs out in one of
-three ways:
+two ways:
 
-| | Direct (default) | Message bus | Framed |
-| --- | --- | --- | --- |
-| Selected by | Default | Inferred by the compiler when the call graph needs it | `composition: 'framed'` |
-| A contract in one transaction | One co-spent input | One participant input that runs every call made to it | One master input per entry, and its records once |
-| The same contract called twice, or a cycle | Needs the message bus | Yes, as rows of one shared call manifest | Yes, as separate frames |
-| Call order | None: every input checks the same finished transaction | The manifest's depth-first rows | The EVM's order |
-| `msg.sender` | Derived from the transaction's inputs | The caller recorded in the manifest | Checked for each frame by the scripts |
-| Status | Stable, except a call that changes another contract's state (experimental) | Experimental | Experimental |
+| | Direct (default) | Framed |
+| --- | --- | --- |
+| Selected by | Default | `composition: 'framed'` |
+| A contract in one transaction | One co-spent input | One master input per entry, and its records once |
+| The same contract called twice, or a cycle | Frames of its multi-call entry when one fixed target repeats | Yes, as separate frames |
+| Call order | None: every input checks the same finished transaction | The EVM's order |
+| `msg.sender` | Derived from the transaction's inputs | Checked for each frame by the scripts |
+| Status | Stable, except a call that changes another contract's state (experimental) | Experimental |
 
-The [message bus](/docs/guides/message-bus) keeps one input per contract and runs every call made to that contract
-inside it. The framed convention gives every entry its own input, running the contract's own code, and proves the
-calls between those inputs with a validator. A framed artifact carries no message-bus route, and every contract a
-framed transaction enters must itself be compiled framed.
+The framed convention gives every entry its own input, running the contract's own code, and proves the calls
+between those inputs with a validator. Every contract a framed transaction enters must itself be compiled framed.
 
 ## How a framed transaction works
 
@@ -611,7 +609,6 @@ The contract handle covers most applications. The `@solidcash/solidcash/framed` 
 ## Related pages
 
 - [Cross-Contract Calls & Results](/docs/language/cross-contract-calls): typed calls, results and the direct path.
-- [Atomic Calls with the Message Bus](/docs/guides/message-bus): the other experimental composition model.
 - [Large Contracts & Split Bundles](/docs/compiler/large-contracts): `--split size` and `--split func`.
 - [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies): proxies on the direct path.
 - [Contract Deployment](/docs/guides/deployment): genesis funding, identity outputs and `nativeToken`.

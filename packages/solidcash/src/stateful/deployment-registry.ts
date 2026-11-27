@@ -1,6 +1,5 @@
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript, lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
 
@@ -216,16 +215,6 @@ export function registeredValueAddressLockingBytecode(
 ): Uint8Array | undefined {
   const deployment = findDeploymentByExactAddress(provider, address);
   if (!deployment) return undefined;
-  const contract = deployment.contract as {
-    inner?: { artifact?: Artifact };
-    implementation?: { inner?: { artifact?: Artifact } };
-  };
-  const artifact = contract.implementation?.inner?.artifact ?? contract.inner?.artifact;
-  const authenticatesPublicSelf = artifact?.messageBus?.route?.inputs
-    .some((input) => input.name === '__internal__graphSelfIdentityInput') === true;
-  // New kernel routes prove their public SCID on-chain. Persisting the physical execution address instead
-  // would make an otherwise identical CREATE reference depend on whether its deployment was already known.
-  if (authenticatesPublicSelf) return addressToLockScript(deployment.address);
   return deployment.lockingBytecode ? hexToBin(deployment.lockingBytecode) : undefined;
 }
 
@@ -379,29 +368,6 @@ function typedSolidityAddressPayload(value: string | Uint8Array): Uint8Array | u
       ? hexToBin(value.replace(/^0x/iu, '')) : undefined;
   if (bytes?.length === 20) return bytes;
   if (bytes?.length === 32 && bytes.subarray(0, 12).every((byte) => byte === 0)) return bytes.subarray(12);
-  return undefined;
-}
-
-/** Recover the exact registered native address which projects to a typed Solidity identity. */
-export function registeredAddressValueLockingBytecode(
-  provider: NetworkProvider, value: string | Uint8Array,
-): Uint8Array | undefined {
-  const deployment = findDeploymentByAddressValue(provider, value);
-  if (!deployment) return undefined;
-  const payload = typedSolidityAddressPayload(value);
-  if (!payload) {
-    if (value instanceof Uint8Array) return value;
-    try { return addressToLockScript(value); } catch { return hexToBin(value.replace(/^0x/iu, '')); }
-  }
-  const candidates = new Set([deployment.lockingBytecode, registeredExecutionLockingBytecode(deployment)]);
-  try { candidates.add(binToHex(addressToLockScript(deployment.address))); } catch { /* not a cashaddr */ }
-  const wanted = binToHex(payload);
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const bytes = hexToBin(candidate.replace(/^0x/iu, ''));
-    const identity = lockingBytecodeToSolidityAddressPayload(bytes);
-    if (identity && binToHex(identity) === wanted) return bytes;
-  }
   return undefined;
 }
 

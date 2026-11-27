@@ -3,16 +3,18 @@ import type { Artifact, EntryAccessAbi, ExternalCallExpression } from '@solidcas
 import { compileStringMulti } from '../../../src/compiler.js';
 
 /**
- * The branch a literal argument decides is kept only under the framed convention.
+ * A literal-decided arm and a call site's condition under each convention.
  *
  * `PruneInlinedConstantBranches` drops an arm a literal argument rules out, so an impossible state or collection
- * write never reaches physical-slot discovery; `SymbolTableTraversal` serializes a call site's condition against
- * the statements that dominate it. Both are framed-only: a framed entry publishes the skipped write's access and
- * the condition it runs under (the frame declares the record that write keeps), and reads a branch predicate where
- * the branch begins. The direct convention prunes the same arm and folds a dominating write, as it always has.
+ * write never reaches physical-slot discovery. Only a direct compile prunes it: a framed entry keeps the arm and
+ * publishes the skipped write's access and the condition it runs under (the frame declares the record that write
+ * keeps). `SymbolTableTraversal` serializes a call site's condition against the statements that dominate it. Both
+ * conventions read a branch predicate where the branch begins; a framed value folded from an earlier write keeps the
+ * read field's declared type.
  *
- * Each assertion below is a fact the shipped artifact publishes for the same source compiled both ways; reverting
- * the framed gate (commit 31bfe3cb7) makes the framed artifacts match the direct ones and fails them.
+ * Each assertion below is a fact the shipped artifact publishes for the same source compiled both ways. Reverting the
+ * framed pruning gate (commit 31bfe3cb7) fails the first block; folding an arm's own write into the predicate fails
+ * the `close` rows.
  */
 
 const TOKEN_SOURCE = 'pragma solidity ^0.8.20;'
@@ -114,20 +116,24 @@ const JOBS_FRAMED = { composition: 'framed', suppressWarnings: true, maximumInpu
 const JOBS_DIRECT = { suppressWarnings: true, maximumInputBytes: 200_000 } as never;
 
 describe('a call site inside a branch the arm rewrites before the call', () => {
-  it('reads the predicate where the branch begins under framed, and folds the write on a direct compile', () => {
+  it('reads the predicate where the branch begins, framed and direct', () => {
     const framed = compileStringMulti(JOBS_SOURCE, JOBS_FRAMED).Root!;
     const direct = compileStringMulti(JOBS_SOURCE, JOBS_DIRECT).Root!;
     // `close` writes the field inside the arm; the condition must read the field as the predicate saw it (`1`),
-    // not the arm's own write. A framed compile resets the serialization program point to the predicate's read.
+    // not the arm's own write. Both conventions reset the serialization program point to the predicate's read.
     expect(conditionOf(framed, 'close')).toStrictEqual(stateEquals('1'));
-    // The folded value keeps the read field's declared type, not the literal's own bigint.
+    expect(conditionOf(direct, 'close')).toStrictEqual(stateEquals('1'));
+    // `reopen`'s write before the branch is folded in. A framed value keeps the read field's declared type; a direct
+    // one keeps the literal's own bigint.
     expect(conditionOf(framed, 'reopen')).toStrictEqual({
       kind: 'binary', operator: '==',
       left: { kind: 'literal', type: 'int256', value: '1' },
       right: { kind: 'literal', type: 'bigint', value: '1' },
     });
-    // The direct convention publishes as it stands: the dominating write of the arm is folded in.
-    expect(conditionOf(direct, 'close')).not.toStrictEqual(stateEquals('1'));
-    expect(conditionOf(direct, 'close')).not.toStrictEqual(conditionOf(framed, 'close'));
+    expect(conditionOf(direct, 'reopen')).toStrictEqual({
+      kind: 'binary', operator: '==',
+      left: { kind: 'literal', type: 'bigint', value: '1' },
+      right: { kind: 'literal', type: 'bigint', value: '1' },
+    });
   });
 });

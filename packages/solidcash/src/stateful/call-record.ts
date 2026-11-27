@@ -14,7 +14,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { MixedCallRecordReaderError, MixedCompileModeCallError } from '../Errors.js';
-import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { materializeInternalFunctionArgument } from './internal-function-args.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 
 export const CALL_RECORD_DIGEST_BYTES = 31;
@@ -197,7 +197,7 @@ export function assertCallSelectorScheme(
   call: ExternalCallAbi, caller: Pick<Artifact, 'compiler'>, callee: Pick<Artifact, 'compiler'>,
 ): void {
   const fixedMethod = call.interfaceName !== '__raw__' && call.callMode === undefined && call.fnPtrCall !== true
-    && call.selectorArrayVar === undefined && call.opaqueReturn !== true && call.batchInvocations === undefined;
+    && call.selectorArrayVar === undefined && call.opaqueReturn !== true;
   if (!fixedMethod || (call.needsSelectorVerification !== true && call.hasReturnValues !== true)) return;
   const callerEvmCompat = artifactUsesSolidityAbi(caller);
   if (callerEvmCompat !== artifactUsesSolidityAbi(callee)) {
@@ -209,7 +209,7 @@ export function assertCallSelectorScheme(
  * Refuses a call whose caller and callee digest it apart, when the call digests: it reads a record its caller checks,
  * or its callee reads `msg.sender` and so requires the caller's edge, whose digest is the call's. A caller names its
  * reader where its artifact says `callRecordReader`; the callee's run names one where its entry takes the reader
- * witness (an artifact compiled before has none, nor does a kernel direct participant's entry). The two never
+ * witness (an artifact compiled before has none, nor does a journal direct participant's entry). The two never
  * digest alike, and a caller that accepted an unbound record would let two callers read one run. A callee whose
  * artifact holds no entry of the method (a proxy, whose implementation runs it) is left to its run.
  */

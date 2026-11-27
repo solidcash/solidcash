@@ -82,7 +82,10 @@ const STANDALONE: Record<string, Uint8Array> = {
   __internal__callRecordReader: num(-1n),
 };
 
-/** The selector at the bottom, then the ABI arguments with the first on top, then the redeem. */
+/**
+ * The selector at the bottom, then the ABI arguments with the first on top, then the redeem. A sole entry runs inline
+ * and takes no selector, as the SDK unlocks it.
+ */
 function masterUnlock(artifact: Artifact, name: string, values: Record<string, Uint8Array> = {}): Uint8Array {
   const fn = fnOf(artifact, name);
   const args = fn.inputs.map((entry) => {
@@ -91,7 +94,7 @@ function masterUnlock(artifact: Artifact, name: string, values: Record<string, U
     if (value === undefined) throw new Error(`no value for ${name}.${entry.name}`);
     return value;
   }).reverse();
-  if (fn.selector) args.unshift(hexToBin(fn.selector));
+  if (fn.selector && artifact.abi.length > 1) args.unshift(hexToBin(fn.selector));
   return new Uint8Array([...pushesOf(args), ...encodeDataPush(redeemOf(artifact))]);
 }
 
@@ -117,7 +120,7 @@ function recordOutput(artifact: Artifact, field: string, values: Record<string, 
 }
 
 function compile(members: string): Artifact {
-  return compileString(`${P} contract C { ${members} }`, { messageBus: true });
+  return compileString(`${P} contract C { ${members} }`, {});
 }
 
 function verdict(spend: Spend): true | string {

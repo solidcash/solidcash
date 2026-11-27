@@ -12,7 +12,7 @@ import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   defaultInternalFunctionArg,
   materializeInternalFunctionArgument,
-} from './kernel-journal-helpers.js';
+} from './internal-function-args.js';
 import { lowLevelCallTurnInputsWitness, lowLevelCallTurnWitnessPositions } from './low-level-call-turns.js';
 
 export type MaterializeCreateBuilderSyntheticArgsHost = {
@@ -38,7 +38,7 @@ export function materializeCreateBuilderSyntheticArgs(
     activeDelegateGroupIndex: number | undefined;
     lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
     lowLevelCallInputBase: number;
-    overrides: { blockBase?: number; emitReturn?: boolean; returnProbeOnly?: boolean } | undefined;
+    overrides: { emitReturn?: boolean; returnProbeOnly?: boolean } | undefined;
     returnEmitOutputIndex: number;
     functionName: string;
     [key: string]: any;
@@ -89,7 +89,7 @@ export function materializeCreateBuilderSyntheticArgs(
     if (dIdxPos >= 0 && finalArgs.length < abiFunction.inputs.length) {
       const delegateGroupIdx = activeDelegateGroupIndex
         ?? lowLevelCallUtxoGroups.findIndex((g) => g.callMode === 'delegatecall');
-      const delegateAbsoluteBase = (overrides?.blockBase ?? 0) + lowLevelCallInputBase;
+      const delegateAbsoluteBase = lowLevelCallInputBase;
       const delegatePos = delegateGroupIdx < 0 ? delegateAbsoluteBase
         : delegateAbsoluteBase + lowLevelCallUtxoGroups
           .slice(0, delegateGroupIdx).reduce((s, g) => s + 1 + g.dataNftUtxos.length, 0);
@@ -124,7 +124,7 @@ export function materializeCreateBuilderSyntheticArgs(
       if (turn !== undefined) {
         if (row === undefined) continue;
         const positions = turnPositions.get(row) ?? [];
-        positions[turn] = (overrides?.blockBase ?? 0) + lowLevelCallInputBase
+        positions[turn] = lowLevelCallInputBase
           + lowLevelCallUtxoGroups.slice(0, i).reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
         turnPositions.set(row, positions);
         continue;
@@ -133,7 +133,7 @@ export function materializeCreateBuilderSyntheticArgs(
         ? '__internal__callInputIndex'
         : `__internal__callInputIndex${callOrdinal}`;
       callOrdinal += 1;
-      const masterPos = (overrides?.blockBase ?? 0) + lowLevelCallInputBase
+      const masterPos = lowLevelCallInputBase
         + lowLevelCallUtxoGroups.slice(0, i)
           .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
       callInputIndexByName.set(paramName, BigInt(masterPos));
@@ -183,7 +183,7 @@ export function materializeCreateBuilderSyntheticArgs(
       }
       finalArgs[externalCallInputBasePosition] = BigInt(
         1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount
-        + (abiFunction.graphBlockhashOracle?.slotCount ?? 0) + iterationEntryInputs.length,
+        + (0) + iterationEntryInputs.length,
       );
     }
   }

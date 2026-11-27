@@ -14,20 +14,15 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { batchPredecessorCommitment, isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
+import { batchPredecessorCommitment, isPendingBatchPredecessor } from './pending-batch-predecessor.js';
 import { callRecordHashesResult } from './call-record.js';
 import { isDisposableAlignmentPad } from './value-chunk-band-helpers.js';
-import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { materializeInternalFunctionArgument } from './internal-function-args.js';
 import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import {
-  compilerRouteUsesPhysicalWrapper,
-  selectedMessageBusResourceMetadata,
-} from './message-bus-resource-routing.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import { resolveMaterializedDynamicWriteOutputBase } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
 import {
   StatefulTransactionBuilder,
@@ -62,7 +57,6 @@ export function constructCreateBuilderTransactionBuilder(
     finalArgs: FunctionArgument[];
     abiFunction: AbiFunction | undefined;
     entryAbiFunction: AbiFunction | undefined;
-    physicalAbiFunction: AbiFunction | undefined;
     functionName: string;
     effectiveBlockLayout: FunctionBlockLayout | undefined;
     entryAccesses: any;
@@ -84,8 +78,6 @@ export function constructCreateBuilderTransactionBuilder(
     runtimeLoopEventOutputs: any[];
     runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[];
     runtimeLoopTrailingSegments: any[];
-    kernelJournalSettlementOutputPlan: any;
-    kernelJournalEagerOutputPlan: any;
     tokenContainers: TokenContainerInfo[];
     tokenContainerLockingBytecodes: Map<string, Uint8Array>;
     satoshiContainerUtxo: UnlockableUtxo | undefined;
@@ -94,7 +86,6 @@ export function constructCreateBuilderTransactionBuilder(
     blockInfoCoSpendUtxos?: UnlockableUtxo[];
     delegateBlockInfoOracle?: boolean;
     unslottedPoolCoSpends?: UnlockableUtxo[];
-    blockhashCoSpendSlotOrdinals: number[] | undefined;
     keccakComputeCoSpendUtxos: UnlockableUtxo[];
     keccakComputeCommitments: any;
     delegateComputeResources: boolean;
@@ -112,7 +103,7 @@ export function constructCreateBuilderTransactionBuilder(
     lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
     activeDelegateGroupIndex: number | undefined;
     lowLevelCallRawInputs: any[];
-    compilerRouteDelegateLayout: FunctionBlockLayout | undefined;
+    directCallDelegateLayout: FunctionBlockLayout | undefined;
     hasDelegatedDynamicReadChunks: boolean;
     delegateReturnEventOffset: number | undefined;
     delegateEventSlots: Array<{ kind: string; offset: number }>;
@@ -137,22 +128,20 @@ export function constructCreateBuilderTransactionBuilder(
   },
 ): ConstructCreateBuilderTransactionBuilderResult {
   let {
-    finalArgs, abiFunction, entryAbiFunction, physicalAbiFunction, functionName,
+    finalArgs, abiFunction, entryAbiFunction, functionName,
     effectiveBlockLayout, entryAccesses, entryNfts, batchTargetPlaceholders,
     resolvedMsgSenderCategory, externalReadUtxos, overrides, valueChunkWriteStagingSession,
     unlockableMaster, unlockableDataNfts, stateLayout, requiredNftIndices, entryNftLockingBytecodes,
     dynamicChunkVars, dynamicChunkInputs, trailingDisposalInputs, loopEntryVars,
-    runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments,
-    kernelJournalSettlementOutputPlan, kernelJournalEagerOutputPlan, tokenContainers,
+    runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments, tokenContainers,
     tokenContainerLockingBytecodes, satoshiContainerUtxo, satoshiContainerLockingBytecode,
     blockhashCoSpendUtxos, blockInfoCoSpendUtxos, delegateBlockInfoOracle, unslottedPoolCoSpends,
-    blockhashCoSpendSlotOrdinals,
     keccakComputeCoSpendUtxos,
     keccakComputeCommitments, delegateComputeResources, deferredKeccakCompute,
     deferredEcrecoverCompute, ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates,
     keccakLoopSideCars, keccakLoopRecreates, externalOutStateUtxoGroups, externalCallUtxoGroups,
     embeddedFunderUtxos, logicalIdentity, identityAnchors, lowLevelCallUtxoGroups,
-    activeDelegateGroupIndex, lowLevelCallRawInputs, compilerRouteDelegateLayout,
+    activeDelegateGroupIndex, lowLevelCallRawInputs, directCallDelegateLayout,
     hasDelegatedDynamicReadChunks, delegateReturnEventOffset, delegateEventSlots,
     lowLevelCallInputBase, batchPredCommitments, sortedLoopCommitments, eventDefs,
     eventNftLockingBytecodes, iterationEntryInputs, insertLoopPredecessors,
@@ -168,7 +157,6 @@ export function constructCreateBuilderTransactionBuilder(
       .map((slot: any) => `${slot.offset}:${slot.slotIndex}`);
     console.error('entry-placement', JSON.stringify({
       functionName, abiFunction: abiFunction?.name, entryFunction: entryAbiFunction?.name,
-      blockBase: overrides?.blockBase,
       layoutEntries,
       accesses: [...(entryAccesses ?? new Map()).entries()].map(([slotIndex, access]: any) =>
         `${slotIndex}:${access.collection}`),
@@ -180,7 +168,7 @@ export function constructCreateBuilderTransactionBuilder(
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
     // Zip the FINAL args with their ABI names: indexing `finalArgs` by the ABI position is unsafe for
-    // probe/route frames (hidden args are appended and reordered by name), and that mis-index is what made the
+    // probe frames (hidden args are appended and reordered by name), and that mis-index is what made the
     // earlier reading of this witness wrong. Only a name-keyed dump can be trusted.
     const names = (abiFunction?.inputs ?? []).map((input) => input.name);
     console.error('msg-sender-category-final', JSON.stringify({
@@ -193,7 +181,6 @@ export function constructCreateBuilderTransactionBuilder(
       ]).filter(([name]) => String(name).startsWith('__internal__')),
       build: {
         returnProbeOnly: overrides?.returnProbeOnly === true,
-        compilerRoute: overrides?.compilerRouteSelector !== undefined,
         calls: overrides?.calls?.length ?? 0,
       },
     }));
@@ -242,8 +229,6 @@ export function constructCreateBuilderTransactionBuilder(
     ...(runtimeLoopEventOutputs.length > 0 && { runtimeLoopEventOutputs }),
     ...(runtimeLoopTransferOutputs.length > 0 && { runtimeLoopTransferOutputs }),
     ...(runtimeLoopTrailingSegments.length > 0 && { runtimeLoopTrailingSegments }),
-    ...(kernelJournalSettlementOutputPlan && { kernelJournalSettlementOutputPlan }),
-    ...(kernelJournalEagerOutputPlan && { kernelJournalEagerOutputPlan }),
     tokenContainers,
     tokenContainerLockingBytecodes,
     ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
@@ -252,7 +237,6 @@ export function constructCreateBuilderTransactionBuilder(
     ...(blockInfoCoSpendUtxos && blockInfoCoSpendUtxos.length > 0 && { blockInfoCoSpendUtxos }),
     ...(delegateBlockInfoOracle && { delegateBlockInfoOracle: true }),
     ...(unslottedPoolCoSpends && unslottedPoolCoSpends.length > 0 && { unslottedPoolCoSpends }),
-    ...(blockhashCoSpendSlotOrdinals && { blockhashCoSpendSlotOrdinals }),
     ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
     ...(delegateComputeResources && { delegateComputeResources: true }),
     ...(deferredKeccakCompute && { deferredKeccakCompute }),
@@ -272,15 +256,15 @@ export function constructCreateBuilderTransactionBuilder(
     ...(activeDelegateGroupIndex !== undefined && { activeDelegateGroupIndex }),
     ...(lowLevelCallRawInputs.length > 0 && { lowLevelCallRawInputs }),
     ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
-      && !compilerRouteDelegateLayout
+      && !directCallDelegateLayout
       && { delegateEntriesAfterLowLevel: true }),
     ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
       && dynamicChunkVars.some((variable) => variable.delegate === true)
-      && !compilerRouteDelegateLayout
+      && !directCallDelegateLayout
       && { delegateDynamicChunksAtSuffix: true }),
     // A compiler-owned delegate route already reserves its dynamic resources in the balanced trailing frame.
     // Legacy delegates have no such frame, so only they use the transaction-wide reverse suffix.
-    ...(hasDelegatedDynamicReadChunks && !compilerRouteDelegateLayout
+    ...(hasDelegatedDynamicReadChunks && !directCallDelegateLayout
       && { delegateDynamicChunksAtSuffix: true }),
     // X56. Only when the co-spent implementation BOTH emits and returns: its event resolves to the index the
     // forwarder had reserved for the return channel, so the return channel has to follow the events.
@@ -288,34 +272,24 @@ export function constructCreateBuilderTransactionBuilder(
       && { delegateReturnEventAfterEvents: true }),
     ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
       && { lowLevelCallInputBase }),
-    ...(compilerRouteDelegateLayout && { compilerRouteDelegateBlock: true }),
-    ...(overrides?.omitLocalFeeTail && { preserveBlockLayoutWidth: true }),
+    ...(directCallDelegateLayout && { directCallDelegateBlock: true }),
     ...(delegateEventSlots.some((slot: any) => slot.kind === 'entry') && { preserveBlockLayoutWidth: true }),
     ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0
       || runtimeLoopEventOutputs.length > 0 || runtimeLoopTransferOutputs.length > 0)
       // A compiler-owned delegate block preserves its dynamic chunks at the published trailing base;
       // sorted entry creations in that same block follow the chunks.
-      && !(compilerRouteDelegateLayout && dynamicChunkVars.length > 0)
+      && !(directCallDelegateLayout && dynamicChunkVars.length > 0)
       && { loopEntriesBeforeDynamicChunks: true }),
     ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
     ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
     ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
     ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
     ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
-    ...(overrides?.omitLocalFeeTail === true && {
-      composedParticipant: true,
-      ...(overrides?.blockBase !== undefined && { composedBlockBase: overrides.blockBase }),
-    }),
-    ...((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention && {
-      messageBusConvention:
-        (entryAbiFunction as MessageBusRuntimeAbiFunction).messageBusConvention,
-    }),
   });
   const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
   const selfIdentityArgumentIndex = abiFunction?.inputs.findIndex((input) =>
     input.name === '__internal__graphSelfIdentityInput') ?? -1;
   const refreshTopLevelSelfIdentityInput = selfIdentityArgumentIndex < 0 || !usesOrdinarySelfIdentity(abiFunction)
-    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (logicalIdentity === undefined) {
@@ -328,13 +302,11 @@ export function constructCreateBuilderTransactionBuilder(
           && input.vout === target.vout)
         : builder.findInputIndexByOutpoint(target);
       if (localIndex < 0) throw new Error('Selected own CREATE identity anchor is absent from the finalized transaction');
-      finalArgs[selfIdentityArgumentIndex] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+      finalArgs[selfIdentityArgumentIndex] = BigInt(localIndex);
     };
   const dynamicOutputArgumentIndex = abiFunction?.inputs.findIndex((input) =>
     input.name === '__internal__dynamicChunkOutputBase') ?? -1;
   const refreshTopLevelDynamicChunkOutputBase = dynamicOutputArgumentIndex < 0
-    || overrides?.omitLocalFeeTail === true
-    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (materialized === undefined || abiFunction === undefined) return;
@@ -344,17 +316,10 @@ export function constructCreateBuilderTransactionBuilder(
         route: abiFunction, stateLayout, contract: host.inner, categoryId: host.categoryId,
         outputs: materialized.outputs, start: 0, end: materialized.outputs.length,
         allowProvisionalChunks: true,
-        selectedDynamicWrites: new Set(abiFunction.dynamicWrites ?? []),
       }));
     };
-  const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments;
-  const dynamicWriteActive = selectedRows === undefined
-    ? dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0
-    : selectedMessageBusResourceMetadata(selectedRows).dynamicWrites.length > 0;
+  const dynamicWriteActive = dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0;
   const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
-    || compilerRouteUsesPhysicalWrapper(
-      overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,
-    )
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       const target = firstRootDynamicChunk;
@@ -369,13 +334,12 @@ export function constructCreateBuilderTransactionBuilder(
       // to fit in this participant's local frame. buildParticipantProbeProgram performs the inverse conversion
       // only in generated probe bytecode, without changing these shared final-transaction arguments.
       finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(
-        localIndex, overrides?.blockBase ?? 0, dynamicWriteActive,
+        localIndex, 0, dynamicWriteActive,
       );
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
         console.error('dynamic-chunk-root-base', JSON.stringify({
           functionName,
-          blockBase: overrides?.blockBase ?? 0,
           localIndex,
           frameLength: materialized?.inputs.length,
           target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
@@ -443,7 +407,6 @@ export function constructCreateBuilderTransactionBuilder(
     utxo?: Pick<Utxo, 'txid' | 'vout'>;
   } | undefined)[];
   const refreshTopLevelLowLevelCallInputIndices = abiFunction === undefined
-    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (!abiFunction) return;
@@ -480,16 +443,14 @@ export function constructCreateBuilderTransactionBuilder(
         const target = coSpends.get(witness[1] === '' ? 0 : Number(witness[1]));
         if (target === undefined) continue;
         const localIndex = inputIndexOf(target);
-        if (localIndex >= 0) finalArgs[position] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+        if (localIndex >= 0) finalArgs[position] = BigInt(localIndex);
       }
       // A per-turn row names each turn's callee in its list, and the first turn's record where it reads records.
       for (const [row, turns] of turnCoSpends) {
         const { inputs, recordBase } = lowLevelCallTurnWitnessPositions(abiFunction, row);
         const indices = [...turns].map((turn) => (turn === undefined ? -1 : inputIndexOf(turn)));
         if (inputs >= 0 && inputs < finalArgs.length && indices.every((index) => index >= 0)) {
-          finalArgs[inputs] = lowLevelCallTurnInputsWitness(
-            indices.map((index) => index + (overrides?.blockBase ?? 0)),
-          );
+          finalArgs[inputs] = lowLevelCallTurnInputsWitness(indices);
         }
         const first = lowLevelCallUtxoGroups.find((group) => group.edgeLowLevelCallIndex === row
           && group.lowLevelCallTurn === 0);

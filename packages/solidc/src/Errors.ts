@@ -51,13 +51,12 @@ import {
   RevertNode,
 } from './ast/AST.js';
 import { Symbol, SymbolType } from './ast/SymbolTable.js';
-import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
+import { Location, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
 export type SolidcDiagnosticCode =
-  | 'MESSAGE_BUS_RESERVED_SELECTOR_COLLISION'
-  | 'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE'
-  | 'MESSAGE_BUS_REQUIRED'
+  | 'DELEGATE_CONTEXT_UNPRESERVABLE'
+  | 'REPEATED_CALL_UNSUPPORTED'
   | 'FRAMED_CODEGEN_UNAVAILABLE'
   | 'FRAMED_UPGRADE_LAYOUT'
   | 'STATE_RECORD_CAPACITY'
@@ -90,8 +89,6 @@ export type SolidcDiagnosticCode =
   | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
   // A call through a collection entry its function writes before the call where the call cannot read the written entry.
   | 'ENTRY_TARGET_WRITTEN_BEFORE_CALL'
-  // A message-bus handler whose call the route checks before the handler's body runs writes that call's target first.
-  | 'ROUTE_TARGET_WRITTEN_BEFORE_CALL'
   // A framed master's call whose target the function read at its top and then wrote before the call.
   | 'FRAMED_TARGET_WRITTEN_BEFORE_CALL'
   // A constructor's call, in a genesis body, through a target the constructor read at its top and then wrote.
@@ -106,18 +103,10 @@ export type SolidcDiagnosticCode =
   | 'CALL_VALUE_UNBOUND'
   // F1: an entry reads a contract-caller msg.sender but its call digest is not in scope where the caller edge binds.
   | 'CALLER_EDGE_DIGEST_UNAVAILABLE'
-  // A message-bus entry whose looped call only the route binds, where the route does not serve that entry.
-  | 'ROUTE_ONLY_ENTRY_UNSERVED'
-  // A message-bus verifier that reaches a function-pointer target reading block.*, whose pool helper it cannot carry.
-  | 'MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ'
-  // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
-  | 'KERNEL_LAYOUT'
-  | 'KERNEL_UNBOUNDED_KEY'
-  | 'KERNEL_TX_SIGNATURE'
-  | 'KERNEL_OPAQUE_EFFECT'
-  | 'KERNEL_FOREIGN_DELEGATE'
-  | 'KERNEL_LIFECYCLE'
-  | 'KERNEL_INTERNAL_DEFECT';
+  // Frozen JOURNAL_* catalog codes for fence / journal-helper refuse diagnostics.
+  | 'JOURNAL_LAYOUT'
+  | 'JOURNAL_UNBOUNDED_KEY'
+  | 'JOURNAL_INTERNAL_DEFECT';
 
 /** Machine-stable compiler refusal with source-owned context. */
 export class SolidcDiagnosticError extends Error {
@@ -138,29 +127,13 @@ export class SolidcDiagnosticError extends Error {
  */
 export class UnpublishableLoopGuardError extends SolidcDiagnosticError {
   constructor(
-    code: 'KERNEL_UNBOUNDED_KEY' | 'KERNEL_LAYOUT',
+    code: 'JOURNAL_UNBOUNDED_KEY' | 'JOURNAL_LAYOUT',
     readonly functionName: string,
     readonly reason: string,
     context: Readonly<Record<string, unknown>>,
   ) {
     super(code, `'${functionName}' is refused: ${reason}`, { functionName, ...context });
   }
-}
-
-/**
- * X92. Say so when a Line/Column is a position in COMPILER-GENERATED source.
- *
- * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot
- * reach: a diagnostic raised during SEMANTIC ANALYSIS of the merged AST, on a node the route parse built.
- * Measured on `SushiMakerKashi.sol` (169 lines) during generated graph-route analysis:
- * `Undefined reference to symbol __message_bus_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
- * `address private immutable sushi;`. The position is INSIDE the file, so nothing signals it is wrong.
- */
-export function generatedSourceCaveat(location?: Location): string {
-  const origin = generatedOriginOf(location);
-  if (!origin) return '';
-  return ` - a position in ${origin}, NOT in your file. It shifts when an unrelated compile option changes the`
-    + ' generated preamble, and no edit to the contract can name it. This is a compiler defect';
 }
 
 /**
@@ -171,11 +144,7 @@ export function generatedSourceCaveat(location?: Location): string {
  * reports `Type 'address' can not be assigned to variable of type 'address payable' at Line 16` - line 16 of the
  * ERC20 base it inherits.
  *
- * X92 rule, unchanged: a position can look both imported and generated, and GENERATED WINS. The imported label
- * asserts "line N is real in file F on disk"; a generated position is in a string no file holds, so labelling it
- * would be a SPECIFIC FALSE label naming a real file - worse than none.
- *
- * Measured over mistswap + solidity-by-example + eacc + a bus-mode solidity-by-example pass, 7394 diagnostics:
+ * Measured over mistswap + solidity-by-example + eacc + a since-removed message-bus pass, 7394 diagnostics:
  * hard-error positions naming a file too short to hold the line went 21 -> 4, and no diagnostic anywhere names a
  * file that does not exist. WHAT THE STAMP DOES NOT REACH, so the next reader does not have to re-measure it:
  *  - The 4 that remain are ANTLR error-listener SYNTAX errors. Their Location is built by the listener during
@@ -186,7 +155,6 @@ export function generatedSourceCaveat(location?: Location): string {
  *    not even call it. Those exact Locations DO carry the stamp, measured.
  */
 export function importedFileCaveat(location?: Location): string {
-  if (generatedOriginOf(location)) return '';
   const file = sourceFileOf(location);
   return file ? ` of imported "${file}"` : '';
 }
@@ -201,7 +169,6 @@ export class SolidCashError extends Error {
     if (node.location) {
       message += ` at ${node.location.start}`;
       message += importedFileCaveat(node.location);
-      message += generatedSourceCaveat(node.location);
     }
 
     super(message);
@@ -316,30 +283,6 @@ export class UnsupportedMemoryAliasingError extends SolidCashError {
 }
 
 /**
- * X119. A graph handler whose call shape route synthesis cannot lower.
- *
- * Six sites in `SymbolTableTraversal` raised a bare `throw new Error`, so the user got a message naming a
- * SYNTHESIZED handler (`__message_bus_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
- * which of their own functions it was cloned from. The stamp cannot reach these: they need a NODE. Carrying the
- * handler's definition node routes them through `SolidCashError`, so each one gains a Line/Column plus both file
- * caveats the same way every other diagnostic here does.
- *
- * Only in bus/participant mode. Measured at `0103ce9d` over the full 152-file solidity-by-example denominator:
- * SIX firings - four of `requires call/staticcall edges ..` (TokenSwap, TokenLock, UniswapV2Liquidity, Optimal)
- * and two of `currently requires forwarded identifier arguments` (DiscreteStakingRewards, UniswapV2FlashSwap) -
- * and ZERO in direct mode. Counting only the 141 files the SBE bench keeps in its denominator gives 3, which is
- * the same measurement over a smaller corpus, not a different one.
- *
- * FOUR OF THE SIX SITES HAVE NO SUBJECT in mistswap + eacc + solidity-by-example, either mode: the runtime-graph,
- * pinned-parameter-target, raw-calldata and unresolved-target-method refusals never fire. They share this class
- * and therefore the position mechanism, but nothing here exercises them.
- */
-export class GraphHandlerShapeError extends SolidCashError {
-  // Inherits `SolidCashError(node, message)`: the six sites already compose their own message, and the value this
-  // class adds is the position, the two file caveats and a name that is not `Error`.
-}
-
-/**
  * X118. A value-returning, internally-invoked helper that emits an event.
  *
  * Such a helper compiles to an OP_INVOKE subroutine whose epilogue returns before emit settlement, so the event
@@ -371,7 +314,6 @@ export class ParseError extends Error {
       // parse was reading - an import as often as the root. The listener-built positions (syntax errors) carry no
       // stamp, so they print unchanged.
       message += importedFileCaveat(location);
-      message += generatedSourceCaveat(location);
     }
 
     super(message);
@@ -493,8 +435,7 @@ export class DirectHeterogeneousDeployError extends SolidCashError {
   constructor(public node: InstantiationNode) {
     super(node,
       'conditional deployment of different child contract types is not SDK-derivable in the direct route: '
-      + 'deployFrom accepts one child artifact for every fired site. Use the message-bus route with '
-      + 'per-site child descriptors, or split the child types into separate entry points');
+      + 'deployFrom accepts one child artifact for every fired site: split the child types into separate entry points');
   }
 }
 
@@ -1761,22 +1702,6 @@ export class UnauthorizedLifecycleError extends SolidCashError {
   }
 }
 
-/**
- * CRYPTO-4 binds every record to the executing master's exact lock. An in-place upgrade moves the master to the
- * replacement's lock, so a record the contract keeps could never be spent again.
- */
-export class UpgradeStrandsBoundStateError extends SolidCashError {
-  constructor(node: Node, funcName: string, records: readonly string[]) {
-    const kept = records.length > 1
-      ? `${records.slice(0, -1).join(', ')} and ${records[records.length - 1]}` : records[0];
-    super(node, `Function '${funcName}' is an in-place upgrade, but this contract keeps ${kept}. Each such record `
-      + 'is bound to the master\'s exact lock, and the upgrade moves the master to the replacement bytecode\'s lock, '
-      + 'so the records cannot follow it and could never be spent again. An in-place upgrade works for a contract '
-      + 'whose whole state lives in its master NFT commitment (no state variables, mappings, or satoshi or token '
-      + 'containers); a proxy upgrade keeps the proxy\'s lock and its records.');
-  }
-}
-
 export class NestedSelfdestructError extends SolidCashError {
   constructor(node: Node, funcName: string) {
     super(node, `Function '${funcName}' places selfdestruct inside conditional or nested control flow. `
@@ -2302,44 +2227,20 @@ export class ContractTypeConstructorArgCountError extends SolidCashError {
  * A returning external edge reached code generation in a function whose compiled external-call layout has no
  * slot for it, so there is no return-event output to read the result from.
  *
- * Code generation aborted here with a bare internal sentinel (`Unbound return call in <fn>; graph=<flag>`) -
- * no error name, no position and no remedy, which is the shape the message-bus board treats as a defect in
- * its own right. X22 closed one instance by refusing the shape in route synthesis; this is the gate in front
- * of every shape that still reaches the generator, whichever upstream gate missed it.
+ * Code generation aborted here with a bare internal sentinel - no error name, no position and no remedy. This is
+ * the gate in front of every shape that still reaches the generator, whichever upstream gate missed it.
  */
 export class UnboundReturnCallError extends SolidCashError {
   constructor(node: Node, functionName: string, edge: string, slotIndex: number, slotCount: number) {
-    const routed = /^__message_bus/.test(functionName);
     super(
       node,
       `Function '${functionName}' consumes the return value of the external call '${edge}', but no return-event `
       + `slot is reserved for it in that function's compiled layout (${slotCount} external-call slot`
       + `${slotCount === 1 ? '' : 's'}; the call carries index ${slotIndex}), so there is no authenticated `
       + 'output to read the result from. The call was relocated into this function after its layout was fixed. '
-      + (routed
-        ? 'On a message-bus route that is a void helper which both consumes a call result and carries a '
-          + 'physical effect: the effect makes the helper ineligible for its own OP_INVOKE subroutine, so it is '
-          + 'inlined into the message-bus batch wrapper, and the wrapper owns the block slots. Keep the returning call in a '
-          + 'handler whose body carries no other physical effect (event, satoshi transfer, token-container move '
-          + 'or deploy), or drop the result and make the call a void tail call.'
-        : 'Keep the returning call in the function whose layout owns its return-event slot, or drop the result '
-          + 'and make the call a void tail call.'),
+      + 'Keep the returning call in the function whose layout owns its return-event slot, or drop the result '
+      + 'and make the call a void tail call.',
     );
   }
 }
 
-export class GraphEmissionEffectError extends SolidCashError {
-  constructor(node: Node, handlerName: string, effect: string) {
-    super(
-      node,
-      `Batched handler '${handlerName}' performs ${effect}, which the route reserves no output slot for, so it `
-      + 'would settle WITHOUT the effect while the same function called directly enforces it - and the spender chooses '
-      + 'which entry to use. A token-container transfer needs a co-spent container INPUT slot bound to its '
-      + 'category parameter, which the route only reserves when a handler also READS the container: adding '
-      + '`require(this.tokens[<category>].tokenAmount >= <amount>)` makes the route settle the transfer. Handlers '
-      + 'routed through the message bus additionally execute behind OP_INVOKE (that is what keeps their outgoing '
-      + 'edges recomputable against the callManifest); the route frames their emit and transfer outputs per '
-      + 'dispatch site (X29), but not a container input.',
-    );
-  }
-}

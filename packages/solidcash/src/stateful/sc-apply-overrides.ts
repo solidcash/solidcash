@@ -3,20 +3,10 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import {
-  type AbiFunction,
-  type Artifact,
-  type EventDefinitionAbi,
-  type FixedBchTransferAbi,
-  type StateValue,
-} from '@solidcash/utils';
+import { type AbiFunction, type EventDefinitionAbi, type StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
-import { loadFixedEffectEntries } from '../message-bus/fixed-effect-entries.js';
-import { addressToLockScript } from '../utils.js';
-import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { autoWireLowLevelCalls, type AutoWireLowLevelCallsHost } from './sc-auto-wire-low-level-calls.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
 import type {
@@ -48,13 +38,6 @@ export interface ApplyOverridesHost {
   externalEntryKeyOverrides: Map<number, bigint | boolean | Uint8Array>;
   entryDeleteSlots: number[];
   transfers: Array<{ lockingBytecode: Uint8Array; amount: bigint; outputSlot?: number }>;
-  compilerTransferRecipes: Array<{
-    outputSlot: number;
-    transfer: FixedBchTransferAbi;
-    args: readonly FunctionArgument[];
-    handler: NonNullable<NonNullable<Artifact['messageBus']>['handlers']>[number];
-    executionArtifact: Artifact;
-  }>;
   tokenContainerTransfers: Array<{
     tokenContainerCategoryId: string; lockingBytecode: Uint8Array; amount: bigint;
   }>;
@@ -64,9 +47,6 @@ export interface ApplyOverridesHost {
   }>;
   extraOutputs: Output[];
   extraInputs: Array<{ utxo: Utxo; unlocker: Unlocker }>;
-  childDeployments: Array<{
-    slotOffset: number; genesisInput: UnlockableUtxo; outputs: readonly Output[];
-  }>;
   tokenContainerDeposits: Array<{ tokenContainerCategoryId: string; amount: bigint }>;
   manualEvents: Array<{ name: string; args: StateValueType[] }>;
   detachedEvents: Array<{
@@ -80,12 +60,8 @@ export interface ApplyOverridesHost {
   callInfos: CallInfo[];
   registryExternalStateOverrides: Map<string, Record<string, StateValueType>>;
   emitReturnFlag: boolean;
-  compilerRoute?: {
-    abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
-    emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
-    logicalIdentity?: ResolvedLogicalIdentity;
-    valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
-  };
+  /** The call a creation's callee runs: its ABI function is fixed and its return emitted (deployer). */
+  directCall?: { abiFunction: AbiFunction; emitReturn?: boolean };
   selectedAbiFunction(): AbiFunction | undefined;
   resolveLibrariesFromRegistry(): Promise<void>;
   autoWireLibraryDelegatecalls(): void;
@@ -162,22 +138,18 @@ export async function applyOverrides(
   // delaying their validation lets provider/state derivation serialize invalid fixed-width values first.
   const validatePreparedFrames = (): void => {
     if (host.parentContract && host.functionArgs) {
-      const selected = host.compilerRoute?.abiFunction ?? host.selectedAbiFunction();
-      if (selected) host.functionArgs = host.parentContract._validateAbiFrame(selected, host.functionArgs, {
-        implicitMsgSenderCategory: host.compilerRoute?.abiFunction.name === '__message_bus1',
-      });
+      const selected = host.directCall?.abiFunction ?? host.selectedAbiFunction();
+      if (selected) host.functionArgs = host.parentContract._validateAbiFrame(selected, host.functionArgs);
     }
     for (const call of host.callInfos) {
       if (call.type !== 'stateful') continue;
-      const callArgs = (call.compilerRoute?.args ?? call.args) as FunctionArgument[];
-      const selected = call.compilerRoute?.abiFunction
-        ?? call.contract._resolveCallAbi(call.functionName, callArgs);
+      const callArgs = call.args as FunctionArgument[];
+      const selected = call.contract._resolveCallAbi(call.functionName, callArgs);
       if (selected) {
         const normalized = call.contract._validateAbiFrame(selected, callArgs);
         // Keep the validated frame for materialization too; a delegate's semantic arguments do not pass
         // through its proxy forwarder's _createBuilder argument normalization.
-        if (call.compilerRoute) call.compilerRoute.args = normalized;
-        else call.args = normalized;
+        call.args = normalized;
       }
     }
   };
@@ -225,15 +197,9 @@ export async function applyOverrides(
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
         ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
         ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
-        ...(host.compilerRoute && {
-          abiFunction: host.compilerRoute.abiFunction,
-          compilerRouteSelector: host.compilerRoute.selector,
-          blockBase: host.compilerRoute.blockBase,
-          emitReturn: host.compilerRoute.emitReturn,
-          returnBlob: host.compilerRoute.returnBlob,
-          omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
-          logicalIdentity: host.compilerRoute.logicalIdentity,
-          valueChunkProductions: host.compilerRoute.valueChunkProductions,
+        ...(host.directCall && {
+          abiFunction: host.directCall.abiFunction,
+          emitReturn: host.directCall.emitReturn,
         }),
       },
     );
@@ -284,45 +250,7 @@ export async function applyOverrides(
     builder.addTokenContainerDeposit(tokenContainerCategoryId, amount);
   }
 
-  let effectiveTransfers = host.transfers;
-  if (effectiveTransfers.length === 0 && host.compilerTransferRecipes.length > 0) {
-    const { materializeFixedBchTransfer } = await import('../message-bus/compose.js');
-    const materialized: typeof host.transfers = [];
-    const authenticatedState = await host.parentContract!.getState();
-    for (const plan of host.compilerTransferRecipes) {
-      if (plan.transfer.condition === null) {
-        throw new Error(`messageBus: BCH transfer predicate in '${plan.handler.name}' is not canonical`);
-      }
-      const handlerAbi = plan.executionArtifact.abi.find((candidate) =>
-        candidate.selector === plan.handler.selector || candidate.name === plan.handler.name);
-      if (!handlerAbi) throw new Error(`Message-bus handler ABI '${plan.handler.name}' is missing`);
-      // An owner-local route authenticates msg.sender as tx.origin. The ordinary builder guarantees that a
-      // connected signer contributes that native P2PKH input; use the same identity for compiler-authored
-      // fixed effects rather than accepting a caller supplied as an ABI value.
-      const sender = host.parentContract!._signer ?? host.parentContract!._logicalNonceSigner;
-      const logicalCaller = sender ? addressToLockScript(sender.getAddress()) : undefined;
-      const entries = await loadFixedEffectEntries([
-        plan.transfer.recipientRecipe, plan.transfer.amountRecipe, plan.transfer.condition?.fixedEffectRecipe,
-      ], plan.executionArtifact, host.parentContract!);
-      if (plan.transfer.condition !== undefined && !(await host.parentContract!._resolveCompilerEffectPredicate(
-        plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState, entries, logicalCaller,
-      ))) continue;
-      const transfer = materializeFixedBchTransfer(
-        plan.transfer,
-        plan.args,
-        plan.handler.inputs.map((input) => input.type),
-        plan.executionArtifact,
-        host.parentContract!.inner.provider,
-        authenticatedState as Readonly<Record<string, FunctionArgument>>,
-        logicalCaller,
-        entries,
-      );
-      // A zero-value fixed effect is an inactive conditional slot, not a positive BCH payment.
-      if (transfer.amount === 0n) continue;
-      materialized.push({ outputSlot: plan.outputSlot, ...transfer });
-    }
-    effectiveTransfers = materialized;
-  }
+  const effectiveTransfers = host.transfers;
 
   // Apply transfers: user overrides replace auto-derived transfers
   if (effectiveTransfers.length > 0) {
@@ -372,15 +300,9 @@ export async function applyOverrides(
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
         ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
         ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
-        ...(host.compilerRoute && {
-          abiFunction: host.compilerRoute.abiFunction,
-          compilerRouteSelector: host.compilerRoute.selector,
-          blockBase: host.compilerRoute.blockBase,
-          emitReturn: host.compilerRoute.emitReturn,
-          returnBlob: host.compilerRoute.returnBlob,
-          omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
-          logicalIdentity: host.compilerRoute.logicalIdentity,
-          valueChunkProductions: host.compilerRoute.valueChunkProductions,
+        ...(host.directCall && {
+          abiFunction: host.directCall.abiFunction,
+          emitReturn: host.directCall.emitReturn,
         }),
       },
     );
@@ -416,15 +338,9 @@ export async function applyOverrides(
           ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
           ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
           drainTokenContainers: drainedTokenContainers,
-          ...(host.compilerRoute && {
-            abiFunction: host.compilerRoute.abiFunction,
-            compilerRouteSelector: host.compilerRoute.selector,
-            blockBase: host.compilerRoute.blockBase,
-            emitReturn: host.compilerRoute.emitReturn,
-            returnBlob: host.compilerRoute.returnBlob,
-            omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
-            logicalIdentity: host.compilerRoute.logicalIdentity,
-            valueChunkProductions: host.compilerRoute.valueChunkProductions,
+          ...(host.directCall && {
+            abiFunction: host.directCall.abiFunction,
+            emitReturn: host.directCall.emitReturn,
           }),
         },
       );
@@ -441,9 +357,6 @@ export async function applyOverrides(
   // container's units (a state write, an event) was derived from 0 and would not match the sent call. In each
   // case, re-derive only when new context has been added and no manual .setState() was called.
   const vmErrored = !!(builder as any).__vmErrored;
-  const transparentAtomicPromotion = ((builder as StatefulTransactionBuilder & {
-    __preparedAtomicCalls?: readonly PreparedAtomicMessageBusCall[];
-  }).__preparedAtomicCalls?.length ?? 0) > 0;
   const depositUnseen = host.containerDepositAmount > 0n || host.tokenContainerDeposits.length > 0;
   const shouldReDerive = (!derived || vmErrored || depositUnseen) && host.stateOverrides.length === 0;
   if (shouldReDerive) {
@@ -541,11 +454,6 @@ export async function applyOverrides(
           })),
         });
       }
-      // Atomic graph composition deliberately begins with placeholder return values, so a caller whose state
-      // update depends on a callee result cannot derive its chunks in the first owner-local probe. The composer
-      // builds those probes without a local fee tail, evaluates the complete graph, and independently refuses
-      // a stable/final assembly containing any unresolved chunk. Standalone sends retain this fail-closed gate.
-      if (transparentAtomicPromotion || host.compilerRoute?.omitLocalFeeTail) continue;
       const derivationError = (builder as any).__derivationError;
       // A covenant OP_VERIFY is the function rejecting (e.g. registerUser pubkey length).
       // Do not wrap that as a chunk-layout construction failure — revertedWith cannot match.
@@ -568,7 +476,7 @@ export async function applyOverrides(
   // silently building a transaction with dummy amounts the covenant would reject.
   const expectedSatoshiTransfers = (builder as any).__expectedTransferCount ?? 0;
   const expectedFtTransfers = (builder as any).__expectedFtTransferCount ?? 0;
-  if (!transparentAtomicPromotion && expectedSatoshiTransfers > 0 && effectiveTransfers.length === 0
+  if (expectedSatoshiTransfers > 0 && effectiveTransfers.length === 0
       && !(builder as any).__derivedTransfers) {
     const derivationError = (builder as any).__derivationError as Error | undefined;
     // A covenant OP_VERIFY is a revert, not a missing transfer slot. Surface it so
@@ -583,7 +491,7 @@ export async function applyOverrides(
       + detail + ' Use .transfer() to provide transfer outputs manually.',
     );
   }
-  if (!transparentAtomicPromotion && expectedFtTransfers > 0 && host.tokenContainerTransfers.length === 0
+  if (expectedFtTransfers > 0 && host.tokenContainerTransfers.length === 0
       && !(builder as any).__derivedTokenContainerTransfers) {
     const derivationError = (builder as any).__derivationError;
     const detail = derivationError ? ` Reason: ${derivationError.message}` : '';
@@ -594,7 +502,7 @@ export async function applyOverrides(
     );
   }
   const expectedNftTransfers = (builder as any).__expectedNftTransferCount ?? 0;
-  if (!transparentAtomicPromotion && expectedNftTransfers > 0 && host.tokenContainerTransferNfts.length === 0
+  if (expectedNftTransfers > 0 && host.tokenContainerTransferNfts.length === 0
       && !(builder as any).__derivedTokenContainerTransferNfts) {
     const derivationError = (builder as any).__derivationError;
     const detail = derivationError ? ` Reason: ${derivationError.message}` : '';
@@ -618,9 +526,5 @@ export async function applyOverrides(
     builder.emitDetachedEvent(event.name, ...event.args);
   }
 
-  builder._restoreMessageBusProbeMasterOutpoint();
-  for (const deployment of host.childDeployments) {
-    builder.setChildDeployment(deployment.slotOffset, deployment.genesisInput, deployment.outputs);
-  }
   return builder;
 }

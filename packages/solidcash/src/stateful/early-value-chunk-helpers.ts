@@ -311,7 +311,7 @@ export function shouldGrowSpeculativeChunkRegion(parts: {
     && parts.reverseIndexedChunkSuffix !== true;
 }
 
-/** Materialize persist/compose `v` onto the live jobEvents band. */
+/** Materialize the persisted `v` onto the live jobEvents band. */
 export function seedChunksFromPersistedValue(
   setChunk: (
     outputIndex: number,
@@ -566,7 +566,7 @@ export function selectHashedValueForChunkPin(
 }
 
 /**
- * Kernel `emitSortedValueChunkPin` discovers chunks by locking-bytecode identity, then
+ * `emitSortedValueChunkPin` discovers chunks by locking-bytecode identity, then
  * EQUALVERIFYs `matches == expected nNew`. Missing outputs never take the positional
  * OUTPUTBYTECODE EQUALVERIFY path, so the planner must recover the redeem lock and
  * expected width from that count mismatch.

@@ -13,7 +13,6 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
-import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import {
   extractIdentityScanValueChunkPin,
 } from './early-value-chunk-helpers.js';
@@ -31,14 +30,13 @@ import {
 import {
   appendEncodedArrayElement,
   concatenateEncodedArrays,
-} from './resource-fold-route.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+} from './resource-fold.js';
 import {
-  extractAllRouteValueChunks,
+  extractAllValueChunks,
   extractFailingP2sh32OutputPin,
-  extractRouteChunkPin,
+  extractValueChunkPin,
   lastExtractedComputedValue,
-} from './route-value-chunk-helpers.js';
+} from './value-chunk-trace-helpers.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
@@ -123,7 +121,7 @@ export function applyDeriveFullNestedValueChunkPin(
   let nestedProbeHadError = false;
 
   if (llc.callMode !== 'delegatecall') return { skipped: true as const };
-  // A composed implementation band can shift as sorted inserts and dynamic outputs converge. Resolve
+  // An implementation band can shift as sorted inserts and dynamic outputs converge. Resolve
   // the executed implementation from the materialized transaction, not from a function-name exception
   // or a provisional dense coordinate.
   const builtImplInputIndex = probeBuilder2.inputs.findIndex((input) => (
@@ -137,7 +135,7 @@ export function applyDeriveFullNestedValueChunkPin(
     (group) => group.delegateCallGroupIndex === llcIndex,
   );
   const groupFunctionName = (group: ExternalCallUtxoGroup): string | undefined => (
-    group.logicalFunctionName ?? group.compilerRoute?.abiFunction.name ?? group.functionName
+    group.logicalFunctionName ?? group.functionName
   );
   const matchingGroups = attachedGroups.filter((group) => groupFunctionName(group) === llc.functionName);
   const physicalProxyGroups = attachedGroups.filter((group) => group.sharedGroupIndex === undefined);
@@ -151,7 +149,7 @@ export function applyDeriveFullNestedValueChunkPin(
     ? -1 : (proxyGroup?.sharedGroupIndex ?? proxyGroupIndex);
   const proxyPhysicalGroup = proxyPhysicalGroupIndex < 0
     ? undefined : stb.getExternalCallUtxoGroups()[proxyPhysicalGroupIndex];
-  // An implementation embedded in a compiler-routed participant executes from an input in the
+  // An implementation embedded in a routed participant executes from an input in the
   // delegate band, but its output covenants remain relative to the owning participant block. These
   // coordinates can be far apart after route fusion (and are intentionally not reconstructible from
   // the implementation input alone). Use the materialized physical owner for output discovery; legacy
@@ -234,8 +232,8 @@ export function applyDeriveFullNestedValueChunkPin(
     }
     : (stb.hasStagedValueChunkOutputs() || stb.getValueChunkRedeemLock())
       ? extractFailingP2sh32OutputPin(nestedTrace)
-      ?? extractRouteChunkPin(nestedTrace)
-      : extractRouteChunkPin(nestedTrace)
+      ?? extractValueChunkPin(nestedTrace)
+      : extractValueChunkPin(nestedTrace)
       ?? extractFailingP2sh32OutputPin(nestedTrace, band);
   const nestedPinExtractedAt = debugTargetsThisDerivation ? Date.now() : 0;
   // Earlier logical aliases have different, valid producer IDs. The terminal physical call and its
@@ -261,27 +259,19 @@ export function applyDeriveFullNestedValueChunkPin(
   const valueChunkResourceSelection = selectValueChunkResource(valueChunkWrites);
   const valueChunkResourceIdentity = valueChunkResourceSelection.status === 'exact'
     ? valueChunkResourceSelection.identity : undefined;
-  // Old descriptor-free routes reconstructed their computed array value from a historical ABI shape.
-  // Keep that adapter outside kernel routes. A kernel candidate must come from the VM trace or from the
-  // exact producer/resource pair staged while evaluating `storedElementSource`; a function name, argument
-  // position, or same-typed value is not producer authority.
+  // Old descriptor-free plans reconstructed their computed array value from a historical ABI shape. A
+  // compiler-described candidate must come from the VM trace or from the exact producer/resource pair staged while
+  // evaluating `storedElementSource`; a function name, argument position, or same-typed value is not producer
+  // authority.
   const legacyValueCandidates: Uint8Array[] = [];
-  const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent'
-  && permitsLegacyNamedValueChunkFallback(
-    [llc, ...(proxyGroup ? [proxyGroup] : [])],
-    host.inner.artifact.messageBus?.convention
-      ?? (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention,
-  );
-  const publishName = llc.functionName ?? llc.logicalFunctionName
-  ?? llc.compilerRoute?.abiFunction?.name;
+  const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent';
+  const publishName = llc.functionName ?? llc.logicalFunctionName;
   // legacy JobEvent name adapter: JobEvent value-candidate discovery only via legacy adapter under the gate above.
   if (permitsLegacyValueCandidate && (
     legacyIsPublishJobEventName(publishName)
   || legacyGroupLooksLikePublishJobEvent({
     functionName: llc.functionName,
     logicalFunctionName: llc.logicalFunctionName,
-    compilerRoute: llc.compilerRoute,
   })
   )) {
     const args = llc.logicalFunctionArgs ?? llc.functionArgs;
@@ -325,7 +315,7 @@ export function applyDeriveFullNestedValueChunkPin(
       legacyValueCandidates.push(witness);
     }
   }
-  const allChunks = extractAllRouteValueChunks(
+  const allChunks = extractAllValueChunks(
     nestedTrace, pin,
     fallbackBase,
     band?.nNew ?? identityPin?.nNew ?? llc.valueChunkOutputCount ?? 0,
@@ -438,14 +428,8 @@ export function applyDeriveFullNestedValueChunkPin(
       const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
         (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),
       ));
-      if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
-        [llc, ...(proxyGroup ? [proxyGroup] : [])],
-        (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
-          ?.messageBusConvention,
-      )) {
       // Compatibility only for descriptor-free artifacts.
-        rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
-      }
+      if (selection.status === 'absent') rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
     }
   }
   const redeemLock = pin?.lockingBytecode && isP2sh32LockingBytecode(pin.lockingBytecode)
@@ -456,14 +440,8 @@ export function applyDeriveFullNestedValueChunkPin(
     const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
       (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),
     ));
-    if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
-      [llc, ...(proxyGroup ? [proxyGroup] : [])],
-      (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention,
-    )) {
     // Compatibility only for descriptor-free artifacts.
-      rememberJobEventsLock(chunkCategory, redeemLock);
-    }
+    if (selection.status === 'absent') rememberJobEventsLock(chunkCategory, redeemLock);
     stb.setValueChunkRedeemLock(redeemLock);
   }
   if (identityPin && allChunks.length > 0 && identityPin.nNew === allChunks.length) {

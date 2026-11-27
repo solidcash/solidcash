@@ -11,13 +11,12 @@ import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
  * Refuse, before anything is built, the call of a contract reached through another contract's call whose function
  * reads blockhash(n) itself. An ordinary call co-spends a ring slot of an oracle pool for the contract the transaction
  * runs (and for a contract it reads, and for a function-pointer target's walk), never at the block-hash slot of a
- * called contract's block: that slot holds a plain coin, and the called contract's read would refuse it. A message-bus
- * route places its own slots and is not refused.
+ * called contract's block: that slot holds a plain coin, and the called contract's read would refuse it.
  */
 export function refuseCreateBuilderNestedBlockhashReads(groups: readonly ExternalCallUtxoGroup[]): void {
   for (const group of groups) {
     const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
-    if (group.compilerRoute !== undefined || artifact === undefined) continue;
+    if (artifact === undefined) continue;
     let fn: AbiFunction | undefined;
     try {
       fn = resolveStatefulAbiFunction(artifact, group.functionName, group.functionArgs);

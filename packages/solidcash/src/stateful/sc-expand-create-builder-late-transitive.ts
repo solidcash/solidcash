@@ -1,6 +1,6 @@
 /**
- * phase-boundary extract: SC _createBuilder extract — late-transitive compose layer
- * (expand A→B→C callees discovered after nested compose).
+ * phase-boundary extract: SC _createBuilder extract - late-transitive compose layer
+ * (expand A -> B -> C callees discovered after nested compose).
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -13,10 +13,8 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
-import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
-import { MessageBusDiagnosticError } from '../message-bus/diagnostics.js';
+import { CallDiagnosticError } from './call-diagnostics.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import { addressToLockScript } from '../utils.js';
 import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   createDataNftUnlocker,
@@ -36,21 +34,20 @@ import { externalCallIterationIndices } from './external-call-iteration-domain.j
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { externalReturnsForCallsites } from './external-returns-for-callsites.js';
 import {
-  createGraphPlanningProducerResultContext,
-  memoizeGraphPlanningProducerResult,
-} from './graph-planning-producer-result.js';
+  createCallPlanningProducerResultContext,
+  memoizeCallPlanningProducerResult,
+} from './call-planning-producer-result.js';
 import {
   connectedContractMatchesExactAddress,
   exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue,
   findDeploymentByName,
-  registeredAddressValueLockingBytecode,
 } from './deployment-registry.js';
 import {
   entryAccessAt,
   resolvePreparedProducerEntry,
   resolveRouteRowExpressionKey,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import {
   SortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
@@ -102,16 +99,16 @@ export async function expandCreateBuilderLateTransitive(
   params: {
     externalCallUtxoGroups: ExternalCallUtxoGroup[];
     lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
-    preparedAtomicNodes: any[] | undefined;
-    preparedAtomicNodeByExternalGroup: Map<number, number>;
+    preparedCallNodes: any[] | undefined;
+    preparedCallNodeByExternalGroup: Map<number, number>;
     publicSelfAddress: FunctionArgument;
     bags: ExpandCreateBuilderLateTransitiveBags;
     [key: string]: any;
   },
 ): Promise<ExpandCreateBuilderLateTransitiveBags> {
   const {
-    externalCallUtxoGroups, preparedAtomicNodes,
-    preparedAtomicNodeByExternalGroup, publicSelfAddress, bags,
+    externalCallUtxoGroups, preparedCallNodes,
+    preparedCallNodeByExternalGroup, publicSelfAddress, bags,
   } = params;
 
   let allGroupEcSlots = bags.allGroupEcSlots;
@@ -128,17 +125,17 @@ export async function expandCreateBuilderLateTransitive(
     groups: expansionGroups, parents: expansionParents, callsites: expansionCallsites,
   } = snapshotExternalCallFrontier(externalCallUtxoGroups, allGroupParentIndices, allGroupEcSlots);
   const expansionDepths = expansionGroups.map((_, groupIndex) => {
-    const atomicIndex = preparedAtomicNodeByExternalGroup.get(groupIndex);
+    const callNodeIndex = preparedCallNodeByExternalGroup.get(groupIndex);
     const seen = new Set<number>();
-    let index: number | null | undefined = atomicIndex ?? groupIndex;
-    let depth = atomicIndex === undefined ? 1 : 0;
+    let index: number | null | undefined = callNodeIndex ?? groupIndex;
+    let depth = callNodeIndex === undefined ? 1 : 0;
     while (index !== undefined && index !== null && index >= 0) {
-      if (seen.has(index)) throw new MessageBusDiagnosticError(
+      if (seen.has(index)) throw new CallDiagnosticError(
         'L3_RECURSIVE_CLOSURE', 'late call preparation contains a cyclic parent chain', {},
       );
       seen.add(index);
-      index = atomicIndex === undefined
-        ? expansionParents[index] : preparedAtomicNodes?.[index]?.parent;
+      index = callNodeIndex === undefined
+        ? expansionParents[index] : preparedCallNodes?.[index]?.parent;
       if (index !== undefined && index !== null && index >= 0) depth += 1;
     }
     return depth;
@@ -153,31 +150,27 @@ export async function expandCreateBuilderLateTransitive(
     // argument resolution and route witness planning.
     const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
     const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
-    const selectedSelfAbi = !parent.compilerRoute && logicalParentArtifact === logicalParentContract.inner.artifact
+    const selectedSelfAbi = logicalParentArtifact === logicalParentContract.inner.artifact
       ? logicalParentContract._resolveCallAbi?.(logicalParentFunctionName, logicalParentArgs) : undefined;
     const ordinarySelfIdentity = await resolveOrdinarySelfIdentity(logicalParentContract, selectedSelfAbi);
     const parentCallerIdentity = Object.freeze({
       categoryId: parentContract.categoryId,
       lockingBytecode: ordinarySelfIdentity ? binToHex(ordinarySelfIdentity.unlocker.generateLockingBytecode())
-        : logicalParentArtifact.messageBus?.route.inputs.some(
-          (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
-        ) ? binToHex(addressToLockScript(parentContract.target)) : parentContract.inner.lockingBytecode,
+        : parentContract.inner.lockingBytecode,
     });
     const parentOutgoingSelfAddress = hexToBin(parentCallerIdentity.lockingBytecode);
     // Expressions inside this invocation observe its incoming caller, not its own outgoing identity
     // and not the transaction signer.
     const parentIncomingCallerAddress = parent.callerIdentity
       ? hexToBin(parent.callerIdentity.lockingBytecode) : undefined;
-    const parentAtomicNode = preparedAtomicNodeByExternalGroup.get(parentGroupIndex);
-    const graphParentArgsRaw = parentAtomicNode === undefined
-      ? logicalParentArgs : preparedAtomicNodes?.[parentAtomicNode]?.args ?? logicalParentArgs;
+    const parentCallNode = preparedCallNodeByExternalGroup.get(parentGroupIndex);
+    const callTreeParentArgsRaw = parentCallNode === undefined
+      ? logicalParentArgs : preparedCallNodes?.[parentCallNode]?.args ?? logicalParentArgs;
     const parentFn = (logicalParentArtifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === logicalParentFunctionName);
     if (!parentFn?.externalCalls?.length) return;
-    const graphParentArgs = projectMessageBusHandlerArguments(
-      logicalParentArtifact, parentFn.name, parentFn.selector, graphParentArgsRaw,
-    );
-    const graphPlanningResults = createGraphPlanningProducerResultContext();
+    const callTreeParentArgs = [...callTreeParentArgsRaw];
+    const callPlanningResults = createCallPlanningProducerResultContext();
     // The parent's guards and the arguments it passes read the block as its run does: from the info coin of the pool
     // its executing code binds. Without the clock a guard on block.number or block.timestamp did not resolve and the
     // call was refused, also when discovery had decided it.
@@ -214,7 +207,7 @@ export async function expandCreateBuilderLateTransitive(
     ): Promise<Map<string, FunctionArgument> | undefined> => sources?.some((source) => source.kind === 'expression')
       ? logicalParentContract._resolveExternalExpressionReturns(
         sources, args, logicalParentContract, parentState, parentFn.inputs,
-        parentOutgoingSelfAddress, parentFn.externalCalls, allowProvisional, graphPlanningResults,
+        parentOutgoingSelfAddress, parentFn.externalCalls, allowProvisional, callPlanningResults,
         conditionCallsite && {
           callsiteId: conditionCallsite.callsiteId, resultConsumers: parentFn.resultConsumers, lane: 'condition',
         }, iterationIndex, parentIncomingCallerAddress,
@@ -290,7 +283,7 @@ export async function expandCreateBuilderLateTransitive(
         ...(nested.addressSource ? [nested.addressSource] : []), ...(nested.argSources ?? []),
       ].map((source) => ({ kind: 'source', source })), iterationIndex);
       const addressReturns = await expressionReturns(
-        nested.addressSource ? [nested.addressSource] : undefined, logicalParentArgs, preparedAtomicNodes !== undefined,
+        nested.addressSource ? [nested.addressSource] : undefined, logicalParentArgs, preparedCallNodes !== undefined,
         iterationIndex,
       );
       const addressParamIndex = nested.addressParam === undefined ? -1
@@ -318,9 +311,6 @@ export async function expandCreateBuilderLateTransitive(
         : exactAddressLockingBytecodeHex(typedAddressTarget);
       const deployment = typedAddressTarget === undefined ? undefined
         : findDeploymentByAddressValue(host.inner.provider, typedAddressTarget);
-      const resolvedTargetLockingBytecode = typedAddressTarget === undefined ? undefined
-        : registeredAddressValueLockingBytecode(host.inner.provider, typedAddressTarget)
-          ?? (exactTargetLockHex === undefined ? undefined : hexToBin(exactTargetLockHex));
       const connectedCandidates = [
         logicalParentContract._externalRegistry.get(nested.interfaceName),
         parentContract._externalRegistry.get(nested.interfaceName),
@@ -362,56 +352,36 @@ export async function expandCreateBuilderLateTransitive(
       const proxyCallee = 'implementation' in registeredCallee ? registeredCallee : undefined;
       const callee = (proxyCallee?.proxy ?? registeredCallee) as any;
       // Under predicates the compiler could not write down, no frame can decide whether the parent makes this call.
-      // A message-bus route binds the rows it runs instead.
-      if (nested.conditionUnpublished === true && nested.condition === undefined && !parent.compilerRoute) {
+      if (nested.conditionUnpublished === true && nested.condition === undefined) {
         const executing = (proxyCallee?.implementation ?? callee) as { inner?: { artifact?: { contractName?: string } } };
         throw undecidedLateCall(nested, executing.inner?.artifact?.contractName ?? nested.interfaceName);
       }
-      const graphChildSources = nested.rawArgSources ?? nested.argSources;
-      if (preparedAtomicNodes && parentFn.resultConsumers) {
-        // Validate the compiler's argument lanes before speculative probing; authenticated result refreshes
-        // below use the same source/consumer identity, never a function-name match.
-        externalReturnsForCallsites(graphChildSources, new Map(), parentFn.externalCalls,
+      const childArgSources = nested.rawArgSources ?? nested.argSources;
+      if (preparedCallNodes && parentFn.resultConsumers) {
+        // Validate the compiler's argument lanes before speculative probing.
+        externalReturnsForCallsites(childArgSources, new Map(), parentFn.externalCalls,
           nested.callsiteId === undefined ? undefined : {
             callsiteId: nested.callsiteId, resultConsumers: parentFn.resultConsumers,
           });
       }
       const childReturns = await expressionReturns(
-        graphChildSources, logicalParentArgs, preparedAtomicNodes !== undefined, iterationIndex,
+        childArgSources, logicalParentArgs, preparedCallNodes !== undefined, iterationIndex,
       );
       const childArgs = logicalParentContract._resolveExternalArgs(
-        graphChildSources,
+        childArgSources,
         logicalParentArgs, logicalParentArtifact, parentState,
         parentFn.inputs, childReturns, iterationIndex, false, parentOutgoingSelfAddress,
         parentIncomingCallerAddress,
       );
       if (childArgs === undefined) continue;
-      const graphChildReturns = preparedAtomicNodes
-        ? await expressionReturns(graphChildSources, [...graphParentArgs], true, iterationIndex) : childReturns;
-      const graphChildArgs = logicalParentContract._resolveExternalArgs(
-        graphChildSources,
-        [...graphParentArgs], logicalParentArtifact, parentState,
-        parentFn.inputs, graphChildReturns, iterationIndex, false, parentOutgoingSelfAddress,
+      const callTreeChildReturns = preparedCallNodes
+        ? await expressionReturns(childArgSources, [...callTreeParentArgs], true, iterationIndex) : childReturns;
+      const callTreeChildArgs = logicalParentContract._resolveExternalArgs(
+        childArgSources,
+        [...callTreeParentArgs], logicalParentArtifact, parentState,
+        parentFn.inputs, callTreeChildReturns, iterationIndex, false, parentOutgoingSelfAddress,
         parentIncomingCallerAddress,
       ) ?? childArgs;
-      const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
-        ? (results: ReadonlyMap<number, FunctionArgument>, parentArgs?: readonly FunctionArgument[]):
-        FunctionArgument[] | undefined => {
-          const externalReturns = externalReturnsForCallsites(
-            graphChildSources, results, parentFn.externalCalls ?? [],
-            nested.callsiteId === undefined ? undefined : {
-              callsiteId: nested.callsiteId,
-              resultConsumers: parentFn.resultConsumers,
-            },
-          );
-          if (externalReturns.size === 0 && parentArgs === undefined) return undefined;
-          return logicalParentContract._resolveExternalArgs(
-            graphChildSources, [...(parentArgs ?? graphParentArgs)], logicalParentArtifact, parentState,
-            parentFn.inputs, externalReturns, iterationIndex, false, parentOutgoingSelfAddress,
-            parentIncomingCallerAddress,
-          );
-        }
-        : undefined;
       const selectedContract = proxyCallee?.implementation ?? callee;
       const rawFunctionName = nested.interfaceName === '__raw__'
         ? nested.rawFunctionName ?? (selectedContract.inner.artifact.abi as readonly AbiFunction[])
@@ -431,7 +401,7 @@ export async function expandCreateBuilderLateTransitive(
         callee.categoryId, selectedFn.name,
       );
       const childDepth = expansionDepths[parentGroupIndex] + 1;
-      if (childDepth > MAX_LATE_TRANSITIVE_DEPTH) throw new MessageBusDiagnosticError(
+      if (childDepth > MAX_LATE_TRANSITIVE_DEPTH) throw new CallDiagnosticError(
         'L3_GRAPH_DEPTH_LIMIT',
         `late call preparation would append depth ${childDepth}, exceeding the deployed `
           + `${MAX_LATE_TRANSITIVE_DEPTH}-depth bound`,
@@ -451,7 +421,7 @@ export async function expandCreateBuilderLateTransitive(
       if (!childState.masterUtxo) {
         // Every frame here is a reached occurrence: the loop above already dropped the ones whose guard is false.
         // A reached occurrence has to co-spend its callee's master, so skipping this quietly composed a
-        // transaction with no callee input that the generated route then refuses at spend time. The ordinary
+        // transaction with no callee input that the covenant then refuses at spend time. The ordinary
         // transitive discovery path already refuses this condition; name the callsite and occurrence here too.
         throw new Error(
           `Late external callsite ${nested.callsiteId ?? '?'} occurrence ${occurrenceIndex} has no master UTXO `
@@ -463,7 +433,7 @@ export async function expandCreateBuilderLateTransitive(
           .map((slot) => slot.nftIndex ?? 0))];
       const dataNftUtxos = requiredDataNftIndices.map((nftIndex) => {
         const utxo = childState.dataNftUtxos[nftIndex];
-        if (!utxo) throw new Error(`Late external data NFT at index ${nftIndex} is missing for the selected handler.`);
+        if (!utxo) throw new Error(`Late external data NFT at index ${nftIndex} is missing for the called function.`);
         return {
           ...utxo,
           unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
@@ -479,22 +449,17 @@ export async function expandCreateBuilderLateTransitive(
       const physicalOwnerFn = physicalOwner === undefined ? undefined
         : (physicalOwner.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === physicalOwner.functionName);
-      const physicalRouteCoversCall = selectedFn.selector !== undefined
-        && physicalOwner?.compilerRoute?.logicalSelectors.includes(selectedFn.selector) === true;
       // Late graph expansion discovers callees of already-composed callees (A -> B -> C). If C's master
       // was provisionally owned by an earlier read or conditional alternative, the state-writing edge is
       // the physical transition which must execute. Apply the same ownership rule as direct composition:
       // repeated conditional alternatives selecting one handler keep their first carrier, while a distinct
-      // writer replaces an ordinary (non-routed) carrier. A compiler route already owns all selectors it
-      // advertises and must not be dismantled here.
+      // writer replaces an ordinary (non-routed) carrier.
       const preserveConditionalOwner = nested.occurrence === 'conditional'
         && selectedFn.writesState === true
         && physicalOwnerFn?.selector === selectedFn.selector
         && physicalOwnerFn?.writesState === true;
       const retargetPhysicalOwner = physicalOwner !== undefined
         && selectedFn.writesState === true
-        && physicalOwner.compilerRoute === undefined
-        && !physicalRouteCoversCall
         && !preserveConditionalOwner;
       const lateInternalArgs: Record<string, FunctionArgument> = {};
       const lateRelativeOutputInternalArgs = new Set<string>();
@@ -604,11 +569,8 @@ export async function expandCreateBuilderLateTransitive(
                 if (source.kind === 'expression' && 'expressionLabel' in source) {
                   const resolved = resolveRouteRowExpressionKey({
                     expressionLabel: source.expressionLabel,
-                    collection: access.collection,
                     routePlanningArgs: childArgs,
                     routeVisibleInputs: visibleInputs,
-                    structs: selectedContract.inner.artifact.structs
-                      ?? selectedContract.inner.stateLayout?.structs,
                     state: childState.state,
                   });
                   if (resolved) return resolved;
@@ -865,8 +827,8 @@ export async function expandCreateBuilderLateTransitive(
             publicSelfAddress, host.categoryId) as Promise<FunctionArgument>;
         const value = nested.callsiteId === undefined
           ? await evaluateReturn()
-          : await memoizeGraphPlanningProducerResult(
-            graphPlanningResults,
+          : await memoizeCallPlanningProducerResult(
+            callPlanningResults,
             nested.callsiteId,
             childArgs,
             typedAddressTarget ?? callee.categoryId,
@@ -954,22 +916,17 @@ export async function expandCreateBuilderLateTransitive(
       expansionParents.push(parentGroupIndex);
       expansionCallsites.push(nested);
       expansionDepths.push(childDepth);
-      if (preparedAtomicNodes) {
-        if (parentAtomicNode !== undefined) {
-          const atomicNodeIndex = preparedAtomicNodes.length;
-          preparedAtomicNodes.push({
+      // The late call joins the prepared call tree, so the repeated-owner refusal counts the owner it reaches.
+      if (preparedCallNodes) {
+        if (parentCallNode !== undefined) {
+          const childCallNodeIndex = preparedCallNodes.length;
+          preparedCallNodes.push({
             contract: callee,
             functionName: rawFunctionName ?? nested.functionName,
             ...(producerSelector !== undefined && { selector: producerSelector }),
-            args: graphChildArgs,
-            ...(resolvedTargetLockingBytecode && {
-              targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
-            }),
-            ...(proxyCallee && {
-              executionArtifact: proxyCallee.implementation.inner.artifact,
-              executor: proxyCallee.implementation,
-            }),
-            parent: parentAtomicNode,
+            args: callTreeChildArgs,
+            ...(proxyCallee && { executionArtifact: proxyCallee.implementation.inner.artifact }),
+            parent: parentCallNode,
             ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
             ...(nested.sourceEffectOrdinal !== undefined && {
               sourceEffectOrdinal: nested.sourceEffectOrdinal,
@@ -978,26 +935,13 @@ export async function expandCreateBuilderLateTransitive(
               sourceCallsiteId: nested.callsiteId,
               occurrenceIndex,
             }),
-            producerPath: preparedChildProducerPath(parentAtomicNode, {
+            producerPath: preparedChildProducerPath(parentCallNode, {
               sourceCallsiteId: nested.callsiteId,
               occurrenceIndex,
               sourceEffectOrdinal: nested.sourceEffectOrdinal,
             }),
-            ...(resolveGraphChildArgs && { resolveArgsFromResults: resolveGraphChildArgs }),
-            active: true,
           });
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_ATOMIC_PUSH === '1') {
-            const pushedIndex = preparedAtomicNodes.length - 1;
-            console.error('atomic-node-push', JSON.stringify({
-              site: 'LATE', nodeIndex: pushedIndex,
-              functionName: nested.functionName, callsiteId: nested.callsiteId,
-              parent: parentAtomicNode,
-              hasChildSources: graphChildSources !== undefined,
-              hasResolver: preparedAtomicNodes[pushedIndex]!.resolveArgsFromResults !== undefined,
-            }));
-          }
-          preparedAtomicNodeByExternalGroup.set(childGroupIndex, atomicNodeIndex);
+          preparedCallNodeByExternalGroup.set(childGroupIndex, childCallNodeIndex);
         }
       }
       allGroupEcSlots = [...allGroupEcSlots, groupSlot];

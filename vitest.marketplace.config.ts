@@ -32,9 +32,8 @@ const workerInspectPort = Number.parseInt(process.env.SOLIDCASH_MARKETPLACE_WORK
 if (Number.isSafeInteger(workerInspectPort) && workerInspectPort > 0 && workerInspectPort < 65_536) {
   workerExecArgv.push(`--inspect=127.0.0.1:${workerInspectPort}`);
 }
-// The kernel lane materializes `.marketplace/project` as a self-contained project with its own solidcash config (the
-// no-proxy twin); the framed lane keeps the config, artifacts and compiler build at the worktree root, which the
-// fixture-freshness setup reads through this variable. Each layout gets the root its config lives at.
+// Both lanes keep the config, artifacts and compiler build at the worktree root, which the fixture-freshness setup
+// reads through this variable; a `.marketplace/project` that carries its own solidcash config is its own root.
 const projectHasOwnConfig = ['solidcash.config.ts', 'solidcash.config.mjs', 'solidcash.config.js']
   .some((name) => existsSync(path.join(projectRoot, name)));
 process.env.SOLIDCASH_PROJECT_ROOT = projectHasOwnConfig ? projectRoot : worktreeRoot;
@@ -59,7 +58,7 @@ export default defineConfig(solidhatPreset(
       include: ['.marketplace/project/test/marketplace.test.ts'],
       // A run measures the compiled fixture on disk, so a fixture older than the compiler build is refused up front.
       globalSetup: ['./scripts/marketplace-fixture-fresh.mjs'],
-      // Kernel-mode history tests compose dozens of multi-participant BCH transactions serially. Keep the
+      // The history tests compose dozens of multi-participant BCH transactions serially. Keep the
       // unchanged upstream test bodies authoritative rather than aborting a healthy loop at the ten-minute mark.
       // The original 20-minute budget does not hold for the no-proxy twin. Measured 2026-10-06 at 19f6c28b5:
       // `approve result and review sanity checks` is 1148.58 s of test time (1155.62 s file) on a lightly loaded

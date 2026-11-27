@@ -233,7 +233,7 @@ describe('X11: delegate vmap sorted mapping write', () => {
     const outcome = await fixture.proxySc.call.__fallback()
       .withDelegatecall(fixture.libSc, 'setBal', [30n, 100n]).send()
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toBe('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    expect(outcome).toBe('BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
     expect(await valueOfKey30(fixture)).toBeUndefined();
   }, 300_000);
 });

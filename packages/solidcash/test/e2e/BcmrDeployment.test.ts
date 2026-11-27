@@ -300,7 +300,7 @@ describe('the owner\'s spends of an identity', () => {
 });
 
 describe('an ERC-20-shaped token', () => {
-  const artifact = compileFile(TOKEN, { messageBus: false });
+  const artifact = compileFile(TOKEN, {});
 
   /** A signer with a deployment coin and a coin whose txid becomes the token's own category. */
   async function coins(provider: MockNetworkProvider): Promise<{ alice: Signer; funding: Utxo; token: Utxo }> {

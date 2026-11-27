@@ -31,10 +31,10 @@ const HEADER = 'pragma solidcash >=0.8.0;\n'
 function wrapper(name: string, bases: string, body = ''): Artifact {
   return compileString(`${HEADER}contract ${name}() is ${bases} {\n`
     + '    constructor(bytes32 underlying_) BchNativeWrapper(underlying_) { }\n'
-    + `${body}}\n`, { files, rootFileId: '/contracts/Main.scash', messageBus: false, suppressWarnings: true }) as Artifact;
+    + `${body}}\n`, { files, rootFileId: '/contracts/Main.scash', suppressWarnings: true }) as Artifact;
 }
 
-const minimal = compileFile(new URL('examples/MinimalWrappedToken.scash', CONTRACTS), { messageBus: false });
+const minimal = compileFile(new URL('examples/MinimalWrappedToken.scash', CONTRACTS), {});
 
 async function genesisCoin(signer: Signer, skip: readonly Utxo[] = []): Promise<Utxo> {
   const coin = (await signer.getUtxos()).find((utxo) => utxo.vout === 0 && utxo.token === undefined
@@ -223,10 +223,10 @@ describe('BchNativeWrapper', () => {
       .rejects.toThrow(/keys its reserve by category e{64}/);
     await expect(deploy(minimal, [hexToBin(category).reverse()], { category })).rejects.toThrow(/not reversed/);
     // A constructor that credits units the genesis does not back.
-    const credited = compileFile(new URL('../fixture/bcmr_metadata_token.scash', import.meta.url), { messageBus: false });
+    const credited = compileFile(new URL('../fixture/bcmr_metadata_token.scash', import.meta.url), {});
     await expect(deploy(credited, args, { category })).rejects.toThrow(/credits a totalSupply\(\) of 5000/);
     const counter = compileString('pragma solidcash >=0.8.0;\ncontract Counter() {\n  int count;\n'
-      + '  function bump() { this.count = this.count + 1; require(this.count > 0); }\n}\n', { messageBus: false });
+      + '  function bump() { this.count = this.count + 1; require(this.count > 0); }\n}\n', {});
     await expect(StatefulContract.deploy(counter, [], { ...base, nativeToken: { category } }))
       .rejects.toThrow(/keys none/);
     const live = await deployer!.getUtxos();

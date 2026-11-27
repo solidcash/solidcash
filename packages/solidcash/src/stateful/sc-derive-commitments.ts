@@ -133,7 +133,7 @@ export async function deriveCommitments(
     let ecrecoverProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }> = [];
     if (abiFunction.ecrecoverCompute && !abiFunction.ecrecoverLoopReads && host.categoryId) {
       ecrecoverProbeCoSpends = (await host.resolveEcrecoverComputeCoSpends(
-        abiFunction, args, undefined, { deferUnresolved: true },
+        abiFunction, args, { deferUnresolved: true },
       )).coSpends;
     }
     // A direct unbounded keccak256 chained read routes its preimage through START/CONT/FINAL side-cars in the
@@ -426,7 +426,7 @@ export async function deriveCommitments(
         keccakCoSpends: keccakProbeCoSpends,
       };
     } catch (e) {
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
         console.error('state-derivation-error', e);
       }
       if (e instanceof AutoDerivationError) throw e;

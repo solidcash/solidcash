@@ -47,7 +47,7 @@ const publishesRecord = (fn: Artifact['abi'][number]): boolean => fn.inputs
 
 describe('genesisCalls is on by default', () => {
   it('takes the genesis call in every record-publishing entry and flags the code record-sound', () => {
-    for (const options of [{ messageBus: false }, { messageBus: false, callBatch: true }]) {
+    for (const options of [{}, { callBatch: true }]) {
       const artifact = compileString(COUNTER, options);
       expect(artifact.recordSound).toBe(true);
       expect(artifact.genesisCalls).toBe(true);
@@ -68,7 +68,7 @@ describe('genesisCalls is on by default', () => {
   });
 
   it('keeps every frame of the multi-call entry, each taking the genesis call', () => {
-    const artifact = compileString(COUNTER, { messageBus: false, callBatch: true });
+    const artifact = compileString(COUNTER, { callBatch: true });
     expect(artifact.callBatch).toEqual({ selector: '53434442' });
     const frames = artifact.abi.filter((fn) => fn.callBatchRow === true);
     expect(frames.map((fn) => fn.name)).toEqual(['add', 'get']);
@@ -78,8 +78,7 @@ describe('genesisCalls is on by default', () => {
   it('keeps the multi-call entry of the BCMR token fixtures, record-sound, within the room it leaves its spends', () => {
     // The entry stays while the contract leaves a tenth of the 10,000-byte input limit: 9,000 bytes.
     for (const file of ['bcmr_metadata_token.scash', 'bcmr_padded_token.scash']) {
-      const artifact = compileFile(new URL(`../../solidcash/test/fixture/${file}`, import.meta.url), {
-        messageBus: false, callBatch: true,
+      const artifact = compileFile(new URL(`../../solidcash/test/fixture/${file}`, import.meta.url), { callBatch: true,
       });
       expect(artifact.callBatch, file).toEqual({ selector: '53434442' });
       expect(artifact.recordSound, file).toBe(true);
@@ -90,12 +89,12 @@ describe('genesisCalls is on by default', () => {
 
   it('gives no genesis call to a contract that is not record-sound, nor to a stateless one', () => {
     const delegate = compileString(`${P} contract C { int s; function a() { s = s + 1; }
-      function d() delegate { s = s + 2; } }`, { messageBus: false, allowUnsafeOperations: true });
+      function d() delegate { s = s + 2; } }`, { allowUnsafeOperations: true });
     expect(delegate.recordSound).toBe(false);
     expect(delegate.abi.some(takesGenesisCall)).toBe(false);
     const stateless = compileString(`${P} contract C(bytes20 pkh) {
       function get(int a) public pure returns (int) { return a + 1; }
-      function spend(int a) { require(a > 1); require(pkh != bytes20(0)); } }`, { messageBus: false });
+      function spend(int a) { require(a > 1); require(pkh != bytes20(0)); } }`, {});
     expect(stateless.recordSound).toBeUndefined();
     expect(stateless.abi.some(takesGenesisCall)).toBe(false);
     expect(endsWithMarker(codeOf(stateless))).toBe(false);
@@ -105,7 +104,7 @@ describe('genesisCalls is on by default', () => {
     const source = `${P} contract Tally { int calls;
       function scaled(int a) public pure returns (int) { return a * 2 + 1; }
       function hit(int a) public { calls = calls + scaled(a) + scaled(a + 1); } }`;
-    const artifact = compileString(source, { messageBus: false });
+    const artifact = compileString(source, {});
     expect(artifact.recordSound).toBe(true);
     expect(artifact.abi.filter(takesGenesisCall).map((fn) => fn.name)).toEqual(['scaled', 'hit']);
     const provider = createTestProvider();
@@ -174,7 +173,7 @@ const BEFORE = {
 
 describe('genesisCalls: false', () => {
   const compile = (name: keyof typeof BEFORE, options: Record<string, unknown>): Artifact => compileString(
-    BEFORE[name].source, { messageBus: false, ...BEFORE[name].options, ...options },
+    BEFORE[name].source, { ...BEFORE[name].options, ...options },
   );
 
   it('is the code compiled before, unset or off, for a contract that is not record-sound', () => {
@@ -253,7 +252,7 @@ const resultOf = (value: bigint): Uint8Array => encodeDataPush(bigIntToVmNumber(
 
 describe('a multi-call frame requires its genesis call empty', () => {
   it('runs a batch with empty genesis calls, refuses a frame given a tag, and answers that tag standalone', async () => {
-    const artifact = compileString(COUNTER, { messageBus: false, callBatch: true });
+    const artifact = compileString(COUNTER, { callBatch: true });
     const provider = new MockNetworkProvider();
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -337,7 +336,7 @@ describe('a payable entry answers a tag only when it is paid nothing', () => {
   it('refuses a tagged run whose satoshi container gains, and accepts one whose container is unchanged', async () => {
     const source = `${P} contract Box { int paid;
       function pay() public payable returns (int) { paid = paid + 1; return paid; } }`;
-    const artifact = compileString(source, { messageBus: false });
+    const artifact = compileString(source, {});
     expect(artifact.recordSound).toBe(true);
     const provider = createTestProvider() as MockNetworkProvider;
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

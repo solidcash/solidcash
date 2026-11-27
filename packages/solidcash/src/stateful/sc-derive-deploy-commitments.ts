@@ -47,7 +47,7 @@ import {
 } from './covenant-helpers.js';
 import { probeRequireStatement } from './external-return-encoding.js';
 import { reduceProbeTrace } from './faithful-probe-trace.js';
-import { evalComputedKey } from './route-expression-key.js';
+import { evalComputedKey } from './call-expression-key.js';
 import {
   bytesToSlotValue,
   decodeEntryCommitment,
@@ -1040,7 +1040,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
         ? ''
         : `; failing require in ${requirement.contractName ?? 'contract'}:${requirement.line}`
           + `${requirement.message ? ` (${requirement.message})` : ''}`;
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE
         && failedStep) {
         console.error('constructor-probe-failure', {
           iter, currentCommitments, entryCommits, trailingEntryCommits, eventCommits,

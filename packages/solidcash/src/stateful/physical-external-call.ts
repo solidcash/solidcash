@@ -88,26 +88,6 @@ export function externalReturnParamSlot(
     .filter(({ call }) => call.hasReturnValues)[returnOrdinal]?.slot;
 }
 
-/**
- * These witnesses describe the assembled transaction, not the compiler route which requested it. Route builders
- * may carry provisional values from an isolated probe, but composition can omit conditional calls, fuse groups,
- * or move participant blocks. The SDK must therefore resolve these names after the physical layout is known.
- */
-export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boolean {
-  return paramName === '__internal__externalCallInputBase'
-    || paramName === '__internal__dynamicChunkInputBase'
-    || paramName === '__internal__dynamicChunkOutputBase'
-    || /^__internal__extcallMasterIdx\d*$/.test(paramName)
-    || /^__internal__extcallAnchorIdx\d*$/.test(paramName);
-}
-
-/** Participant storage proofs depend on the materialized state UTXOs, so an atomic graph's provisional/default
- * argument vector cannot own them. They are resolved while assembling the participant block. */
-export function isSdkResolvedParticipantStorageWitness(paramName: string): boolean {
-  return paramName.startsWith('__internal__vmapBatch')
-    || paramName.startsWith('__internal__valueWitness_');
-}
-
 /** Sentinels for a vmap-batch ABI slot when this handler has no planned sorted batch. */
 export function vmapBatchWitnessFallback(paramName: string): Uint8Array | bigint | undefined {
   if (!paramName.startsWith('__internal__vmapBatch')) return undefined;
@@ -163,17 +143,10 @@ type PhysicalSelectorGroup = {
   sharedGroupIndex?: number;
   delegateCallGroupIndex?: number;
   functionName: string;
-  compilerRoute?: { selector: Uint8Array };
   externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
 };
 
-/**
- * Bytes argument for a baked `__forward(bytes)` proxy. The caller covenant extracts the first 4-byte
- * unlocking push (skipping a short delegate-index prefix) and EQUALVERIFYs it against the logical
- * implementation selector. A compiler route forwards `SCB1` through both proxy and implementation.
- */
-const COMPILER_ROUTE_SELECTOR_HEX = '53434231';
-
+/** Bytes argument for a baked `__forward(bytes)` proxy: its implementation selector. */
 const isFunctionSelectorHex = (value: string | undefined): value is string => (
   !!value && /^[0-9a-fA-F]{8}$/i.test(value)
 );
@@ -181,19 +154,11 @@ const isFunctionSelectorHex = (value: string | undefined): value is string => (
 export function selectProxyForwardInput(
   logicalSelectorHex: string | undefined,
   functionArgs: readonly FunctionArgument[] = [],
-  preferCompilerRoute = false,
 ): Uint8Array {
   const arg = functionArgs[0];
   const argHex = arg instanceof Uint8Array && arg.length === 4 ? binToHex(arg) : undefined;
-  if (preferCompilerRoute && argHex?.toLowerCase() === COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
   // A shared proxy master is created by the first nested call (often a view) and later retargeted
   // to the state-writing handler. Prefer that 4-byte functionArgs selector over a stale logical name.
-  // A compiler route opts in above because the proxy itself verifies the implementation's SCB1 selector.
-  if (argHex && argHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
-  if (isFunctionSelectorHex(logicalSelectorHex)
-    && logicalSelectorHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) {
-    return hexToBin(logicalSelectorHex);
-  }
   if (argHex) return arg as Uint8Array;
   if (isFunctionSelectorHex(logicalSelectorHex)) return hexToBin(logicalSelectorHex);
   const got = logicalSelectorHex
@@ -228,7 +193,6 @@ export function physicalExternalCallSelectorHex(
   const delegate = physical.delegateCallGroupIndex === undefined
     ? undefined : delegateGroups[physical.delegateCallGroupIndex];
   const selected = delegate ?? physical;
-  if (selected.compilerRoute?.selector) return binToHex(selected.compilerRoute.selector);
   return selected.externalContract.inner.artifact.abi
     .find((candidate) => candidate.name === selected.functionName)?.selector;
 }
@@ -236,7 +200,6 @@ export function physicalExternalCallSelectorHex(
 export {
   evalComputedKey,
   type RouteExpressionKeyRow,
-  parseRowArgsDecodeLabel,
   visibleHandlerInputs,
   canonicalAbiFunctionSignature,
   entryAccessAt,
@@ -244,10 +207,8 @@ export {
   selectVisibleCallArguments,
   type DirectMappingReadPlan,
   directMappingReadPlan,
-  canShareIdempotentCounterLoopSettlement,
-  matchingRouteRowsForExpressionKey,
   resolveRouteRowExpressionKey,
-} from './route-expression-key.js';
+} from './call-expression-key.js';
 
 
 /**

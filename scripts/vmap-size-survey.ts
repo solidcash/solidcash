@@ -1,6 +1,6 @@
 import { compileString } from '../packages/solidc/test/direct-compile.js';
 
-const options = { forceStateful: true, messageBus: false } as const;
+const options = { forceStateful: true } as const;
 
 const cases: Record<string, string> = {
   empty: 'contract C { int x; function f() external { require(true); } }',

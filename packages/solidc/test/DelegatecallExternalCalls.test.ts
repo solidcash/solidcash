@@ -18,7 +18,7 @@ contract T(address impl, address target) {
     (bool ok, ) = impl.delegatecall(abi.encodeWithSignature("x()")); require(ok);
     IH(target).inc(v);
   }
-}`, { messageBus: false });
+}`, {});
     const fire = artifact.abi.find((entry) => entry.name === 'fire');
     expect(fire?.externalCalls?.map((call) => `${call.interfaceName}.${call.functionName}/${call.occurrence}`))
       .toStrictEqual(['IH.inc/once']);

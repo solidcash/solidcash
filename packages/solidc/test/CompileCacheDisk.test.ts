@@ -34,7 +34,7 @@ describe('SOLIDC_COMPILE_CACHE_DIR disk layer', () => {
     process.env.SOLIDC_COMPILE_CACHE = '1';
     process.env.SOLIDC_COMPILE_CACHE_MAX_ENTRIES = '2';
     for (const name of ['First', 'Second', 'Third']) {
-      compileString(`contract ${name} { function f() { require(true); } }`, { messageBus: false });
+      compileString(`contract ${name} { function f() { require(true); } }`, {});
     }
     expect(getCompileCacheEntryCount()).toBe(2);
   });

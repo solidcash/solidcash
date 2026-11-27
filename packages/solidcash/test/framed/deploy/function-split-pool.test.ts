@@ -3,7 +3,6 @@ import {
   binToHex, encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
 import {
-  ATOMIC_MESSAGE_BUS_DOMAIN_HEX, MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN,
   bytesEqual, bytesToHex, FrameKind, TokenCapability, type FunctionSplitBundle, type StateLayout,
 } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
@@ -310,26 +309,6 @@ function verdictText(result: FramedCallResult): string {
     .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
 }
 
-function commitmentHex(commitment: Uint8Array | string | undefined): string {
-  if (commitment === undefined) return '';
-  return typeof commitment === 'string' ? commitment.toLowerCase() : binToHex(commitment);
-}
-
-/** A kernel spend carries a verifier NFT (`L3V1`) and the atomic envelope domain in an unlocking script. */
-function assertNoKernelBus(result: FramedCallResult): void {
-  const verifier = binToHex(MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN);
-  for (const output of result.sourceOutputs) {
-    expect(commitmentHex(output.token?.nft?.commitment).startsWith(verifier)).toBe(false);
-  }
-  for (const output of result.transaction.outputs) {
-    const token = (output as { token?: { nft?: { commitment?: Uint8Array | string } } }).token;
-    expect(commitmentHex(token?.nft?.commitment).startsWith(verifier)).toBe(false);
-  }
-  for (const input of result.transaction.inputs) {
-    expect(binToHex(input.unlockingBytecode).toLowerCase().includes(ATOMIC_MESSAGE_BUS_DOMAIN_HEX)).toBe(false);
-  }
-}
-
 function mintingLocks(result: FramedCallResult): string[] {
   return result.sourceOutputs.flatMap((output) => (
     output.token?.nft?.capability === 'minting' && output.lockingBytecode !== undefined
@@ -611,15 +590,6 @@ describe('function-split calls on the composition machine', () => {
           require(this.m == 1);
         }
       }`, { split: 'func', ...FRAMED });
-    for (const split of [alphaBundle, betaBundle]) {
-      expect(split.logical.messageBus?.available ?? false).toBe(false);
-      expect(split.logical.kernelExecutionPlans).toBeUndefined();
-      expect(split.logical.messageBus?.verifierProgram).toBeUndefined();
-      for (const shard of split.shards) {
-        expect(shard.artifact.messageBus?.available ?? false).toBe(false);
-        expect(shard.artifact.kernelExecutionPlans).toBeUndefined();
-      }
-    }
     const alpha = await deployLive(alphaBundle);
     const beta = await deployLive(betaBundle);
     const betaStep = betaBundle.shards.find((shard) => shard.function === 'step')!;
@@ -637,14 +607,6 @@ describe('function-split calls on the composition machine', () => {
       externals: { IBeta: { artifact: betaStep.artifact, categoryId: beta.categoryId } },
     });
     expect(result.accepted, verdictText(result)).toBe(true);
-    assertNoKernelBus(result);
-    const verifierDomain = binToHex(MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN);
-    const kernelVerifierInputs = result.sourceOutputs.filter((output) =>
-      commitmentHex(output.token?.nft?.commitment).startsWith(verifierDomain));
-    expect(kernelVerifierInputs, 'kernel verifier input').toHaveLength(0);
-    const messageEnvelopes = result.transaction.inputs.filter((input) =>
-      binToHex(input.unlockingBytecode).toLowerCase().includes(ATOMIC_MESSAGE_BUS_DOMAIN_HEX));
-    expect(messageEnvelopes, 'message envelope').toHaveLength(0);
     expect(result.completed.map((frame) => [frame.functionName, frame.kind])).toStrictEqual([
       ['Alpha.finish()', FrameKind.CALL],
       ['Beta.step()', FrameKind.CALL],

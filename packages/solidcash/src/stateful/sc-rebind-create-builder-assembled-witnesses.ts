@@ -114,20 +114,19 @@ export function rebindCreateBuilderAssembledWitnesses(
         (candidate.sharedGroupIndex ?? index) === groupIdx
       && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
         || (candidate.plannedEntryInserts?.length ?? 0) > 0
-        || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
+        || Object.entries({ ...candidate.internalArgs })
           .some(([name]) => isWriterBatchWitnessName(name))));
       for (const writer of writers) {
         if (!writerBatchPlanMatchesPhysicalCarrier(group, writer)) continue;
         inheritWriterBatchPlan(group, writer);
       }
       const hasPred = (group.batchPredecessorOutputs?.length ?? 0) > 0
-      || Object.entries({ ...group.internalArgs, ...group.compilerRoute?.internalArgs })
+      || Object.entries({ ...group.internalArgs })
         .some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
           && typeof value === 'bigint' && value >= 0n)
-      || writers.some((writer) => Object.entries({
-        ...writer.internalArgs, ...writer.compilerRoute?.internalArgs,
-      }).some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
-        && typeof value === 'bigint' && value >= 0n));
+      || writers.some((writer) => Object.entries({ ...writer.internalArgs })
+        .some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
+          && typeof value === 'bigint' && value >= 0n));
       if (!hasPred) continue;
       const master = builder.findMintingInputIndex(group.categoryId);
       if (master < 0) continue;

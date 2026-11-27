@@ -360,7 +360,7 @@ export default class LowerTailRecursion extends AstTraversal {
    * Publish a deliberately inert recursive-frame relation after the existing affine proof has accepted the
    * source shape, but before lowering replaces source-frame expressions with compiler temporaries.  This does
    * not identify a state collection by source name: access ordinal is the only link to the independently
-   * published journal stream.  In particular, this descriptor is not consulted by admission.
+   * published journal stream.  The artifact publishes this descriptor; no compile decision consults it.
    */
   private publishAffineRecursiveFrame(
     node: FunctionDefinitionNode,
@@ -452,7 +452,7 @@ export default class LowerTailRecursion extends AstTraversal {
     };
     for (const effect of effects) collect(effect);
     if (!complete || accesses.length === 0) return;
-    node.messageBusAffineRecursiveFrameDescriptors = [{
+    node.runtimeLoopAffineRecursiveFrameDescriptors = [{
       version: 1, phase: 'unwind', inductionParameterIndex: visibleInductionIndex,
       step, maximumFrames: 64, parameterProgressions: progressions, accesses,
     }];
@@ -651,7 +651,7 @@ export default class LowerTailRecursion extends AstTraversal {
       functionsByName.set(fn.name, overloads);
     }
     // Run before tail/control normalization: literal base selection and recursive source order are still explicit.
-    // The specialized block replaces the source call, so later memory lowering and kernel key replay consume the
+    // The specialized block replaces the source call, so later memory lowering and journal key replay consume the
     // same finite executable statements rather than independently reconstructing recursion metadata.
     this.finiteArraySpecializationBudget = 256;
     for (const fn of node.functions) {
@@ -921,7 +921,7 @@ export default class LowerTailRecursion extends AstTraversal {
         ? this.finiteArraySpecialization(statement, functionsByName) : undefined;
       if (specialized) {
         // Keep the specialized mutations in their caller's lexical array scope. Introducing a nested scoped
-        // block here would make later memory lowering allocate a distinct local-array frame while kernel replay
+        // block here would make later memory lowering allocate a distinct local-array frame while journal replay
         // still attributes the writes to the caller array.
         statements.push(...(specialized.statements ?? []));
         continue;
@@ -1002,9 +1002,9 @@ export default class LowerTailRecursion extends AstTraversal {
       const group = functions.filter((fn) => unordered.includes(fn));
       const names = new Set(group.map((fn) => fn.name));
       // A recursive call in the conditional RHS is still tail-positioned, but only on the path which reaches it.
-      // Spell that source short circuit as ordinary control flow before fold recognition so the row loop never
-      // turns a skipped recursive operand into an unconditional iteration. The recursive-LHS form needs a deferred
-      // continuation environment and deliberately remains outside this normalization.
+      // Spell that source short circuit as ordinary control flow before fold recognition so the dispatch loop
+      // never turns a skipped recursive operand into an unconditional iteration. The recursive-LHS form needs a
+      // deferred continuation environment and deliberately remains outside this normalization.
       for (const fn of group) this.normalizeRightShortCircuitReturns(fn.body!, names);
       const first = group[0];
       const sameFrame = group.every((fn) => fn.body
@@ -1750,8 +1750,8 @@ export default class LowerTailRecursion extends AstTraversal {
         return (statement.statements ?? []).every(collectEffectTree);
       }
       if (statement instanceof BranchNode) {
-        // This serializer is also the SDK evaluator's accepted expression language. Proving it here prevents a
-        // lowered route from depending on state, loop-carried locals, or an opaque helper merely because the later
+        // This serializer is also the SDK evaluator's accepted expression language. Proving it here prevents the
+        // lowered loop from depending on state, loop-carried locals, or an opaque helper merely because the later
         // counter-loop pass happened to find a mapping write below the branch.
         if (!this.affineEventExpression(statement.condition, node, '', true)) return false;
         return collectEffectTree(statement.ifBlock)
@@ -2407,8 +2407,6 @@ export default class LowerTailRecursion extends AstTraversal {
         maximumIterations: 64,
       },
     }];
-    node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
-      + plan.emits.length * 64;
     plan.emits.forEach(({ node: emit, condition }, siteIndex) => {
       if (exact) {
         // The ordinary lowered loop already mutates parameters to their current-frame values. Preserve those
@@ -2677,8 +2675,6 @@ export default class LowerTailRecursion extends AstTraversal {
         maximumIterations: 64,
       },
     }];
-    node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
-      + plan.emits.length * 64;
     const clonedEmits: EmitStatementNode[] = [];
     for (const effect of effects) this.walkNodes(effect, (candidate) => {
       if (candidate instanceof EmitStatementNode) clonedEmits.push(candidate);
@@ -2742,8 +2738,6 @@ export default class LowerTailRecursion extends AstTraversal {
         maximumIterations: 64,
       },
     }];
-    node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
-      + plan.prefixEmits.length * 64;
     const clonedEmits: EmitStatementNode[] = [];
     for (const effect of effects) this.walkNodes(effect, (candidate) => {
       if (candidate instanceof EmitStatementNode) clonedEmits.push(candidate);
@@ -3029,7 +3023,7 @@ export default class LowerTailRecursion extends AstTraversal {
     const unnamedResults = node.returnTypes.length > 0 && node.returnNames.length === 0;
     if (!node.body || (!voidFunction && !namedResults && !unnamedResults)) return node;
     const frame = this.counter;
-    // Kernel admission runs before NamedReturnTransformation. Give unnamed results private locals so base-case
+    // This pass runs before NamedReturnTransformation. Give unnamed results private locals so base-case
     // returns and the final loop tuple have the same ordinary control-flow representation as named results,
     // without changing the source ABI's intentionally empty output names.
     const returnNames = unnamedResults
@@ -3073,14 +3067,9 @@ export default class LowerTailRecursion extends AstTraversal {
       return node;
     }
     const affineEvent = selfCalls === 1 ? this.affineEventRecursion(node) : undefined;
-    // A varying entry cannot use the invariant-entry cache, and the ordinary repeat loop publishes no key stream.
-    // Leave every shape outside the exact rank proof above recursive so kernel admission fails closed.
-    if (this.hasVaryingRecursiveMappingWrite(node) || this.hasVaryingRecursiveMappingRead(node)) {
-      // A write-only shape has no mapping read, so copying only the read detector left it unmarked. The generic
-      // tail loop still has no per-frame key witness, and kernel admission refuses either side on this marker.
-      node.unloweredVaryingRecursiveMappingRead = true;
-      return node;
-    }
+    // A varying entry cannot use the invariant-entry cache, and the ordinary repeat loop publishes no key stream:
+    // a varying-key mapping read or write outside the exact rank proof above stays recursive.
+    if (this.hasVaryingRecursiveMappingWrite(node) || this.hasVaryingRecursiveMappingRead(node)) return node;
     const fold = selfCalls > 0 ? this.recursiveFoldShape([node], selfNames) : undefined;
     if (selfCalls === 0 || !this.selfCallsHaveArity(node.body, node.name, node.parameters.length)
       || !this.baseReturnsHaveArity(node.body, node.name, node.returnTypes.length, namedResults)

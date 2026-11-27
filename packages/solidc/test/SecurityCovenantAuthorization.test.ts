@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
 const P = 'pragma solidcash ^0.52.0;';
-// Direct (non-kernel) compiles exercise the source-level covenant-authorization rules; the kernel lane manages
-// lifecycle authority through its own signature policy and is covered separately.
-const direct = { messageBus: false } as const;
+// Direct compiles exercise the source-level covenant-authorization rules; the framed block at the end checks that the
+// framed convention applies the same lifecycle and selfdestruct rules.
+const direct = {} as const;
 // An upgradable contract keeps no record (CRYPTO-4 binds each to the master lock an upgrade leaves), so its upgrade
 // cases compile stateful without state.
-const upgradable = { messageBus: false, forceStateful: true } as const;
+const upgradable = { forceStateful: true } as const;
 
 describe('a terminal loop must verify every iteration', () => {
   it('rejects a require that is only reached on some loop iterations', () => {
@@ -99,7 +99,7 @@ describe('an inferred deploy entry is guarded like an explicit one', () => {
   });
 
   it('admits it only under the explicit allowUnsafeOperations opt-in', () => {
-    expect(() => compileString(inferred, { messageBus: false, allowUnsafeOperations: true })).not.toThrow();
+    expect(() => compileString(inferred, { allowUnsafeOperations: true })).not.toThrow();
   });
 });
 
@@ -113,5 +113,38 @@ describe('a selfdestruct entry needs an explicit require', () => {
     const source = `${P} contract C() { bytes20 beneficiary;`
       + ' function kill() { require(true); selfdestruct(this.beneficiary); } }';
     expect(() => compileString(source, direct)).not.toThrow();
+  });
+});
+
+describe('the framed convention applies the same lifecycle and selfdestruct rules', () => {
+  const framed = { composition: 'framed', forceStateful: true } as const;
+  const lifecycleRefusal = /without an unconditional trusted-key signature check/;
+
+  it('rejects an unauthenticated upgrade entry', () => {
+    const source = `${P} contract C() { function migrate() upgrade { require(true); } }`;
+    expect(() => compileString(source, framed)).toThrow(lifecycleRefusal);
+  });
+
+  it('rejects an unauthenticated deploy entry', () => {
+    const source = `${P} contract Child() { int v; function init() { this.v = this.v + 1; } }`
+      + ' contract C() { int v; function make() deploy { this.v = this.v + 1; } }';
+    expect(() => compileString(source, framed)).toThrow(lifecycleRefusal);
+  });
+
+  it('accepts an authenticated upgrade entry', () => {
+    const source = `${P} contract C(pubkey admin) {`
+      + ' function migrate(sig s) upgrade { require(checkSig(s, admin)); } }';
+    expect(compileString(source, framed).contractName).toBe('C');
+  });
+
+  it('rejects a selfdestruct statement with no require', () => {
+    const source = `${P} contract C() { bytes20 beneficiary; function kill() { selfdestruct(this.beneficiary); } }`;
+    expect(() => compileString(source, framed)).toThrow(/FinalRequireStatementError|final statement|require\(\)/i);
+  });
+
+  it('accepts a selfdestruct entry with an explicit require', () => {
+    const source = `${P} contract C() { bytes20 beneficiary;`
+      + ' function kill() { require(true); selfdestruct(this.beneficiary); } }';
+    expect(compileString(source, framed).contractName).toBe('C');
   });
 });

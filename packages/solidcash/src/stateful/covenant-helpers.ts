@@ -1,6 +1,5 @@
 import { cashAddressToLockingBytecode, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   type AbiFunction,
   type AbiInput,
@@ -24,14 +23,6 @@ import {
   valueChunkSignature,
   type Script,
   scriptToBytecode,
-  buildMessageBusVerifierCovenantScript,
-  assertMessageBusVerifierProgram,
-  ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
-  ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
-  ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  MAX_MESSAGE_BUS_BLOB_BYTES,
-  MESSAGE_BUS_VERIFIER_RECURRENT_COMMITMENT_BYTES,
-  type MessageBusVerifierProgram,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { AddressType, ContractUnlocker, Utxo } from '../interfaces.js';
@@ -60,130 +51,6 @@ export function validateCategoryId(hex: string, paramName: string = 'categoryId'
 export function validateMasterInputIndex(index: number): void {
   if (!Number.isInteger(index) || index < 0) {
     throw new Error(`Invalid masterInputIndex: expected a non-negative integer, got ${index}`);
-  }
-}
-
-/** Fail closed on the compiler-published message-bus capability before deriving or deploying a verifier covenant. */
-export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifierProgram {
-  const capability = artifact.messageBus as unknown;
-  if (!capability || typeof capability !== 'object' || Array.isArray(capability)) {
-    throw new Error(`Contract '${artifact.contractName}' publishes no supported message bus capability`);
-  }
-  const replacement = capability as Record<string, unknown>;
-  const atomic = replacement.atomicMessageBus;
-  const route = replacement.route;
-  const envelopeLocation = atomic && typeof atomic === 'object' && !Array.isArray(atomic)
-    ? (atomic as Record<string, unknown>).messageEnvelope : undefined;
-  const legacyEnvelope = envelopeLocation && typeof envelopeLocation === 'object'
-    && !Array.isArray(envelopeLocation)
-    && (envelopeLocation as Record<string, unknown>).region === 'participant-verifiers'
-    && (envelopeLocation as Record<string, unknown>).canonicalInput === 'final-participant-verifier'
-    && (envelopeLocation as Record<string, unknown>).unlockingPush === 0;
-  const rootEnvelope = envelopeLocation && typeof envelopeLocation === 'object'
-    && !Array.isArray(envelopeLocation)
-    && (envelopeLocation as Record<string, unknown>).region === 'root-route'
-    && (envelopeLocation as Record<string, unknown>).canonicalInput === 'root-participant-master'
-    && (envelopeLocation as Record<string, unknown>).unlockingPush === 1;
-  const proxyForwardEnvelope = envelopeLocation && typeof envelopeLocation === 'object'
-    && !Array.isArray(envelopeLocation)
-    && (envelopeLocation as Record<string, unknown>).region === 'proxy-forward'
-    && (envelopeLocation as Record<string, unknown>).canonicalInput === 'root-proxy-master'
-    && (envelopeLocation as Record<string, unknown>).unlockingPush === 1;
-  const programTransport = (replacement.verifierProgram as { envelopeTransport?: unknown } | undefined)
-    ?.envelopeTransport;
-  if (replacement.selector !== '53434231'
-    || (replacement.convention !== 'kernel-row-loop' && replacement.convention !== 'legacy-unroll')
-    || !Number.isSafeInteger(replacement.maximumRows) || (replacement.maximumRows as number) < 1
-    || (replacement.maximumRows as number) > ATOMIC_MESSAGE_BUS_MAX_ROWS
-    || (replacement.minimumRows !== undefined
-      && (!Number.isSafeInteger(replacement.minimumRows) || (replacement.minimumRows as number) < 1
-        || (replacement.minimumRows as number) > (replacement.maximumRows as number)))
-    || replacement.maximumBlobBytes !== (replacement.convention === 'kernel-row-loop'
-      ? ConsensusBch2026.maximumStackItemLength : MAX_MESSAGE_BUS_BLOB_BYTES)
-    || !atomic || typeof atomic !== 'object' || Array.isArray(atomic)
-    || (atomic as Record<string, unknown>).domain !== ATOMIC_MESSAGE_BUS_DOMAIN_HEX
-    || (atomic as Record<string, unknown>).maximumParticipants !== ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS
-    || (atomic as Record<string, unknown>).maximumRows !== ATOMIC_MESSAGE_BUS_MAX_ROWS
-    || !(legacyEnvelope && programTransport === undefined
-      || rootEnvelope && programTransport === 'root-route'
-      || proxyForwardEnvelope && programTransport === 'proxy-forward')
-    || !route || typeof route !== 'object' || Array.isArray(route)
-    || (route as Record<string, unknown>).selector !== '53434231'
-    || !Array.isArray((route as Record<string, unknown>).inputs)
-    || (route as { inputs: unknown[] }).inputs.length < 1
-    || !(route as { inputs: unknown[] }).inputs.every((input) => input && typeof input === 'object')
-    || (route as { inputs: { name?: unknown; type?: unknown }[] }).inputs[0].name !== 'batchBlob'
-    || (route as { inputs: { name?: unknown; type?: unknown }[] }).inputs[0].type !== 'bytes') {
-    throw new Error(`Contract '${artifact.contractName}' publishes malformed replacement message bus capability`);
-  }
-  if (replacement.convention === 'kernel-row-loop') {
-    const published = replacement.resourceBudgets;
-    const axes = [
-      'maximumRows', 'maximumParticipants', 'maximumBlobBytes', 'maximumDynamicChunks',
-      'maximumValueContinuationChunks', 'maximumJournalRecords', 'maximumEvents',
-      'maximumTransfers', 'maximumReturnCarriers', 'maximumExternalEdges',
-      'maximumSemanticDerivationPasses',
-    ];
-    if (!published || typeof published !== 'object' || Array.isArray(published)
-      || (published as Record<string, unknown>).version !== 1
-      || axes.some((axis) => {
-        const value = (published as Record<string, unknown>)[axis];
-        return !Number.isSafeInteger(value) || (value as number) < 0;
-      })
-      || (published as Record<string, unknown>).maximumRows !== replacement.maximumRows
-      || (published as Record<string, unknown>).maximumBlobBytes !== replacement.maximumBlobBytes
-      || (published as Record<string, unknown>).maximumParticipants === 0
-      || ((published as Record<string, unknown>).maximumParticipants as number)
-        > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS
-      || (published as Record<string, unknown>).maximumSemanticDerivationPasses === 0) {
-      throw new Error(`Contract '${artifact.contractName}' publishes malformed resourceBudgets`);
-    }
-  }
-  const program = replacement.verifierProgram;
-  if (!program) throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
-  assertMessageBusVerifierProgram(program);
-  return program;
-}
-
-/** The declared carrier is part of the verifier program, not a caller-selected compose option. */
-export function getMessageBusEnvelopeTransport(
-  artifact: Artifact,
-): 'participant-verifiers' | 'root-route' | 'proxy-forward' {
-  const program = assertMessageBusCapability(artifact);
-  return program.envelopeTransport === 'root-route' || program.envelopeTransport === 'proxy-forward'
-    ? program.envelopeTransport : 'participant-verifiers';
-}
-
-export function getMessageBusVerifierProgram(contract: Contract<any, any>): MessageBusVerifierProgram {
-  return assertMessageBusCapability(contract.artifact);
-}
-
-const verifierConsensusLimit = (
-  provider: NetworkProvider, field: keyof Pick<NonNullable<NetworkProvider['consensusLimits']>,
-  'maximumInputBytes' | 'maximumStackItemBytes' | 'maximumNftCommitmentBytes'>, fallback: number,
-): number => {
-  const value = provider.consensusLimits?.[field] ?? fallback;
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`message bus verifier requires '${field}' to be a positive safe integer, got ${value}`);
-  }
-  return value;
-};
-
-/** The redeem script is both part of the input and a pushed stack item. */
-export function getMessageBusVerifierMaximumScriptBytes(provider: NetworkProvider): number {
-  return Math.min(
-    verifierConsensusLimit(provider, 'maximumInputBytes', 10_000),
-    verifierConsensusLimit(provider, 'maximumStackItemBytes', 10_000),
-  );
-}
-
-export function assertMessageBusVerifierCommitmentCapacity(provider: NetworkProvider): void {
-  const maximum = verifierConsensusLimit(provider, 'maximumNftCommitmentBytes', 128);
-  if (maximum < MESSAGE_BUS_VERIFIER_RECURRENT_COMMITMENT_BYTES) {
-    throw new Error(
-      `message bus verifier requires a ${MESSAGE_BUS_VERIFIER_RECURRENT_COMMITMENT_BYTES}-byte recurrent NFT `
-      + `commitment; active consensus permits at most ${maximum}`,
-    );
   }
 }
 
@@ -306,42 +173,6 @@ export function getDataNftAddress(contract: Contract<any, any>, categoryId: stri
   validateCategoryId(categoryId);
   const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), directConventionMasterLock(contract));
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
-}
-
-export function getMessageBusVerifierAddress(contract: Contract<any, any>, categoryId: string): string {
-  validateCategoryId(categoryId);
-  assertMessageBusVerifierCommitmentCapacity(contract.provider);
-  const program = getMessageBusVerifierProgram(contract);
-  return scriptToAddress(
-    buildMessageBusVerifierCovenantScript(
-      program, getMessageBusVerifierMaximumScriptBytes(contract.provider),
-    ),
-    contract.provider.network,
-    'p2sh32',
-    true,
-  );
-}
-
-export function getMessageBusVerifierLockingBytecode(
-  contract: Contract<any, any>, categoryId: string, _addressType: AddressType = 'p2sh32',
-): Uint8Array {
-  validateCategoryId(categoryId);
-  assertMessageBusVerifierCommitmentCapacity(contract.provider);
-  return getMessageBusVerifierLockingBytecodeForArtifact(
-    contract.artifact, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
-  );
-}
-
-/** Resolve a verifier from the artifact which executes a participant route. For delegate execution this is the
- * implementation artifact, while the verifier NFT remains branded to and deployed under the physical owner. */
-export function getMessageBusVerifierLockingBytecodeForArtifact(
-  artifact: Artifact, maximumInputBytes = 10_000,
-): Uint8Array {
-  const program = artifact.messageBus?.verifierProgram;
-  if (!program) throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
-  return scriptToLockingBytecode(
-    buildMessageBusVerifierCovenantScript(program, maximumInputBytes), 'p2sh32',
-  );
 }
 
 export function getEntryNftAddress(
@@ -588,7 +419,7 @@ export async function getContractState(
   }
 
   const reader = new StateReader(contract.artifact.stateLayout);
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE) {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE) {
     console.error('get-contract-state-addresses', {
       contract: contract.name, categoryId, tokenAddress: contract.tokenAddress,
       allAddresses, dataNftOnlyAddresses,
@@ -602,79 +433,6 @@ export async function getContractState(
 // ---------------------------------------------------------------------------
 // Covenant unlocker factories
 // ---------------------------------------------------------------------------
-
-/**
- * Minimum encoded verifier unlocking-bytecode length used to earn BCH-2026 operation-density budget.
- * The reserve is calculated after encoding the actual verifier arguments, so larger programs and envelopes
- * displace padding rather than accumulating another fixed allocation.
- */
-export const MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES = 9_000;
-
-export function createMessageBusVerifierUnlocker(
-  contract: Contract<any, any>, categoryId: string, messageEnvelope: Uint8Array, verifierArgs: FunctionArgument[],
-  executionArtifact: Artifact = contract.artifact,
-): ContractUnlocker {
-  validateCategoryId(categoryId);
-  assertMessageBusVerifierCommitmentCapacity(contract.provider);
-  const program = executionArtifact.messageBus?.verifierProgram;
-  if (!program) throw new Error(`Contract '${executionArtifact.contractName}' publishes no message bus verifier program`);
-  if (verifierArgs.length !== program.inputs.length) {
-    throw new Error(`message bus verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
-  }
-  const maximumInputBytes = verifierConsensusLimit(contract.provider, 'maximumInputBytes', 10_000);
-  const maximumStackItemBytes = verifierConsensusLimit(contract.provider, 'maximumStackItemBytes', 10_000);
-  const covenantScript = buildMessageBusVerifierCovenantScript(
-    program, getMessageBusVerifierMaximumScriptBytes(contract.provider),
-  );
-  const rootRouteEnvelope = getMessageBusEnvelopeTransport(executionArtifact) !== 'participant-verifiers';
-  const abiInputs: AbiInput[] = [
-    { name: '__internal__densityReserve', type: 'bytes' },
-    ...program.inputs,
-    ...(!rootRouteEnvelope ? [{ name: 'messageEnvelope', type: 'bytes' }] : []),
-  ];
-  const argumentsWithEnvelope = rootRouteEnvelope ? verifierArgs : [...verifierArgs, messageEnvelope];
-  const create = (densityReserve: Uint8Array): ContractUnlocker => createCovenantContractUnlocker(
-    contract, `MessageBusVerifier_${categoryId.slice(0, 8)}`, covenantScript, abiInputs,
-    [densityReserve, ...argumentsWithEnvelope], 'p2sh32',
-  );
-  const createSized = (minimumBytes: number): ContractUnlocker => {
-    if (!Number.isSafeInteger(minimumBytes) || minimumBytes < 0) {
-      throw new Error('message bus verifier density reserve byte floor must be a non-negative safe integer');
-    }
-    const empty = create(new Uint8Array());
-    const emptyLength = empty.generateUnlockingBytecode({} as never).length;
-    let reserveLength = Math.max(0, minimumBytes - emptyLength);
-    let unlocker = create(new Uint8Array(reserveLength));
-    let encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
-    if (encodedLength < minimumBytes) {
-      reserveLength += minimumBytes - encodedLength;
-      unlocker = create(new Uint8Array(reserveLength));
-      encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
-    }
-    if (encodedLength < minimumBytes) {
-      throw new Error('message bus verifier density reserve calculation did not reach its encoded-byte floor');
-    }
-    const structs = executionArtifact.structs ?? executionArtifact.stateLayout?.structs;
-    const oversizedStackItem = unlocker.params
-      .map((argument, index) => encodeFunctionArgument(argument, abiInputs[index].type, structs))
-      .find((argument): argument is Uint8Array =>
-        argument instanceof Uint8Array && argument.length > maximumStackItemBytes);
-    if (oversizedStackItem) {
-      throw new Error(
-        `message bus verifier argument is ${oversizedStackItem.length} bytes; maximum stack item is `
-        + `${maximumStackItemBytes} bytes`,
-      );
-    }
-    if (encodedLength > maximumInputBytes) {
-      throw new Error(
-        `message bus verifier arguments require ${encodedLength} unlocking-bytecode bytes; maximum is ${maximumInputBytes}`,
-      );
-    }
-    unlocker.withMinimumUnlockingBytecodeBytes = createSized;
-    return unlocker;
-  };
-  return createSized(MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES);
-}
 
 export function createDataNftUnlocker(
   contract: Contract<any, any>, masterInputIndex: number, categoryId: string,

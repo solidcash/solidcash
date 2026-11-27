@@ -3,7 +3,6 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe,
   encodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileString as compileMessageBus } from '@solidcash/solidc';
 import { compileString } from '../direct-compile.js';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
@@ -110,20 +109,4 @@ describe('DYN-1: a free dynamic-chunk base cannot disable the chunk verifier', (
     await expect(provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');
     await expect(sc.expectName('third').send()).resolves.toBeDefined();
   }, 300_000);
-
-  it('ships the refusal in the message-bus build\'s direct entry', () => {
-    const artifact = compileMessageBus(SOURCE, { messageBus: true, suppressWarnings: true });
-    expect(artifact.messageBus?.available).toBe(true);
-    // The route ABI keeps its own base witness (and its honest sentinel lane is unchanged); the direct entry that
-    // the same artifact still exposes refuses a value below -1.
-    expect(artifact.messageBus!.route.inputs.map((input) => input.name))
-      .toContain('__internal__dynamicChunkInputBase');
-    const bodies = artifact.functionBodies as unknown as Record<string, { bytecode?: string } | string>;
-    const hexOf = (body: { bytecode?: string } | string): string =>
-      (typeof body === 'string' ? body : (body.bytecode ?? ''));
-    const directKey = Object.keys(bodies).find((key) => key !== artifact.messageBus!.selector);
-    expect(directKey).toBeDefined();
-    // `4f a2 69` is `OP_1NEGATE OP_GREATERTHANOREQUAL OP_VERIFY`; the pre-fix guard continued with `OP_IF` (0x63).
-    expect(hexOf(bodies[directKey!]!)).toContain('4fa269');
-  });
 });

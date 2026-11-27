@@ -1,5 +1,4 @@
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { compileString as compileProduction } from '@solidcash/solidc';
 import { sha256 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
@@ -163,35 +162,6 @@ describe('events wider than one NFT commitment', () => {
     });
     expectScriptRejection(outcome, 0);
   }, 300_000);
-
-  it('streams a wide event on the kernel route, refuses it on the legacy route, and keeps its direct layout', () => {
-    const source = `contract WideRoute {
-      int last;
-      event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);
-      function emitWide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e) public {
-        last = 1;
-        emit Wide(a, b, c, d, e);
-        require(last == 1);
-      }
-      function setLast(int value) public {
-        last = value;
-        require(last == value);
-      }
-    }`;
-    const options = {
-      forceStateful: true, messageBus: true, maximumInputBytes: 1_000_000, optimizeForCompilationSpeed: true,
-    } as const;
-    const kernel = compileProduction(source, options);
-    const streamed = kernel.messageBus?.handlers.find((handler) => handler.name === 'emitWide');
-    expect(streamed).toMatchObject({ eligible: true, runtimeLoopEvents: [{ repeatCount: 1, chunked: true }] });
-    expect(streamed?.emits).toBeUndefined();
-    const legacy = compileProduction(source, { ...options, messageBusKernel: false });
-    expect(legacy.messageBus?.handlers.find((handler) => handler.name === 'emitWide')?.eligible ?? false).toBe(false);
-    for (const compiled of [kernel, legacy]) {
-      expect((compiled.abi as any[]).find((entry) => entry.name === 'emitWide').blockLayout.slots
-        .some((slot: any) => slot.kind === 'eventChunk')).toBe(true);
-    }
-  });
 
   it('destroy sweeps a wide event head and its continuation chunks', async () => {
     const { sc, categoryId, salted, provider } = await deploy();

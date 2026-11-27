@@ -126,7 +126,7 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
     const sc = StatefulContract.withCategory(contract, categoryId);
     sc._setRawIterationKeysBlob('bal', tampered);
     await expect(sc.checkKeys(3n, lastKey, alicePub, sig).send())
-      .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+      .rejects.toThrow('BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 
   it('VARIABLE-WIDTH KEYS: int-keyed mapping iterates (length-prefixed blob)', async () => {

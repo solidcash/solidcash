@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  buildPushdataCommitment, encodeNftIndexTag, encodePushdataValue, parsePushdataCommitment,
-  type Artifact, type StateLayout,
+  buildPushdataCommitment, encodeNftIndexTag,
+  type StateLayout,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import type { Utxo } from '../../src/interfaces.js';
@@ -10,7 +10,6 @@ import { widestRecordCommitmentBytes } from '../../src/framed/composer/dust.js';
 import {
   classifyFramedDeployment, readFramedState, stateRecordLockingBytecode,
 } from '../../src/framed/deploy/records.js';
-import { appendOnlyStateSuffix } from '../../src/message-bus/compose-participant-helpers.js';
 import { StateReader } from '../../src/stateful/StateReader.js';
 import { sameStatePrefixThroughField } from '../../src/stateful/sc-derive-return-value.js';
 
@@ -24,7 +23,6 @@ const record = (commitment: string, vout = 5): Utxo & { lockingBytecode: Uint8Ar
   txid: 'cd'.repeat(32), vout, satoshis: 1200n, lockingBytecode: stateRecordLockingBytecode(CATEGORY),
   token: { category: CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment } },
 });
-const artifact = (stateLayout: StateLayout): Artifact => ({ stateLayout } as Artifact);
 
 describe('SDK tagged singleton state schemas', () => {
   it('discovers and decodes a tagged singleton without accepting untagged or wrong-index records', () => {
@@ -76,19 +74,5 @@ describe('SDK tagged singleton state schemas', () => {
     expect(sameStatePrefixThroughField(tagged, legacy, 0, 0)).toBe(false);
     expect(sameStatePrefixThroughField(tagged, { ...tagged,
       variables: [{ ...tagged.variables[0], type: 'uint16' }] }, 0, 0)).toBe(false);
-  });
-
-  it('refuses a bus upgrade header switch and appends a fixed suffix under a matching tagged schema', () => {
-    expect(() => appendOnlyStateSuffix(artifact(legacy), artifact(tagged)))
-      .toThrow(/data NFT geometry/);
-    expect(() => appendOnlyStateSuffix(artifact(tagged), artifact(legacy)))
-      .toThrow(/data NFT geometry/);
-    const next: StateLayout = { ...tagged,
-      variables: [...tagged.variables, { name: 'extra', type: 'uint8', nftIndex: 0, fieldIndex: 1 }] };
-    const suffix = appendOnlyStateSuffix(artifact(tagged), artifact(next), { extra: 9n });
-    expect(suffix).toEqual(encodePushdataValue(9n, 'uint8'));
-    const preservedPrefix = buildPushdataCommitment(tagged, { counter: 42n }, 0);
-    expect(parsePushdataCommitment(preservedPrefix + binToHex(suffix), next, 0))
-      .toEqual({ counter: 42n, extra: 9n });
   });
 });

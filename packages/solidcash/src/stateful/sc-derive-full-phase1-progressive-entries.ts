@@ -21,20 +21,16 @@ import {
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import {
-  progressiveRouteProbePassLimit,
-  routeProbeEntrySlotOffsetForOutput,
-  routeProbeRepairableEntryCoordinateCount,
-  type RouteProbeObservationHistory,
-} from './route-probe-progress.js';
-import { entryAccessAt } from './route-expression-key.js';
-import { deriveRouteValueChunks } from './route-value-chunk-helpers.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+  progressiveEntryProbePassLimit,
+  entryProbeSlotOffsetForOutput,
+  entryProbeRepairableCoordinateCount,
+  type EntryProbeObservationHistory,
+} from './entry-probe-progress.js';
+import { entryAccessAt } from './call-expression-key.js';
+import { deriveValueChunks } from './value-chunk-trace-helpers.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
-import {
-  describeValueChunkWrites,
-  physicalExternalCallFunction,
-} from './writer-group-selection.js';
+import { describeValueChunkWrites } from './writer-group-selection.js';
 
 export interface DeriveFullPhase1ProgressiveEntriesHost {
   readonly inner: { provider: NetworkProvider };
@@ -57,10 +53,8 @@ export function deriveFullPhase1ProgressiveEntries(
   debugTargetDerivation: boolean,
 ): void {
   if (group.blockLayout && group.blockInputs) {
-    const bEntryMap = group.compilerRoute
-      ? new Map<number, string>()
-      : extractCommitmentMapFromTrace(fullTrace,
-        { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
+    const bEntryMap = extractCommitmentMapFromTrace(fullTrace,
+      { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
     if (debugTargetDerivation && group.functionName === 'approve') {
       console.error('approve-entry-map', {
         bOutputBase,
@@ -69,7 +63,7 @@ export function deriveFullPhase1ProgressiveEntries(
         slots: group.blockLayout.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset })),
       });
     }
-    // The initial trace commonly stops at the data-NFT placeholder. Compiler routes derive entry
+    // The initial trace commonly stops at the data-NFT placeholder. Routes derive entry
     // outputs progressively, so begin that process from a fresh transaction after the data commitment
     // above has been installed; otherwise an empty first map terminates the loop before any entry write
     // (for example ERC20 approve's allowance update) can be revealed. A direct callee checks its data
@@ -77,13 +71,12 @@ export function deriveFullPhase1ProgressiveEntries(
     let entryTrace = fullTrace;
     let entryTransaction = transaction;
     const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
-    const requiresFreshEntryProbe = group.compilerRoute !== undefined
-      || group.delegateEmbeddedInBlock === true || valueChunkWitness !== undefined
+    const requiresFreshEntryProbe = group.delegateEmbeddedInBlock === true || valueChunkWitness !== undefined
       || (entrySlotCount > 0 && group.requiredDataNftIndices.length > 0);
     if (requiresFreshEntryProbe) {
       const entryProbe = stb.build();
       entryTransaction = entryProbe.buildLibauthTransaction();
-      if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN', 'SOLIDC_DEBUG_CHUNK_SCAN'].some((name) =>
+      if (['SOLIDC_DEBUG_TRACE_CONCISE', 'SOLIDC_DEBUG_RETURN', 'SOLIDC_DEBUG_CHUNK_SCAN'].some((name) =>
         (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
         console.error('route-entry-output-window', entryProbe.outputs.slice(38, 50).map((output, offset) => ({
           index: 38 + offset,
@@ -105,7 +98,7 @@ export function deriveFullPhase1ProgressiveEntries(
     }
     const embeddedDelegate = group.delegateCallGroupIndex === undefined
       ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
-    const repairableEntryCoordinateCount = routeProbeRepairableEntryCoordinateCount(
+    const repairableEntryCoordinateCount = entryProbeRepairableCoordinateCount(
       group, embeddedDelegate,
     );
     // A covenant stops at the first mismatching entry output, so one
@@ -115,16 +108,12 @@ export function deriveFullPhase1ProgressiveEntries(
     // Probe progress is resource-based, not setter-based. A long value is recovered as one complete run;
     // physical output replacement must never extend its own convergence budget.
     const valueChunkWritesForProbe = group.valueChunkWrites ?? describeValueChunkWrites(group);
-    const routeConvention = (physicalExternalCallFunction(group) as MessageBusRuntimeAbiFunction | undefined)
-      ?.messageBusConvention
-      ?? group.logicalArtifact?.messageBus?.convention
-      ?? group.externalContract?.inner.artifact.messageBus?.convention;
-    const routeProbeObservations: RouteProbeObservationHistory = new Map();
-    const routeProbeTransactions = new Set<string>();
-    const routeProbePassLimit = progressiveRouteProbePassLimit(
+    const entryProbeObservations: EntryProbeObservationHistory = new Map();
+    const entryProbeTransactions = new Set<string>();
+    const entryProbePassLimit = progressiveEntryProbePassLimit(
       repairableEntryCoordinateCount, valueChunkWritesForProbe,
     );
-    routeProbeTransactions.add(binToHex(encodeTransaction(entryTransaction)));
+    entryProbeTransactions.add(binToHex(encodeTransaction(entryTransaction)));
     // A direct call can write several mapping entries too (for example, allowance + two balances). Its
     // first faithful trace already reveals the first mismatch, so install that observation and rebuild
     // before entering the same progressive loop used by routed calls. Otherwise the accepted transaction
@@ -146,14 +135,14 @@ export function deriveFullPhase1ProgressiveEntries(
           sourceOutputs: generateLibauthSourceOutputs(entryProbe.inputs),
           transaction: entryTransaction,
         });
-        routeProbeTransactions.add(binToHex(encodeTransaction(entryTransaction)));
+        entryProbeTransactions.add(binToHex(encodeTransaction(entryTransaction)));
       }
     }
-    for (let pass = 0; entrySlotCount > 0 && pass < routeProbePassLimit; pass++) {
+    for (let pass = 0; entrySlotCount > 0 && pass < entryProbePassLimit; pass++) {
       const revealed = extractCommitmentMapFromTrace(entryTrace,
         { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE_VERBOSE === '1') {
+        ?.SOLIDC_DEBUG_TRACE_VERBOSE === '1') {
         const aborted = entryTrace.at(-1);
         console.error('progressive-route-entries', {
           groupIdx,
@@ -170,10 +159,9 @@ export function deriveFullPhase1ProgressiveEntries(
         ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
       const delegateImplIndex = group.delegateCallGroupIndex === undefined
         ? -1 : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
-      const delegateImplFn = delegateLlc?.compilerRoute?.abiFunction
-        ?? delegateLlc?.externalContract?.inner.artifact.abi.find(
-          (candidate: AbiFunction) => candidate.name === delegateLlc.functionName,
-        );
+      const delegateImplFn = delegateLlc?.externalContract?.inner.artifact.abi.find(
+        (candidate: AbiFunction) => candidate.name === delegateLlc.functionName,
+      );
       for (const [outputIndex, commitment] of revealed) {
         const previous = bEntryMap.get(outputIndex);
         if (hexToBin(commitment).length < 64 || /^0+$/.test(commitment)) continue;
@@ -185,7 +173,7 @@ export function deriveFullPhase1ProgressiveEntries(
           && outputIndex === bOutputBase + planned.blockSlot
           && planned.commitment?.toLowerCase() === commitment.toLowerCase()
         ))) continue;
-        const blockSlot = routeProbeEntrySlotOffsetForOutput(outputIndex, [
+        const blockSlot = entryProbeSlotOffsetForOutput(outputIndex, [
           { base: bOutputBase, slots: group.blockLayout.slots },
           { base: delegateImplIndex, slots: delegateImplFn?.blockLayout?.slots },
         ]);
@@ -218,27 +206,27 @@ export function deriveFullPhase1ProgressiveEntries(
           )) progressed = true;
         }
       }
-      const chunkProgress = deriveRouteValueChunks(
-        group, bOutputBase, entryTrace, stb, routeProbeObservations, routeConvention,
+      const chunkProgress = deriveValueChunks(
+        group, bOutputBase, entryTrace, stb, entryProbeObservations,
       );
       if (chunkProgress.changed) progressed = true;
       if (!progressed) break;
       const nextProbe = stb.build();
       const nextTransaction = nextProbe.buildLibauthTransaction();
       const nextFingerprint = binToHex(encodeTransaction(nextTransaction));
-      if (routeProbeTransactions.has(nextFingerprint)) {
+      if (entryProbeTransactions.has(nextFingerprint)) {
         // A repeated physical transaction is a FIXED POINT: this pass applied every observation the trace
         // revealed and the built transaction is unchanged, so further probing cannot reveal anything new.
         // Accepting it is what "converged" means; the previous guard treated convergence as failure and
         // told the caller to supply state manually.
         break;
       }
-      if (pass + 1 === routeProbePassLimit) {
+      if (pass + 1 === entryProbePassLimit) {
         throw new Error(
-          `Route probe convergence exhausted after ${routeProbePassLimit} passes.`,
+          `Route probe convergence exhausted after ${entryProbePassLimit} passes.`,
         );
       }
-      routeProbeTransactions.add(nextFingerprint);
+      entryProbeTransactions.add(nextFingerprint);
       entryTrace = evaluateProbeTrace(host.inner.provider, {
         inputIndex: bMasterIdx,
         sourceOutputs: generateLibauthSourceOutputs(nextProbe.inputs),
@@ -247,10 +235,9 @@ export function deriveFullPhase1ProgressiveEntries(
     }
     if (group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined) {
       const delegateGroup = stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
-      const delegateFn = delegateGroup?.compilerRoute?.abiFunction
-        ?? delegateGroup?.externalContract.inner.artifact.abi.find(
-          (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
-        );
+      const delegateFn = delegateGroup?.externalContract.inner.artifact.abi.find(
+        (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
+      );
       const witnessInput = delegateFn?.inputs.find((input: { name: string }) =>
         /^__internal__valueWitness_\d+$/.test(input.name));
       const witnessSlot = Number(witnessInput?.name.match(/\d+$/)?.[0] ?? -1);
@@ -318,7 +305,6 @@ export function deriveFullPhase1ProgressiveEntries(
       }
       const currentWitness = witnessInput
         ? delegateGroup?.internalArgs?.[witnessInput.name]
-          ?? delegateGroup?.compilerRoute?.internalArgs?.[witnessInput.name]
         : undefined;
       if (currentWitness instanceof Uint8Array && currentWitness.length > 60
         && isCompleteCollectionValue(currentWitness, witnessValueType, witnessLayout?.structs)) {
@@ -369,23 +355,20 @@ export function deriveFullPhase1ProgressiveEntries(
       // offset. A shared-proof P' also changes nextKey at the proof co-spend output; that is
       // not a trailing INSERT. Treating it as one clones the collection lock past blockSize
       // and fails the output-cardinality EQUALVERIFY (expected 2, got 3).
-      const trailingCountRaw = group.internalArgs?.__internal__vmapBatchTrailingCount
-        ?? group.compilerRoute?.internalArgs?.__internal__vmapBatchTrailingCount;
+      const trailingCountRaw = group.internalArgs?.__internal__vmapBatchTrailingCount;
       const trailingCount = typeof trailingCountRaw === 'bigint' ? Number(trailingCountRaw)
         : typeof trailingCountRaw === 'number' ? trailingCountRaw
           : typeof trailingCountRaw === 'string' && trailingCountRaw !== ''
             ? Number(trailingCountRaw)
             : -1;
-      const abiFn = group.compilerRoute?.abiFunction
-        ?? (group.externalContract?.inner?.artifact?.abi as {
-          name?: string; sortedBatchInfo?: Array<{ linear?: boolean }>;
-        }[] | undefined)
-          ?.find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
+      const abiFn = (group.externalContract?.inner?.artifact?.abi as {
+        name?: string; sortedBatchInfo?: Array<{ linear?: boolean }>;
+      }[] | undefined)
+        ?.find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
       const linearInBlock = (abiFn?.sortedBatchInfo?.some((batch) => batch.linear === true) ?? false)
         && trailingCount === 0;
       if (inCommit && inCommit.length >= 128 && commit.length >= 128
         && inCommit.slice(64, 128) !== commit.slice(64, 128)
-        && (!group.compilerRoute || plannedIndex >= 0)
         && !(linearInBlock && plannedIndex < 0)) {
         const handle = plannedIndex >= 0
           ? group.plannedEntryInsertHandles![plannedIndex]

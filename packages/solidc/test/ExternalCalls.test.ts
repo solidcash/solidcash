@@ -11,7 +11,7 @@ import { ParseError, StructFieldExternalCallError, UndefinedInterfaceFunctionErr
 import { compileStringMulti } from '../src/compiler.js';
 import { hasEffectiveCallValue } from '../src/semantic/branchOps.js';
 import { compileString } from './direct-compile.js';
-import { compileString as compileMessageBus } from '../dist/compiler.js';
+import { compileString as compileProduction } from '../dist/compiler.js';
 
 describe('returned external-call loop metadata', () => {
   const makeBody = (step = 1n, competingWrite = false, allocationBound = 'count'): {
@@ -82,11 +82,9 @@ describe('returned external-call loop metadata', () => {
         }
       }
     `;
-    const compileAt = (messageBusKernel: boolean): ReturnType<typeof compileMessageBus> => compileMessageBus(source, {
+    const artifact = compileProduction(source, {
       forceStateful: true,
       evmCompat: true,
-      messageBus: true,
-      messageBusKernel,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: false,
       suppressWarnings: true,
@@ -94,25 +92,18 @@ describe('returned external-call loop metadata', () => {
       __strictNoInternalRecovery: true,
     });
 
-    const kernel = compileAt(true);
-    const legacy = compileAt(false);
-    expect(kernel.messageBus?.convention).toBe('kernel-row-loop');
-    expect(legacy.messageBus?.convention).toBe('legacy-unroll');
-
-    for (const artifact of [kernel, legacy]) {
-      const calls = artifact.abi.find((entry) => entry.name === 'collect')?.externalCalls ?? [];
-      expect(calls.map(({ callsiteId, functionName }) => ({ callsiteId, functionName }))).toEqual([
-        { callsiteId: 0, functionName: 'size' },
-        { callsiteId: 1, functionName: 'read' },
-      ]);
-      expect(new Set(calls.map(({ callsiteId }) => callsiteId)).size).toBe(calls.length);
-      expect(calls.filter(({ functionName }) => functionName === 'read')).toHaveLength(1);
-      expect(calls[1]).toMatchObject({ occurrence: 'loop', resultArrayOutput: 0 });
-    }
+    const calls = artifact.abi.find((entry) => entry.name === 'collect')?.externalCalls ?? [];
+    expect(calls.map(({ callsiteId, functionName }) => ({ callsiteId, functionName }))).toEqual([
+      { callsiteId: 0, functionName: 'size' },
+      { callsiteId: 1, functionName: 'read' },
+    ]);
+    expect(new Set(calls.map(({ callsiteId }) => callsiteId)).size).toBe(calls.length);
+    expect(calls.filter(({ functionName }) => functionName === 'read')).toHaveLength(1);
+    expect(calls[1]).toMatchObject({ occurrence: 'loop', resultArrayOutput: 0 });
   });
 
   it('publishes an external return nested in a struct argument once while retaining distinct calls', () => {
-    const artifact = compileMessageBus(`pragma solidity ^0.8.0;
+    const artifact = compileProduction(`pragma solidity ^0.8.0;
       struct Peer { address who; uint256 tag; }
       interface IHelper { function who() external view returns (address); }
       interface ICallee {
@@ -131,8 +122,6 @@ describe('returned external-call loop metadata', () => {
       }`, {
       forceStateful: true,
       evmCompat: true,
-      messageBus: true,
-      messageBusKernel: true,
       maximumInputBytes: 1_000_000,
       suppressWarnings: true,
     });
@@ -142,46 +131,6 @@ describe('returned external-call loop metadata', () => {
     expect(pairCalls.map((call) => call.functionName)).toEqual(['who', 'who', 'actPair']);
     expect(applyCalls.map((call) => call.callsiteId)).toEqual([0, 1]);
     expect(pairCalls.map((call) => call.callsiteId)).toEqual([0, 1, 2]);
-  });
-
-  it('does not clone an effectful producer to derive a constructed collection key', () => {
-    const artifact = compileMessageBus(`
-      interface ISource { function keyAt(uint index) external view returns (uint); }
-      contract Registry(ISource source) {
-        mapping(uint => uint) records;
-
-        function apply(uint count) public {
-          uint[] memory keys = new uint[](count);
-          for (uint producer = 0; producer < count; producer++) {
-            keys[producer] = source.keyAt(producer);
-          }
-          for (uint consumer = 0; consumer < count; consumer++) {
-            this.records[keys[consumer]] = consumer;
-          }
-          require(true);
-        }
-
-        function control() public { require(true); }
-      }
-    `, {
-      forceStateful: true,
-      evmCompat: true,
-      messageBus: true,
-      messageBusKernel: true,
-      maximumInputBytes: 1_000_000,
-      optimizeForCompilationSpeed: false,
-      suppressWarnings: true,
-      __artifactCache: false,
-      __strictNoInternalRecovery: true,
-    });
-    const calls = artifact.abi.find((entry) => entry.name === 'apply')?.externalCalls ?? [];
-    expect(calls.map(({ callsiteId, functionName }) => ({ callsiteId, functionName }))).toEqual([
-      { callsiteId: 0, functionName: 'keyAt' },
-    ]);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
   });
 });
 
@@ -193,12 +142,12 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
       + ' function registered(address a) external returns (bool);'
       + ' function tagAt(int i) external returns (string);'
       + '}';
-    const unique = compileMessageBus(
+    const unique = compileProduction(
       `${iface} contract C(IData data) {`
       + '  function f(address arb) { require(data.registered(arb)); }'
       + '}',
     );
-    const withLoop = compileMessageBus(
+    const withLoop = compileProduction(
       `${iface} contract C(IData data) {`
       + '  function f(address arb, int n) {'
       + '    require(data.registered(arb));'
@@ -213,7 +162,7 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
     expect(withLoop.bytecode).not.toContain(uniquenessPin);
     // Each callee run counts its category's OP_TRUE carriers against the records it pinned, and the caller reads
     // only the record whose digest is its own call's.
-    const callee = compileMessageBus(
+    const callee = compileProduction(
       'contract D { bool flag; function registered(address a) public returns (bool) { return this.flag; } }',
       { suppressWarnings: true },
     );
@@ -399,7 +348,7 @@ describe('external-call witness frame access', () => {
 
 describe('address.code with an authenticated external-call slot', () => {
   it('checks the requested address before using the authenticated slot as a code marker', () => {
-    const artifact = compileMessageBus(
+    const artifact = compileProduction(
       'interface IERC20 { function balanceOf(address a) external returns (int);'
       + ' function approve(address a, int n) external returns (bool); }'
       + ' contract C() { function f(address token) {'
@@ -427,7 +376,7 @@ describe('address.code with an authenticated external-call slot', () => {
         right: expect.objectContaining({ kind: 'literal', value: '0' }),
       }));
     // Preserve address(0) as empty `.code`; only a non-empty address may select the authenticated slot marker.
-    expect(artifact.bytecode).toContain('OP_DUP OP_SIZE OP_0 OP_NUMEQUAL OP_IF OP_ELSE OP_DROP');
+    expect(artifact.bytecode).toContain('OP_OVER OP_SIZE OP_0 OP_NUMEQUAL OP_IF OP_ELSE OP_DROP');
   });
 });
 
@@ -452,7 +401,7 @@ describe('inactive conditional external-call identity', () => {
           require(true);
         }
       }
-    `, { evmCompat: true, messageBus: true });
+    `, { evmCompat: true });
     const calls = artifact.abi.find((candidate) => candidate.name === 'approveResult')?.externalCalls ?? [];
     expect(calls.map((call) => call.functionName)).toEqual(['updateUserRating']);
     expect(calls[0].condition).toEqual({
@@ -513,7 +462,7 @@ describe('inactive conditional external-call identity', () => {
           if (abi.decode(encoded, (bool))) { bool sent = token.transfer(to, 2); require(sent); }
           require(checkSig(s, pk));
         }
-      }`, { messageBus: true });
+      }`, {});
     const calls = artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls ?? [];
     expect(calls).toHaveLength(1);
     expect(calls[0].condition).toEqual({
@@ -663,10 +612,10 @@ describe('value-returning low-level-call helpers are inlined at direct call site
   it('the inlined low-level-call co-spend covenant is byte-identical to the hand-written form', () => {
     const inlined = compileString(`${LIB} contract C() {`
       + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }',
-    { messageBus: false }).bytecode.split(' ');
+    {}).bytecode.split(' ');
     const hand = compileString('contract C() { function f(address x, bytes d) returns (bytes) {'
       + ' (bool ok, bytes r) = x.call(d); require(ok); return r; } }',
-    { messageBus: false }).bytecode.split(' ');
+    {}).bytecode.split(' ');
     // Inlining adds a benign param-copy at the front; the entire co-spend covenant tail must be identical.
     expect(inlined.slice(-150).join(' ')).toBe(hand.slice(-150).join(' '));
   });
@@ -742,13 +691,13 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' if (n == 0) result = n; else result = step(a, n - 1); }'
       + ' function run(address a, uint n) public {'
       + ' total = step(a, n); require(true); } }';
-    const artifact = compileString(src(' view'), { evmCompat: true, messageBus: false });
+    const artifact = compileString(src(' view'), { evmCompat: true });
     const run = artifact.abi.find((entry) => entry.name === 'run');
     expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['pair', 'swap']);
     expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
     // The lowered loop repeats the lookup on one callee: a state-changing one runs as counted frames of the factory's
     // multi-call spend, each iteration bound to its own frame's record.
-    const writer = compileString(src(''), { evmCompat: true, messageBus: false });
+    const writer = compileString(src(''), { evmCompat: true });
     expect(writer.abi.find((entry) => entry.name === 'run')?.externalCalls?.[0]?.callOrdinal)
       .toEqual({ group: 0, counted: true });
   });
@@ -764,7 +713,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' if (n == 0) result = out; else result = step(token, n - 1); }'
       + ' function run(address token, uint n) public {'
       + ' total = step(token, n); require(true); } }';
-    const artifact = compileString(src, { evmCompat: true, messageBus: false });
+    const artifact = compileString(src, { evmCompat: true });
     const run = artifact.abi.find((entry) => entry.name === 'run');
     expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['move']);
     expect(run?.externalCalls?.[0].addressSource).toEqual({ kind: 'forward', paramIndex: 0 });
@@ -840,7 +789,6 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' Safe.xfer(token, from, to, value); this.n = value; require(true); } }';
     const artifact = compileString(src, {
       evmCompat: true,
-      messageBus: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
     });
@@ -868,16 +816,11 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' this.marker = 1; require(true); } }';
     const artifact = compileString(src, {
       evmCompat: true,
-      messageBus: true,
-      messageBusKernel: true,
-      messageBusGraphContext: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
       __artifactCache: false,
       __strictNoInternalRecovery: true,
     });
-    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run')?.eligible).toBe(true);
     const call = artifact.abi.find((candidate) => candidate.name === 'run')?.externalCalls?.[0];
     expect(call).toEqual(expect.objectContaining({
       interfaceName: '__raw__',
@@ -922,7 +865,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
 
 describe('external call on a tuple-destructured / copied local interface var', () => {
   const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
-  const ccBus = (src: string): string => compileMessageBus(src, { evmCompat: true }).contractName;
+  const ccProduction = (src: string): string => compileProduction(src, { evmCompat: true }).contractName;
   const iface = 'interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool);'
     + ' function balanceOf(address o) external view returns (uint256); function transfer(address t, uint256 a) external returns (bool); }';
 
@@ -933,7 +876,7 @@ describe('external call on a tuple-destructured / copied local interface var', (
   });
 
   it('routes a method call on a tuple-ternary-destructured interface var (CSAMM shape)', () => {
-    expect(ccBus(`${iface} contract C { IERC20 token0; IERC20 token1;`
+    expect(ccProduction(`${iface} contract C { IERC20 token0; IERC20 token1;`
       + ' function swap(bool isToken0, uint256 amt) public {'
       + ' (IERC20 tokenIn, IERC20 tokenOut) = isToken0 ? (token0, token1) : (token1, token0);'
       + ' tokenIn.transferFrom(msg.sender, address(this), amt);'
@@ -1122,7 +1065,7 @@ describe('pre-call require reachability metadata', () => {
           sink.ping();
           require(true);
         }
-      }`, { evmCompat: true, forceStateful: true, messageBus: true });
+      }`, { evmCompat: true, forceStateful: true });
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls ?? [];
     expect(calls.map((call) => call.functionName)).toEqual(['balanceOf', 'ping']);
     expect(calls[1]?.preCallRequires).toContainEqual({
@@ -1549,16 +1492,15 @@ describe('interface methods named send and transfer are called as the interface 
     expect(externalCallsOf(artifact, 'tip')).toEqual([]);
   });
 
-  it('calls transfer and send through a typed local and a contract param, also on the message-bus route', () => {
+  it('calls transfer and send through a typed local and a contract param', () => {
     expect(payCalls(IFACE, 'address target', 'IVault v = IVault(target); v.transfer(a); require(a > 0);'))
       .toEqual(['IVault.transfer']);
     expect(payCalls(IFACE, 'address target', 'IVault v = IVault(target); require(v.send(a));'))
       .toEqual(['IVault.send']);
-    const routed = compileString(`pragma solidcash ^0.52.0; ${IFACE}
+    const payer = compileString(`pragma solidcash ^0.52.0; ${IFACE}
       contract Payer(IVault vault) { int calls; function pay(int a) public { vault.transfer(a); calls = calls + 1; } }`,
-    { messageBus: true });
-    expect(routed.messageBus).toBeDefined();
-    expect(externalCallsOf(routed, 'pay')).toEqual(['IVault.transfer']);
+    {});
+    expect(externalCallsOf(payer, 'pay')).toEqual(['IVault.transfer']);
   });
 
   it('calls a declared send through this rather than sending to this', () => {

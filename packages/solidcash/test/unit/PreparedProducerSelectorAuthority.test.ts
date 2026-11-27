@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
-import {
-  assertPreparedInvocationIdentity,
-  type PreparedAtomicMessageBusCall,
-} from '../../src/message-bus/compose.js';
-import type { PlannedGraphInvocation } from '../../src/message-bus/graph.js';
 import { resolvePreparedProducerEntry } from '../../src/stateful/StatefulContract.js';
 
 /**
@@ -44,23 +39,6 @@ const foreignCallee = (): Artifact => ({
     { name: 'pick', selector: '44444444', inputs: [{ name: 'a', type: 'int' }] },
   ],
 } as Artifact);
-
-const plannedInvocation = (selectorHex: string): PlannedGraphInvocation => ({
-  index: 0,
-  parent: null,
-  callee: 1,
-  function: 'pick',
-  selectorHex,
-  producerPath: { status: 'unavailable' },
-} as unknown as PlannedGraphInvocation);
-
-const preparedInvocation = (selector?: string): PreparedAtomicMessageBusCall => ({
-  contract: {} as PreparedAtomicMessageBusCall['contract'],
-  functionName: 'pick',
-  args: [],
-  producerPath: { status: 'unavailable' },
-  ...(selector !== undefined && { selector }),
-} as PreparedAtomicMessageBusCall);
 
 describe('prepared producer selector authority', () => {
   describe('resolvePreparedProducerEntry', () => {
@@ -110,29 +88,6 @@ describe('prepared producer selector authority', () => {
     it('resolves a unique name and refuses a name the callee does not declare', () => {
       expect(resolvePreparedProducerEntry([overloadedCallee()], 'keep')?.selector).toBe('33333333');
       expect(resolvePreparedProducerEntry([overloadedCallee()], 'absent')).toBeUndefined();
-    });
-  });
-
-  describe('assertPreparedInvocationIdentity', () => {
-    it('refuses a transported selector that names a different overload than the graph row', () => {
-      expect(() => assertPreparedInvocationIdentity(
-        preparedInvocation(ONE_ARG_SELECTOR), plannedInvocation(TWO_ARG_SELECTOR), 0,
-      )).toThrow(/selector disagrees with the compiled graph/);
-    });
-
-    it('accepts the graph row selector, case-insensitively', () => {
-      expect(() => assertPreparedInvocationIdentity(
-        preparedInvocation(TWO_ARG_SELECTOR), plannedInvocation(TWO_ARG_SELECTOR), 0,
-      )).not.toThrow();
-      expect(() => assertPreparedInvocationIdentity(
-        preparedInvocation(TWO_ARG_SELECTOR.toUpperCase()), plannedInvocation(TWO_ARG_SELECTOR), 0,
-      )).not.toThrow();
-    });
-
-    it('accepts a withheld selector, which runtime-dispatched edges legitimately carry', () => {
-      expect(() => assertPreparedInvocationIdentity(
-        preparedInvocation(), plannedInvocation(TWO_ARG_SELECTOR), 0,
-      )).not.toThrow();
     });
   });
 });

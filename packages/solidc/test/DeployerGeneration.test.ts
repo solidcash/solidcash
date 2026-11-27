@@ -20,7 +20,7 @@ const compile = (source: string, options: Record<string, unknown>): {
 } => {
   const warnings: string[] = [];
   const artifact = compileString(source, {
-    messageBus: false, warningListener: (warning) => warnings.push(warning.message), ...options,
+    warningListener: (warning) => warnings.push(warning.message), ...options,
   });
   return { artifact, warnings };
 };
@@ -55,13 +55,6 @@ describe('B7.0: when a deployer is built', () => {
     expect(artifact.deployerUnsupported).toBeUndefined();
     expect(artifact.deployer?.readsBlockData).toBe(true);
     expect(artifact.constructorInputs.map((input) => input.name)).toContain('__oraclePool');
-  });
-
-  it('a message-bus compile records lock-composition', () => {
-    const source = `${P} contract C { int n; function a() { n = n + 1; } function b() { n = n + 2; } }`;
-    const { artifact, warnings } = compile(source, { deployer: true, messageBus: true });
-    expect(artifact.deployerUnsupported).toBe('lock-composition');
-    expect(warnings.some((warning) => warning.includes('lock-composition'))).toBe(true);
   });
 
   describe('single-container-key (A4.1): a single token container named by anything but a contract parameter', () => {

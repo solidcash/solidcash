@@ -5,11 +5,7 @@
 
 import type { AbiFunction, Artifact, FunctionBlockLayout, StateLayout, StateValue } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
-import type {
-  TransportedContinuationResourceClaim,
-  ValueChunkProducerPathDisposition,
-  ValueChunkProducerResourceClaim,
-} from './ValueChunkProducerIdentity.js';
+import type { ValueChunkProducerResourceClaim } from './ValueChunkProducerIdentity.js';
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
 import type { DirectCallBatch, DirectCallBatchFrameBlock, DirectCallBatchUnit } from './direct-call-batch.js';
 
@@ -106,7 +102,6 @@ export function sameOutpoint(
 /** Resolve the compiler-owned physical block layout for a low-level call group. */
 export function lowLevelCallBlockLayout(group: ExternalCallUtxoGroup): AbiFunction['blockLayout'] {
   return group.blockLayout
-    ?? group.compilerRoute?.abiFunction.blockLayout
     ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName)?.blockLayout;
 }
@@ -241,13 +236,6 @@ export interface ExternalCallUtxoGroup {
   logicalArtifact?: Artifact;
   /** Compiler-authenticated producer/resource occurrences represented by this physical or logical alias. */
   valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
-  /**
-   * Ordered per-resource continuation bands under this carrier. Band[0] absolute base is also published as
-   * `valueChunkOutputBase` / `__internal__valueChunkOutputBase`; later bands are authenticated here.
-   */
-  continuationResourceClaims?: readonly TransportedContinuationResourceClaim[];
-  /** Claims and exact post-values were transported from a prepared atomic invocation into this final carrier. */
-  transportedValueChunkProductions?: boolean;
   /** Exact physical state owner against which producer claims are authenticated. */
   valueChunkStateOwner?: { categoryId: string; lockingBytecode: string };
   callMode?: 'call' | 'staticcall' | 'delegatecall';
@@ -310,29 +298,6 @@ export interface ExternalCallUtxoGroup {
    * master input, and this group's element in it. Planned from band widths; rebound from the assembled frame.
    */
   broadcastIdxList?: { witness: string; element: number };
-  /** Compiler-owned hidden route used for a grouped logical invocation. */
-  compilerRoute?: {
-    abiFunction: AbiFunction;
-    selector: Uint8Array;
-    blob: Uint8Array;
-    args: any[];
-    /** Logical handler selectors already executed by this physical route owner. */
-    logicalSelectors: string[];
-    /** Decoded Solidity-visible arguments for each authenticated logical row. */
-    rowArguments?: Array<{
-      selector: string;
-      args: any[];
-      handler: AbiFunction;
-      internalArgs?: Readonly<Record<string, any>>;
-      sourceLogicalIndex?: number;
-      sourceCallsiteId?: number;
-      occurrenceIndex?: number;
-      sourceEffectOrdinal?: number;
-      producerPath?: ValueChunkProducerPathDisposition;
-    }>;
-    internalArgs?: Record<string, any>;
-    eventSignaturesBySlot?: Array<string | undefined>;
-  };
   /** ABI-named hidden witnesses resolved while assembling this callee's physical block. */
   internalArgs?: Record<string, any>;
   /** Immutable ABI names captured by the concrete physical unlocker owned by this group. */
@@ -352,27 +317,6 @@ export interface ExternalCallUtxoGroup {
   ) => void;
   /** Rebuild the physical unlocker after compiler-derived visible arguments change during dependency convergence. */
   refreshFunctionArgs?: (args: any[]) => void;
-  /** Recompute hidden witnesses derived from a route's visible row arguments (for example, replayed array pushes). */
-  refreshRouteDerivedArguments?: (
-    rowArguments: readonly {
-      selector: string;
-      args: any[];
-      handler: AbiFunction;
-      internalArgs?: Readonly<Record<string, any>>;
-      sourceLogicalIndex?: number;
-      sourceCallsiteId?: number;
-      occurrenceIndex?: number;
-      sourceEffectOrdinal?: number;
-      producerPath?: ValueChunkProducerPathDisposition;
-    }[] | undefined,
-    finalVisibleArgs: readonly any[],
-  ) => { internalArgs: Record<string, any>; payloadBytes: number };
-  /** The carrier master unlocker changed during the current dependency-convergence pass. */
-  argumentsRefreshedDuringConvergence?: boolean;
-  /** Active message-bus batch blockhash reads, retained until the group's absolute input base is known. */
-  graphBlockhashSelections?: Array<{
-    readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;
-  }>;
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
   /** Old dynamic-state chunks consumed by an ordinary direct callee after its master/data block. */
@@ -387,8 +331,6 @@ export interface ExternalCallUtxoGroup {
    * chunks off-chain the way `valueChunkMints` does for a caller-known value - the commitments are extracted
    * from the callee's derivation probe and placed here, keyed by block slot. */
   derivedTrailingOutputs?: Map<number, { commitment: string; lockingBytecode: Uint8Array }>;
-  /** Lifted runtime event records in this physical callee's trailing band. */
-  streamedEventPlan?: import('./nested-streamed-events.js').NestedStreamedEventPlan;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
   eventOutputs?: Array<{
     eventSignature: string; commitment: string; lockingBytecode: Uint8Array;
@@ -431,7 +373,7 @@ export interface ExternalCallUtxoGroup {
   plannedEntryInsertHandles?: number[];
   /** Hidden output-index arguments stored block-relative until this group's absolute output base is known. */
   relativeOutputInternalArgs?: string[];
-  /** Exact vmap predecessor recreations reserved in compiler-route trailing slots. */
+  /** Exact vmap predecessor recreations reserved in route trailing slots. */
   batchPredecessorOutputs?: Array<{
     outputBlockSlot: number; lockingBytecode: Uint8Array; commitment: string;
   }>;
@@ -439,7 +381,7 @@ export interface ExternalCallUtxoGroup {
   relocatedPredOutBase?: number;
   /** Planned continuation-NFT count for a chunkable vmap write (publishJobEvent). */
   valueChunkOutputCount?: number;
-  /** Absolute first continuation output selected for this composed write. */
+  /** Absolute first continuation output selected for this write. */
   valueChunkOutputBase?: number;
   /** Exact computed value-chunk writes owned by this physical call. */
   valueChunkWrites?: ValueChunkWriteDescriptor[];
@@ -450,7 +392,7 @@ export interface ExternalCallUtxoGroup {
   batchEntryCommitments?: Map<number, string>;
   /** Direct, unambiguous dynamic-write values derived from the callee ABI arguments. */
   dynamicStateValues?: Readonly<Record<string, StateValue>>;
-  /** Dynamic chunk inputs occupying a compiler route's balanced trailing band. Write spends are rebound once the
+  /** Dynamic chunk inputs occupying a route's balanced trailing band. Write spends are rebound once the
    * physical state-owner master coordinate is known; inactive union resources remain preservation spends. */
   dynamicChunkResources?: Array<{
     blockSlot: number; name: string; type: string; write: boolean;
@@ -462,7 +404,7 @@ export interface ExternalCallUtxoGroup {
  * witness, so the run need not follow the callee's block.
  */
 export function calleeWitnessesDynamicRun(group: ExternalCallUtxoGroup): boolean {
-  return group.compilerRoute === undefined && group.callBatch === undefined
+  return group.callBatch === undefined
     && group.delegateCallGroupIndex === undefined
     && group.internalArgNames?.includes('__internal__dynamicChunkOutputBase') === true;
 }

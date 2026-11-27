@@ -19,6 +19,17 @@ export class TypeError extends Error {
   }
 }
 
+/** An artifact compiled with the message bus, which this SDK no longer runs. */
+export class MessageBusArtifactError extends Error {
+  readonly name = 'MessageBusArtifactError';
+
+  constructor(readonly contractName: string) {
+    super(`Artifact '${contractName}' was compiled with the message bus, which was removed: recompile it with the `
+      + 'current compiler and deploy the new build. A contract that took a message-bus route compiles to the direct '
+      + 'convention.');
+  }
+}
+
 export class MixedCompileModeCallError extends Error {
   constructor(interfaceName: string, functionName: string, callerEvmCompat: boolean) {
     const [caller, callee] = callerEvmCompat ? ['under evmCompat', 'natively'] : ['natively', 'under evmCompat'];
@@ -506,8 +517,8 @@ export class CallValueUnpayableError extends Error {
     detail?: string,
   ) {
     super(reason === 'callee takes no value'
-      ? `${call} sends {value:} to an entry whose record digests no value: it is not payable and reads no msg.value, `
-        + 'or it was compiled with the message bus. Its record cannot match the caller\'s, which names the value.'
+      ? `${call} sends {value:} to an entry whose record digests no value: it is not payable and reads no msg.value. `
+        + 'Its record cannot match the caller\'s, which names the value.'
       : reason === 'callee sends value on'
         ? `${call}, which sends {value:} with ${detail}: a nested value call is not built, since a deposit and its `
           + 'payer\'s debit are laid out only for the calls the root makes.'

@@ -24,7 +24,7 @@ const fx = (name: string): URL => new URL(`../fixture/${name}`, import.meta.url)
 let artifact: Artifact;
 
 beforeAll(() => {
-  artifact = compileFile(fx('bch_native_token.scash'), { messageBus: false }) as Artifact;
+  artifact = compileFile(fx('bch_native_token.scash'), {}) as Artifact;
 });
 
 interface Deployed {

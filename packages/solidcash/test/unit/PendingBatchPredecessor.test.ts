@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import {
   batchPredecessorCommitment, isPendingBatchPredecessor,
-} from '../../src/message-bus/pending-batch-predecessor.js';
+} from '../../src/stateful/pending-batch-predecessor.js';
 
 const first = new Uint8Array(32).fill(1);
 const second = new Uint8Array(32).fill(2);

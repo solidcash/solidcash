@@ -676,7 +676,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     // A mempool output a mempool child spent stays in the store's mempool outputs, marked only as spent.
     for (const [key, entry] of snap.mempoolUtxos) if (!snap.mempoolSpends.has(key)) live.set(key, entry);
     const entries = [...live.values()];
-    // A read by category walks the whole set otherwise, and a composed transaction carries tens of thousands of
+    // A read by category walks the whole set otherwise, and a long mock chain carries tens of thousands of
     // entries. One pass here indexes each entry under its category, and under its 64-character prefix as well when
     // a capability byte follows it, which is what the read matches on.
     const byCategory = new Map<string, number[]>();

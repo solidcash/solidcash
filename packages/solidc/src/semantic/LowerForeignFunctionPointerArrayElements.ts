@@ -76,15 +76,6 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
   private hoistCounter = 0;
   private hoists: StatementNode[] = [];
 
-  /**
-   * `graphMode` only affects a varying broadcast (in-loop) call. Message-bus graph handlers reconstruct one
-   * authoritative row per reached iteration, so they also need the element's live selector. The ordinary
-   * broadcast covenant instead verifies every element against the whole selector array in its epilogue.
-   */
-  constructor(private readonly graphMode = false) {
-    super();
-  }
-
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
     this.members = new ForeignMemberTypes(node);
@@ -401,8 +392,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
           }
           // Broadcast: the receiver keeps the live element, so the call is the array-element co-spend whose
           // epilogue binds every element; a loop-invariant receiver such as fns[0] would be hoisted out of the
-          // loop as one fixed callee. A graph handler, which reconstructs one authoritative row per reached
-          // iteration, also takes the live selector.
+          // loop as one fixed callee.
           const arrId = new IdentifierNode(name); arrId.location = node.location;
           const liveIndex = this.visit(target.index) as ExpressionNode;
           const elem = new ArrayAccessNode(
@@ -424,9 +414,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
             selectorRead.location = node.location;
             const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
             selectorCast.location = node.location;
-            // A graph handler checks the row's selector; a direct entry's record digest names it.
-            if (this.graphMode) mc.runtimeSelector = selectorCast;
-            else mc.loopRecordSelector = selectorCast;
+            mc.loopRecordSelector = selectorCast;
           }
           return mc;
         }

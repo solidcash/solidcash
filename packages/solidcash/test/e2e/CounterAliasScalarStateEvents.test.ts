@@ -29,12 +29,8 @@ describe('counter-alias scalar-state event recurrences', () => {
         }
       }`, {
       forceStateful: true,
-      messageBus: true,
-      messageBusKernel: true,
       maximumInputBytes: 1_000_000,
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'accumulate'))
-      .toMatchObject({ eligible: true });
 
     const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
     let nonce = 0x8e00;

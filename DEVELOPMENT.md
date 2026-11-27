@@ -45,7 +45,7 @@ yarn test:e2e:changed
 ```
 
 The SDK's `test:unit` command runs only `test/unit`; `test:fast` and the default SDK watch loop add top-level
-SDK regression tests but deliberately exclude conformance and journal/message-bus suites. The comprehensive
+SDK regression tests but deliberately exclude conformance and compatibility suites. The comprehensive
 `yarn test` command is unchanged and remains a milestone regression gate.
 
 If you're already in a package directory, you can run:

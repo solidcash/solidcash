@@ -11,9 +11,9 @@ const factoryFile = path.join(fixtureDir, 'fold_factory.artifact.ts');
 
 const childSource = childFixture.source;
 const factorySource = factoryFixture.source.replace(') deploy {', ') {');
-const child = compileString(childSource, { messageBus: false, forceStateful: true });
+const child = compileString(childSource, { forceStateful: true });
 const factory = compileString(factorySource, {
-  messageBus: false, forceStateful: true,
+  forceStateful: true,
   rootFileId: '/main.scash',
   importResolver: (specifier, currentFile) => {
     const directory = currentFile.slice(0, currentFile.lastIndexOf('/') + 1);

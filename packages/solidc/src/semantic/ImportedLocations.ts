@@ -1,6 +1,6 @@
 import type { LocationI } from '@solidcash/utils';
 import { Node, SourceFileNode } from '../ast/AST.js';
-import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
+import { sourceFileOf } from '../ast/Location.js';
 
 /**
  * Labels a diagnostic position with the imported file that actually declares it.
@@ -26,16 +26,10 @@ export class ImportedLocations {
 
   /**
    * ` at line N` for a diagnostic, naming the imported file when line N is not in the file being compiled.
-   *
-   * X92. A position can be both generated and imported-looking, and GENERATED WINS. The imported label asserts
-   * "line N is real in file F on disk"; a generated position is in a string that exists only inside the compiler,
-   * so no file holds it and the imported label would be a SPECIFIC FALSE label naming a real file.
    */
   diagLine(location?: LocationI): string {
     const line = location?.start?.line;
     if (line === undefined) return '';
-    const generated = generatedOriginOf(location);
-    if (generated) return ` at line ${line} of ${generated}, not of your file`;
     const file = this.fileOf(location);
     return file ? ` at line ${line} of imported "${file}"` : ` at line ${line}`;
   }

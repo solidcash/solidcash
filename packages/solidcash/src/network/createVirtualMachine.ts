@@ -1058,7 +1058,7 @@ function buildVirtualMachineBch2026ForProvider(
   let runPhases: NonNullable<typeof instructionSet.evaluate> | undefined;
   let closes: { last: FailedClose | undefined } | undefined;
   if (limits !== undefined && usesFastVmPaths(provider)) {
-    // The kernel lane's fast `every` goes first; the framed operation-limit check installed below replaces it with
+    // The journal lane's fast `every` goes first; the framed operation-limit check installed below replaces it with
     // the same libauth-equivalent check, and this one stays in effect wherever that check declines to install.
     installFastBch2026Every(instructionSet, consensus, standard);
     runPhases = installCachedP2shEvaluator(

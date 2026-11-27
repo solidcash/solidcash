@@ -1,30 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
-import { asmToScript, scriptToBytecode } from '@solidcash/utils';
-import { compileFile, compileFileMulti } from '../src/compileFile.js';
+import { compileFile } from '../src/compileFile.js';
 import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
 
+/**
+ * MarketplaceV1 compiles framed, its project's configuration. A direct compile refuses `publishJobPost`, whose
+ * low-level `SafeERC20` calls repeat calls to the same state owner (packages/solidc/docs/deferrals.md, "Shapes only
+ * the message bus compiled").
+ */
 const contractsRoot = effectiveAccelerationContractsRoot();
 const marketplaceV1 = (): string => path.join(contractsRoot!, 'MarketplaceV1.sol');
 
-const JOBS_LENGTH_MINUS_ONE = 'binop:-(unop:.length(state:jobs),lit:1)';
-
-function expectPublishJobPostKeys(art: { abi: readonly { name: string; sortedUpsertLoopInfo?: Array<{
-  collection?: string; fixedKeySources?: Array<{ kind?: string; expressionLabel?: string }>;
-}> }[] }): void {
-  const infos = art.abi.filter((fn) => fn.name === 'publishJobPost')
-    .flatMap((fn) => fn.sortedUpsertLoopInfo ?? []);
-  expect(infos.length).toBeGreaterThan(0);
-  expect(infos.some((info) => info.collection === 'whitelistWorkers'
-    && info.fixedKeySources?.some((source) =>
-      source.kind === 'expression'
-      && source.expressionLabel === JOBS_LENGTH_MINUS_ONE))).toBe(true);
-}
-
 const eaOpts = {
   evmCompat: true,
-  messageBus: true,
-  messageBusGraphContext: true,
   optimizeForCompilationSpeed: true,
   suppressWarnings: true,
   commitmentLimit: 128,
@@ -32,67 +20,12 @@ const eaOpts = {
   ecrecover: 'p2pkh' as const,
 };
 
-describe.skipIf(contractsRoot === undefined)('MarketplaceV1 publishJobPost upsert keys', () => {
-  it('publishes jobs.length-1 as fixedKeySources on publishJobPost', () => {
-    expectPublishJobPostKeys(compileFile(marketplaceV1(), {
-      evmCompat: true,
-      optimizeForCompilationSpeed: true,
+describe.skipIf(contractsRoot === undefined)('MarketplaceV1 publishJobPost on a direct compile', () => {
+  it('refuses publishJobPost for its repeated calls to the same state owner', () => {
+    // Only the removed message bus compiled it.
+    expect(() => compileFile(marketplaceV1(), eaOpts)).toThrow(expect.objectContaining({
+      code: 'REPEATED_CALL_UNSUPPORTED',
+      message: expect.stringContaining("Function 'publishJobPost' repeats calls to the same state owner"),
     }));
   });
-
-  it('keeps jobs.length-1 on compileFileMulti and the delegate-capable artifact', () => {
-    const art = compileFileMulti(marketplaceV1(), eaOpts).MarketplaceV1;
-    expect(art).toBeDefined();
-    expectPublishJobPostKeys(art!);
-    // Initializer inference can make the primary artifact itself the delegate implementation. Only standalone
-    // implementations receive a second, lazy delegateArtifact; both representations must preserve the key ABI.
-    expectPublishJobPostKeys(art!.delegateArtifact ?? art!);
-  });
-
-  it('classifies empty-commitment immutables from output j, not the zeroAmount boolean', () => {
-    const art = compileFileMulti(marketplaceV1(), eaOpts).MarketplaceV1;
-    // `publishJobPost(string,bytes32,bool,string[],address,uint256,uint32,string,address,address[])`; the
-    // source compiles evmCompat, so the body is keyed by the keccak256 selector (D27).
-    const hex = (art?.delegateArtifact ?? art)?.functionBodies?.['3a080839'];
-    expect(typeof hex).toBe('string');
-    const ops: number[] = [];
-    const raw = Buffer.from((hex as string).replace(/\s+/g, ''), 'hex');
-    for (let i = 0; i < raw.length;) {
-      const op = raw[i++];
-      ops.push(op);
-      if (op > 0 && op <= 75) i += op;
-      else if (op === 76) i += 1 + raw[i];
-      else if (op === 77) { const n = raw[i] | (raw[i + 1] << 8); i += 2 + n; } else if (op === 78) {
-        const n = raw[i] | (raw[i + 1] << 8) | (raw[i + 2] << 16) | (raw[i + 3] << 24);
-        i += 4 + n;
-      }
-    }
-    // OP_NUMEQUAL 156, OP_DUP 118, OP_OVER 120, OP_OUTPUTTOKENCOMMITMENT 210
-    let over = 0;
-    let dup = 0;
-    for (let i = 0; i < ops.length - 2; i++) {
-      if (ops[i] !== 156 || ops[i + 2] !== 210) continue;
-      if (ops[i + 1] === 120) over += 1;
-      if (ops[i + 1] === 118) dup += 1;
-    }
-    expect(over).toBeGreaterThan(0);
-    expect(dup).toBe(0);
-  });
-
-  it('adds ceil(jobsLen/120) before the whitelist upsert predecessor check', () => {
-    const art = compileFile(marketplaceV1(), eaOpts);
-    const target = art.delegateArtifact ?? art;
-    // `updateJobWhitelist(uint256,address[],address[])`, keyed by its evmCompat keccak256 selector (D27).
-    const hex = target.functionBodies?.bdb10816;
-    expect(typeof hex).toBe('string');
-    const body = hex as string;
-    // A delegate's records are bound to the proxy master's lock. The collection's shared address helper takes that
-    // lock from the stack, so the whitelist collection hash is pushed once in the script, not in this body. The body
-    // retains the predecessor displacement ceil(jobsLen/120): encodeInt(119) ADD encodeInt(120) DIV.
-    const whitelistHash = '1409e7d00ab6cd5795b2a4fa3db718efbdb374cbaf';
-    expect(body).not.toContain(whitelistHash);
-    expect(Buffer.from(scriptToBytecode(asmToScript(target.bytecode))).toString('hex')).toContain(whitelistHash);
-    expect(body).toContain('017793017896');
-  });
-
 });

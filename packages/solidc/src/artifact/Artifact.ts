@@ -8,7 +8,7 @@ import {
   abiTypeString, type ChildDeploymentValueRecipe, type FixedBchTransferAbi, type ExternalResultConsumerAbi,
   canonicalSelectorType, isEvmNotationScalarType,
   type ComputeSideCarRecipesAbi,
-  ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature, type ExternalCallOrdinalAbi,
+  computeErrorSignature, computeEventSignature, type ExternalCallOrdinalAbi,
   CALL_RECORD_READER_INPUT,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -49,6 +49,9 @@ import {
 } from '../deploymentRecipes.js';
 import { computeExpressionSiteKey } from '../ast/Location.js';
 import { GlobalFunction } from '../ast/Globals.js';
+
+/** A framed runtime loop's iteration ceiling when nothing tighter bounds it: the iteration domain it publishes. */
+const FRAMED_RUNTIME_LOOP_MAXIMUM_ITERATIONS = 0xffff;
 
 /** A caller witness of a call the contract digests: the output of a record it reads, or of an edge it pins. */
 const DIGESTING_WITNESS = /^__internal__(?:externalReturnOutputIdx\d*|(?:lowLevelC|c)allEdgeOutputIdx\d+)$/;
@@ -401,17 +404,13 @@ const computeSideCarRecipesOf = (
 /** Fail-closed artifact publication gate for compiler-owned source-effect identities. */
 export const sourceEffectOrderForArtifact = (
   declared: FunctionDefinitionNode['sourceEffectOrder'],
-  externalCalls: readonly { sourceEffectOrdinal?: number; batchInvocations?: readonly {
-    sourceEffectOrdinal?: number;
-  }[] }[],
+  externalCalls: readonly { sourceEffectOrdinal?: number }[],
   entryAccesses: readonly Pick<EntryAccessInfo, 'operations' | 'mutationEffectOrdinals'>[],
 ): FunctionDefinitionNode['sourceEffectOrder'] => {
-  const complete = externalCalls.every((call) => safeSourceEffectOrdinal(call.sourceEffectOrdinal)
-    && (!call.batchInvocations || call.batchInvocations.every(
-      (row) => safeSourceEffectOrdinal(row.sourceEffectOrdinal),
-    ))) && entryAccesses.filter((access) =>
-    access.operations.includes('write') || access.operations.includes('delete'))
-    .every((access) => access.mutationEffectOrdinals?.length
+  const complete = externalCalls.every((call) => safeSourceEffectOrdinal(call.sourceEffectOrdinal))
+    && entryAccesses.filter((access) =>
+      access.operations.includes('write') || access.operations.includes('delete'))
+      .every((access) => access.mutationEffectOrdinals?.length
       && access.mutationEffectOrdinals.every(safeSourceEffectOrdinal));
   return declared === 'linear' && !complete ? undefined : declared;
 };
@@ -1015,7 +1014,7 @@ const externalCallIterationDomainLists = (
       if (statement === target) return true;
       if (!contains(statement, target)) {
         // A completed earlier loop need not be symbolically replayed if it cannot change any input to
-        // this recurrence. Its own calls/effects remain separate compiler graph edges.
+        // this recurrence. Its own calls/effects are published separately.
         if (statement instanceof WhileNode && canSkipPriorLoop(statement)) continue;
         if (!processBlock(new BlockNode([statement]), state)) return false;
         if (!state.reachable) return false;
@@ -1274,7 +1273,7 @@ const externalCallIterationDomainLists = (
       const callOrdinal = (call as { callOrdinal?: ExternalCallOrdinalAbi }).callOrdinal;
       const maximumIterations = fixedForMaximum(counter, loop)
       ?? loop.compilerAuthenticatedMaximumIterations
-      ?? (compilerOptions.messageBusKernel === true ? ATOMIC_MESSAGE_BUS_MAX_ROWS : undefined)
+      ?? (compilerOptions.composition === 'framed' ? FRAMED_RUNTIME_LOOP_MAXIMUM_ITERATIONS : undefined)
       ?? (callOrdinal !== undefined && 'counted' in callOrdinal ? CALL_BATCH_MAXIMUM_FRAMES : undefined);
       if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) break;
       // A serialized state read after any write in this handler would use the SDK's pre-call snapshot, not
@@ -1382,9 +1381,6 @@ const expressionSource = (
   const shaped = expression as unknown as { name?: string; value?: unknown; type?: Type };
   if (expression.constructor.name === 'NullaryOpNode'
     && (expression as unknown as { operator?: string }).operator === 'msg.sender') {
-    return { kind: 'msgSender' };
-  }
-  if (expression.constructor.name === 'IdentifierNode' && shaped.name === '__message_bus_graph_caller') {
     return { kind: 'msgSender' };
   }
   if (expression.constructor.name === 'IdentifierNode' && shaped.name) {
@@ -2554,7 +2550,7 @@ const transferEffects = (
         };
       })() : undefined;
     // Inlined low-level helpers can retain their source branch in this artifact walk after flow analysis has
-    // flattened that branch around the cloned effect node. Recover a condition expressed directly in handler
+    // flattened that branch around the cloned effect node. Recover a condition expressed directly in function
     // inputs/literals through the same executable recipe language; aliases still require the flow snapshot.
     const conditionRecipe = effect?.activation
       ?? (transfer.condition ? operandRecipe(transfer.condition) : undefined);
@@ -2612,8 +2608,8 @@ const transferEffects = (
 };
 
 /**
- * X135. True when every dynamic (chunk-backed) write this function publishes was RESERVED by the route's
- * journal rather than performed by the function.
+ * X135. True when every dynamic (chunk-backed) write this function publishes was RESERVED by the scalar journal
+ * rather than performed by the function.
  *
  * `GenerateTargetTraversal` pre-allocates one chunk slot per dynamic journal slot a handler HOLDS, and a
  * handler holds a slot it only READS: the epilogue then writes the pre-state value back unchanged, which is a
@@ -2621,14 +2617,10 @@ const transferEffects = (
  * build shape needs it - the SDK consumes and recreates those chunks - but a write-back is not a mutation,
  * and `writesState` is the flag that answers "output state == input state".
  *
- * Measured: ERC-20 `name()` / `symbol()` are `writesState: false` compiled DIRECT and were `true` compiled in
- * bus mode, from the same unchanged body. `decimals()` / `totalSupply()` never moved, because their journal
- * slots are scalar and X105 already gated the scalar sibling of this leak.
- *
  * SOUNDNESS. `scalarJournal` is set at GTT:2711 exactly when journal context is live AND the writer closure
  * reached this function, and that closure is transitive over internal calls (GTT:1745-1755) and over function
  * pointers (L2-F3), so a false answer cannot hide a write behind a helper. `journalContextArity` is set only
- * for a handler carrying live journal context, so DIRECT-mode dynamic writes - which carry none - are never
+ * for a handler carrying live journal context, so an entry's own dynamic writes - which carry none - are never
  * gated. The caller has already returned true for `scalarJournal`, so reaching here means "not a writer".
  */
 const journalReservedDynamicWritesOnly = (func: FunctionDefinitionNode): boolean =>
@@ -3460,7 +3452,7 @@ function buildFunctionAbiMetadata(
       }
       if (slot.preCallRequires) {
         // Compute recipes may reuse one of these source-point predicates. Give its producer leaves the same
-        // physical callsite, tuple-component, and repeated-owner source identity as every other graph use.
+        // physical callsite, tuple-component, and repeated-owner source identity as every other use.
         slot.preCallRequires = slot.preCallRequires.map((predicate) =>
           canonicalize(predicate, slot.slotIndex, 'condition'));
       }
@@ -3470,16 +3462,6 @@ function buildFunctionAbiMetadata(
         domain.continueCondition = canonicalize(
           domain.continueCondition, slot.slotIndex, 'iterationDomain',
         );
-      }
-      for (const row of slot.batchInvocations ?? []) {
-        // A repeated-owner batch has one physical consumer lane, but each row retains its exact source position.
-        // Validate dominance against that source position while publishing the physical lane consumed by the SDK.
-        canonicalizeSources(row.argSources, slot.slotIndex, row.sourceCallsiteId);
-        if (row.condition) {
-          row.condition = canonicalize(
-            row.condition, slot.slotIndex, 'condition', row.sourceCallsiteId,
-          );
-        }
       }
     }
     return [...result.values()].sort((left, right) =>
@@ -3575,25 +3557,13 @@ function buildFunctionAbiMetadata(
     };
   })();
   const signatureGuard = signatureGuardOf(func, contract, provenance);
-  // Graph handlers execute behind the synthetic route, while their loop-write metadata is discovered during
-  // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
-  // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
-  // mutable placeholder and its handler covenant correctly rejects the missing entry-NFT output.
-  const routeEntryLoopWrites = func.messageBusRoute
-    ? [...new Set([
-      ...(func.entryLoopWrites ?? []),
-      ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)
-        .flatMap((candidate) => candidate.entryLoopWrites ?? []),
-    ])]
-    : func.entryLoopWrites;
-  const loopSignatureFunctions = func.messageBusRoute
-    ? [func, ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)]
-    : [func];
-  const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
+  const loopWriteCollections = func.entryLoopWrites;
+  const loopSignatureFunctions = [func];
+  const loopWriteSignatures = Object.fromEntries(loopSignatureFunctions
     .flatMap((candidate) => candidate.entryAccesses ?? [])
     // Codegen may mark its private entry-slot copy as inLoop after semantic traversal; the authoritative
     // collection name is entryLoopWrites, so match that name rather than requiring the AST flag to survive.
-    .filter((access) => routeEntryLoopWrites?.includes(access.collection))
+    .filter((access) => loopWriteCollections?.includes(access.collection))
     .map((access) => [access.collection, access.collectionSignature]));
   const visibleParameters = func.parameters.filter((parameter) =>
     !parameter.name.startsWith('__internal__'));
@@ -4030,11 +4000,11 @@ function buildFunctionAbiMetadata(
     const matchingCalls = (func.externalCalls ?? []).filter((call) => call.sourceCallNode === returned[0]);
     if ((func.externalCalls ?? []).length !== 1 || matchingCalls.length !== 1
       || !matchingCalls[0].hasReturnValues
-      || matchingCalls[0].batchInvocations || matchingCalls[0].condition
+      || matchingCalls[0].condition
       || matchingCalls[0].callValueEffect || matchingCalls[0].opaqueReturn) return undefined;
     return { callsiteId: matchingCalls[0].slotIndex };
   })();
-  // Late semantic rewrites may introduce graph calls or entry mutations after the source program-point pass.
+  // Late semantic rewrites may introduce external calls or entry mutations after the source program-point pass.
   // Never advertise a linear authority domain unless every emitted effect retained its compiler-owned identity.
   const publishedSourceEffectOrder = sourceEffectOrderForArtifact(
     func.sourceEffectOrder, func.externalCalls ?? [], func.entryAccesses ?? [],
@@ -4044,16 +4014,10 @@ function buildFunctionAbiMetadata(
     ...(argumentFieldUpdates && { argumentFieldUpdates }),
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
-    ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
-    ...(func.messageBusConstructedKeyVectorDescriptors?.length && {
-      // Descriptors have already crossed the narrow typed proof-program boundary. Copy the outer list so later
-      // compiler lowering cannot mutate published metadata; no AST node or source-local identity escapes.
-      constructedKeyVectors: func.messageBusConstructedKeyVectorDescriptors.map((descriptor) => ({ ...descriptor })),
-    }),
-    ...(func.messageBusAffineRecursiveFrameDescriptors?.length && {
-      affineRecursiveFrames: func.messageBusAffineRecursiveFrameDescriptors.map((descriptor) => ({
+    ...(func.runtimeLoopAffineRecursiveFrameDescriptors?.length && {
+      affineRecursiveFrames: func.runtimeLoopAffineRecursiveFrameDescriptors.map((descriptor) => ({
         ...descriptor,
         parameterProgressions: descriptor.parameterProgressions.map((progression) => ({ ...progression })),
         accesses: descriptor.accesses.map((access) => ({ ...access, key: [...access.key] })),
@@ -4121,8 +4085,6 @@ function buildFunctionAbiMetadata(
         }),
         ...(ea.chunkableArrayValue && { chunkableArrayValue: true }),
         ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),
-        ...(ea.runtimeAliasPriorSlots?.length
-          && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),
         ...(ea.composeAliasPriorSlots?.length && { composeAliasPriorSlots: [...ea.composeAliasPriorSlots] }),
         ...(ea.sharedProofPriorSlot !== undefined && { sharedProofPriorSlot: ea.sharedProofPriorSlot }),
         ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
@@ -4140,25 +4102,7 @@ function buildFunctionAbiMetadata(
           },
         }),
         ...(ea.arrayMutation !== undefined && { arrayMutation: ea.arrayMutation }),
-        ...((() => {
-          const pooledActivation = func.messageBusPooledChunkableArrayPush === true
-            && ea.arrayMutation === 'push'
-            && func.messageBusPooledChunkableArrayPushActivation !== undefined
-            && (func.messageBusPooledChunkableArrayPushEffectOrdinal === undefined
-              || (ea.mutationEffectOrdinals?.includes(func.messageBusPooledChunkableArrayPushEffectOrdinal)
-                ?? false))
-            ? func.messageBusPooledChunkableArrayPushActivation
-            : undefined;
-          const stamped = ea.activation
-            ?? func.messageBusFixedChunkableResources?.find((resource) =>
-              resource.collection === ea.collection
-              && (ea.mutationEffectOrdinals?.includes(resource.effectOrdinal) ?? false))
-              ?.activation
-            ?? pooledActivation;
-          return stamped !== undefined
-            ? { activation: cloneExternalCallExpression(stamped) }
-            : {};
-        })()),
+        ...(ea.activation !== undefined && { activation: cloneExternalCallExpression(ea.activation) }),
       })),
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),
@@ -4221,23 +4165,20 @@ function buildFunctionAbiMetadata(
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => {
         const rawCall = ec.interfaceName === '__raw__' && ec.functionName === '__raw__';
-        // A grouped call owns one physical route even when its logical rows are conditional or repeated.
-        // Publish row cardinality below; the outer callsite itself is the singular co-spend.
-        const structuralOccurrence = ec.batchInvocations
-          ? { occurrence: 'once' as const }
-          : occurrenceInfoOf(func, ec.sourceCallNode);
+        // A grouped call owns one co-spend even when its logical occurrences are conditional or repeated.
+        // Publish their cardinality below; the outer callsite itself is the singular co-spend.
+        const structuralOccurrence = occurrenceInfoOf(func, ec.sourceCallNode);
         // The source call can be hoisted out of its branch during lowering while its compiler-published
         // condition still records the branch that reaches it. In that case it is not a mandatory `once`
-        // edge: the graph may have zero rows until the guard's authenticated producer result is known.
+        // call: it may run zero times until the guard's authenticated producer result is known.
         const occurrenceInfo = ec.condition && structuralOccurrence.occurrence === 'once'
-          && !ec.batchInvocations
           ? { occurrence: 'conditional' as const, maximumOccurrences: 1 }
           : structuralOccurrence;
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
           ? ec.resultArrayOutput ?? ec.sourceCallNode?.resultArrayOutput
             ?? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
-        if (ec.callerIdentity === undefined && compilerOptions.messageBusKernel === true) {
-          throw new Error(`Kernel callsite ${func.name}:${ec.slotIndex} lacks caller identity metadata`);
+        if (ec.callerIdentity === undefined && compilerOptions.composition === 'framed') {
+          throw new Error(`Framed callsite ${func.name}:${ec.slotIndex} lacks caller identity metadata`);
         }
         return {
           callsiteId: ec.slotIndex,
@@ -4255,7 +4196,7 @@ function buildFunctionAbiMetadata(
           ...occurrenceInfo,
           ...(ec.condition && { condition: ec.condition }),
           ...(ec.conditionUnpublished && { conditionUnpublished: true }),
-          ...(!ec.batchInvocations && ec.preCallRequires?.length && {
+          ...(ec.preCallRequires?.length && {
             preCallRequires: ec.preCallRequires,
           }),
           ...(iterationDomains.get(ec.slotIndex)?.length === 1 && {
@@ -4295,7 +4236,7 @@ function buildFunctionAbiMetadata(
           ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
           ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
           // Publish false too: absence denotes a legacy artifact, not a proven value-free edge.
-          callValueEffect: rawCall && (func.graphRawCallValueEffect === true || hasExternalCallValueEffect(ec)),
+          callValueEffect: rawCall && hasExternalCallValueEffect(ec),
           ...(ec.callValueInRecord && ec.callValueSource && { callValue: ec.callValueSource }),
           ...(ec.opaqueReturn && { opaqueReturn: true }),
           ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
@@ -4310,21 +4251,6 @@ function buildFunctionAbiMetadata(
           // Publish the empty list too. Omission means legacy/unknown provenance to SDK consumers; a present empty
           // list is the proof that this call has zero arguments and needs no runtime argument resolution.
           ...(ec.argSources && { argSources: ec.argSources }),
-          ...(ec.batchInvocations && {
-            batchInvocations: ec.batchInvocations.map((row) => ({
-              selector: binToHex(row.selector),
-              sourceCallsiteId: row.sourceCallsiteId,
-              sourceEffectOrdinal: row.sourceEffectOrdinal,
-              logicalIndex: row.logicalIndex,
-              callValueEffect: rawCall && (func.graphRawCallValueEffect === true || hasExternalCallValueEffect(row)),
-              inputs: row.parameterTypes.map((type, index) => ({
-                name: `arg${index}`, type: abiTypeString(type),
-              })),
-              ...(row.argSources && { argSources: row.argSources }),
-              ...(row.occurrence && row.occurrence !== 'once' && { occurrence: row.occurrence }),
-              ...(row.condition && { condition: row.condition }),
-            })),
-          }),
         };
       }),
     }),
@@ -4430,17 +4356,17 @@ function buildFunctionAbiMetadata(
     ...(Object.keys(dynamicWriteGrowth).length > 0 && { dynamicWriteGrowth }),
     ...(dynamicWriteOrder.length > 0 && { dynamicWriteOrder }),
     ...(Object.keys(dynamicWriteRecipes).length > 0 && { dynamicWriteRecipes }),
-    ...(routeEntryLoopWrites && routeEntryLoopWrites.some(
+    ...(loopWriteCollections && loopWriteCollections.some(
       (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
     ) && {
       // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
       // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
       // it here makes the SDK attempt to decode vmap slot/link commitments as legacy key/value loop commitments.
-      entryLoopWrites: routeEntryLoopWrites.filter(
+      entryLoopWrites: loopWriteCollections.filter(
         (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
       ),
-      ...(Object.keys(routeEntryLoopWriteSignatures).length > 0 && {
-        entryLoopWriteSignatures: routeEntryLoopWriteSignatures,
+      ...(Object.keys(loopWriteSignatures).length > 0 && {
+        entryLoopWriteSignatures: loopWriteSignatures,
       }),
     }),
     ...(func.sortedInsertLoops && func.sortedInsertLoops.length > 0 && { sortedInsertLoops: [...func.sortedInsertLoops] }),
@@ -4567,15 +4493,6 @@ function buildFunctionAbiMetadata(
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
     ...(func.usesBlockOracle && { usesBlockOracle: true }),
     ...(func.indirectPoolReads && { indirectPoolReads: { ...func.indirectPoolReads } }),
-    ...(func.messageBusBlockhashReadWidth && func.messageBusBlockhashReads && {
-      graphBlockhashOracle: {
-        inputBaseParameter: '__internal__blockhashInputIndex' as const,
-        rowCount: func.messageBusMaximumRows!,
-        readWidth: func.messageBusBlockhashReadWidth,
-        slotCount: func.messageBusMaximumRows! * func.messageBusBlockhashReadWidth,
-        reads: [...func.messageBusBlockhashReads],
-      },
-    }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
   };
 }
@@ -4747,12 +4664,7 @@ export function generateArtifact(
     name: func.name,
     ...(func.mappingArrayPagination && { mappingArrayPagination: func.mappingArrayPagination }),
     ...(func.functionSelector && { selector: binToHex(func.functionSelector) }),
-    // A caller several OP_INVOKE edges above a runtime journal receives a physical copy of the leaf's hidden
-    // context so generated calls have one typed frame. Those forwarded operands are route-owned implementation
-    // details; publishing them as source inputs leaks the depth of the helper closure and makes equivalent
-    // source signatures ABI-incompatible. Parameters introduced by the function's own lowering remain present:
-    // SDK journal planning still consumes those physical witness declarations.
-    inputs: func.parameters.filter((parameter) => !parameter.kernelJournalForwardedContext).map((parameter) => ({
+    inputs: func.parameters.map((parameter) => ({
       name: parameter.name,
       type: abiTypeString(parameter.type),
     })),
@@ -4763,10 +4675,7 @@ export function generateArtifact(
         ...(compilerOptions.composition === 'framed' && (func.returnNames[index] ?? '') !== ''
           ? { name: func.returnNames[index]! } : {}),
       })),
-      // The compiler-generated route always carries its aggregate vector in one compact outer bytes field.
-      // Individual handler rows independently publish EVM or compact result encodings inside that carrier.
-      resultEncoding: func.messageBusRoute
-        ? 'compact-pushdata-v1' : externalResultEncoding(func.returnTypes, compilerOptions),
+      resultEncoding: externalResultEncoding(func.returnTypes, compilerOptions),
     }),
     ...(func.settlesCallRecord === true && { callRecord: true }),
     ...(func.recordDigestsValue === true && { callRecordValue: true }),
@@ -5071,8 +4980,8 @@ export function generateArtifact(
     debug,
     ...(directCompile && isStateful && { callRecords: compilerOptions.callRecords ?? 'returning' as const }),
     // A direct compile's call digests name their reader (CALL_RECORD_READER_INPUT): it digests its own input as a
-    // caller, a kernel direct participant too, whose entries take no reader witness. Said where the contract digests
-    // a call: an entry takes the reader witness, reads a record or pins an edge.
+    // caller. Said where the contract digests a call: an entry takes the reader witness, reads a record or pins an
+    // edge.
     ...(directCompile && abi.some((fn) => fn.inputs.some((input) => input.name === CALL_RECORD_READER_INPUT
       || DIGESTING_WITNESS.test(input.name))) && { callRecordReader: true }),
     ...(directCompile && isStateful && { genesisCalls: compilerOptions.genesisCalls !== false }),
@@ -5101,17 +5010,11 @@ export function generateArtifact(
         allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
         ...(compilerOptions.tagSingletonDataNfts === true && { tagSingletonDataNfts: true }),
-        messageBus: compilerOptions.messageBus,
         // Published only when the source chose it: omitting it follows the mode, which `resolveAddressForm`
         // re-derives on the artifact, so an artifact that names no form reads back the one its compile used
         // without every artifact gaining a field. The SDK's value emulation reads it back through
         // `artifactAddressForm`, so an explicit 'bytecode' compile is not mistaken for the 'hash' default.
         ...(compilerOptions.addressForm !== undefined && { addressForm: compilerOptions.addressForm }),
-        ...(compilerOptions.messageBus && compilerOptions.messageBusKernel !== undefined
-          && { messageBusKernel: compilerOptions.messageBusKernel }),
-        ...(compilerOptions.messageBusEntryPoolCapacity !== undefined
-          && { messageBusEntryPoolCapacity: compilerOptions.messageBusEntryPoolCapacity }),
-        ...(compilerOptions.messageBusDirectParticipant === true && { messageBusDirectParticipant: true }),
         ...(compilerOptions.sourceMap === false && { sourceMap: false }),
       },
     },

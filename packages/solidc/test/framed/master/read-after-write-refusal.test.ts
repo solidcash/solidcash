@@ -221,8 +221,7 @@ describe('a snapshot that only carries fields over into the entry\'s next write'
   it('known wall: fails closed where a second write of the entry follows the first in the segment', () => {
     // Pinned wall, failing closed and unchanged: the second snapshot takes the view the segment declared, not the
     // first write (`GenerateTargetTraversal.emitSortedSetRead` keeps no value for a write the body writes again or
-    // writes in an arm), so the two writes disagree and no node satisfies both. The message-bus kernel lowering
-    // (`CoalesceMappingEntryFieldWrites(true)`) spells every single field write this way.
+    // writes in an arm), so the two writes disagree and no node satisfies both.
     for (const after of [[5n, 1n, 1n], [5n, 0n, 1n], [5n, 1n, 0n]]) {
       expect(accepts(SNAPSHOTS, 'approve', [YES, YES, ID], arbSpend(after))).toBe(false);
     }

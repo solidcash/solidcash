@@ -5,7 +5,7 @@ import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const verifyPreflight = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyPreflight = 'BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A storage pointer to a (non-flattened) struct state variable is an ALIAS, not a copy: writes through the
 // pointer reach the state variable. Previously `S storage sL = s` silently fell through to a local copy, so

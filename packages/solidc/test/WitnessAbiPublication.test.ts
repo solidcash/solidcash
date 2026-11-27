@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
 describe('compiler-owned witness ABI publication', () => {
-  it.each([false, true])('does not invent fold witnesses on a direct writer (message bus: %s)', (messageBus) => {
+  it('does not invent fold witnesses on a direct writer', () => {
     const artifact = compileString(`pragma solidity ^0.8.20;
       contract Store {
         mapping(uint => string) left;
@@ -12,12 +12,8 @@ describe('compiler-owned witness ABI publication', () => {
           this.left[key] = value;
           if (value.length > 1) { this.right[key] = value; }
         }
-      }`, { forceStateful: true, evmCompat: true, messageBus,
-      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      }`, { forceStateful: true, evmCompat: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
-    if (messageBus) {
-      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(false);
-    }
     const inputs = artifact.abi.find((fn) => fn.name === 'write')!.inputs;
     expect(inputs.some((input) => input.name.startsWith('__internal__leadingPushValue_'))).toBe(true);
     // Complete-value folding is not part of this direct function's generated frame. An ABI-only extra

@@ -1,4 +1,3 @@
-import type { CompilerOptions } from '@solidcash/utils';
 import { FunctionCallNode, FunctionDefinitionNode, Node } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 
@@ -43,15 +42,6 @@ export function checksTransactionSignature(
     const callee = name === undefined ? undefined : functionsByName.get(name);
     return callee !== undefined && callee !== fn && checksTransactionSignature(callee, functionsByName, visiting);
   });
-}
-
-/**
- * Whether the helper inliners keep transaction-signature checks in the entry point, which is what the SDK signs.
- * A message-bus build does not: it keeps such a helper behind OP_INVOKE and publishes that body for each signature
- * its route takes. A framed artifact carries no route, so its helpers are inlined as in a direct build.
- */
-export function inlinesSignatureChecks(options: CompilerOptions): boolean {
-  return options.messageBus !== true || options.composition === 'framed';
 }
 
 /** The names that the given bodies call directly. */

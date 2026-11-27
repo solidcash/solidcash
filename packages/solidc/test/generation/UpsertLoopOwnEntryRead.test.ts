@@ -29,7 +29,7 @@ contract Book {
 const quiet = { suppressWarnings: true };
 const conventions = {
   auto: (source: string, options: object = {}) => compileString(source, { ...quiet, ...options }),
-  direct: (source: string, options: object = {}) => compileString(source, { ...quiet, messageBus: false, ...options }),
+  direct: (source: string, options: object = {}) => compileString(source, { ...quiet, ...options }),
   framed: (source: string, options: object = {}) => Object.values(compileStringMulti(source, {
     ...quiet, composition: 'framed', ...options,
   })).find((artifact) => artifact.abi.some((entry) => entry.name === 'put'))!,
@@ -84,19 +84,18 @@ describe('a sorted-mapping loop write folds only its own entry', () => {
     }
   });
 
-  it('folds a counter loop\'s write only into the entry it reads, on the kernel convention too', () => {
+  it('folds a counter loop\'s write only into the entry it reads', () => {
     const counter = (body: string): string => `contract C() { mapping(int => int) slots; mapping(int => int) other;
       event Hit(int v);
       function put(int n, int amount) public { for (int i = 0; i < n; i = i + 1) { ${body} } require(true); }
       function control() public { require(true); } }`;
-    const kernel = { forceStateful: true, messageBus: true, messageBusKernel: true };
     for (const [body, expected] of [
       ['slots[i] = slots[i] + amount;', '+'], ['slots[i] = slots[i] - amount;', '-'], ['slots[i] += amount;', '+'],
       ['slots[i] = slots[i] + amount; emit Hit(i);', '+'],
       ['slots[i] = slots[7] + amount;', 'set'], ['slots[i] = slots[7] + amount; emit Hit(i);', 'set'],
       ['slots[i] = other[i] + amount;', 'set'],
     ] as const) {
-      for (const [name, options] of [['kernel', kernel], ['auto', {}], ['direct', { messageBus: false }]] as const) {
+      for (const [name, options] of [['auto', {}], ['direct', {}]] as const) {
         const loop = compileString(counter(body), { ...quiet, ...options }).abi.find((entry) => entry.name === 'put')
           ?.sortedUpsertLoopInfo?.find((info) => info.collection === 'slots');
         expect([name, body, loop?.op]).toStrictEqual([name, body, expected]);

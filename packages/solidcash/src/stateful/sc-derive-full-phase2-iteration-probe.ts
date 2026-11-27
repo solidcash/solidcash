@@ -13,7 +13,6 @@ import {
   fingerprintLibauthTransaction,
 } from './faithful-probe-trace.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
-import { buildParticipantProbeProgram } from './participant-probe-program.js';
 
 export interface DeriveFullPhase2IterationProbeHost {
   readonly inner: { provider: NetworkProvider };
@@ -79,9 +78,7 @@ export function deriveFullPhase2IterationProbe(
     ? stb.insertBeforeLateValueSuffix(probeBuilder2, { to: dummyLbc, amount: 1000n }, {
       rebindReturnWitnessesOnly: probeBuilder2.outputs.length > 30,
     }) : undefined;
-  const { transaction: transaction2, sourceOutputs: sourceOutputs2 } = buildParticipantProbeProgram(
-    probeBuilder2, stb.getComposedBlockBase(),
-  );
+  const { transaction: transaction2, sourceOutputs: sourceOutputs2 } = probeBuilder2.buildLibauthProgram();
   const debugProgramBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
   if (debugTargetsThisDerivation) console.error('derive-phase2-program-built', {
     iter, programMs: debugProgramBuiltAt - debugBuilderBuiltAt,
@@ -152,7 +149,7 @@ export function deriveFullPhase2IterationProbe(
   // those clobber the first valid pin with later stack garbage.
   // The sparse observer cannot currently see introspection executed inside OP_INVOKE bodies. Runtime-loop
   // transfer values are verified there, so use the faithful reduced debug trace until those outputs have
-  // converged. This remains bounded by the kernel's 64-iteration admission limit.
+  // converged. This remains bounded by the journal's 64-iteration admission limit.
   const hasRuntimeLoopTransfers = stb.getRuntimeLoopTransferOutputs().length > 0;
   const fullTrace2 = evaluateProbeTrace(
     host.inner.provider, probeProgram, hasRuntimeLoopTransfers,

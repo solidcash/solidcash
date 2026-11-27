@@ -29,20 +29,11 @@ export {
   groupIndexForExternalCallSlot,
   externalReturnParamSlot,
   isSdkResolvedExternalCallTopologyWitness,
-  parseRowArgsDecodeLabel,
   visibleHandlerInputs,
-  matchingRouteRowsForExpressionKey,
   resolveRouteRowExpressionKey,
-  kernelJournalAccessStreamPlaceholders,
-  kernelJournalRecordSegmentWitnesses,
-  type KernelJournalRecordSegmentWitnesses,
   type RouteExpressionKeyRow,
   type SoftStateSnapshot,
 } from './StatefulContract.js';
-export {
-  readKernelExecutionPlans,
-  requireKernelExecutionPlanDigest,
-} from './KernelExecutionPlanReader.js';
 export { artifactAddressForm } from './solidityAbi.js';
 export {
   legacyLiveValueChunkBandWidth,
@@ -100,16 +91,10 @@ export {
 export {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerPathContext,
-  createValueChunkProducerArgumentEpoch,
-  advanceValueChunkProducerArgumentEpoch,
-  valueChunkProducerArgumentsInEpoch,
   appendValueChunkProducerSourceSite,
   deriveValueChunkProducerChildPath,
   canonicalValueChunkProducerResourceIdentity,
   canonicalValueChunkProducerResourceClaim,
-  canonicalTransportedContinuationResourceClaim,
-  buildTransportedContinuationResourceClaim,
-  orderTransportedContinuationResourceClaims,
   bindValueChunkProducerClaimAliases,
   selectSingletonValueChunkProducer,
   terminalValueChunkProducerClaim,
@@ -118,13 +103,11 @@ export {
   type ValueChunkProducerIdentity,
   type ValueChunkProducerClaimCarrier,
   type ValueChunkProducerResourceClaim,
-  type TransportedContinuationResourceClaim,
   type ValueChunkProducerSourceSite,
   type ValueChunkProducerRouteRowCoordinates,
   type ValueChunkProducerMutationRow,
   type ValueChunkProducerPathContext,
   type ValueChunkProducerPathDisposition,
-  type ValueChunkProducerArgumentEpoch,
   type SingletonValueChunkProducerSelection,
 } from './ValueChunkProducerIdentity.js';
 export {
@@ -196,55 +179,11 @@ export {
   type JournaledMutationPlan, type JournaledMutationResult,
 } from './SortedList.js';
 export {
-  KERNEL_ENTRY_JOURNAL_TAG, KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
-  KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES, KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
-  KERNEL_ENTRY_JOURNAL_MAX_RECORDS, KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
-  KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
-  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
-  encodeKernelEntryJournalRecord, encodeKernelEntryJournalRecords, decodeKernelEntryJournalRecord,
-  validateKernelEntryJournalTransportRecords,
-  segmentKernelEntryJournalRecords, kernelEntryJournalRecordPosition,
-  kernelEntryJournalRecordSegmentName, kernelEntryJournalRecordSegmentIndex,
-  validateKernelEntryJournalRecordSegments, validateKernelEntryJournalRecordSegmentSlots,
-  encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
-  planKernelEntryJournalStreams, planKernelEntryJournalAccessTopology,
-  planKernelEntryJournalSettlementAuthority, planKernelEntryJournalSettlementOutputSegments,
-  planKernelEntryJournalPhysicalSettlement, planKernelEntryJournalOutputLayout,
-  kernelJournalDispositionsFromArtifact,
-  resolveKernelEntryJournalDirtyFinalBodies,
-  scheduleKernelEntryJournalOccurrences,
-  validateKernelEntryJournalSettlementGroups,
-  type KernelEntryJournalRecord, type KernelEntryJournalStreamPlan,
-  type KernelEntryJournalRecordPosition, type KernelEntryJournalSegmentValidationOptions,
-  type KernelEntryJournalTopologyOperation, type KernelEntryJournalAccessTopologyPlan,
-  type KernelEntryJournalSettlementOccurrence, type KernelEntryJournalSettlementReference,
-  type KernelEntryJournalSettlementPlan,
-  type KernelEntryJournalPhysicalSettlementPlan,
-  type KernelEntryJournalPhysicalSettlementOccurrence,
-  type KernelEntryJournalPhysicalSettlementInput,
-  type KernelEntryJournalPhysicalSettlementOutput,
-  type KernelEntryJournalPhysicalSettlementStreamAccounting,
-  type KernelEntryJournalDirtyFinalBodyProducer,
-  type KernelEntryJournalDirtyFinalBodyCandidate,
-  type KernelEntryJournalDirtyFinalBodyResolution,
-  type KernelEntryJournalEagerOutputPlanEntry,
-  type KernelEntryJournalOutputLayoutEntry,
-  type KernelEntryJournalOutputLayoutPlan,
-  type KernelEntryJournalSettlementOutputSegment,
-  type KernelEntryJournalSettlementStream,
-  type KernelEntryJournalExecutionStream, type KernelEntryJournalScheduledOccurrence,
-} from './KernelEntryJournal.js';
-export {
-  bindKernelLifecycleTransaction, planKernelLifecycleTopology,
-  type BoundKernelLifecycleTransaction, type KernelLifecycleTransactionFrame,
-  type KernelLifecycleTransactionPoint, type ResolvedKernelLifecycleSpan, type ResolvedKernelLifecycleTopology,
-} from './KernelLifecycleTopology.js';
-export {
-  planKernelDelegateForwarding, resolveKernelDelegateExecution, resolveKernelDelegatePromotion,
-  type KernelDelegateExecutionTarget, type KernelDelegateForwardingFrame, type KernelDelegateForwardingMetadata,
-  type KernelDelegatePromotionInput,
-  type ResolvedKernelDelegateForwarding, type ResolvedKernelDelegateExecution,
-} from './KernelDelegateForwarding.js';
+  planDelegateForwarding, resolveDelegateExecution, resolveDelegatePromotion,
+  type DelegateExecutionTarget, type DelegateForwardingFrame, type DelegateForwardingMetadata,
+  type DelegatePromotionInput,
+  type ResolvedDelegateForwarding, type ResolvedDelegateExecution,
+} from './DelegateForwarding.js';
 export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,
   findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot, listDeployments,
@@ -258,8 +197,6 @@ export {
 } from './genesis-reservations.js';
 export {
   getDataNftAddress,
-  getMessageBusVerifierAddress,
-  getMessageBusVerifierLockingBytecode,
   getDataNftLockingBytecode,
   getEntryNftLockingBytecode,
   getEntryNftAddress,
@@ -272,7 +209,6 @@ export {
   getSatoshiContainerAddress,
   getContractState,
   createDataNftUnlocker,
-  createMessageBusVerifierUnlocker,
   createDestroyDataNftUnlocker,
   createReadOnlyDataNftUnlocker,
   createEntryNftUnlocker,
@@ -287,20 +223,7 @@ export {
   resolveCollectionSignature,
   resolveEventSignature,
 } from './covenant-helpers.js';
-export {
-  preflightBalancedBlockAssembly,
-  deriveBalancedAssemblyFromInputs,
-  assertCompleteLocalBlock,
-  participantRegionEnd,
-  BALANCED_SLOT_SATOSHIS,
-  BALANCED_EVENT_SLOT_CEILING,
-  OUTPUT_ONLY_BLOCK_SLOT_KINDS,
-  EVENT_BLOCK_SLOT_KINDS,
-  type BalancedAssembly,
-  type BalancedAssemblyOptions,
-  type BalancedAssemblyView,
-  type BalancedBlockPlacement,
-} from './balancedBlocks.js';
+export { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 export { StatefulMasterPaymentError, refusePaymentsToStatefulMasters } from './master-lock-payment.js';
 export {
   buildDeployerPrep, buildDeployerPreps, buildDeployerSweep, buildDeployerUnlocking,

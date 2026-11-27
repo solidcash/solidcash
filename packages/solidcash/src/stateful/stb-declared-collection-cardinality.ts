@@ -38,7 +38,7 @@ export function enforceDeclaredCollectionOutputCardinality(
     if (!group.categoryId) continue;
     const master = host.findMintingInputIndex(group.categoryId);
     if (master < 0) continue;
-    const layout = group.compilerRoute?.abiFunction?.blockLayout ?? group.blockLayout;
+    const layout = group.blockLayout;
     for (const slot of layout?.slots ?? []) {
       if (slot.kind !== 'entry') continue;
       const collectionLock = externalEntryLockingBytecode(group, slot)

@@ -143,7 +143,7 @@ describe('a function-split contract whose only emit sits in a library function',
 
 describe('a size-split contract whose only emit sits in a library function', () => {
   it('lists the event on its root, through which the SDK reads a facet log', () => {
-    const bundle = compileStringSplit(LIBRARY, { forceSplit: true, messageBus: false }) as SplitArtifactBundle;
+    const bundle = compileStringSplit(LIBRARY, { forceSplit: true }) as SplitArtifactBundle;
     expect(bundle.root.events?.map((event) => event.name)).toEqual(['Fired']);
     for (const facet of Object.values(bundle.facets)) {
       expect(facet.events?.map((event) => event.name), facet.contractName).toEqual(['Fired']);

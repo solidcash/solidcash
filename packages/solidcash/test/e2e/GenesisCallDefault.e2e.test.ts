@@ -44,7 +44,7 @@ describe('a constructor calls a callee compiled with the default options', () =>
       });
     };
     const tArtifact = compileString(SOURCE, {
-      deployer: true, messageBus: false, primaryContractName: 'T', ...calleeOptions,
+      deployer: true, primaryContractName: 'T', ...calleeOptions,
     } as never);
     expect(tArtifact.recordSound).toBe(true);
     expect(tArtifact.genesisCalls).toBe(true);
@@ -52,7 +52,7 @@ describe('a constructor calls a callee compiled with the default options', () =>
     expect(f.inputs.some((input) => input.name === '__internal__genesisCall')).toBe(true);
     expect(f.callBatchRow === true).toBe('callBatch' in calleeOptions);
     const tResult = await deploy(tArtifact);
-    const cArtifact = compileString(SOURCE, { deployer: true, messageBus: false, primaryContractName: 'C' } as never);
+    const cArtifact = compileString(SOURCE, { deployer: true, primaryContractName: 'C' } as never);
     const cResult = await deploy(cArtifact, [addressToLockScript(tResult.contract.address)], {
       constructorCallees: [{ contract: tResult.contract, args: [5n] }],
     });

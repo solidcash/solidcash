@@ -46,13 +46,11 @@ describe('nested approve insert', () => {
     const provider = createTestProvider();
     const [signer] = await getSigners(1, { provider, fundingUtxos: 8 });
     const options = {
-      forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+      forceStateful: true,
       evmCompat: true,
     } as const;
     const tokenArtifact = compileString(TOKEN, options);
     const callerArtifact = compileString(CALLER, options);
-    expect(tokenArtifact.messageBus?.convention).toBe('kernel-row-loop');
-    expect(callerArtifact.messageBus?.convention).toBe('kernel-row-loop');
 
     const token = await getContractFactory(tokenArtifact, signer).deploy();
     const caller = await upgrades.deployProxy(getContractFactory(callerArtifact, signer), []);

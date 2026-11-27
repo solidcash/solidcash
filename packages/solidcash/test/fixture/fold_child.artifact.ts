@@ -99,7 +99,6 @@ export default {
       enforceFinalRequire: true,
       allowUnsafeOperations: false,
       commitmentLimit: 128,
-      messageBus: false,
     },
   },
   invocationAnalysis: {

@@ -34,7 +34,7 @@ import { describeValueChunkWrites } from './writer-group-selection.js';
  * The batch trailing width is the number of DISTINCT non-negative PredOut lanes the batch witnesses name, which
  * is exactly what the covenant's `emitBatchTrailingCountBinding` counts. Several inserts that share one
  * predecessor publish one rewritten predecessor lane, not one per insert; `bPlannedEntryInserts.length` overcounts
- * those shared-gap batches and made the covenant refuse the composed settlement.
+ * those shared-gap batches and made the covenant refuse the settlement.
  */
 export function directVmapBatchTrailingCount(
   internalArgs: Record<string, unknown>,
@@ -81,7 +81,6 @@ export interface PushCreateBuilderDirectExternalCallGroupHost {
 
 export interface PushCreateBuilderDirectExternalCallGroupInput {
   externalCallUtxoGroups: ExternalCallUtxoGroup[];
-  compilerRoute: ExternalCallUtxoGroup['compilerRoute'] | undefined;
   bBlockInputs: UnlockableUtxo[] | undefined;
   bBlockLayout: NonNullable<AbiFunction['blockLayout']> | undefined;
   bAbiFunc: AbiFunction | undefined;
@@ -93,7 +92,6 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
   bDataNfts: UnlockableUtxo[];
   bRequiredNftIndices: number[];
   bReturnEventInBlock: boolean;
-  bGraphBlockhashSelections: NonNullable<ExternalCallUtxoGroup['graphBlockhashSelections']> | [];
   bKeccak: { recreates: NonNullable<ExternalCallUtxoGroup['keccakRecreates']> };
   bDynamicChunkInputs: NonNullable<ExternalCallUtxoGroup['ordinaryDynamicChunkInputs']>;
   bDynamicChunkResources: NonNullable<ExternalCallUtxoGroup['dynamicChunkResources']>;
@@ -118,8 +116,8 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
 }
 
 /**
- * Validate route entry uniqueness, optionally precompute a probe return, push the
- * direct ExternalCallUtxoGroup, and promote shared physical blocks / stage chunk writes.
+ * Optionally precompute a probe return, push the direct ExternalCallUtxoGroup, and
+ * promote shared physical blocks / stage chunk writes.
  */
 export async function pushCreateBuilderDirectExternalCallGroup(
   host: PushCreateBuilderDirectExternalCallGroupHost,
@@ -127,7 +125,6 @@ export async function pushCreateBuilderDirectExternalCallGroup(
 ): Promise<void> {
   const {
     externalCallUtxoGroups,
-    compilerRoute,
     bBlockInputs,
     bBlockLayout,
     bAbiFunc,
@@ -139,7 +136,6 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     bDataNfts,
     bRequiredNftIndices,
     bReturnEventInBlock,
-    bGraphBlockhashSelections,
     bKeccak,
     bDynamicChunkInputs,
     bDynamicChunkResources,
@@ -157,24 +153,6 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     returnProbeOnly,
     callValue,
   } = input;
-
-  if (compilerRoute && bBlockInputs && bBlockLayout) {
-    const seenEntries = new Map<string, number>();
-    for (const slot of bBlockLayout.slots) {
-      if (slot.kind !== 'entry') continue;
-      const entryInput = bBlockInputs[slot.offset];
-      if (!entryInput?.token?.nft) continue;
-      const outpoint = `${entryInput.txid}:${entryInput.vout}`;
-      const owner = seenEntries.get(outpoint);
-      if (owner !== undefined) {
-        throw new Error(
-          `External message-bus batch resource shape aliases entry slots ${owner} and ${slot.slotIndex}; `
-          + 'this physical alias is not supported by the advertised route',
-        );
-      }
-      seenEntries.set(outpoint, slot.slotIndex ?? 0);
-    }
-  }
 
   if ((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0
     && !Object.prototype.hasOwnProperty.call(
@@ -194,7 +172,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     bCompilerInternalArgs.__internal__msgSenderCategory = hexToBin(host.callerCategoryId).reverse();
   }
 
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_TRACE === '1') {
     console.error('external-route-vmap-args', callInfo.functionName, bAbiFunc?.name,
       bAbiFunc?.sortedBatchInfo, bCompilerInternalArgs);
   }
@@ -212,18 +190,17 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   // A unit of a direct multi-call runs as one frame of its callee's multi-call spend (direct-call-batch.ts).
   const directBatch = (ec as DirectCallBatchCall).directBatch;
   // A direct caller can share a physical block with a view/writer pair, but two distinct returning methods
-  // cannot both execute from its one master input unless the compiler published one authenticated batch route.
-  // Without that route the second return output is only a placeholder, and deriving it would turn an invalid
-  // transaction into a late VM failure (or, for some schemas, an ambiguous provisional result).
+  // cannot both execute from its one master input: the second return output is only a placeholder, and deriving
+  // it would turn an invalid transaction into a late VM failure (or, for some schemas, an ambiguous provisional
+  // result).
   if (!returnProbeOnly && ec.hasReturnValues && sharedPhysical && !directBatch
-    && sharedPhysical.functionName !== callInfo.functionName
-    && !compilerRoute && !sharedPhysical.compilerRoute) {
+    && sharedPhysical.functionName !== callInfo.functionName) {
     const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
       ?.find((candidate) => candidate.name === sharedPhysical.functionName);
     if ((priorAbi?.outputs?.length ?? 0) > 0) {
       throw new Error(
         `Direct external calls to ${sharedPhysical.functionName} and ${callInfo.functionName} share one state owner `
-        + 'but both return values. Use messageBus.compose() to authenticate both logical invocations.',
+        + 'but both return values, which one spend of it cannot answer: make the calls in separate transactions.',
       );
     }
   }
@@ -284,7 +261,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
         // This frame is the CALLER of `callInfo.externalContract`, so the callee's `msg.sender` is exactly
         // this frame's authenticated identity. Without it the nested probe keys every `msg.sender`-derived
         // mapping slot on the transaction origin (measured: a `transferFrom` allowance probe pinned the
-        // signer-keyed slot while the composed transaction reads the caller-keyed one), and the returned
+        // signer-keyed slot while the transaction reads the caller-keyed one), and the returned
         // value the composition reuses describes a frame the transaction never builds.
         const precomputeValue = await host.deriveReturnValue(
           precomputeName, callInfo.args, undefined, precomputeAbi, undefined,
@@ -359,7 +336,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     functionName: callInfo.functionName,
     functionArgs: callInfo.args,
     ...(callValue !== undefined && { callValue }),
-    ...(!compilerRoute && ec.readonlyReturnBinding?.version === 1
+    ...(ec.readonlyReturnBinding?.version === 1
       && bAbiFunc?.writesState === false && bAbiFunc.selector !== undefined
       && ec.readonlyReturnBinding.selector.toLowerCase() === bAbiFunc.selector.toLowerCase()
       && (bAbiFunc.outputs?.length ?? 0) > 0 && callInfo.args.length === 0
@@ -373,22 +350,6 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(Object.keys(bCompilerInternalArgs).length > 0 && { internalArgs: bCompilerInternalArgs }),
     ...(bRelativeOutputInternalArgs.size > 0 && {
       relativeOutputInternalArgs: [...bRelativeOutputInternalArgs],
-    }),
-    ...(compilerRoute && {
-      compilerRoute: {
-        ...compilerRoute,
-        ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && {
-          internalArgs: {
-            ...bCompilerInternalArgs,
-            __internal__vmapBatchTrailingCount: directVmapBatchTrailingCount(
-              bCompilerInternalArgs,
-            ),
-          },
-        }),
-      },
-    }),
-    ...(bGraphBlockhashSelections.length > 0 && {
-      graphBlockhashSelections: bGraphBlockhashSelections,
     }),
     ...(ec.callMode && { callMode: ec.callMode }),
     ...(bPlannedEntryInserts.length > 0 && { plannedEntryInserts: bPlannedEntryInserts }),
@@ -472,7 +433,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     const write = directGroup.valueChunkWrites[0]!;
     const access = bAbiFunc?.entryAccesses?.[write.entryAccessSlot];
     const owner = { categoryId: externalCategoryId, lockingBytecode: callInfo.externalContract.inner.lockingBytecode };
-    const claim = !compilerRoute && bAbiFunc && access?.arrayMutation === 'push'
+    const claim = bAbiFunc && access?.arrayMutation === 'push'
       && access.storedElementSource?.version === 1 && ordinaryProducerPath?.status === 'complete'
       ? terminalValueChunkProducerClaim({
         rows: [{ handler: bAbiFunc, selector: bAbiFunc.selector, producerPath: ordinaryProducerPath }],

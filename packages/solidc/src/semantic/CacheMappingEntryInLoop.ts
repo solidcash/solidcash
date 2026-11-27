@@ -54,7 +54,7 @@ import {
   AssemblyStatementNode,
   type ExternalCallExpression,
 } from '../ast/AST.js';
-import { NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { NullaryOperator } from '../ast/Operator.js';
 import {
   MappingType, ArrayType, StructType, type Type, PrimitiveType, isChunkableValueType,
 } from '@solidcash/utils';
@@ -62,8 +62,8 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
-  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
-} from './KernelEntryActivation.js';
+  argumentConditionActivation, booleanArgumentIndices, stableArgumentIndices,
+} from './ArgumentConditionActivation.js';
 import { blockEndsWithReturn, holdsReturn } from './EarlyReturnTransformation.js';
 
 const PREFIX = '__vmapcache_';
@@ -210,10 +210,6 @@ const PURE_KEY_BUILTINS = new Set([
   'toPaddedBytes', 'intToString', 'stringToInt',
 ]);
 const READ_ONLY_GUARD_BUILTINS = new Set(['checkSig', 'checkMultiSig', 'checkDataSig']);
-/** Unary operators a value guard applies without reading the transaction. */
-const PURE_GUARD_OPERATORS: ReadonlySet<UnaryOperator> = new Set([
-  UnaryOperator.NOT, UnaryOperator.NEGATE, UnaryOperator.INVERT, UnaryOperator.SIZE,
-]);
 
 function literalCanon(k: LiteralNode): string {
   const value = k.value instanceof Uint8Array ? [...k.value].join(',') : String(k.value);
@@ -560,33 +556,6 @@ function withoutDirtyMarks(statements: StatementNode[], dirty: string): Statemen
   return kept;
 }
 
-/** The cache a whole-entry write flushes when `dirty` is that cache's dirty flag. */
-function flushedCache(write: Node | undefined, value: Node, dirty: Node): string | undefined {
-  return write instanceof MappingAssignNode && write.arrayIndex === undefined && !write.arrayPush && !write.arrayPop
-    && value instanceof IdentifierNode && value.name.startsWith(PREFIX)
-    && dirty instanceof IdentifierNode && dirty.name === `${value.name}_dirty` ? value.name : undefined;
-}
-
-/**
- * A cache flush and the cache it writes back: `if (<cache>_dirty) { m[k] = <cache>; }` as `makeFlush` builds it, or
- * `m[k] = <cache>_dirty ? <cache> : m[k]` where IfConvertConditionalEntryOp predicated it.
- */
-function cacheFlush(node: Node): { write: MappingAssignNode; local: string } | undefined {
-  if (node instanceof MappingAssignNode && node.expression instanceof TernaryOpNode) {
-    const { condition, ifTrue, ifFalse } = node.expression;
-    const local = ifFalse instanceof MappingAccessNode && ifFalse.name === node.name
-      ? flushedCache(node, ifTrue, condition) : undefined;
-    return local === undefined ? undefined : { write: node, local };
-  }
-  if (!(node instanceof BranchNode) || node.elseBlock !== undefined || node.preserveConditionalEntryWrites !== true) {
-    return undefined;
-  }
-  const [write, ...rest] = node.ifBlock.statements ?? [];
-  const local = rest.length === 0 && write instanceof MappingAssignNode
-    ? flushedCache(write, write.expression, node.condition) : undefined;
-  return local === undefined ? undefined : { write: write as MappingAssignNode, local };
-}
-
 function expressionParameterDependencies(node: Node, out = new Set<string>()): Set<string> {
   if (node instanceof IdentifierNode) out.add(node.name);
   if (node instanceof FunctionCallNode) {
@@ -705,13 +674,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private contractFunctionNames: Set<string> = new Set();
   private counter = 0;
 
-  /**
-   * `callsCloseSegments` holds under the framed composition, whose calls each close a segment. `composesAliases`
-   * holds when no message-bus route can clone a body after this pass: only then is a composed mapping left uncached.
-   */
-  constructor(
-    private routeSnapshotKeysOnly = false, private callsCloseSegments = false, private composesAliases = false,
-  ) { super(); }
+  /** `callsCloseSegments` holds under the framed composition, whose calls each close a segment. */
+  constructor(private callsCloseSegments = false) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.sourceFunctionNames = new Set(node.freeFunctions.map((fn) => fn.name));
@@ -755,14 +719,12 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
    * Scalar sorted mappings the direct convention composes on runtime aliasing (SymbolTableTraversal
    * assignComposeAliasPriors) rather than caches: two or more entries of keys that are not distinct literals, each
    * written once by a whole-value statement of the body itself before any return. A cache would read every entry
-   * before any is written, so a write could not reach the read of an entry its key aliases. Only under
-   * `composesAliases`: a message-bus route cloned from the body after this pass never composes and keeps the cache.
-   * A chunkable value never composes either.
+   * before any is written, so a write could not reach the read of an entry its key aliases. A chunkable value never
+   * composes.
    */
   private composedMappings(fn: FunctionDefinitionNode, constructor: boolean): Set<string> {
     const composed = new Set<string>();
-    if (!this.composesAliases || this.routeSnapshotKeysOnly || this.callsCloseSegments || constructor
-      || fn.messageBusRoute || fn.name.startsWith('__message_bus_') || fn.modifiers.includes(FunctionModifier.DELEGATE)
+    if (this.callsCloseSegments || constructor || fn.modifiers.includes(FunctionModifier.DELEGATE)
       || !(fn.body instanceof BlockNode)) return composed;
     const statements = fn.body.statements ?? [];
     for (const [mapping, info] of this.scalarMappings) {
@@ -801,19 +763,13 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private transformFunction(fn: FunctionDefinitionNode, constructor = false): void {
-    // The kernel's pre-write key recipes; a framed body plans its keys from its own frame and takes none.
+    // The direct body's pre-write key recipes; a framed body plans its keys from its own frame and takes none.
     if (!this.callsCloseSegments) this.publishStraightLineMappingKeyValues(fn);
     const composed = this.composedMappings(fn, constructor);
     // A collection is no symbol, so a local may take its name, and the bare `x[i]` this pass sees is then the local's.
     const shadowed = declaredNames(fn);
     const selected = this.collectCacheableEntries(fn.body).filter((e) => !composed.has(e.mapping)
-      && !shadowed.has(e.mapping)
-      && !(this.routeSnapshotKeysOnly
-      && e.keys.length === 1
-      && !e.keys.some((key) => key.kind === 'expression'
-        || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))
-      && !e.inLoop
-      && (constructor || !this.entryReadGuardedChunkableWrite(fn, e))));
+      && !shadowed.has(e.mapping));
     // Under the framed composition, which top-level statements make a call another contract's code runs in. A call
     // of a variable is a call through a pointer, which may lower to one another contract runs.
     const variables = new Set([...this.stateVariableNames, ...fn.parameters.map((parameter) => parameter.name)]);
@@ -833,7 +789,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // afterwards instead of holding a node that is no longer in the body. An entry with a call between two of its
     // accesses gets a cache per run of statements (`straddleSpans`), each redirect rewriting its own run alone.
     // Capture source guards before any redirect rewrites a mutation site. Multiple cached entries may share a
-    // branch, and a later guard scan must still see the complete source body. The guard plan feeds the kernel's
+    // branch, and a later guard scan must still see the complete source body. The guard plan feeds the
     // replayable flush activation; a framed body publishes its own write activation instead, so it takes none.
     const selectedWithPlans = selected.map((e) => ({
       e, guardPlan: this.callsCloseSegments ? undefined : this.replayableCacheActivation(fn, e),
@@ -901,10 +857,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (lastWrite >= 0 && calling.slice(lastWrite + 1).some(Boolean)) closings.set(item, statements[lastWrite]!);
       }
     }
-    // DS-6 (closeBeforeGuardedDelete). Under the message bus a route cloned from this body stages no alias write, so
-    // the body keeps its end flush here and CloseDirectEntryCaches moves it in the direct body once routes are cloned.
+    // DS-6 (closeBeforeGuardedDelete).
     const writeOnly = new Set<(typeof prepared)[number]>();
-    if (this.composesAliases && !this.callsCloseSegments && !this.routeSnapshotKeysOnly) {
+    if (!this.callsCloseSegments) {
       const functions = new Set([...this.contractFunctionNames, ...this.sourceFunctionNames]);
       for (const item of prepared) {
         if (item.span !== undefined || !this.scalarMappings.has(item.e.mapping)
@@ -1262,59 +1217,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     }
   }
 
-  /**
-   * A chunkable entry an entry point writes once, as the only statement of a top-level single-arm branch whose guard
-   * reads that entry and otherwise only stable arguments and literals: `if (m[k].length > 1) { m[k] = m[k] + x; }`.
-   * Cached before route synthesis, the route reads the entry once, at its authenticated key argument, and the flush
-   * runs on a bit computed from that read alone. A guard over any other read keeps the raw write, which admission
-   * refuses.
-   */
-  private entryReadGuardedChunkableWrite(fn: FunctionDefinitionNode, e: CacheableEntry): boolean {
-    const [key] = e.keys;
-    if (this.callsCloseSegments || !fn.isEntryPoint || e.inLoop || e.mutationCount !== 1
-      || e.fromModifier !== undefined || e.keys.length !== 1 || key?.kind !== 'id'
-      || this.scalarMappings.get(e.mapping)?.depth !== 1 || !isChunkableValueType(e.valueType)) return false;
-    const stable = stableKernelArgumentIndices(fn);
-    const argument = (name: string): boolean => fn.parameters[stable.get(name) ?? -1]?.name === name;
-    const variables = new Set([...this.stateVariableNames, ...declaredNames(fn)]);
-    if (!argument(key.name) || reaches(fn.body, (node) => node instanceof ReturnNode || mayCall(node, variables))) {
-      return false;
-    }
-    const entry = (name: string, keys: readonly Node[]): boolean => name === e.mapping && keys.length === 1
-      && keyNodeMatches(keys[0], key);
-    const write = (node: Node): boolean => (node instanceof ArrayAssignNode && entry(node.name, [node.index]))
-      || (node instanceof MappingAssignNode && entry(node.name, node.keys) && node.arrayIndex === undefined
-        && !node.arrayPush && !node.arrayPop);
-    const [branch, ...others] = (fn.body.statements ?? []).filter((statement) => reaches(statement, write));
-    if (others.length > 0 || !(branch instanceof BranchNode) || branch.elseBlock !== undefined) return false;
-    const arm = branch.ifBlock.statements ?? [];
-    if (arm.length !== 1 || !write(arm[0]!)) return false;
-    let readsEntry = false;
-    const replayable = (node: Node): boolean => {
-      if ((node instanceof MappingAccessNode && entry(node.name, node.keys))
-        || (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode
-          && entry(node.array.name, [node.index]))) {
-        readsEntry = true;
-        return true;
-      }
-      if (node instanceof IdentifierNode) return argument(node.name);
-      if (node instanceof UnaryOpNode) return PURE_GUARD_OPERATORS.has(node.operator) && replayable(node.expression);
-      if (node instanceof FieldAccessNode) return node.name === 'length' && replayable(node.expression);
-      if (node instanceof CastNode) return replayable(node.expression);
-      if (node instanceof BinaryOpNode) return replayable(node.left) && replayable(node.right);
-      return node instanceof LiteralNode;
-    };
-    return replayable(branch.condition) && readsEntry;
-  }
-
   /** Recover the exact source-argument condition for a scalar cache's final dirty-bit flush. */
   private replayableCacheActivation(
     fn: FunctionDefinitionNode,
     entry: { mapping: string; keys: KeyKind[]; mutationCount: number; inLoop: boolean },
   ): { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } } | undefined {
     if (entry.inLoop || entry.mutationCount === 0 || !this.scalarMappings.has(entry.mapping)) return undefined;
-    const argumentIndices = stableKernelArgumentIndices(fn);
-    const booleanArguments = kernelBooleanArgumentIndices(fn);
+    const argumentIndices = stableArgumentIndices(fn);
+    const booleanArguments = booleanArgumentIndices(fn);
     const mutations: Array<{ guard: ExternalCallExpression; value?: ExpressionNode }> = [];
     let mutationCount = 0;
     let unsupported = false;
@@ -1325,7 +1235,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
     const scan = (node: Node, guard?: ExternalCallExpression, representable = true): void => {
       if (node instanceof BranchNode) {
-        const condition = kernelArgumentConditionActivation(node.condition, argumentIndices, booleanArguments);
+        const condition = argumentConditionActivation(node.condition, argumentIndices, booleanArguments);
         const supported = representable && condition !== undefined;
         scan(node.ifBlock, supported ? combine(guard, condition!) : undefined, supported);
         if (node.elseBlock) scan(node.elseBlock, supported ? combine(guard, {
@@ -1641,11 +1551,6 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (key.kind !== 'id' || key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)) continue;
         if (scope.declaredInLoop.has(key.name) || scope.reassigned.has(key.name)) { keyUsable = false; break; }
         if (!scope.assigned.has(key.name)) continue;
-        // The route-snapshot instance runs before kernel route synthesis, where a handler's collection accesses are
-        // the ones the message-bus covenant and the SDK's argument derivation both read by name. An anchored local
-        // there changes that shape, so the anchored form stays with the ordinary pipeline; kernel handlers keep
-        // their established snapshot-key caching.
-        if (this.routeSnapshotKeysOnly) { keyUsable = false; break; }
         const declaration = scope.declaredTopLevel.get(key.name);
         const statements = body instanceof BlockNode ? body.statements ?? [] : [];
         const anchor = this.firstUseStatement(body, e);
@@ -1805,38 +1710,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     return scope;
   }
 
-  private declaresNameInsideLoop(root: Node, name: string): boolean {
-    let found = false;
-    const walk = (node: Node, inLoop: boolean): void => {
-      if (found) return;
-      const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
-      if (nowLoop && node instanceof VariableDefinitionNode && node.name === name) { found = true; return; }
-      if (nowLoop && node instanceof TupleAssignmentNode
-        && node.elements.some((element) => !element.skip && !element.existing && element.name === name)) {
-        found = true; return;
-      }
-      for (const key of Object.keys(node)) {
-        if (['location', 'resolvedFunction', 'functionReference', 'definition',
-          'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
-        const child = (node as unknown as Record<string, unknown>)[key];
-        if (child instanceof Node) walk(child, nowLoop);
-        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item, nowLoop);
-      }
-    };
-    walk(root, false);
-    return found;
-  }
-
   /**
-   * A write-back may drop its dirty guard where nothing replays or moves it as the guarded flush: not in a framed
-   * body, whose write activation reads the flag; not under the message bus, whose routes clone the body and whose
-   * CloseDirectEntryCaches moves the flush (`composesAliases` holds only without it); not for a guarded kernel
-   * activation.
+   * A write-back may drop its dirty guard where nothing replays it as the guarded flush: not in a framed body, whose
+   * write activation reads the flag, and not for a guarded entry activation.
    */
   private settlesWriteBack(
     guardPlan?: { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } },
   ): boolean {
-    return this.composesAliases && !this.callsCloseSegments && !this.routeSnapshotKeysOnly && guardPlan === undefined;
+    return !this.callsCloseSegments && guardPlan === undefined;
   }
 
   /** `if (<dirty>) { m[k] = local; }`, or the plain `m[k] = local` once `settled` says every path set the flag. */
@@ -1851,7 +1732,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     const flush = new MappingAssignNode(mapping, keyNodes, rhs); // m[k1][k2] = local
     flush.fromModifier = fromModifier;
     flush.location = loc;
-    flush.kernelValueSource = guardPlan?.valueSource;
+    flush.valueSource = guardPlan?.valueSource;
     if (settled) return flush;
     const flushBlock = new BlockNode([flush]);
     flushBlock.location = loc;
@@ -1862,7 +1743,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // The not-dirty arm is a physical no-op. If-converting it to a preserve write would still consume and recreate
     // chunk-backed resources, defeating the dirty bit and forcing outputs for paths which never changed the entry.
     branch.preserveConditionalEntryWrites = true;
-    branch.kernelEntryActivation = guardPlan?.activation;
+    branch.entryActivation = guardPlan?.activation;
     return branch;
   }
 
@@ -1900,104 +1781,6 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       marked ||= setsDirtyOnEveryPath(stmt, dirty);
     }
     return out;
-  }
-
-  // Does `node` contain an assignment / declaration that writes the identifier `name` (so the key is not invariant)?
-  private assignsName(node: Node, name: string): boolean {
-    let found = false;
-    const scan = (n: Node): void => {
-      if (!n || found) return;
-      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode && n.identifier.name === name) found = true;
-      if (n instanceof VariableDefinitionNode && n.name === name) found = true;
-      for (const key of Object.keys(n)) {
-        if (found || ['location', 'resolvedFunction', 'functionReference', 'definition',
-          'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
-        const v = (n as unknown as Record<string, unknown>)[key];
-        if (v instanceof Node) scan(v);
-        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) scan(e);
-      }
-    };
-    scan(node);
-    return found;
-  }
-}
-
-/**
- * DS-6 under the message bus: each direct entry body's read-modify-write caches take the placement
- * `closeBeforeGuardedDelete` gives, once route synthesis has cloned the bodies. A route and its handler clones compile
- * without alias staging, so a flush moved before the delete there would skip the write where the keys meet and the
- * delete does not run: they keep the end flush, as does an entry a route invokes itself and a cache also flushed before
- * a return. So does a cache the body only writes: the SDK plans a delete the kernel's argument activation turns off as
- * a read, and a write-only alias write then finds no node at the delete's slot (refused by the VM preflight).
- */
-export class CloseDirectEntryCaches extends AstTraversal {
-  private sourceFunctionNames: string[] = [];
-
-  visitSourceFile(node: SourceFileNode): Node {
-    this.sourceFunctionNames = node.freeFunctions.map((fn) => fn.name);
-    if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
-    return node;
-  }
-
-  visitContract(node: ContractNode): Node {
-    // An array collection's entries cache as a mapping's do (CacheMappingEntryInLoop.visitContract).
-    const scalars = new Set(node.collections.filter((col) => col.sorted
-      && !(col.innermostValueType instanceof ArrayType) && !(col.innermostValueType instanceof StructType)
-      && !isChunkableValueType(col.innermostValueType)).map((col) => col.name));
-    if (scalars.size === 0) return node;
-    const routed = (fn: FunctionDefinitionNode): boolean => fn.messageBusRoute === true
-      || fn.name.startsWith('__message_bus');
-    const flushes = (statement: StatementNode): boolean => scalars.has(cacheFlush(statement)?.write.name ?? '');
-    const direct = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]
-      .filter((fn): fn is FunctionDefinitionNode => fn?.body instanceof BlockNode && fn.isEntryPoint
-        && !fn.collectionJournal && !routed(fn) && (fn.body.statements ?? []).some(flushes));
-    if (direct.length === 0) return node;
-    const invoked = new Set<string>();
-    for (const fn of node.functions) {
-      if (!routed(fn) || !fn.body) continue;
-      reaches(fn.body, (child) => {
-        if (child instanceof FunctionCallNode) invoked.add(child.identifier.name);
-        return false;
-      });
-    }
-    const functions = new Set([...node.functions.map((fn) => fn.name), ...this.sourceFunctionNames]);
-    for (const fn of direct) if (!invoked.has(fn.name)) this.closeFlushes(fn.body as BlockNode, scalars, functions);
-    return node;
-  }
-
-  private closeFlushes(body: BlockNode, scalars: ReadonlySet<string>, functions: ReadonlySet<string>): void {
-    const flushedAfter = new Map<StatementNode, StatementNode>();
-    for (const flush of [...(body.statements ?? [])]) {
-      const found = cacheFlush(flush);
-      if (found === undefined || !scalars.has(found.write.name)) continue;
-      const { write, local } = found;
-      const dirty = `${local}_dirty`;
-      const keys = write.keys.map((key) => canonKeyOf(key, true)?.key);
-      let flushes = 0;
-      reaches(body, (node) => {
-        if ((node instanceof BranchNode || node instanceof TernaryOpNode) && node.condition instanceof IdentifierNode
-          && node.condition.name === dirty) flushes += 1;
-        return false;
-      });
-      const statements = body.statements ?? [];
-      const declaration = statements.find((statement): statement is VariableDefinitionNode =>
-        statement instanceof VariableDefinitionNode && statement.name === local);
-      const marker = statements.find((statement) =>
-        statement instanceof VariableDefinitionNode && statement.name === dirty);
-      if (flushes !== 1 || declaration === undefined || marker === undefined
-        || keys.some((key) => key === undefined)) continue;
-      const others = statements.filter((statement) => statement !== declaration && statement !== marker
-        && statement !== flush);
-      const close = closeBeforeGuardedDelete(others, local, dirty, write.name, keys as KeyKind[], functions);
-      if (close === undefined || close.writeOnly
-        || statements.indexOf(others[close.lastWrite]!) > statements.indexOf(flush)) continue;
-      // Flushes that close after one statement keep their order.
-      const closing = others[close.lastWrite]!;
-      const kept = statements.filter((statement) => statement !== flush);
-      const at = kept.indexOf(flushedAfter.get(closing) ?? closing) + 1;
-      flushedAfter.set(closing, flush);
-      body.statements = [...kept.slice(0, at), flush, ...kept.slice(at)];
-    }
   }
 }
 

@@ -138,8 +138,7 @@ The stateful exports also include:
 - `ThreadManager` and `ThreadHandle` for partitioned masters;
 - event parsing/query helpers and the ethers-flavored event facade;
 - external contract registration and result-event calls;
-- message-bus composition (`sc.batch`, `messageBus.compose`) and composed external state mutation, both
-  experimental;
+- composed external state mutation (experimental);
 - lifecycle helpers for child deployment, upgrades and proxies, split/merge, and destruction (custom proxies and
   `upgrades.upgradeProxy` are experimental);
 - oracle pool genesis, keeper and co-spend helpers.
@@ -175,7 +174,6 @@ source maps, composition routes, split metadata, and security requirements may a
 ```ts
 import { Contract, utils } from '@solidcash/solidcash';
 import { StatefulContract } from '@solidcash/solidcash/stateful';
-import * as messageBus from '@solidcash/solidcash/message-bus';
 import { expect } from 'vitest';
 import '@solidcash/solidcash/vitest';
 ```
@@ -191,8 +189,6 @@ area has its own entry point:
 | `@solidcash/solidcash/network/mock` | `MockNetworkProvider`, the in-process test network, and `FailingMockNetworkProvider` |
 | `@solidcash/solidcash/network/electrum` | `ElectrumNetworkProvider` |
 | `@solidcash/solidcash/hdsigner` | `HDSigner`, `HDPublicSigner`, `signersFromMnemonic`, `BCH_DEFAULT_HD_PATH` and `BCH_ACCOUNT_BRANCH` |
-| `@solidcash/solidcash/message-bus` | Message-bus composition (`compose`) and its preflight helpers (experimental) |
-| `@solidcash/solidcash/kernel` | The message-bus kernel route planners, for tooling (experimental) |
 | `@solidcash/solidcash/framed` | The framed convention: `framedDeploy`, `framedCall`, `framedRead`, `framedReceipt`, `framedQueue`, `framedComposer` and `framedReference` (experimental, see [Framed Composition](/docs/guides/framed-composition)) |
 | `@solidcash/solidcash/oracle` | Oracle pools: `createOraclePool`, `PoolKeeper`, coin selection (`selectPoolInfoCoin`, `selectPoolSlot`) and `resolveBlockhashCoSpend` |
 | `@solidcash/solidcash/bcmr` | BCMR token metadata: registry encoding, publication outputs and authchain helpers |

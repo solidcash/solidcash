@@ -47,7 +47,7 @@ export function applyDeferredEcrecoverArgument(
   const previous = deferred.argBlobs[callIndex];
   if (previous !== null) {
     if (binToHex(previous) !== binToHex(argBlob)) {
-      throw new Error(`messageBus: recovery recipe disagrees with resolved call ${callIndex}`);
+      throw new Error(`recovery recipe disagrees with resolved call ${callIndex}`);
     }
     return false;
   }

@@ -8,7 +8,7 @@ describe('this.categoryId introspection (contract self-category)', () => {
   it('lowers to OP_INPUTINDEX OP_UTXOTOKENCATEGORY (the active input own category)', () => {
     const a = compileString(
       'contract C() { function f(bytes32 expected) { require(this.categoryId == expected); } }',
-      { messageBus: false },
+      {},
     );
     expect(a.bytecode).toContain('OP_INPUTINDEX OP_UTXOTOKENCATEGORY');
   });
@@ -27,7 +27,7 @@ describe('this.category introspection (display-order own category)', () => {
   it('strips the capability byte and reverses native category byte order', () => {
     const a = compileString(
       'contract C() { function f(bytes32 expected) { require(this.category == expected); } }',
-      { messageBus: false },
+      {},
     );
     expect(a.bytecode).toContain('OP_UTXOTOKENCATEGORY');
     expect(a.bytecode).toContain('OP_SPLIT OP_DROP OP_REVERSEBYTES');
@@ -37,7 +37,7 @@ describe('this.category introspection (display-order own category)', () => {
     const a = compileString(
       'contract C() { int x; function readAmount() {'
       + ' bytes32 category = this.category; this.x = this.tokens[category].tokenAmount; } }',
-      { messageBus: false },
+      {},
     );
     const amount = a.abi.find((entry) => entry.name === 'readAmount')!;
     expect(amount.tokenContainerAccesses?.[0]).toMatchObject({ keySource: 'own' });

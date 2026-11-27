@@ -163,9 +163,9 @@ const callDigest = (tag: Uint8Array, selector: string, argument: Uint8Array): Ui
 
 describe('A7: a constructor call in create', () => {
   it('passes when the callee publishes the tagged record and its outputs sit at its input index', () => {
-    const callee = compileString(calleeSource('T'), { deployer: true, messageBus: false, genesisCalls: true });
+    const callee = compileString(calleeSource('T'), { deployer: true, genesisCalls: true });
     const caller = compileString(callerSource('T', 'i.f(5); ok = true;'), {
-      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     });
     const x = masters(caller.deployer!).x;
     const calleeMaster = masters(callee.deployer!, 7);
@@ -221,9 +221,9 @@ describe('A7: a constructor call in create', () => {
   });
 
   it('fails when the callee is answered with an untagged record', () => {
-    const callee = compileString(calleeSource('T'), { deployer: true, messageBus: false, genesisCalls: true });
+    const callee = compileString(calleeSource('T'), { deployer: true, genesisCalls: true });
     const caller = compileString(callerSource('T', 'i.f(5); ok = true;'), {
-      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     });
     const x = masters(caller.deployer!).x;
     const calleeMaster = masters(callee.deployer!, 7);
@@ -283,13 +283,13 @@ describe('A7: a constructor call in create', () => {
       contract T2 { bool b; function g(int x) external returns (bool) { b = true; return true; } }
       contract C { bool ok; constructor(IA x, IB y) { ok = x.f(1); y.g(2); } }`;
     const caller = compileString(source, {
-      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     const calleeA = compileString(source, {
-      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'T1',
+      deployer: true, genesisCalls: true, primaryContractName: 'T1',
     } as never);
     const calleeB = compileString(source, {
-      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'T2',
+      deployer: true, genesisCalls: true, primaryContractName: 'T2',
     } as never);
     const x = masters(caller.deployer!).x;
     const aMaster = masters(calleeA.deployer!, 7);
@@ -367,9 +367,9 @@ describe('A7: a constructor call in create', () => {
 
 
   it('reports a callee unlocking shorter than 300 bytes at its code-marker check', () => {
-    const callee = compileString(calleeSource('T'), { deployer: true, messageBus: false, genesisCalls: true });
+    const callee = compileString(calleeSource('T'), { deployer: true, genesisCalls: true });
     const caller = compileString(callerSource('T', 'i.f(5); ok = true;'), {
-      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     });
     const x = masters(caller.deployer!).x;
     const calleeMaster = masters(callee.deployer!, 7);
@@ -434,9 +434,9 @@ describe('A7: create binds the record it accepts to the callee', () => {
     calleeUnlock?: (unlocking: Uint8Array) => Uint8Array;
     tagGIn?: number;
   } = {}) => {
-    const callee = compileString(calleeSource('T'), { deployer: true, messageBus: false, genesisCalls: true });
+    const callee = compileString(calleeSource('T'), { deployer: true, genesisCalls: true });
     const caller = compileString(callerSource('T', 'i.f(5); ok = true;'), {
-      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     });
     const x = masters(caller.deployer!).x;
     const calleeMaster = masters(callee.deployer!, 7);
@@ -541,7 +541,7 @@ describe('A7: an emit after a constructor call', () => {
       contract T { bool ok; function f(int x) external returns (bool) { ok = true; return true; } }
       contract C { bool ok; event Made(int v); constructor(I i) { ok = i.f(5); emit Made(7); } }`;
     const caller = compileString(source, {
-      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'C',
+      deployer: true, genesisCalls: true, primaryContractName: 'C',
     } as never);
     expect(caller.deployer?.callSlots).toBe(1);
     expect(caller.deployer?.abi.find((entry) => entry.name === 'create')?.blockLayout?.slots.map((slot) => slot.kind))

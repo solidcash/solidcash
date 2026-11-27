@@ -12,30 +12,29 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
 /**
  * Compile a fixture for direct-route language semantics.
  *
- * General parser/type/codegen tests must not synthesize an unrelated message-bus batch route: doing so changes byte-identity
- * assertions, can replace the source diagnostic with a generated-route diagnostic, and multiplies full-suite
- * runtime. message bus tests import the production compiler directly. An explicit `messageBus: true` still wins.
+ * General parser/type/codegen fixtures run with the final-require check and the unsafe-operation gate relaxed.
+ * Tests that need production defaults import the compiler directly.
  */
 export const compileFile = (
   sourcePath: Parameters<typeof compileFileRaw>[0], options: FileOptions = {},
 ): ReturnType<typeof compileFileRaw> => compileFileRaw(sourcePath, {
-  messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+  enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileString = (
   source: string, options: StringOptions = {},
 ): ReturnType<typeof compileStringRaw> => compileStringRaw(source, {
-  messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+  enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileStringMulti = (
   source: string, options: MultiOptions = {},
 ): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, {
-  messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+  enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileStringSplit = (
   source: string, options: SplitOptions = {},
 ): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, {
-  messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
+  enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });

@@ -67,7 +67,6 @@ describe('October 2026 class A holes', () => {
     const artifact = compileString(
       `${P} contract C { function f(bytes target, bytes payload) {`
       + ' address(target).call(payload); require(true); } }',
-      { messageBus: false },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'f');
     if (!fn) throw new Error(`no f; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -85,7 +84,7 @@ describe('October 2026 class A holes', () => {
       else if (entry.name === '__internal__returnOutputIdx') values[entry.name] = num(-1n);
       else values[entry.name] = new Uint8Array();
     }
-    const dispatch = artifact.messageBus?.routeInBytecode === true;
+    const dispatch = false;
     const calleeUnlock = pushesOf([payload]);
     const spend = (calleeLock: Uint8Array): true | string => {
       const transaction: VmTransaction = {
@@ -138,7 +137,7 @@ describe('October 2026 class A holes', () => {
       else if (entry.name === '__internal__returnOutputIdx') values[entry.name] = num(-1n);
       else values[entry.name] = new Uint8Array();
     }
-    const masterUnlock = redeemUnlock(fn, redeem, values, artifact.messageBus?.routeInBytecode === true);
+    const masterUnlock = redeemUnlock(fn, redeem, values, false);
     // The bound pool's slot sits at its covenant, which its read path recreates. A stand-in sits at a lock its read
     // unlocking satisfies, so only the reader refuses it.
     const spend = (side: VmOutput): true | string => {
@@ -185,9 +184,7 @@ describe('October 2026 class A holes', () => {
       `${P} contract C { mapping(int => int) m;`
       + ' function writeRead(int k, int v, int r, int sel) { this.m[k] = v;'
       + ' if (sel > 0) { require(this.m[r] > 0); } require(true); } }',
-      // The message-bus redeem for this body is past the 10_000-byte standard limit, so the spend is the
-      // direct function, which is the census the read-slot count lives in.
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'writeRead');
     if (!fn) throw new Error(`no writeRead; ${artifact.abi.map((entry) => entry.name).join(',')}`);
@@ -220,7 +217,7 @@ describe('October 2026 class A holes', () => {
       else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
       else throw new Error(`unexpected input ${entry.name}`);
     }
-    const dispatch = artifact.messageBus?.routeInBytecode === true;
+    const dispatch = false;
     const master = input(0, redeemUnlock(fn, redeem, values, dispatch));
     const entryUnlock = pushesOf([num(0n), num(1n), entryRedeem]);
     const before = encodeEntryCommitment(slot, zero, num(1n));

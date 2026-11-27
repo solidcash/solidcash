@@ -18,7 +18,7 @@ import {
 } from './authenticated-collection-value.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
-import { entryAccessAt } from './route-expression-key.js';
+import { entryAccessAt } from './call-expression-key.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentsFromTrace } from './trace-commitment-helpers.js';
 import { commitmentsToState } from './trace-verified-value-helpers.js';
@@ -51,10 +51,9 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
   let fullTrace = fullTraceIn;
   if (group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined) {
     const delegateGroup = stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
-    const delegateFn = delegateGroup?.compilerRoute?.abiFunction
-      ?? delegateGroup?.externalContract.inner.artifact.abi.find(
-        (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
-      );
+    const delegateFn = delegateGroup?.externalContract.inner.artifact.abi.find(
+      (candidate: AbiFunction) => candidate.name === delegateGroup.functionName,
+    );
     const witnessInputs = delegateFn?.inputs.filter((input: { name: string }) =>
       /^__internal__valueWitness_\d+$/.test(input.name)) ?? [];
     const witnessCollection = witnessInputs.length === 1
@@ -81,7 +80,6 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
     }
     const currentWitness = witnessInputs.length === 1
       ? delegateGroup?.internalArgs?.[witnessInputs[0].name]
-        ?? delegateGroup?.compilerRoute?.internalArgs?.[witnessInputs[0].name]
       : undefined;
     if (currentWitness instanceof Uint8Array && currentWitness.length > 60
       && isCompleteCollectionValue(currentWitness, witnessValueType, witnessLayout?.structs)) {
@@ -104,7 +102,7 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
     }
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
     console.error('route-derive-finish', {
       groupIdx, states: fullTrace.length, error: fullTrace.at(-1)?.error,
       tail: fullTrace.slice(-3).map((state) => ({
@@ -141,7 +139,7 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
       && lockingBytecode.every((byte, index) => byte === expectedMasterLockingBytecode[index]);
   });
   // The concrete probe is authoritative: output-only caller slots and sorted INSERT expansion can shift
-  // participant bands in ways the pre-build dense-coordinate helper cannot reconstruct. Compiler-routed
+  // participant bands in ways the pre-build dense-coordinate helper cannot reconstruct. Routed
   // proxies deliberately emit a spacer in their nominal master slot, so retain the helper as their fallback.
   const bOutputBase = builtOutputBase >= 0
     ? builtOutputBase : stb.getExternalCallOutputBase(groupIdx);

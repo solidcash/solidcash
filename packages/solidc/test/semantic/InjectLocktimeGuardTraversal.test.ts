@@ -24,7 +24,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           require(x >= 100);
         }
       }`;
-    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, {}).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('does not inject when a top-level require(tx.time >= ...) is already present', () => {
@@ -74,7 +74,7 @@ describe('InjectLocktimeGuardTraversal', () => {
         }
       }`;
     // bigint param (no H6 bounds check) so the guard stays at the very start.
-    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, {}).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('injects guard when tx.locktime is used only in a branch condition', () => {
@@ -88,7 +88,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           }
         }
       }`;
-    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, {}).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('does not inject guard when tx.locktime is used in a branch body and tx.time check is already present', () => {
@@ -153,7 +153,7 @@ describe('InjectLocktimeGuardTraversal', () => {
     // A fixed-bound loop is unrolled, so the three checked `int + tx.locktime` additions share one outlined
     // bounds-check helper that precedes the injected guard in the script. The guard is still injected; assert its
     // presence rather than that it is the very first opcode.
-    expect(countGuards(compileString(src, { messageBus: false }))).toBeGreaterThanOrEqual(1);
+    expect(countGuards(compileString(src, {}))).toBeGreaterThanOrEqual(1);
   });
 
 
@@ -189,7 +189,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           require(x >= 0);
         }
       }`;
-    const bytecode = compileString(src, { messageBus: false }).bytecode;
+    const bytecode = compileString(src, {}).bytecode;
     expect(bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
@@ -215,7 +215,7 @@ describe('InjectLocktimeGuardTraversal', () => {
         }
       }`;
     // bigint param (no H6 bounds check) so the guard stays at the very start.
-    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, {}).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('still injects when the only tx.time check follows a return', () => {
@@ -228,7 +228,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           require(tx.time >= 100);
         }
       }`;
-    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, {}).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('still injects when a branch returns before the tx.time check', () => {
@@ -243,7 +243,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           require(t >= 100);
         }
       }`;
-    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, {}).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('does not inject when enforceLocktimeGuard is disabled', () => {

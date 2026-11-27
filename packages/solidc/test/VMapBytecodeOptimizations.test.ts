@@ -2,9 +2,8 @@ import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm, bytecodeToScript, decodeInt, Op, sourceMapToLocationData } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
-// These tests inspect the physical route's helper allocation and byte budget.
-// Message-bus route synthesis has its own cost and structure regression suite.
-const DIRECT_ROUTE = { forceStateful: true, messageBus: false } as const;
+// These tests inspect the direct route's helper allocation and byte budget.
+const DIRECT_ROUTE = { forceStateful: true } as const;
 
 // Dynamically allocated helper ids render either as a hex push or, when the id came from the single-byte pool
 // (script numbers 1..16 and -1, which push as one opcode), as OP_1..OP_16 / OP_1NEGATE. Both are the same kind
@@ -34,7 +33,7 @@ describe('general vmap bytecode sharing', () => {
     // addresses to the master lock and runs the container, foreign-token and mutable-output scans.
     // 4335 measured after the trailing batch-width binding landed on the direct convention.
     // 4695 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
-    // 4711 measured after the direct entry's message-bus-eligibility census widened.
+    // 4711 measured after the direct entry's batch-eligibility census widened.
     // 4990.5 measured after the October reaudit/hardening set (master-lock binding plus the DS-6 activity
     // settlement and container/foreign-token scans); re-pinned to the verified current emission.
     // 5090.5 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
@@ -57,7 +56,7 @@ describe('general vmap bytecode sharing', () => {
     // 4415.5 measured after the October covenant hardening (master-lock entry addresses, per-function scans).
     // 4630.5 measured after the trailing batch-width binding landed on the direct convention.
     // 4988 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
-    // 5004 measured after the direct entry's message-bus-eligibility census widened.
+    // 5004 measured after the direct entry's batch-eligibility census widened.
     // 5283.5 measured after the October reaudit/hardening set; re-pinned to the verified current emission.
     // 5383.5 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
     expect(artifact.bytecode.length / 2).toBeLessThan(6300); // B+F1: +~790 B void-record/edge overhead

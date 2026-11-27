@@ -13,7 +13,7 @@ import { attachWait } from '../wait.js';
 import {
   assertFinalizedBytesWithCovenant,
   inputSubjectsOfBuilder,
-} from '../message-bus/preflight.js';
+} from '../finalization.js';
 
 export interface SendRawBuilderHost {
   readonly parentProvider: NetworkProvider;

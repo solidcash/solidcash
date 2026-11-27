@@ -10,11 +10,8 @@ import { fixtures } from './fixtures.js';
 describe('Code generation & target code optimisation', () => {
   fixtures.forEach((fixture) => {
     it(`should compile ${fixture.fn} to correct Script and artifact`, () => {
-      // These checked-in artifacts pin the legacy/direct code-generation
-      // surface. Default-on message-bus artifacts are covered separately and
-      // must not silently rewrite every historical fixture.
+      // These checked-in artifacts pin the legacy/direct code-generation surface.
       const artifact = compileFile(new URL(`../valid-contract-files/${fixture.fn}`, import.meta.url), {
-        messageBus: false,
         ...fixture.compilerOptions,
       });
       // Invocation analysis is additive compiler metadata with dedicated
@@ -23,16 +20,13 @@ describe('Code generation & target code optimisation', () => {
       const { invocationAnalysis } = artifact;
       expect(invocationAnalysis?.version).toBe(1);
       // Fixtures are JSON artifacts, so compare the same serializable surface
-      // (omitting in-memory `undefined` fields). The explicit test-only route
-      // selection is not part of the historical artifact contract.
+      // (omitting in-memory `undefined` fields).
       const legacyArtifact = JSON.parse(JSON.stringify(artifact));
       delete legacyArtifact.invocationAnalysis;
       delete legacyArtifact.debug?.invokeDebug;
-      // Effect-order metadata is asserted by its dedicated graph/admission tests; these goldens pin direct
+      // Effect-order metadata is asserted by its dedicated tests; these goldens pin direct
       // bytecode and the historical ABI surface independently of that additive planner annotation.
       for (const fn of legacyArtifact.abi) delete fn.sourceEffectOrder;
-      delete legacyArtifact.compiler.options.messageBus;
-      delete legacyArtifact.compiler.options.messageBusKernel;
       delete legacyArtifact.compiler.options.enforceFinalRequire;
       delete legacyArtifact.compiler.options.allowUnsafeOperations;
       // fingerprint is a deterministic hash of the (separately asserted) bytecode, so match its presence

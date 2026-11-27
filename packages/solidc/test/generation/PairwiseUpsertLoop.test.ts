@@ -4,7 +4,7 @@ import { compileString, compileStringMulti } from '../../src/compiler.js';
 // The SDK rewrites a sorted-mapping loop call's arrays - reordering a gap's new keys, merging a repeated key, netting
 // the sender's own credit out - to reach the order the covenant folds. That keeps the call's meaning only when each turn
 // is fixed by its own (key, value) pair, which the compiler publishes as `pairwise`, and `senderDebit` where each turn
-// first debits msg.sender by what it credits. Both are SDK guidance, which the kernel's stream digest skips.
+// first debits msg.sender by what it credits. Both are SDK guidance, which the journal's stream digest skips.
 const book = (body: string): string => `contract Book() { int seen; int last; mapping(int => int) bal;
   event Seen(int k, int v);
   function seed(int a, int v) { this.bal[a] = v; }
@@ -15,7 +15,7 @@ const token = (body: string, valueType = 'int'): string => `contract Token() { m
   function run(address[] rs, ${valueType}[] amounts) { for (int i = 0; i < rs.length; i++) { ${body} } } }`;
 const MULTI_TRANSFER = 'this.bal[msg.sender] -= amounts[i]; this.bal[rs[i]] += amounts[i];';
 const quiet = { suppressWarnings: true };
-const conventions = [quiet, { ...quiet, messageBus: false }];
+const conventions = [quiet, { ...quiet }];
 
 const published = (source: string, fn: string, options: object = quiet): unknown => {
   const loop = compileString(source, options).abi.find((entry) => entry.name === fn)?.sortedUpsertLoopInfo?.[0];

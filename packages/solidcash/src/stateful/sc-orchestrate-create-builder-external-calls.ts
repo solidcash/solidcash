@@ -29,7 +29,7 @@ import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 import {
   createReadOnlyDynamicChunkUnlocker, getDynamicChunkAddress, getSatoshiContainerAddress,
 } from './covenant-helpers.js';
-import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
+import { defaultInternalFunctionArg } from './internal-function-args.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
@@ -79,7 +79,6 @@ import {
 } from './sc-discover-create-builder-transitive-external-calls.js';
 import { refuseCreateBuilderNestedBlockhashReads } from './sc-refuse-create-builder-nested-blockhash-reads.js';
 import { refuseCreateBuilderNestedLowLevelCalls } from './sc-refuse-create-builder-nested-low-level-calls.js';
-import { buildSharedMethodExternalBatch } from './sc-build-shared-method-external-batch.js';
 import {
   finalizeCreateBuilderNestedBasesUnlockers as finalizeCreateBuilderNestedBasesUnlockersImpl,
 } from './sc-finalize-create-builder-nested-bases-unlockers.js';
@@ -102,7 +101,7 @@ const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
  * as late expansion plans it.
  */
 function directGroupEcSlot(ec: ExternalCallAbi, group: ExternalCallUtxoGroup | undefined): ExternalCallAbi {
-  if (ec.interfaceName !== '__raw__' || !ec.hasReturnValues || !group || group.compilerRoute) return ec;
+  if (ec.interfaceName !== '__raw__' || !ec.hasReturnValues || !group) return ec;
   return calleePinsNoRecord(group) ? { ...ec, hasReturnValues: false } : ec;
 }
 
@@ -114,7 +113,6 @@ export type OrchestrateCreateBuilderExternalCallsHost = {
   readonly callerContract: any;
   getFullState: () => any;
   resolveExternalArgs: (...args: any[]) => any;
-  buildRepeatedExternalBatch: (...args: any[]) => any;
   resolveExternalKeccakSideCars: (...args: any[]) => any;
   resolveExternalBlockhashCoSpends: (...args: any[]) => any;
   keysMatch: (...args: any[]) => any;
@@ -598,10 +596,9 @@ export async function orchestrateCreateBuilderExternalCalls(
       }
       // A raw call's `{value:}` pays the call's target address, the co-spent callee's master lock, where the coin is
       // stuck, and the callee reads msg.value from its satoshi container, which the payment never reaches. Refuse it
-      // before a layout is planned. A message-bus participant settles its value edge in its route; a send of that one
-      // refuses the master-lock output itself.
+      // before a layout is planned.
       if (callInfo && ec.interfaceName === '__raw__' && ec.callValueEffect === true
-        && host.inner.artifact.messageBus === undefined) {
+      ) {
         const callee = callInfo.externalContract.inner.artifact.contractName;
         throw new RawCallCalleeRequiredError(
           'value to a co-spent callee', rawCallName(ec), `${callee}.${callInfo.functionName}`,
@@ -622,7 +619,6 @@ export async function orchestrateCreateBuilderExternalCalls(
 
       const nestedPrelude = await loadCreateBuilderNestedCalleePreludeImpl(
         {
-          buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a),
           resolveExternalKeccakSideCars: (...a: any[]) => host.resolveExternalKeccakSideCars(...a),
           lockingBytecode: host.inner.lockingBytecode,
         },
@@ -639,8 +635,6 @@ export async function orchestrateCreateBuilderExternalCalls(
       );
       const {
         externalCategoryId,
-        compilerRoute,
-        bGraphBlockhashSelections,
         bState,
         bStatelayout,
         bRequiredNftIndices,
@@ -657,7 +651,6 @@ export async function orchestrateCreateBuilderExternalCalls(
 
       // Build B's full block inputs when B's function has entries/events/transfers
       let bBlockInputs: UnlockableUtxo[] | undefined;
-      let bStreamedEventPlan: ExternalCallUtxoGroup['streamedEventPlan'];
       // X13: set once B's block is confirmed to carry a funding input at its published returnEvent offset.
       let bReturnEventInBlock = false;
       const bCompilerInternalArgs: Record<string, FunctionArgument> = {};
@@ -676,7 +669,6 @@ export async function orchestrateCreateBuilderExternalCalls(
         const nestedBlockCtx = {
           callerReadsRecord: ec.hasReturnValues === true,
           bBlockInputs,
-          bStreamedEventPlan,
           bReturnEventInBlock,
           bCompilerInternalArgs,
           bPlannedEntryInserts,
@@ -693,7 +685,6 @@ export async function orchestrateCreateBuilderExternalCalls(
           bValueChunkOutputCount,
           bDirectChunkValue,
           bKeccak,
-          compilerRoute,
           callInfo,
           externalCategoryId,
           slotIndex,
@@ -703,14 +694,13 @@ export async function orchestrateCreateBuilderExternalCalls(
         await assembleCreateBuilderNestedCalleeBlockInputsImpl(nestedBlockHost, nestedBlockCtx as any);
         bBlockInputs = nestedBlockCtx.bBlockInputs;
         bReturnEventInBlock = nestedBlockCtx.bReturnEventInBlock;
-        bStreamedEventPlan = nestedBlockCtx.bStreamedEventPlan;
         bDirectChunkValue = nestedBlockCtx.bDirectChunkValue;
         bValueChunkOutputCount = nestedBlockCtx.bValueChunkOutputCount;
       }
 
       // A direct callee that iterates a collection reads the walk right after its block, before any dynamic state
       // it reads: co-spend the walk there, each entry kept at its own index.
-      if (bAbiFunc !== undefined && compilerRoute === undefined && bSc && callInfo
+      if (bAbiFunc !== undefined && bSc && callInfo
         && (bAbiFunc.collectionIterations?.length ?? 0) > 0) {
         bBlockInputs = await appendCreateBuilderNestedCalleeIterationsImpl({
           bBlockInputs,
@@ -729,7 +719,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       // callee covenant authenticates their address and order; omitting them leaves its hidden
       // dynamic-input base pointing into another participant's inputs.
       const bReadChunks: Array<{ input: UnlockableUtxo; name: string; type: string }> = [];
-      if (bBlockInputs !== undefined && bAbiFunc !== undefined && compilerRoute === undefined) {
+      if (bBlockInputs !== undefined && bAbiFunc !== undefined) {
         const written = new Set(bAbiFunc.dynamicWrites ?? []);
         for (const name of bAbiFunc.dynamicReads ?? []) {
           if (written.has(name)) continue;
@@ -764,7 +754,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       // A direct callee's keccak256 loop reads one shared side-car per iteration right after its block; the chunks it
       // reads follow them, found through the witness that names the first chunk's input.
       let bKeccakLoop: { start: number; recreates: Output[] } | undefined;
-      if (bBlockInputs !== undefined && bAbiFunc?.keccakLoopReads === true && compilerRoute === undefined && bSc) {
+      if (bBlockInputs !== undefined && bAbiFunc?.keccakLoopReads === true && bSc) {
         const label = `${callInfo!.externalContract.inner.artifact.contractName}.${bAbiFunc.name}`;
         const spent = [
           ...externalCallUtxoGroups.flatMap((group) => [...(group.blockInputs ?? []), ...(group.keccakInputs ?? [])]),
@@ -854,7 +844,6 @@ export async function orchestrateCreateBuilderExternalCalls(
           },
           {
             externalCallUtxoGroups,
-            compilerRoute,
             bBlockInputs,
             bBlockLayout,
             bAbiFunc,
@@ -866,7 +855,6 @@ export async function orchestrateCreateBuilderExternalCalls(
             bDataNfts,
             bRequiredNftIndices,
             bReturnEventInBlock,
-            bGraphBlockhashSelections,
             bKeccak,
             bDynamicChunkInputs,
             bDynamicChunkResources,
@@ -875,8 +863,8 @@ export async function orchestrateCreateBuilderExternalCalls(
             bEntryLoopCollection,
             bValueChunkOutputCount,
             bDirectChunkValue,
-            ordinaryProducerPath: !compilerRoute && !ec.batchInvocations
-              && (ec.occurrence === 'once' || (ec.occurrence === 'conditional' && ec.maximumOccurrences === 1))
+            ordinaryProducerPath: (ec.occurrence === 'once'
+              || (ec.occurrence === 'conditional' && ec.maximumOccurrences === 1))
               ? deriveValueChunkProducerChildPath({
                 parent: rootProducerPath,
                 parentExecutionLockingBytecode: host.inner.lockingBytecode,
@@ -895,9 +883,6 @@ export async function orchestrateCreateBuilderExternalCalls(
           } as any,
         );
         const materializedGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
-        if (bStreamedEventPlan && materializedGroup.sharedGroupIndex === undefined) {
-          materializedGroup.streamedEventPlan = bStreamedEventPlan;
-        }
         // Keyed by offsets of this exact block, so only the group owning these inputs may carry it.
         const blockOwner = materializedGroup.sharedGroupIndex === undefined
           ? materializedGroup : externalCallUtxoGroups[materializedGroup.sharedGroupIndex];
@@ -973,19 +958,6 @@ export async function orchestrateCreateBuilderExternalCalls(
         externalCallUtxoGroups,
         groupMetas,
         directEnd,
-        async (shared, next, callee) => buildSharedMethodExternalBatch(
-          { buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a) },
-          shared,
-          next,
-          callee,
-          {
-            artifact: host.inner.artifact,
-            state: callerStateSnapshot ?? onChainState?.state,
-            inputs: abiFunction?.inputs ?? [],
-            selfAddress: publicSelfAddress,
-            identity: publicSelfIdentity,
-          },
-        ),
         firstDirectIndex,
       ));
     await discoverTransitive(0, directGroupCount);
@@ -1061,9 +1033,6 @@ export async function orchestrateCreateBuilderExternalCalls(
       || abiFunction.blockLayout.slots.some((slot) => slot.kind === 'trailing');
     const chunkRunBeforeCallees = chunkRunPrecedesCallees ? iterationEntryInputs.length : 0;
     let externalCallInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount;
-    // message-bus batch reserves the complete oracle row band before its callees. Active reads are sparse; count the
-    // physical width, not the number of resolved oracle UTXOs, when assigning the first participant base.
-    externalCallInputBase += abiFunction?.graphBlockhashOracle?.slotCount ?? 0;
     externalCallInputBase += chunkRunBeforeCallees;
     const externalCallInputBasePosition = abiFunction?.inputs.findIndex((input) =>
       input.name === '__internal__externalCallInputBase') ?? -1;
@@ -1287,14 +1256,12 @@ export async function orchestrateCreateBuilderExternalCalls(
         rootLogicalAddress: params.rootLogicalAddress,
         rootReader: {
           categoryId: host.categoryId,
-          inputIndex: (overrides?.blockBase ?? 0)
-            + (abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'master')?.offset ?? 0),
+          inputIndex: abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'master')?.offset ?? 0,
         },
         blockOracle: host.inner.oraclePool !== undefined
           && abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')
           ? { pool: host.inner.oraclePool,
-            inputIndex: (overrides?.blockBase ?? 0)
-              + abiFunction.blockLayout.slots.find((slot) => slot.kind === 'blockInfoOracle')!.offset }
+            inputIndex: abiFunction.blockLayout.slots.find((slot) => slot.kind === 'blockInfoOracle')!.offset }
           : undefined,
         pendingAnchorFills,
         ensureOrdinarySelfIdentityBand: (contract, selected) => ensureOrdinarySelfIdentityBand(
@@ -1303,8 +1270,6 @@ export async function orchestrateCreateBuilderExternalCalls(
         selectorParamSlot,
         isComputedBlockhashKey,
         noteBhLocktime: (locktime) => { maxBhLocktime = Math.max(maxBhLocktime, locktime); },
-        extractGraphBlockhashRead: (contract, ...a) => contract._extractGraphBlockhashRead(...a),
-        paramBlockhashN: (contract, ...a) => contract.paramBlockhashN(...a),
       },
       externalCallUtxoGroups,
       groupMetas,
@@ -1421,7 +1386,7 @@ export async function orchestrateCreateBuilderExternalCalls(
 
 /**
  * A typed call's `{value:}` that the builder cannot pay: a callee entry whose record digests no value (not payable and
- * reading no msg.value, or compiled with the message bus), a value below the dust its deposit needs, or a callee whose
+ * reading no msg.value), a value below the dust its deposit needs, or a callee whose
  * own run sends value on, whose deposit and debit are laid out for no call but the root's.
  */
 function assertCallValuePayable(caller: string, callInfo: ExternalCallInfo, value: bigint | undefined): void {

@@ -1,17 +1,12 @@
 /**
  * phase-boundary extract: SC _createBuilder extract — nothing-to-derive / read-only-getter gate
- * plus the STB derive-pass (value-chunk witness prep, first/second derive,
- * graph absolute base publish, builder __derived* tags + __reDerive).
+ * plus the STB derive-pass (first/second derive, builder __derived* tags + __reDerive).
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction } from '@solidcash/utils';
 import { isValidComputedValueChunkCommitmentEncoding } from './computed-value-chunk-pin.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
-import { resolveKernelValueChunkResourceLanes } from './kernel-value-chunk-lanes.js';
-import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
-import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { AssembledWitnessBag } from './sc-rebind-create-builder-assembled-witnesses.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { dropSkippedConditionalInserts } from './conditional-sorted-activity.js';
@@ -20,13 +15,8 @@ import {
   persistedValueChunkWriteState,
   readyPersistedCompatibilityValueChunkWidth,
   selectPersistedValueChunkWrite,
-  valueChunkWriteResourceIdentity,
 } from './value-chunk-persist.js';
-import { orderTransportedContinuationResourceClaims } from './ValueChunkProducerIdentity.js';
-import {
-  describeValueChunkWrites,
-  writesChunkableValue,
-} from './writer-group-selection.js';
+import { describeValueChunkWrites } from './writer-group-selection.js';
 
 export type RunCreateBuilderDerivePassHost = {
   deriveFullTransactionState: (...args: any[]) => Promise<any>;
@@ -42,72 +32,6 @@ export function hasMaterializedValueChunkWitness(
   return ownedMaterializedChunkCounts.some((count) => Number.isSafeInteger(count) && count > 0)
     || runs.some((run) => builder.getValueChunkRawCommitments(run.id)
       .some(isValidComputedValueChunkCommitmentEncoding));
-}
-
-/** Rebase graph write descriptors without flattening authenticated, separately placed resources. */
-export function rebaseGraphValueChunkWrites(
-  target: ExternalCallUtxoGroup,
-  outputBase: number,
-  outputCount: number,
-): void {
-  const writes = target.valueChunkWrites;
-  if (!writes?.length) return;
-  const readyBases = writes.map((write) => write.outputBase)
-    .filter((base) => Number.isSafeInteger(base) && base >= 0);
-  const distinctReadyBases = new Set(readyBases);
-  if (distinctReadyBases.size > 1) {
-    // Each lane is already placed; move the entire frame without collapsing its geometry.
-    const delta = outputBase - Math.min(...readyBases);
-    const nextWrites = writes.map((write) => (
-      write.outputBase >= 0 ? { ...write, outputBase: write.outputBase + delta } : write
-    ));
-    let nextClaims = target.continuationResourceClaims;
-    if (target.continuationResourceClaims?.length) {
-      // Write bases can arrive as transaction-absolute production coordinates, while claims are already
-      // participant-local. Moving the scalar to its local slot must not subtract the participant base from
-      // those claims; a later local move advances each claim by the scalar's own local displacement.
-      const claimDelta = outputBase - target.continuationResourceClaims[0]!.bandOffset;
-      const shiftedClaims = target.continuationResourceClaims.map((claim) => ({
-        ...claim, bandOffset: claim.bandOffset + claimDelta,
-      }));
-      const ordered = orderTransportedContinuationResourceClaims(shiftedClaims);
-      if (!ordered) throw new Error('Kernel multi-resource continuation claims lost local band geometry.');
-      nextClaims = ordered;
-    }
-    target.valueChunkWrites = nextWrites;
-    target.continuationResourceClaims = nextClaims;
-    return;
-  }
-  const identities = writes.map(valueChunkWriteResourceIdentity);
-  const distinctIdentities = new Set(identities);
-  if (distinctIdentities.size > 1 || (target.transportedValueChunkProductions === true
-    && (target.continuationResourceClaims?.length ?? 0) > 1)) {
-    const claims = target.transportedValueChunkProductions === true
-      ? orderTransportedContinuationResourceClaims(target.continuationResourceClaims ?? [])
-      : undefined;
-    const byResource = new Map(claims?.map((claim) => [claim.producerClaim.resourceIdentity, claim]));
-    if (!claims || claims.length !== writes.length || byResource.size !== writes.length
-      || distinctIdentities.size !== writes.length) {
-      throw new Error('Kernel multi-resource value-chunk writes lack exact continuation geometry.');
-    }
-    const firstOffset = claims[0]!.bandOffset;
-    const reconstructed = writes.map((write, index) => {
-      const claim = byResource.get(identities[index]!);
-      const base = claim === undefined ? NaN : outputBase + claim.bandOffset - firstOffset;
-      if (!claim || !Number.isSafeInteger(base) || base < 0
-        || !Number.isSafeInteger(base + claim.chunkCount)) {
-        throw new Error('Kernel multi-resource value-chunk writes lack exact continuation geometry.');
-      }
-      return { ...write, outputBase: base, outputCount: claim.chunkCount };
-    });
-    target.valueChunkWrites = reconstructed;
-    return;
-  }
-  target.valueChunkWrites = writes.map((write) => ({
-    ...write,
-    outputBase,
-    outputCount: write.outputCount > 0 ? write.outputCount : outputCount,
-  }));
 }
 
 /**
@@ -137,9 +61,6 @@ export async function runCreateBuilderDerivePass(
     functionName: string;
     timingEnabled: boolean;
     timing?: (label: string) => void;
-    computedValueChunkRuns: readonly any[];
-    ownedMaterializedValueChunkCounts: readonly number[];
-    overrides: any;
     applyMintingMasterFills: () => boolean;
     refreshNestedIdentityAnchorWitnesses: () => boolean;
     refreshTopLevelIdentityAnchorWitnesses: () => boolean;
@@ -156,7 +77,7 @@ export async function runCreateBuilderDerivePass(
     loopEntryVars, runtimeLoopEventOutputs, runtimeLoopTransferOutputs, emitInfos,
     derivTransferCount, derivTokenOps, externalCallUtxoGroups, externalOutStateUtxoGroups,
     returnEmitOutputIndex, stateLayout, allGroupEcSlots, functionName, timingEnabled,
-    timing, computedValueChunkRuns, ownedMaterializedValueChunkCounts, overrides, applyMintingMasterFills,
+    timing, applyMintingMasterFills,
     refreshNestedIdentityAnchorWitnesses, refreshTopLevelIdentityAnchorWitnesses,
     eventBlockLayoutForDerive, delegatecallInputIndex, onChainState,
     valueChunkWriteStagingSession, buildStateInputUnlocker,
@@ -173,9 +94,8 @@ export async function runCreateBuilderDerivePass(
   && (entryAccesses?.length ?? 0) === 0
   && (entryAbiFunction?.entryLoopWrites?.length ?? 0) === 0
   && (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
-  // A kernel route owns no mapping metadata itself: selected row metadata materializes directly as physical
-  // loop-entry variables above. Those variables are the authoritative derivation plan even when every wrapper
-  // metadata list is empty; skipping here would publish link-only placeholder commitments for computed values.
+  // Loop-entry variables are the authoritative derivation plan even when every wrapper metadata list is empty;
+  // skipping here would publish link-only placeholder commitments for computed values.
   && loopEntryVars.length === 0
   && runtimeLoopEventOutputs.length === 0
   && runtimeLoopTransferOutputs.length === 0
@@ -224,7 +144,7 @@ export async function runCreateBuilderDerivePass(
     const ecCallsForDerive = externalCallUtxoGroups.length > 0 ? allGroupEcSlots : [];
     const osGroupsForDerive = externalOutStateUtxoGroups.length > 0 ? externalOutStateUtxoGroups : undefined;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('stateful-derive-call', {
         functionName,
         groups: ecGroupsForDerive.map((group, groupIdx) => ({
@@ -239,18 +159,6 @@ export async function runCreateBuilderDerivePass(
             ? binToHex(group.precomputedReturnCommitment) : undefined,
           blockSize: group.blockInputs?.length,
           returnSlot: group.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset,
-          entries: group.compilerRoute ? group.blockLayout?.slots.flatMap((slot, index) => {
-            if (slot.kind !== 'entry') return [];
-            const commitment = group.blockInputs?.[index]?.token?.nft?.commitment;
-            return [{
-              index,
-              slotIndex: slot.slotIndex,
-              commitment: commitment
-                ? typeof commitment === 'string' ? commitment : binToHex(commitment)
-                : undefined,
-            }];
-          }) : undefined,
-          internalArgs: group.compilerRoute?.internalArgs,
         })),
       });
     }
@@ -262,90 +170,6 @@ export async function runCreateBuilderDerivePass(
     });
     await builder.ensurePersistedValueChunkInputs();
     timing?.('persisted-inputs-ready');
-    // The route ABI owns one continuation coordinate. Derivation executes this participant in an isolated
-    // transaction, so its witness must remain participant-local until every dynamic resource has converged.
-    // Only the finalized graph transaction uses the compiler-published absolute block coordinate.
-    const graphOwnsValueChunkWitness = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
-      ?.messageBusGraphExecution === true;
-    const hasExactComputedValueChunkLane = computedValueChunkRuns.length > 0
-    && computedValueChunkRuns.every((run) => run.slot?.length === 32);
-    const valueChunkWitnessGroups = !graphOwnsValueChunkWitness || !hasExactComputedValueChunkLane ? [] : [
-      ...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups(),
-    ].filter((group) => {
-      const witness = valueChunkOutputWitnessCarrier(builder, group);
-      const convention = (witness?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention
-      ?? witness?.carrier.logicalArtifact?.messageBus?.convention
-      ?? witness?.carrier.externalContract?.inner.artifact.messageBus?.convention;
-      return witness !== undefined
-      && convention === 'kernel-row-loop'
-      && writesChunkableValue(witness.carrier, witness.abiFunction);
-    });
-    if (valueChunkWitnessGroups.length > 0) {
-    // Collapse repeated callsites for one resource, but keep distinct collections/keys as ordered lanes.
-    // The scalar `__internal__valueChunkOutputBase` authenticates band[0]; later bands ride ordered
-    // continuationResourceClaims rather than sharing one projected coordinate.
-      resolveKernelValueChunkResourceLanes(computedValueChunkRuns);
-    }
-    const graphValueChunkArgumentIndex = graphOwnsValueChunkWitness && entryAbiFunction
-      ? entryAbiFunction.inputs.findIndex((input) => input.name === '__internal__valueChunkOutputBase')
-      : -1;
-    const graphValueChunkArgument = graphValueChunkArgumentIndex < 0
-      ? undefined : finalArgs[graphValueChunkArgumentIndex];
-    const publishedGraphBases = new Set([
-      graphValueChunkArgument,
-      ...valueChunkWitnessGroups.flatMap((group) => [
-        group.compilerRoute?.internalArgs?.__internal__valueChunkOutputBase,
-        group.internalArgs?.__internal__valueChunkOutputBase,
-      ]),
-    ].flatMap((candidate) => typeof candidate === 'bigint'
-    && candidate >= 0n && candidate <= BigInt(Number.MAX_SAFE_INTEGER)
-      ? [Number(candidate)] : []));
-    if (publishedGraphBases.size > 1) {
-      throw new Error(
-        'Kernel chunkable-value output placement published conflicting continuation coordinates.',
-      );
-    }
-    const graphPublishedValueChunkOutputBase = publishedGraphBases.size === 1
-      ? [...publishedGraphBases][0] : undefined;
-    const setGraphValueChunkOutputBase = (outputBase: number): boolean => {
-      let refreshed = false;
-      for (const group of valueChunkWitnessGroups) {
-        const witness = valueChunkOutputWitnessCarrier(builder, group);
-        if (!witness || !writesChunkableValue(witness.carrier, witness.abiFunction)) continue;
-        group.valueChunkOutputBase = outputBase;
-        witness.carrier.valueChunkOutputBase = outputBase;
-        const outputCount = witness.carrier.valueChunkOutputCount ?? group.valueChunkOutputCount ?? 0;
-        if (outputCount > 0 || group.valueChunkWrites?.length || witness.carrier.valueChunkWrites?.length) {
-          rebaseGraphValueChunkWrites(group, outputBase, outputCount);
-          if (witness.carrier !== group) {
-            rebaseGraphValueChunkWrites(witness.carrier, outputBase, outputCount);
-          }
-        }
-        witness.carrier.internalArgs = {
-          ...witness.carrier.internalArgs,
-          __internal__valueChunkOutputBase: BigInt(outputBase),
-        };
-        witness.carrier.refreshInternalArgs?.({
-          __internal__valueChunkOutputBase: BigInt(outputBase),
-        });
-        refreshed = true;
-      }
-      if (refreshed) builder._refreshInputs();
-      return refreshed;
-    };
-    // The builder materializes a composed participant's continuation chunks at the block-LOCAL trailing
-    // coordinates (that is what keeps its balanced block inside `blockSize`), while the covenant argument and the
-    // composed value-chunk spans must name the ABSOLUTE coordinate in the concatenated transaction. The atomic
-    // composer publishes that absolute base when it can; otherwise it is the local band shifted by this
-    // participant's block base.
-    const composedValueChunkBlockBase = overrides?.omitLocalFeeTail === true
-      ? overrides?.blockBase ?? 0 : 0;
-    const resolvedGraphValueChunkOutputBase = (): number => (
-      graphPublishedValueChunkOutputBase
-      ?? builder.getValueChunkOutputBase() + composedValueChunkBlockBase
-    );
-    setGraphValueChunkOutputBase(resolvedGraphValueChunkOutputBase());
     if (applyMintingMasterFills()) builder._refreshInputs();
     timing?.('pre-derive-layout-ready');
     const describedPersistedWrites = [
@@ -356,10 +180,8 @@ export async function runCreateBuilderDerivePass(
     );
     const persistBeforeDerive = describedPersistedWrite && isValueChunkWriteReady(describedPersistedWrite)
       ? (persistedValueChunkWriteState(describedPersistedWrite)?.width ?? 0)
-      : (describedPersistedWrites.length === 0 && permitsLegacyNamedValueChunkFallback(
-        [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()],
-        (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
-      ) ? readyPersistedCompatibilityValueChunkWidth(builder.getSelectedPersistedValueChunkCategory()) : 0);
+      : (describedPersistedWrites.length === 0
+        ? readyPersistedCompatibilityValueChunkWidth(builder.getSelectedPersistedValueChunkCategory()) : 0);
     const layoutRevisionBeforeDerive = builder.getDynamicLayoutRevision();
     const firstDeriveStarted = Date.now();
     deriveResult = await host.deriveFullTransactionState(
@@ -393,7 +215,6 @@ export async function runCreateBuilderDerivePass(
       // needs one: caller indices and output witnesses from the narrower geometry are no longer authoritative.
       if (dynamicLayoutChanged || deriveResult.vmErrored || persistBeforeDerive === 0) {
         if (dynamicLayoutChanged) {
-          setGraphValueChunkOutputBase(resolvedGraphValueChunkOutputBase());
           refreshNestedIdentityAnchorWitnesses();
           refreshTopLevelIdentityAnchorWitnesses();
           if (applyMintingMasterFills()) builder._refreshInputs();
@@ -410,27 +231,6 @@ export async function runCreateBuilderDerivePass(
           functionName, pass: 2, ms: Date.now() - secondDeriveStarted,
           vmErrored: deriveResult.vmErrored,
         });
-      }
-    }
-    setGraphValueChunkOutputBase(resolvedGraphValueChunkOutputBase());
-    if (graphOwnsValueChunkWitness && abiFunction) {
-      const topLevelValueChunkBase = abiFunction.inputs.findIndex(
-        (input) => input.name === '__internal__valueChunkOutputBase',
-      );
-      if (topLevelValueChunkBase >= 0) {
-      // During derivation the default/sentinel selects the route-relative continuation band. Once the complete
-      // transaction geometry is known, publish the absolute coordinate on the executing input too. This is
-      // required for standalone kernel rows as well as atomic graphs: runtime mapping entries precede their
-      // computed value chunks, so the layout-relative base is no longer the materialized coordinate.
-        // A chunkable-capable route can select an inline write: its reserved continuation band has
-        // zero physical chunks. The provisional positive base used during derivation is not a witness
-        // until a concrete chunk has materialized; preserve the compiler's absent sentinel otherwise.
-        finalArgs[topLevelValueChunkBase] = hasMaterializedValueChunkWitness(
-          builder, computedValueChunkRuns, ownedMaterializedValueChunkCounts,
-        )
-          ? BigInt(resolvedGraphValueChunkOutputBase()) : -1n;
-        bag.stateInputUnlocker = buildStateInputUnlocker();
-        builder._setMasterUnlocker(bag.stateInputUnlocker);
       }
     }
     timing?.('derivation-complete');

@@ -295,7 +295,7 @@ export class SortedList {
   /**
    * Plan an ordered sequence of logical upserts against one authenticated pre-state list. Each original entry or
    * predecessor is co-spent at most once, repeated slots observe the reducer's pending value, and every affected
-   * node is emitted once in its final linked-list shape. This is the SDK reference model for the kernel's future
+   * node is emitted once in its final linked-list shape. This is the SDK reference model for the journal's future
    * pending-output journal; the current batch-upsert API remains the strict distinct-slot compatibility surface.
    */
   planJournaledUpserts<T>(

@@ -33,10 +33,7 @@ import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { cloneToken } from './stb-output-utils.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { directConventionMasterLock } from './covenant-helpers.js';
-import {
-  canonicalWriterReturnCommitment,
-  isCompilerDescribedMintingBandWriter,
-} from './value-chunk-geometry.js';
+import { canonicalWriterReturnCommitment } from './value-chunk-geometry.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
 
 export type PendingReturnEventLike = {
@@ -60,9 +57,7 @@ export interface MaterializeExternalCallOutputsHost {
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly pendingReturnEventOutputs: readonly PendingReturnEventLike[];
   readonly categoryId: string;
-  readonly composedParticipant: boolean;
   readonly builderOptions: TransactionBuilderOptions;
-  readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly delegateEntriesAfterLowLevel: boolean;
   readonly delegateReturnEventAfterEvents: boolean;
@@ -122,24 +117,14 @@ export function materializeExternalCallOutputs(
     const groupOutputStart = builder.outputs.length;
     // B's master output: preserved unchanged
     const bMaster = group.masterUtxo as UnlockableUtxo;
-    if (group.compilerRoute && group.delegateCallGroupIndex !== undefined) {
-    // A routed delegate's proxy master is displaced from its packed physical block. Slot zero is only a
-    // balanced spacer; the master covenant requires the real minting NFT to be recreated at INPUTINDEX.
-      builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
-    } else {
-      builder.addOutput({
-        to: bMaster.unlocker.generateLockingBytecode(),
-        amount: bMaster.satoshis,
-        token: bMaster.token,
-      });
-    }
+    builder.addOutput({
+      to: bMaster.unlocker.generateLockingBytecode(),
+      amount: bMaster.satoshis,
+      token: bMaster.token,
+    });
 
-    // Plain .staticcall / .delegatecall groups preserve exact input commitments. A compiler-routed
-    // proxy group still owns a balanced output block (entries, events, and its return slot), even
-    // when its implementation is invoked with delegatecall, so it must continue through the full
-    // block materialization below.
-    if (!group.compilerRoute
-    && (group.callMode === 'staticcall' || group.callMode === 'delegatecall')) {
+    // Plain .staticcall / .delegatecall groups preserve exact input commitments.
+    if (group.callMode === 'staticcall' || group.callMode === 'delegatecall') {
       for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
         const nftUtxo = group.dataNftUtxos[i];
         builder.addOutput({
@@ -178,12 +163,10 @@ export function materializeExternalCallOutputs(
 
     const externalDynamicChunks: Output[] = [];
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
       console.error('external-dynamic-plan', {
         categoryId: group.categoryId,
         functionName: group.functionName,
-        compilerRoute: group.compilerRoute?.abiFunction.name,
-        logicalSelectors: group.compilerRoute?.logicalSelectors,
         blockInputs: group.blockInputs?.length,
         blockSize: group.blockLayout?.blockSize,
         trailingBase: group.blockLayout?.trailingBase,
@@ -232,11 +215,10 @@ export function materializeExternalCallOutputs(
       }
     }
     // A witnessed run goes past every input-bound output, so a following block keeps its master's coordinate.
-    if (!host.composedParticipant && calleeWitnessesDynamicRun(group)) {
+    if (calleeWitnessesDynamicRun(group)) {
       deferredCalleeDynamicChunks.push(...externalDynamicChunks.splice(0));
     }
 
-    const displacedRouteStateOutputs: Output[] = [];
     // Create B's data NFT outputs with updated commitments
     for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
       const nftIdx = group.requiredDataNftIndices[i];
@@ -272,30 +254,17 @@ export function materializeExternalCallOutputs(
           },
         },
       };
-      if (group.compilerRoute && group.delegateCallGroupIndex !== undefined) {
-        displacedRouteStateOutputs.push(stateOutput);
-        builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
-      } else {
-        builder.addOutput(stateOutput);
-      }
+      builder.addOutput(stateOutput);
     }
 
     // Full block: output B's remaining slots (entries, SC, TCs, transfers, events, etc.)
     if (group.blockInputs && group.blockLayout) {
-      // Only a compiler route reserves a trailing band, so only a route can run out of capacity.
-      const runBlocker = group.compilerRoute === undefined ? directRunBlocker(group, group.blockLayout) : undefined;
-      const chunksFollowBlock = group.compilerRoute === undefined && runBlocker === undefined;
+      const runBlocker = directRunBlocker(group, group.blockLayout);
+      const chunksFollowBlock = runBlocker === undefined;
       if (runBlocker !== undefined && externalDynamicChunks.length > 0) {
         throw new Error(
           `External dynamic state of '${group.functionName}' has no output coordinate: `
         + `a direct callee's run follows its block, and the SDK cannot place one beside ${runBlocker}`,
-        );
-      }
-      if (group.compilerRoute !== undefined
-        && externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
-        throw new Error(
-          'External dynamic state exceeds balanced trailing capacity '
-        + `(${externalDynamicChunks.length} > ${group.blockLayout.trailingCapacity ?? 0})`,
         );
       }
       // The blockInputs already include master + dataNfts at positions 0..D.
@@ -332,20 +301,8 @@ export function materializeExternalCallOutputs(
       for (let si = dataNftEnd; si < materializationEnd; si++) {
         const input = group.blockInputs[si];
         const slot = group.blockLayout.slots[si];
-        const streamed = group.streamedEventPlan?.outputs.get(si);
-        if (streamed) {
-          const output: Output = {
-            to: streamed.lockingBytecode,
-            amount: BALANCED_SLOT_SATOSHIS,
-            token: { amount: 0n, category: group.categoryId,
-              nft: { capability: 'none', commitment: streamed.commitment } },
-          };
-          output.amount = BigInt(Math.max(Number(output.amount), calculateDust(output)));
-          builder.addOutput(output);
-          continue;
-        }
         const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-        const debugRouteOutputs = debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
+        const debugCallOutputs = debugEnv?.SOLIDC_DEBUG_TRACE_CONCISE === '1'
           || debugEnv?.SOLIDC_DEBUG_FAILURE_RING === '1';
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_CHUNK_GEOM === '1') {
@@ -353,7 +310,7 @@ export function materializeExternalCallOutputs(
         }
 
         // Matched on the absolute index this iteration is about to fill, across every group: the pin's owning
-        // group is not the group it was probed from. See deriveRouteValueChunks.
+        // group is not the group it was probed from. See deriveValueChunks.
         const derivedChunk = host.derivedChunkOutputs.get(builder.outputs.length);
         const derivedOccupant = host.allInputs[builder.outputs.length];
         const suffixOwnedChunk = host.delegateDynamicChunksAtSuffix && derivedChunk
@@ -366,7 +323,7 @@ export function materializeExternalCallOutputs(
         if (derivedChunk && !suffixOwnedChunk && !derivedOntoDataNft
         && derivedOccupant?.token?.nft?.capability !== 'minting') {
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+            ?.SOLIDC_DEBUG_TRACE_CONCISE === '1') {
             console.error('chunk-placed', { groupIndex, si, absOut: builder.outputs.length });
           }
           builder.addOutput({
@@ -384,10 +341,10 @@ export function materializeExternalCallOutputs(
           ?.findIndex((planned) => planned.outputBlockSlot === si) ?? -1;
         const batchPredecessor = group.batchPredecessorOutputs
           ?.find((planned) => planned.outputBlockSlot === si);
-        const routedDynamicResource = group.dynamicChunkResources
+        const groupDynamicResource = group.dynamicChunkResources
           ?.find((resource) => resource.blockSlot === si);
 
-        if (routedDynamicResource && !routedDynamicResource.write) {
+        if (groupDynamicResource && !groupDynamicResource.write) {
           builder.addOutput({
             to: input.unlocker.generateLockingBytecode(),
             amount: input.satoshis,
@@ -427,8 +384,7 @@ export function materializeExternalCallOutputs(
           // then backed by a funder, while its proof witness still names the
           // original collection entry whose lock P' must recreate.
           const proofOffset = plannedInsert.slotIndex === undefined ? undefined
-            : (group.internalArgs?.[`__internal__vmapBatchProof_${plannedInsert.slotIndex}`]
-              ?? group.compilerRoute?.internalArgs?.[`__internal__vmapBatchProof_${plannedInsert.slotIndex}`]);
+            : group.internalArgs?.[`__internal__vmapBatchProof_${plannedInsert.slotIndex}`];
           const predecessor = typeof proofOffset === 'bigint' && proofOffset >= 0n
             ? group.blockInputs[Number(proofOffset)]
             : group.blockInputs[plannedInsert.blockSlot];
@@ -511,23 +467,6 @@ export function materializeExternalCallOutputs(
           ?? input.unlocker.generateLockingBytecode();
           const plannedEntryCommitment = bEntryOut
           ?? group.batchEntryCommitments?.get(si);
-          if (debugRouteOutputs && group.compilerRoute && si < 12) {
-            console.error('builder-route-entry-output', {
-              groupIndex, si, absoluteOutput: builder.outputs.length,
-              callMode: group.callMode, hasCommitment: bEntryOut !== undefined,
-              hasLockingBytecode: group.batchEntryLockingBytecodes?.has(si) ?? false,
-              embeddedEntrySlot: embeddedEntry?.slotIndex,
-              hasEmbeddedCommitment: embeddedCommitment !== undefined,
-              inputOutpoint: `${input.txid}:${input.vout}`,
-              inputCommitment: input.token?.nft?.commitment,
-              localEntries: host.entryNfts.map((entry) => ({
-                slot: entry.slotIndex,
-                outpoint: entry.utxo ? `${entry.utxo.txid}:${entry.utxo.vout}` : undefined,
-              })),
-              insertPredecessors: host.insertLoopPredecessorInputs.map((entry) =>
-                `${entry.txid}:${entry.vout}`),
-            });
-          }
           const physicalLockingBytecode = physicalInput && 'unlocker' in physicalInput && physicalInput.unlocker
             ? physicalInput.unlocker.generateLockingBytecode()
             : input.unlocker.generateLockingBytecode();
@@ -595,7 +534,7 @@ export function materializeExternalCallOutputs(
 
         // X13: B's return event belongs to B's OWN block slot, paired with the funding input the block now
         // carries at the same offset. The commitment comes from B's VM trace (setReturnEventOutput).
-        if (slot?.kind === 'returnEvent' && debugRouteOutputs) {
+        if (slot?.kind === 'returnEvent' && debugCallOutputs) {
           console.error('builder-route-return-output', {
             groupIndex, si, absoluteOutput: builder.outputs.length,
             returnEventInBlock: group.returnEventInBlock,
@@ -635,8 +574,7 @@ export function materializeExternalCallOutputs(
           // advance. Once authenticated (including a legitimate `false`), the exact result wins.
           const re = exact?.provisional && first?.commitment.some((byte) => byte !== 0)
             ? first : exact ?? first;
-          const writerAbi = group.compilerRoute?.abiFunction
-          ?? (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
+          const writerAbi = (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
             ?.find((fn) => fn.name === group.functionName);
           const writerReturnsBool = writerAbi?.outputs?.length === 1 && writerAbi.outputs[0].type === 'bool';
           const writerArtifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
@@ -687,7 +625,6 @@ export function materializeExternalCallOutputs(
               groupIndex,
               physicalFunction: group.functionName,
               logicalFunction: group.logicalFunctionName,
-              routeFunction: group.compilerRoute?.abiFunction.name,
               contract: group.externalContract?.inner?.artifact?.contractName,
               logicalContract: group.logicalContract?.inner?.artifact?.contractName,
               categoryId: group.categoryId,
@@ -709,17 +646,6 @@ export function materializeExternalCallOutputs(
                 category: group.categoryId,
                 nft: { capability: 'none', commitment: eo.commitment },
               },
-            });
-          } else if (group.compilerRoute
-          && !isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)) {
-          // A message-bus route reserves the union of every handler's event slots. Slots not reached by
-          // this dispatch are ordinary balanced funding slots and the route covenant binds them by
-          // preservation. Mirroring the input also works as the active-slot probe: its empty commitment
-          // lets the trace expose the expected event blob, after which `eventOutputs` replaces this slot.
-            builder.addOutput({
-              to: input.unlocker.generateLockingBytecode(),
-              amount: input.satoshis,
-              token: cloneToken(input.token),
             });
           } else {
           // Placeholder: create event NFT with empty commitment so B's VM can
@@ -792,14 +718,6 @@ export function materializeExternalCallOutputs(
     }
     if (group.delegateCallGroupIndex !== undefined) {
       if (!group.delegateEmbeddedInBlock) appendDelegateGroupOutputs(group.delegateCallGroupIndex);
-      if (group.compilerRoute) {
-      // Preserve the displaced proxy master immediately after its associated implementation band, which
-      // is the same absolute coordinate as the proxy-master input in the routed input layout.
-        builder.addOutput({
-          to: bMaster.unlocker.generateLockingBytecode(), amount: bMaster.satoshis, token: bMaster.token,
-        });
-        for (const stateOutput of displacedRouteStateOutputs) builder.addOutput(stateOutput);
-      }
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_FAILURE_RING === '1') {

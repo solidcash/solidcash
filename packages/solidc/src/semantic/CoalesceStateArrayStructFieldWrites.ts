@@ -18,9 +18,9 @@ interface FieldWrite {
 
 /**
  * One `arr[i].field = value` is lowered by AstBuilder to a whole-element struct constructor. Consecutive
- * writes to different fields of the same element otherwise reread and rebuild that element once per field;
- * inside a pooled row loop each rebuild also performs the variable-width array surgery. Coalesce only when
- * the index is stable and values cannot read the changing element or have side effects.
+ * writes to different fields of the same element otherwise reread and rebuild that element once per field,
+ * each rebuild with its own array surgery. Coalesce only when the index is stable and values cannot read the
+ * changing element or have side effects.
  */
 export default class CoalesceStateArrayStructFieldWrites extends AstTraversal {
   private arrays = new Map<string, StructType>();

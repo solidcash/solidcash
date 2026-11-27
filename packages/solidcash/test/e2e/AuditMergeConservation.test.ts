@@ -17,10 +17,10 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * received the consumed masters' satoshis or surplus fungible amount. A merge could recreate the survivor at its
  * own value and send the consumed masters' value/FT anywhere (including the caller's change output).
  *
- * The fix sums those amounts over the consumed tail and pins the total to the survivor output on both the direct
- * covenant and the message-bus mode-2 lifecycle. This test builds a genuine merge through `StatefulContract.merge`
- * (captured before broadcast), asserts the survivor carries the summed totals, then rewrites the captured
- * transaction to redirect the value and the surplus FT and submits both rewrites.
+ * The fix sums those amounts over the consumed tail and pins the total to the survivor output in the merge covenant.
+ * This test builds a genuine merge through `StatefulContract.merge` (captured before broadcast), asserts the survivor
+ * carries the summed totals, then rewrites the captured transaction to redirect the value and the surplus FT and
+ * submits both rewrites.
  */
 const SOURCE = `contract MergeAudit(pubkey admin) {
     bigint counter;

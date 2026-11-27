@@ -12,7 +12,7 @@ import {
 } from '../test-util.js';
 
 
-const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Sibling-preservation rows run on a provider that names the relaxed budget. The natural-size `w` write
 // now fits the real BCH-2026 budget and is checked on that provider below.

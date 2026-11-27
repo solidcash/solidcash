@@ -92,7 +92,7 @@ describe('B6.6/B6.7: the genesis sender', () => {
     }
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     clearCompileCache();
-    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
+    const artifact = compileString(SOURCE, { genesisCalls: true });
     const funding = { txid: 'de'.repeat(32), vout: 0, satoshis: 500_000n };
     await provider.addUtxo(p2pkh.address, funding);
     const deployed = await StatefulContract.deploy(artifact, [], {
@@ -212,7 +212,7 @@ describe('B6.6/B6.7: the genesis sender', () => {
 
   it('emits one shared resolution and invokes it', () => {
     clearCompileCache();
-    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
+    const artifact = compileString(SOURCE, { genesisCalls: true });
     const asm = disassembleBytecodeBCH(hexToBin(artifact.bytecode)).split(' ');
     // Check 3 of the genesis step: hash256(21 ‖ X ‖ 02 c0 ce 88 ‖ S).
     const signature = ['OP_PUSHBYTES_4', '0x02c0ce88', 'OP_CAT', 'OP_SWAP', 'OP_CAT', 'OP_HASH256'];

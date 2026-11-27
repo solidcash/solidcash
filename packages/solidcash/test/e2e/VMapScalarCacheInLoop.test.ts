@@ -17,7 +17,7 @@ import {
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A vmap (sorted) SCALAR mapping entry written more than once to the SAME (loop-invariant) key -
 // `for(i) balance[owner] -= amts[i]` - is now cached by CacheMappingEntryInLoop: read balance[owner] ONCE into a

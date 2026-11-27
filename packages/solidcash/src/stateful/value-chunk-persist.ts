@@ -16,13 +16,6 @@ import { getValueChunkLockingBytecode } from './covenant-helpers.js';
 import { keyToSlot } from './SortedList.js';
 import { LEGACY_JOB_EVENTS_COLLECTION_ALIASES } from './legacy-planning-heuristics.js';
 import {
-  createExecutionContextLifecycle,
-} from '../message-bus/execution-context.js';
-import {
-  createConstraintFixpointSession,
-  type ConstraintFixpointSession,
-} from '../message-bus/constraint-fixpoint-session.js';
-import {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerResourceClaim,
   type ValueChunkProducerResourceClaim,
@@ -222,8 +215,6 @@ export type AuthenticatedValueChunk = {
 /**
  * composition settlement session: per-composition settlement state (persisted job-events / observed chunks / recipes).
  * Two sessions do not share mutable maps unless they deliberately share one instance.
- * Also owns the settle-time ExecutionContextLifecycle
- * (register → assert → settle).
  */
 export class CompositionSettlementSession {
   readonly persistedJobEventsByCategory = new Map<string, Array<{
@@ -275,16 +266,6 @@ export class CompositionSettlementSession {
     return this.readyPersistedCompatibilityValueChunks.size > 0;
   }
 
-  /** Settle-time ExecutionContext lifecycle (isolated per composition session). */
-  readonly executionContexts = createExecutionContextLifecycle();
-  /** constraint fixpoint: multi-domain monotone fixpoint session (isolated per composition). */
-  readonly constraintFixpoint = createConstraintFixpointSession();
-  /**
-   * settle-time ExecutionContext: last admit-time ExecutionContext effect plans (layout/slot authority consumers).
-   * Cleared with the session; written by compose-admit before settle.
-   */
-  executionEffectPlans: readonly import('../message-bus/execution-context.js').ExecutionContextEffectPlan[] = [];
-
   clear(categoryId?: string): void {
     if (categoryId) {
       this.persistedJobEventsByCategory.delete(categoryId);
@@ -327,9 +308,6 @@ export class CompositionSettlementSession {
       this.persistedCreatedValues.clear();
       this.readyPersistedCompatibilityValueChunks.clear();
       this.observedValueChunksByCollection.clear();
-      this.executionContexts.clear();
-      this.constraintFixpoint.clear();
-      this.executionEffectPlans = [];
     }
   }
 }
@@ -359,81 +337,7 @@ export function runWithCompositionSettlementSession<T>(
   }
 }
 
-/** Active settlement maps for this composition (default session unless runWith…). */
-/**
- * Record a converge fingerprint on the explicitly owned composition tracker. Legacy standalone
- * callers fall back to the active settlement tracker (no-op when already finalized).
- */
-export function recordActiveConstraintPass(
-  domain: string,
-  stateKey: string,
-  cycleMessage: string,
-  session: ConstraintFixpointSession = settlement().constraintFixpoint,
-): void {
-  if (session.getPhase() === 'finalized') return;
-  session.recordDomainPass(domain, stateKey, cycleMessage);
-}
-
-/** constraint fixpoint: resolve every domain recorded during admit-time converges. */
-export function finalizeActiveConstraintFixpoint(
-  session: ConstraintFixpointSession = settlement().constraintFixpoint,
-): string {
-  if (session.getPhase() === 'finalized') return session.jointStateKey();
-  return session.finalize();
-}
-
-/**
- * constraint fixpoint: run a speculative admit/converge body on the active ConstraintFixpointSession.
- * Throws restore the pre-call snapshot so a failed probe does not poison joint state.
- */
-export function runActiveConstraintSpeculative<T>(
-  body: (session: ConstraintFixpointSession) => T,
-  session: ConstraintFixpointSession = settlement().constraintFixpoint,
-): T {
-  if (session.getPhase() === 'finalized') return body(session);
-  return session.runSpeculative(body);
-}
-
-/**
- * constraint fixpoint: speculative domain-pass inside a converge loop.
- * Returns false when the joint fingerprint would cycle (snapshot restored); true when recorded.
- */
-export function tryRecordActiveConstraintPass(
-  domain: string,
-  stateKey: string,
-  cycleMessage: string,
-  session: ConstraintFixpointSession = settlement().constraintFixpoint,
-): boolean {
-  if (session.getPhase() === 'finalized') return false;
-  try {
-    session.runSpeculative((fixpoint) => {
-      fixpoint.recordDomainPass(domain, stateKey, cycleMessage);
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * constraint fixpoint: try candidates in order; first that records without a joint cycle wins.
- * Failed attempts restore via {@link tryRecordActiveConstraintPass}.
- */
-export function selectActiveConstraintCandidate(
-  domain: string,
-  candidates: readonly string[],
-  cycleMessage: string,
-  session: ConstraintFixpointSession = settlement().constraintFixpoint,
-): { stateKey: string; index: number } | undefined {
-  for (let index = 0; index < candidates.length; index += 1) {
-    const stateKey = candidates[index]!;
-    if (tryRecordActiveConstraintPass(domain, stateKey, cycleMessage, session)) {
-      return { stateKey, index };
-    }
-  }
-  return undefined;
-}
-
+/** Active settlement maps for this composition (the default session unless runWithCompositionSettlementSession). */
 export function settlement(): CompositionSettlementSession {
   return getCompositionSettlementSession();
 }
@@ -811,8 +715,9 @@ export type ValueChunkResourceSelection =
   | { status: 'multi'; identities: string[] }
   | { status: 'ambiguous' };
 
-/** Select storage-resource ownership independently of the operations applied to it. A graph may INSERT and then
- * UPDATE the same resource in source order; differing operation/route ordinals do not create a second resource. */
+/** Select storage-resource ownership independently of the operations applied to it. One transaction may
+ * INSERT and then UPDATE the same resource in source order; differing `operation`/`routeSlot` values do not
+ * create a second resource. */
 export function selectValueChunkResource(
   writes: ReadonlyArray<ValueChunkWriteDescriptor>,
 ): ValueChunkResourceSelection {
@@ -828,7 +733,7 @@ export function selectValueChunkResource(
   return { status: 'exact', identity, categoryId };
 }
 
-/** Select one compiler-described chunkable-value resource identity; duplicate route/logical views collapse. */
+/** Select one compiler-described chunkable-value resource identity; duplicate logical/physical views collapse. */
 export function selectValueChunkWriteCategory(
   writes: ReadonlyArray<ValueChunkWriteDescriptor>,
 ): ValueChunkWriteCategorySelection {
@@ -878,12 +783,11 @@ export function isInitialValueChunkWrite(
 
 /**
  * Scope persisted continuation readiness to the active compiler-described resource.
- * Descriptor-free pre-kernel plans supply their selected category's compatibility readiness.
+ * Descriptor-free pre-journal plans supply their selected category's compatibility readiness.
  */
 export function persistedValueChunkReadiness(parts: {
   selection: ValueChunkWriteCategorySelection;
   hasWriteMetadata: boolean;
-  permitsLegacyFallback: boolean;
   descriptorReady: boolean;
   legacyReady: boolean;
 }): boolean {
@@ -895,7 +799,7 @@ export function persistedValueChunkReadiness(parts: {
   if (parts.hasWriteMetadata) {
     throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
   }
-  return parts.permitsLegacyFallback && parts.legacyReady;
+  return parts.legacyReady;
 }
 
 /** Descriptor-owned rematerialization decision; `undefined` delegates to old-artifact compatibility. */
@@ -1073,7 +977,7 @@ export function markPersistedCompatibilityValueChunkReady(categoryId: string): v
   settlement().readyPersistedCompatibilityValueChunks.add(categoryId.toLowerCase());
 }
 
-/** True only after a successful compatibility-value send, not compose/extract. */
+/** True only after a successful compatibility-value send, not after a probe or an extraction. */
 export function isPersistedCompatibilityValueChunkReady(categoryId?: string): boolean {
   if (categoryId !== undefined) {
     return settlement().readyPersistedCompatibilityValueChunks.has(categoryId.toLowerCase());

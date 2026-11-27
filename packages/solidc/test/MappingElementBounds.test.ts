@@ -117,7 +117,7 @@ function settleDirect(artifact: Artifact, entry: string, args: Record<string, Ui
 }
 
 describe('a direct element read at or past the array\'s length', () => {
-  const artifact = compileString(SOURCE, { messageBus: false });
+  const artifact = compileString(SOURCE, {});
   const at = (i: bigint, e: Uint8Array): true | string => settleDirect(artifact, 'at', { id: ID, i: num(i), e }, [HELD]);
   const pushAt = (i: bigint, e: Uint8Array): true | string =>
     settleDirect(artifact, 'pushAt', { id: ID, k: ADDED, i: num(i), e }, [HELD], [HELD, ADDED]);

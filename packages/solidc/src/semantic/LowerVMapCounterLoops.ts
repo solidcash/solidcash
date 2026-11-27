@@ -24,8 +24,7 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { canonicalizeUpsertKeyExpression } from '../generation/upsertKeySources.js';
 import {
-  AddressType, ArrayType, BytesType, FixedType, FunctionType, IntType, PrimitiveType, StructType, type Type,
-  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+  AddressType, ArrayType, BytesType, FixedType, IntType, PrimitiveType, StructType, type Type,
 } from '@solidcash/utils';
 import {
   isFunctionEntryInvariantMappingKey, VMAP_KEY_SNAPSHOT_PREFIX,
@@ -41,19 +40,6 @@ export const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCoun
 export const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 export const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
-/** One compact `0x06` access program per runtime journal stream in this selected row. */
-export const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
-/** Transaction-wide truthful initial `0x05` records selected by the compact access programs. */
-export const KERNEL_JOURNAL_RECORDS = '__internal__kernelJournalRecords';
-export class CounterLoopReadWriteConflictError extends Error {
-  constructor(collection: string) {
-    super(
-      `Counter-loop requirement cannot read collection '${collection}' while the same loop writes it; `
-      + 'pending cross-iteration mapping reads are unsupported',
-    );
-    this.name = this.constructor.name;
-  }
-}
 export const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 export const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -71,9 +57,9 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * Lower a vmap counter loop `for (int i=0; i<n; i++) m[…][i] = f(i);` so logical indices execute through an
  * SDK-supplied slot-order permutation. Only mapping/array write keys and values are rewritten to perm[i].
  * Typed calls and other statements stay in source order. Event sites are recorded in a function-local runtime
- * stream and settled after all mapping journals, so they repeat in logical source order without sharing the
- * route's fixed per-row event slots. Nested if/else reachability is serialized when it depends only on SDK-visible
- * inputs, immutable aliases, stable pre-state, and the source counter. Stable switch arms use the same predicates.
+ * stream and settled after all mapping journals, so they repeat in logical source order. Nested if/else
+ * reachability is serialized when it depends only on SDK-visible inputs, immutable aliases, stable pre-state, and
+ * the source counter. Stable switch arms use the same predicates.
  * Nested-loop effect reachability still needs richer runtime effect records. Direct BCH, fungible-token, and NFT
  * transfers use a source-ordered trailing stream alongside events. The canonical pre-test domains
  * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and
@@ -89,14 +75,6 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * number of distinct elements in that domain, hence it is a complete permutation rather than an SDK convention.
  */
 export default class LowerVMapCounterLoops extends AstTraversal {
-  constructor(
-    private readonly publishJournalAccessStreams = false,
-    // A framed master head supplies no route witness, so a framed composition publishes no fallback count.
-    private readonly framedComposition = false,
-  ) {
-    super();
-  }
-
   private collections = new Set<string>();
   private collectionsByName = new Map<string, CollectionNode>();
   private stateTypes = new Map<string, Type>();
@@ -128,7 +106,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const overloads = this.functionsByName.get(x.identifier.name);
       const pureContractCall = overloads !== undefined && overloads.length > 0
         && overloads.every((fn) => fn.modifiers.includes(FunctionModifier.PURE));
-      // These builtins are total stack computations with no route-owned inputs or outputs. Calls to a
+      // These builtins are total stack computations with no transaction inputs or outputs. Calls to a
       // contract function are admitted only when every same-name overload is explicitly pure; semantic
       // analysis later enforces that declaration. Unknown, view, side-car and external calls remain fenced.
       const pureBuiltin = overloads === undefined && PURE_COUNTER_VALUE_BUILTINS.has(x.identifier.name);
@@ -175,8 +153,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       overloads.push(fn);
       this.functionsByName.set(fn.name, overloads);
     }
-    // A geometric event projection may read a scalar factor from authenticated pre-state only when the complete
-    // handler call closure leaves that slot unchanged. Calls are not resolved yet at this pass, so conservatively
+    // A geometric event projection may read a scalar factor from authenticated pre-state only when the function's
+    // complete call closure leaves that slot unchanged. Calls are not resolved yet at this pass, so conservatively
     // join every same-name, same-arity contract overload. Cycles terminate at the ordinary set fixed point.
     const directStateWrites = new Map<FunctionDefinitionNode, Set<string>>();
     const directCallees = new Map<FunctionDefinitionNode, Set<FunctionDefinitionNode>>();
@@ -260,160 +238,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
-    if (this.publishJournalAccessStreams) this.propagateKernelJournalContext(node);
     return node;
-  }
-
-  /**
-   * Thread the runtime-journal ABI to a fixed point over ordinary internal calls.
-   *
-   * The route owns one transaction-wide record vector, while the leaf which interprets an access stream can be
-   * several OP_INVOKE edges below it. Every intermediate DEFINE therefore accepts the same compiler-only
-   * parameters and forwards them unchanged. Parameters retain the leaf's canonical order, and are inserted before
-   * the independently threaded physical-owner context. Source ABI signatures remain unchanged because all names
-   * are compiler-reserved.
-   *
-   * Function-pointer calls have no declared place for this hidden ABI. If a locally declared pointer could reach
-   * a context-bearing target, retain an explicit refusal marker and propagate it to every named caller. This is
-   * deliberately fail-closed until pointer target-set analysis can prove and encode one uniform hidden frame.
-   */
-  propagateKernelJournalContext(contract: ContractNode): void {
-    const functions = [
-      ...contract.functions,
-      ...(contract.constructorDef ? [contract.constructorDef] : []),
-      ...(contract.fallbackDef ? [contract.fallbackDef] : []),
-      ...(contract.receiveDef ? [contract.receiveDef] : []),
-    ];
-    const byName = new Map<string, FunctionDefinitionNode[]>();
-    for (const fn of functions) {
-      const overloads = byName.get(fn.name) ?? [];
-      overloads.push(fn);
-      byName.set(fn.name, overloads);
-    }
-    const contextParameter = (parameter: ParameterNode): boolean =>
-      parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_SOURCE_INDEX_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
-      || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
-      || parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
-      || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
-      || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS
-      || parameter.name === KERNEL_JOURNAL_RECORDS
-      || parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX);
-    const visibleArity = (fn: FunctionDefinitionNode): number =>
-      fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length;
-    const callVisibleArity = (call: FunctionCallNode): number => call.parameters.filter((argument) =>
-      !(argument instanceof IdentifierNode && argument.name.startsWith('__internal__'))).length;
-    const directCalls = new Map<FunctionDefinitionNode, Set<FunctionDefinitionNode>>();
-    const pointerCalls = new Map<FunctionDefinitionNode, number[]>();
-    const walk = (root: Node, visit: (candidate: Node) => void): void => {
-      visit(root);
-      for (const [key, value] of Object.entries(root)) {
-        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-          || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
-          || key === 'stateVariable') continue;
-        if (value instanceof Node) walk(value, visit);
-        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, visit);
-      }
-    };
-    for (const fn of functions) {
-      const callees = new Set<FunctionDefinitionNode>();
-      const functionPointerNames = new Set(fn.parameters
-        .filter((parameter) => parameter.type instanceof FunctionType)
-        .map((parameter) => parameter.name));
-      walk(fn.body, (candidate) => {
-        if (candidate instanceof VariableDefinitionNode && candidate.type instanceof FunctionType) {
-          functionPointerNames.add(candidate.name);
-        }
-      });
-      walk(fn.body, (candidate) => {
-        if (candidate instanceof FunctionCallNode) {
-          if (functionPointerNames.has(candidate.identifier.name) || candidate.lexicalIndirectCall) {
-            const arities = pointerCalls.get(fn) ?? [];
-            arities.push(callVisibleArity(candidate));
-            pointerCalls.set(fn, arities);
-            return;
-          }
-          const targets = (byName.get(candidate.identifier.name) ?? [])
-            .filter((target) => visibleArity(target) === callVisibleArity(candidate));
-          for (const target of targets) callees.add(target);
-        } else if (candidate instanceof IndirectCallNode) {
-          const arities = pointerCalls.get(fn) ?? [];
-          arities.push(candidate.parameters.length);
-          pointerCalls.set(fn, arities);
-        }
-      });
-      directCalls.set(fn, callees);
-    }
-
-    const addContext = (caller: FunctionDefinitionNode, callee: FunctionDefinitionNode): boolean => {
-      let changed = false;
-      const existing = new Set(caller.parameters.map((parameter) => parameter.name));
-      const ownerIndex = caller.parameters.findIndex(
-        (parameter) => parameter.name === '__internal__messageBusOwnerInput',
-      );
-      let insertionIndex = ownerIndex < 0 ? caller.parameters.length : ownerIndex;
-      for (const parameter of callee.parameters.filter(contextParameter)) {
-        if (existing.has(parameter.name)) continue;
-        const forwarded = new ParameterNode(parameter.type, parameter.name, [...parameter.modifier]);
-        forwarded.location = caller.location;
-        forwarded.syntheticallyUsed = true;
-        forwarded.kernelJournalForwardedContext = true;
-        caller.parameters.splice(insertionIndex++, 0, forwarded);
-        existing.add(parameter.name);
-        changed = true;
-      }
-      return changed;
-    };
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const caller of functions) {
-        for (const callee of directCalls.get(caller) ?? []) changed = addContext(caller, callee) || changed;
-      }
-    }
-
-    const unsafe = new Set(functions.filter((fn) => fn.kernelJournalContextUnsafeCall === true));
-    for (const [caller, arities] of pointerCalls) {
-      if (arities.some((arity) => functions.some((target) => visibleArity(target) === arity
-        && target.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_RECORDS
-          || parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX))))) {
-        unsafe.add(caller);
-      }
-    }
-    let unsafeChanged = true;
-    while (unsafeChanged) {
-      unsafeChanged = false;
-      for (const caller of functions) {
-        if (unsafe.has(caller)) continue;
-        if ([...(directCalls.get(caller) ?? [])].some((callee) => unsafe.has(callee))) {
-          unsafe.add(caller);
-          unsafeChanged = true;
-        }
-      }
-    }
-    for (const fn of unsafe) fn.kernelJournalContextUnsafeCall = true;
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const added: ParameterNode[] = [];
     const runtimeCountCollections = new Set<string>();
     const prelude: StatementNode[] = [];
-    const handlerClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
+    const functionClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
     const keySnapshotPrelude: StatementNode[] = [];
-    const markCarrierRole = (
-      name: string,
-      role: 'counter-permutation' | 'old-values-witness',
-    ): void => {
-      if (!node.messageBusKernelReadCarrierDiscovery) return;
-      (node.messageBusKernelReadCarrierSyntheticParameterRoles ??= new Map()).set(name, role);
-    };
-    // The compiler invokes this pass both before speculative admission and, when needed, before final codegen.
-    // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
-    // the generated proof statements on the second pass.
+    // Hidden parameters mark a function this pass already lowered. Do not inspect or mutate its generated proof
+    // statements on a second visit.
     if (node.parameters.some((parameter) => parameter.name.startsWith(PREFIX))) return node;
     const normalizedMutableEventCounters = new WeakMap<WhileNode | DoWhileNode, {
       counter: string; bound: ExpressionNode;
@@ -1173,7 +1008,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       return write.keys.findIndex((key) => containsIdentifier(key, logical));
     };
     const hasObservableEffect = (x: Node): boolean => this.hasObservableEffect(x);
-    // The message-bus effect frame has one fixed window per OUTER message row. Reaching the same emit/transfer
+    // An emit/transfer site has one fixed output. Reaching the same emit/transfer
     // site N times in this inner runtime loop would therefore address one slot N times, while the SDK can only
     // materialize the statically declared site once. Typed external calls are different: their call manifest
     // already carries a runtime occurrence loop, so leave those in source order. Ordinary explicitly-pure
@@ -2273,51 +2108,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         });
       };
       for (const statement of block.statements ?? []) collectRuntimeReadRequirements(statement);
-      if (loop.sourceAuthoredLoop && keyed.length > 0 && directRuntimeReadRequirements.length > 0) {
-        const writtenCollections = new Set(keyed.map((write) => write.name));
-        const conflictingReadCollection = (candidate: Node): string | undefined => {
-          if (candidate instanceof MappingAccessNode
-            && writtenCollections.has(candidate.name)
-            && candidate.keys.some((key) => containsIdentifier(key, logical))) return candidate.name;
-          if (candidate instanceof ArrayAccessNode) {
-            const keys: ExpressionNode[] = [];
-            let root: ExpressionNode = candidate;
-            while (root instanceof ArrayAccessNode) {
-              keys.unshift(root.index);
-              root = root.array;
-            }
-            if ((root instanceof IdentifierNode || root instanceof StateAccessNode)
-              && writtenCollections.has(root.name)
-              && keys.some((key) => containsIdentifier(key, logical))) return root.name;
-          }
-          for (const [key, value] of Object.entries(candidate)) {
-            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
-            if (value instanceof Node) {
-              const conflict = conflictingReadCollection(value);
-              if (conflict) return conflict;
-            }
-            if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
-              const conflict = conflictingReadCollection(item);
-              if (conflict) return conflict;
-            }
-          }
-          return undefined;
-        };
-        const conflict = directRuntimeReadRequirements.map(({ requirement }) =>
-          conflictingReadCollection(requirement.expression)).find((collection) => collection !== undefined);
-        if (conflict) {
-          throw new CounterLoopReadWriteConflictError(conflict);
-        }
-      }
       const prefixCountTraces = [...new Map(keyed.flatMap((write) =>
         (this.constructedArrayPrefixCountUses.get(write) ?? []).map((trace) => [trace.witnessParam, trace]))).values()];
       if (keyed.some((write) => (this.constructedArrayPrefixCountUses.get(write)?.length ?? 0) > 1)) return false;
       for (const write of keyed) {
         if (!(write instanceof MappingAssignNode)
           || (!write.arrayPush && !write.arrayPop && write.arrayIndex === undefined)) continue;
-        if (!write.arrayPop) write.messageBusRuntimeMutationValueExpression = cloneNode(write.expression);
-        if (write.arrayIndex) write.messageBusRuntimeMutationIndexExpression = cloneNode(write.arrayIndex);
+        if (!write.arrayPop) write.runtimeLoopMutationValueExpression = cloneNode(write.expression);
+        if (write.arrayIndex) write.runtimeLoopMutationIndexExpression = cloneNode(write.arrayIndex);
       }
       // Collapse an exhaustive top-level local assignment join into the exact value produced for this source
       // iteration. The original branch remains in the executable body; this expression is metadata used wherever
@@ -3017,7 +2815,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // loop-carried locals and their target state to arbitrary-precision integers: a bounded checked source can
       // execute safely while an equivalent regrouping overflows (or vice versa), which would reject a valid call.
       const authenticatedScalarStateValue = (expression: ExpressionNode): boolean => {
-        if (!(expression instanceof StateAccessNode) || handlerClosureStateWrites.has(expression.name)) return false;
+        if (!(expression instanceof StateAccessNode) || functionClosureStateWrites.has(expression.name)) return false;
         const stateType = this.stateTypes.get(expression.name);
         return stateType === PrimitiveType.BIGINT || stateType instanceof IntType;
       };
@@ -3322,7 +3120,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const supportedStateFactor = stateFactor !== undefined
             && stateFactor.name !== name
             && (stateFactorType instanceof IntType || stateFactorType === PrimitiveType.BIGINT)
-            && !handlerClosureStateWrites.has(stateFactor.name);
+            && !functionClosureStateWrites.has(stateFactor.name);
           const associativeOperator = recurrence instanceof BinaryOpNode
             && [BinaryOperator.MUL, BinaryOperator.BIT_AND, BinaryOperator.BIT_OR, BinaryOperator.BIT_XOR]
               .includes(recurrence.operator);
@@ -4475,9 +4273,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 );
                 synthetic.location = candidate.location ?? destination.location;
                 synthetic.collection = sourceCollection;
-                synthetic.messageBusRuntimeReadOnly = true;
+                synthetic.runtimeLoopReadOnly = true;
                 const authenticatedRead = cloneNode(witnessRead) as ArrayAccessNode;
-                synthetic.messageBusRuntimeOldValueWitness = authenticatedRead;
+                synthetic.runtimeLoopOldValueWitness = authenticatedRead;
                 plan = {
                   destination,
                   consumer: destination,
@@ -4563,10 +4361,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 );
                 synthetic.location = candidate.location ?? requirement.location;
                 synthetic.collection = sourceCollection;
-                synthetic.messageBusRuntimeReadOnly = true;
-                if (condition) synthetic.messageBusRuntimeOldValueWitnessDomain = 'selected-source';
+                synthetic.runtimeLoopReadOnly = true;
+                if (condition) synthetic.runtimeLoopOldValueWitnessDomain = 'selected-source';
                 const authenticatedRead = cloneNode(witnessRead) as ArrayAccessNode;
-                synthetic.messageBusRuntimeOldValueWitness = authenticatedRead;
+                synthetic.runtimeLoopOldValueWitness = authenticatedRead;
                 plan = {
                   consumer: requirement,
                   sourceOrderConsumer: true,
@@ -4701,7 +4499,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       // A same-key read nested in its own write is the ordinary `m[i] += amount` transition. Any other mapping
       // read driven by the counter would require a second runtime input cursor and authenticated read journal;
-      // the fixed route key witness cannot represent all iterations.
+      // a fixed entry key witness cannot represent all iterations.
       const hasUnsafeCounterRead = (x: Node, allowed?: string): boolean => {
         if (x instanceof MappingAccessNode && containsLogical(x)) {
           const signature = `${x.name}:${x.keys.map(expressionShape).join('|')}`;
@@ -4839,7 +4637,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // branches or with effects/collection reads remain fenced because their reachability/value is not invariant.
       const loopValueDefinitions = new Map<string, ExpressionNode>();
       // A scalar state recurrence must read its pre-loop value, not the value currently being updated by the
-      // physical entry order. These snapshots are materialized in the function prelude before the row loop.
+      // physical entry order. These snapshots are materialized in the function prelude before the loop.
       const affineStateValues = new Map<string, ExpressionNode>();
       const affineStateSnapshots = new Map<string, StateAccessNode>();
       for (const statement of block.statements ?? []) {
@@ -5724,7 +5522,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (!insertBefore(block, write, check)) return false;
           const permutedRank = unitDomain ? id(group.logicalValue) : id(group.logicalRank);
           mappingWrite.expression = readAt(permutedRank);
-          mappingWrite.messageBusRuntimeValueTrace = valueTrace;
+          mappingWrite.runtimeLoopValueTrace = valueTrace;
         }
         const transitionRead = expression instanceof BinaryOpNode
           && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
@@ -5732,10 +5530,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (transitionRead !== undefined && transitionRead.name === write.name
           && transitionRead.keys.map(expressionShape).join('|') === writeKeyShape(write)) {
           // A direct left operand of the same collection and key is the entry's old value, which the runtime journal
-          // entry supplies. Mark it before the permutation rewrites the two keys apart, so the route census does not
-          // invent a fixed witness for it and code generation still folds the write into the entry. A read of another
-          // key or another collection is an operand of its own, whose authenticated read the route keeps.
-          (expression as BinaryOpNode).left.messageBusRuntimeLoopTransitionRead = true;
+          // entry supplies. Mark it before the permutation rewrites the two keys apart, so code generation still
+          // folds the write into the entry. A read of another key or another collection is an operand of its own.
+          (expression as BinaryOpNode).left.runtimeLoopTransitionRead = true;
         }
         if (generalOldEntryWrites.has(write as ArrayAssignNode | MappingAssignNode)) {
           const mappingWrite = write as ArrayAssignNode | MappingAssignNode;
@@ -5769,11 +5566,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           } else {
             mappingWrite.value = replaceOldEntry(mappingWrite.value) as ExpressionNode;
           }
-          mappingWrite.messageBusRuntimeOldValueWitness = oldRead();
+          mappingWrite.runtimeLoopOldValueWitness = oldRead();
           const structRmw = structRuntimeRmws.get(mappingWrite);
           if (structRmw) {
             structRmw.declaration.expression = cloneNode(
-              mappingWrite.messageBusRuntimeOldValueWitness,
+              mappingWrite.runtimeLoopOldValueWitness,
             ) as ExpressionNode;
           }
         }
@@ -5857,18 +5654,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             ...(stepExpression && { stepExpression: cloneNode(stepExpression) }),
           };
         });
-        // Admission can revisit an AST which already received fixed transfer ordinals in an earlier semantic
-        // rung. Force the later symbol pass to rebuild that frame, excluding the newly runtime-owned sites.
+        // Drop any fixed transfer ordinals: the symbol pass rebuilds that frame without the runtime-owned sites.
         node.transferInfos = undefined;
       }
-      // The balanced route reserves the worst-case output width of every admitted runtime counter loop. One
-      // iteration produces one mapping entry per distinct stream plus one record per unconditional event site.
-      // Each mapping stream may also displace one predecessor while linking its complete insertion batch, so
-      // reserve that single endpoint independently of the 64 operation slots. Summing here handles sequential
-      // loops and multiple streams without recognizing a contract schema later in layout planning.
-      node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
-        + MAX_COUNTER_ITERATIONS * (keyedByStream.size + runtimeEmits.length + runtimeTransfers.length)
-        + keyedByStream.size;
       const whenLoopActive = (expression: ExpressionNode): ExpressionNode => pathCondition
         ? at(new TernaryOpNode(activePath(), expression, at(new BoolLiteralNode(true))))
         : expression;
@@ -6118,7 +5906,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const p = new ParameterNode(new ArrayType(counterType), group.hidden);
         p.location = node.location;
         added.push(p);
-        markCarrierRole(group.hidden, 'counter-permutation');
         if (group.inputCount && group.outputCount) {
           const inputCount = new ParameterNode(new IntType(true, 256), group.inputCount);
           inputCount.location = node.location;
@@ -6149,11 +5936,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const parameter = new ParameterNode(new ArrayType(valueType), plan.witnessParam);
         parameter.location = node.location;
         added.push(parameter);
-        markCarrierRole(plan.witnessParam, 'old-values-witness');
         // The synthetic no-op transition is a physical runtime journal stream just like a write. It is
         // introduced after `keyedCollections` is collected, so enroll its source explicitly in the shared
-        // transaction-wide cardinality protocol. Without these remainders an internal route clone falls back to
-        // a local address scan, which cannot compose its source stream with the route's other trailing groups.
+        // transaction-wide cardinality protocol.
         runtimeCountCollections.add(plan.synthetic.name);
       }
       if (generalOldEntryWrites.size > 0) {
@@ -6170,54 +5955,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       }
       for (const collection of keyedCollections) runtimeCountCollections.add(collection);
-      if (apply) {
-        for (const write of keyed) {
-          const group = groupByWrite.get(write);
-          if (write instanceof MappingAssignNode && !write.messageBusRuntimeReadOnly && group) {
-            write.messageBusJournalTransport = {
-              collection: write.name,
-              varyingArrayParam: group.hidden,
-            };
-          }
-        }
-      }
       return true;
     };
     const counterWorkLoopSet = new Set(counterWorkLoops.map(([loop]) => loop));
     const allSafe = counterWorkLoops.length > 0
       && counterWorkLoops.every(([loop]) => tryLower(loop, false));
-    // Some canonical loops have a valid per-iteration runtime-upsert lowering in codegen but cannot enter the
-    // permutation rewrite (for example, an eventful helper call inside the loop). Two such sibling loops over
-    // one collection still need one transaction-wide cardinality remainder: a local scan after either loop
-    // cannot distinguish the other loop's legitimate entries from orphans. Publish only the count witnesses
-    // here; these loops do not use the compact journal-access carrier owned by the full permutation lowering.
-    const fallbackRuntimeCountCollections = new Set<string>();
-    if (!allSafe && this.publishJournalAccessStreams && !this.framedComposition) {
-      const loopCounts = new Map<string, number>();
-      for (const [loop, canonical] of counterWorkLoops) {
-        const collections = new Set<string>();
-        const visitWrite = (candidate: Node): void => {
-          if (candidate !== loop.block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
-          if (isWrite(candidate) && this.collections.has(candidate.name)
-            && counterKeyIndex(candidate, canonical.logical) >= 0) collections.add(candidate.name);
-          for (const [key, value] of Object.entries(candidate)) {
-            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
-            if (value instanceof Node) visitWrite(value);
-            else if (Array.isArray(value)) {
-              for (const item of value) if (item instanceof Node) visitWrite(item);
-            }
-          }
-        };
-        visitWrite(loop.block);
-        for (const collection of collections) {
-          loopCounts.set(collection, (loopCounts.get(collection) ?? 0) + 1);
-        }
-      }
-      for (const [collection, count] of loopCounts) {
-        if (count >= 2) fallbackRuntimeCountCollections.add(collection);
-      }
-    }
     if (!allSafe) rollbackConstructedArrayPrefixCounts();
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
     // an `emit after` ahead of all repeated records. Serializable nested if/else predicates provide an exact
@@ -6417,9 +6159,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       appendInSourceOrder(node.body);
       node.runtimeLoopEvents = orderedSegments;
-      node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0) + outerEmits.length;
     }
-    for (const collection of new Set([...runtimeCountCollections, ...fallbackRuntimeCountCollections])) {
+    for (const collection of runtimeCountCollections) {
       const inputCount = new ParameterNode(
         new IntType(true, 256), vmapRuntimeInputCountName(collection),
       );
@@ -6430,30 +6171,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       outputCount.location = node.location;
       added.push(inputCount, outputCount);
     }
-    if (this.publishJournalAccessStreams && runtimeCountCollections.size > 0
-      && !node.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
-      const accesses = new ParameterNode(new ArrayType(new BytesType()), KERNEL_JOURNAL_ACCESS_STREAMS);
-      accesses.location = node.location;
-      const recordSegments = Array.from({ length: KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS }, (_unused, index) => {
-        const records = new ParameterNode(
-          new BytesType(), `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${index}`,
-        );
-        records.location = node.location;
-        return records;
-      });
-      added.push(accesses, ...recordSegments);
-    }
     if (keySnapshotPrelude.length > 0 || prelude.length > 0) {
       node.body.statements = [...keySnapshotPrelude, ...prelude, ...(node.body.statements ?? [])];
     }
-    // Route synthesis appends the physical owner context after every source-derived handler argument. Generated
-    // loop witnesses must remain on the source-argument side of that boundary even when this lowering runs on a
-    // cloned handler after route ownership was attached; otherwise caller and callee disagree on the OP_INVOKE ABI.
-    const ownerIndex = node.parameters.findIndex(
-      (parameter) => parameter.name === '__internal__messageBusOwnerInput',
-    );
-    if (ownerIndex < 0) node.parameters.push(...added);
-    else node.parameters.splice(ownerIndex, 0, ...added);
+    node.parameters.push(...added);
     return node;
   }
 
@@ -6463,10 +6184,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
    * `i == p ? v : default(T)`. The original `xs[i]` read remains in a generated equality requirement, preserving
    * bounds checks and authenticating the symbolic form against the source memory value. Straight-line writes in
    * a canonical loop are available to later statements in that same iteration; writes crossing control-flow
-   * joins, prior-iteration dependencies, and escaped arrays stay untouched and therefore fail closed at ordinary
-   * runtime-key admission. Straight-line push/pop operations advance a symbolic length, so their exact indices
-   * participate in the same replay without turning the source array into a route argument. This is type-generic
-   * and independent of any contract schema.
+   * joins, prior-iteration dependencies, and escaped arrays stay untouched and therefore fail closed at the
+   * ordinary runtime-key check. Straight-line push/pop operations advance a symbolic length, so their exact indices
+   * participate in the same replay. This is type-generic and independent of any contract schema.
    */
   private normalizeImmutableDefaultArrayKeys(
     node: FunctionDefinitionNode,
@@ -6481,9 +6201,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       postTest: boolean;
     }> = new Map(),
   ): void {
-    if (!node.body || node.messageBusConstructedArrayKeysNormalized) return;
-    node.messageBusConstructedArrayKeysNormalized = true;
-    const handlerClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
+    if (!node.body || node.runtimeLoopConstructedArrayKeysNormalized) return;
+    node.runtimeLoopConstructedArrayKeysNormalized = true;
+    const functionClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
     const canonicalCounters = new Set([...canonicalLoops.values()].map((loop) => loop.logical));
     type ArrayRecurrence = {
       counter: string;
@@ -6563,7 +6283,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // This pass exists to derive mapping/state-array KEYS from a locally constructed vector. A result array
     // which is merely populated and returned is not a key source. Tracking it would clone every value expression
     // into the symbolic plan; an effectful value such as `result[i] = target.read(i)` would then represent one
-    // semantic graph edge with two executable ExternalFunctionCallNodes. Keep effect identity singular by never
+    // external call with two executable ExternalFunctionCallNodes. Keep effect identity singular by never
     // constructing a replay plan unless a collection key actually reads one of these local arrays.
     const readsConstructedArray = (root: Node): boolean => {
       let found = false;
@@ -6596,8 +6316,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     });
     // Snapshot only assignments which can reach a constructed-array write. Counter-loop lowering also creates
     // temporary arrays, so snapshotting every assignment merely because one exists changes the physical stack
-    // frame of otherwise unrelated handlers. Close backwards through assignment RHSs to support chains such as
-    // `a = p + 1; b = a * 2; xs[0] = b` without retaining unrelated route counters or journal temporaries.
+    // frame of otherwise unrelated functions. Close backwards through assignment RHSs to support chains such as
+    // `a = p + 1; b = a * 2; xs[0] = b` without retaining unrelated counters or journal temporaries.
     const snapshotDependencyNames = new Set<string>();
     const addExpressionIdentifiers = (expression: ExpressionNode): boolean => {
       let changed = false;
@@ -7164,7 +6884,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const selected = new TernaryOpNode(matches, selectedValue, value);
         selected.location = access.location;
         selected.type = access.type;
-        selected.messageBusDeterministicArrayKey = true;
+        selected.runtimeLoopDeterministicArrayKey = true;
         value = selected;
       }
       return value;
@@ -7402,7 +7122,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (candidate instanceof LiteralNode) return true;
         if (candidate instanceof IdentifierNode) return node.parameters.some((parameter) =>
           parameter.name === candidate.name && !parameter.name.startsWith('__internal__'));
-        if (candidate instanceof StateAccessNode) return !handlerClosureStateWrites.has(candidate.name);
+        if (candidate instanceof StateAccessNode) return !functionClosureStateWrites.has(candidate.name);
         if (candidate instanceof CastNode || candidate instanceof UnaryOpNode) {
           return stableFixedCondition(candidate.expression);
         }
@@ -7488,7 +7208,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (candidate instanceof LiteralNode) return true;
         if (candidate instanceof IdentifierNode) return node.parameters.some((parameter) =>
           parameter.name === candidate.name && !parameter.name.startsWith('__internal__'));
-        if (candidate instanceof StateAccessNode) return !handlerClosureStateWrites.has(candidate.name);
+        if (candidate instanceof StateAccessNode) return !functionClosureStateWrites.has(candidate.name);
         if (candidate instanceof CastNode || candidate instanceof UnaryOpNode) {
           return stableSwitchExpression(candidate.expression);
         }
@@ -8690,7 +8410,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 } else {
                   // A value parameter starts with the caller's current contents but owns an isolated history.
                   // Its mutations remain available to reads inside this call without leaking into the caller.
-                  const copiedPlanName = `__internal__kernelHelperCopy_${this.serial++}`;
+                  const copiedPlanName = `__internal__journalHelperCopy_${this.serial++}`;
                   nestedPlanNames.set(parameter.name, copiedPlanName);
                   nestedSourcePlans.set(copiedPlanName, clonePlan(copiedPlanName, callerPlan));
                 }
@@ -8943,7 +8663,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 // This is deliberately the same closed expression vocabulary the artifact recipe serializer
                 // and SDK evaluator share. In particular, do not infer purity from a resolved call: even a
                 // source `pure` helper has no call representation in the published recipe. An authenticated
-                // scalar pre-state value is equally stable when the complete handler closure cannot write it;
+                // scalar pre-state value is equally stable when the function's call closure cannot write it;
                 // collection state, transaction reads, and all unknown future nodes still fail closed.
                 const stableBoundExpression = (candidate: ExpressionNode): boolean => {
                   if (candidate instanceof LiteralNode) return true;
@@ -8954,7 +8674,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   if (candidate instanceof StateAccessNode) {
                     const stateType = this.stateTypes.get(candidate.name);
                     return (stateType instanceof IntType || stateType === PrimitiveType.BIGINT)
-                      && !handlerClosureStateWrites.has(candidate.name);
+                      && !functionClosureStateWrites.has(candidate.name);
                   }
                   if (candidate instanceof CastNode || candidate instanceof UnaryOpNode
                     || candidate instanceof FieldAccessNode) {
@@ -9958,7 +9678,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }
             if ((!fixedPushes && !fixedPops) || directResizeCount === 0) {
               if (resizeCount > 0) {
-                node.messageBusUnboundedConstructedArray = true;
                 loopPlans.delete(name);
               }
               continue;
@@ -10256,16 +9975,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           && active.has(statement.name)
           && this.hasObservableEffect(replayedArrayValue);
         if (effectfulArrayValue) {
-          // This constructed vector later feeds a collection key (otherwise the method returned before building
-          // plans). Its producer cannot be replayed without duplicating an effect, so refuse the kernel row
-          // shape through the existing unbounded-key admission channel while retaining the direct source call.
-          node.messageBusUnboundedConstructedArray = true;
         }
         const keySnapshot = (statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode)
           && active.has(statement.name)
           && replayedArrayValue !== undefined
           // A snapshot is an additional executable occurrence. It may copy a total value recipe, but must never
-          // clone a graph call, transfer, event, or unknown helper merely to model a later collection key. Such a
+          // clone an external call, transfer, event, or unknown helper merely to model a later collection key. Such a
           // key source remains unsupported until it can consume authenticated producer-result metadata.
           && !effectfulArrayValue
           && containsFutureReassignedName(replayedArrayValue)
@@ -10359,7 +10074,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const values = statement.expression.elements.map((element) =>
               replaceArrayReads(replaceSnapshots(element, snapshots), active, []));
             if (values.some((value) => this.hasObservableEffect(value))) {
-              node.messageBusUnboundedConstructedArray = true;
               active.delete(statement.name);
             } else {
               const length = new IntLiteralNode(BigInt(width));

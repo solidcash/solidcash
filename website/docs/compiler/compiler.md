@@ -36,7 +36,6 @@ Options:
   --split [mode]         Split mode: off, size, or func. A bare --split is refused.
   --suppress-warnings    Suppress non-fatal compiler warnings.
   --no-source-map        Skip bytecode source maps (faster compile; weaker debug attribution).
-  --no-message-bus       Disable inferred atomic message-bus composition (fails if the contract requires it).
   -S, --skip-enforce-function-parameter-types  Do not enforce function parameter types.
   -L, --skip-enforce-locktime-guard            Do not inject a tx.time guard when tx.locktime is used.
   --allow-unverified-paths    Allow spending paths with no verification or state covenant (unsafe).
@@ -58,7 +57,6 @@ Solidity-mode flag; compile `.sol` sources through the [JavaScript API](#javascr
 | `--split off\|size\|func` | `off` compiles a normal artifact. `size` always splits into a root plus facets (it sets `forceSplit`), see [Large Contracts](/docs/compiler/large-contracts). `func` compiles one framed master per entry point and selects the framed convention (experimental). |
 | `--suppress-warnings` | Hide non-fatal warnings, including the over-10,000-byte size warning. Errors still fail the compile. |
 | `--no-source-map` | Sets `sourceMap: false`: no source maps on the artifact. Faster, but failures are attributed less precisely. |
-| `--no-message-bus` | Sets `messageBus: false`: compile direct-only. Fails with `MESSAGE_BUS_REQUIRED` when the contract needs a bus route. |
 | `-S` | Sets `enforceFunctionParameterTypes: false`. |
 | `-L` | Sets `enforceLocktimeGuard: false`. |
 | `--allow-unverified-paths` | Sets `enforceFinalRequire: false`: a spend path with no verification and no state change becomes a warning instead of an error. Unsafe. |
@@ -180,9 +178,9 @@ The return type follows the `split` option:
 
 Every compile function takes an options object. `DEFAULT_COMPILER_OPTIONS` (exported by `solidc`) holds the
 defaults: `enforceFunctionParameterTypes: true`, `enforceLocktimeGuard: true`, `enforceFinalRequire: true`,
-`allowUnsafeOperations: false`, `commitmentLimit: 128`, `chunkedArrays: true`, `chainId: 0`, `optimise: true`,
-`messageBusKernel: true` and `composition: 'direct'`. The artifact records the options that change how it is read
-(`evmCompat`, the enforcement flags, `commitmentLimit`, `messageBus` and a few more) under `compiler.options`.
+`allowUnsafeOperations: false`, `commitmentLimit: 128`, `chunkedArrays: true`, `chainId: 0`, `optimise: true` and
+`composition: 'direct'`. The artifact records the options that change how it is read (`evmCompat`, the enforcement
+flags, `commitmentLimit` and a few more) under `compiler.options`.
 
 ### Safety and validation
 
@@ -245,22 +243,14 @@ const artifact = compileString('import "./math.scash";\ncontract Calculator() { 
 
 ### Composition (experimental)
 
-Message-bus kernel composition and the framed convention are experimental profiles. Leave these options at their
-defaults unless you are following the [message bus guide](/docs/guides/message-bus) or the
-[framed composition guide](/docs/guides/framed-composition).
+The framed convention is an experimental profile, and the multi-call entry is opt-in for a direct callee. Leave
+these options at their defaults unless you are following the
+[framed composition guide](/docs/guides/framed-composition) or need repeated calls to one fixed target.
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `messageBus` | automatic | Omitted infers a route from the source's atomic call graph. `true` also requests a route for a graph-free contract and falls back to direct-only when none can be built. `false` compiles direct-only and fails with `MESSAGE_BUS_REQUIRED` when the source needs a bus. |
-| `messageBusKernel` | `true` | Compile routes as the kernel row loop. `false` reproduces the legacy unrolled route, for compatibility tests only. |
-| `messageBusHandlers` | all eligible | Clone only these entry points (by name, or `{ name, selector }` for one overload) into the route. |
-| `messageBusGraphContext` | `false` | Compile a graph-free participant with the atomic graph envelope. |
-| `messageBusEntryPoolCapacity` | 8 / 2 | Entry lanes for graph-context one-key pools (default 8) and fixed-key tuples (default 2). An integer from 1 to 99. |
-| `messageBusDirectParticipant` | `false` | Allow atomic manifests with a co-spent direct-only participant and no verifier NFT. |
-| `messageBusRootEnvelope` | `false` | Carry the canonical envelope on the root route. |
-| `messageBusProxyForwardEnvelope` | `false` | Carry the canonical envelope in the root proxy's forward payload. |
-| `optimizeForCompilationSpeed` | `false` | Skip speculative route admission attempts and compile the conservative route directly. |
-| `ownerAltAnchor`, `handlerBandModel` | off | Opt-in route code generation features; omitted reads the `SOLIDC_OWNER_ALT_ANCHOR` / `SOLIDC_HANDLER_BAND_MODEL` environment flags. |
+| `callBatch` | `false` | Publish the callee's multi-call entry so repeated or looped calls to one fixed target run as frames of one spend. |
+| `optimizeForCompilationSpeed` | `false` | Compile faster at some cost in bytecode size (lighter helper-body optimisation and outlining). A framed build always compiles this way. |
 | `composition` | `'direct'` | `'framed'` compiles each entry point as a master program that recreates itself, so a contract's state settles once per transaction. The result is published on `artifact.composition`. |
 | `upgradesFrom` | none | Framed proxies: per contract name, the state layout of the implementation it replaces. The compile refuses a layout that would read those records differently. |
 | `split` | see above | `'off'`, `'size'` or `'func'`, for the split entry points. |

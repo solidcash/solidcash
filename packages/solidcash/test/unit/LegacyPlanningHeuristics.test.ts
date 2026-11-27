@@ -5,14 +5,12 @@ import {
   legacyIsJobEventsCollection,
   legacyIsPublishJobEventName,
   legacyScalarNameHints,
-  permitsLegacyScalarNameHeuristics,
 } from '../../src/stateful/legacy-planning-heuristics.js';
 import {
   createCompositionSettlementSession,
   legacyRememberValueChunkLock,
   legacyRememberValueChunkValue,
   markPersistedCompatibilityValueChunkReady,
-  permitsLegacyNamedValueChunkFallback,
   readyPersistedCompatibilityValueChunkWidth,
   runWithCompositionSettlementSession,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
@@ -34,47 +32,23 @@ describe('legacy planning heuristics isolation (item 1)', () => {
     expect(legacyIsJobEventsCollection('records')).toBe(false);
   });
 
-  it('kernel-row-loop forbids legacy named value-chunk fallback and scalar name heuristics', () => {
-    expect(permitsLegacyNamedValueChunkFallback([], 'kernel-row-loop')).toBe(false);
-    expect(permitsLegacyScalarNameHeuristics('kernel-row-loop')).toBe(false);
-    expect(permitsLegacyScalarNameHeuristics('legacy-unroll')).toBe(true);
-  });
-
-  it('alpha-renaming scalar function names changes legacy hints but kernel path ignores them', () => {
+  it('alpha-renaming scalar function names changes legacy hints', () => {
     const resetHints = legacyScalarNameHints('reset');
     const foobarHints = legacyScalarNameHints('foobar');
     expect(resetHints.zero).toBe(true);
     expect(foobarHints.zero).toBe(false);
-
-    // Kernel convention: name heuristics disabled — both names yield the same (disabled) policy.
-    expect(permitsLegacyScalarNameHeuristics('kernel-row-loop')).toBe(false);
-    const kernelUsesHints = permitsLegacyScalarNameHeuristics('kernel-row-loop');
-    expect(kernelUsesHints && resetHints.zero).toBe(false);
-    expect(kernelUsesHints && foobarHints.zero).toBe(false);
   });
 
-  it('kernel artifact groups cannot take the publishJobEvent name branch', () => {
-    const kernelGroup = {
-      logicalArtifact: { messageBus: { convention: 'kernel-row-loop' as const } },
-      functionName: 'publishJobEvent',
-    };
-    expect(permitsLegacyNamedValueChunkFallback([kernelGroup as never])).toBe(false);
-  });
-
-  it('recognizes a renamed legacy first write from planned inserts without changing kernel behavior', () => {
+  it('recognizes a renamed legacy first write from planned inserts', () => {
     const group = { functionName: 'createRecord', plannedEntryInserts: [{ blockSlot: 1 }] };
     const host = {
       externalCallUtxoGroups: [group],
       lowLevelCallUtxoGroups: [],
-      messageBusConvention: 'legacy-unroll',
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
     expect(legacyInitialValueChunkWrite([], [group])).toBe(true);
     expect(isInitialChunkableValueWrite(host as never)).toBe(true);
-    expect(isInitialChunkableValueWrite({ ...host, messageBusConvention: 'kernel-row-loop' } as never))
-      .toBe(false);
     expect(legacyInitialValueChunkWrite([{ functionName: 'publishJobPost' }], [])).toBe(false);
     expect(legacyInitialValueChunkWrite([{
       functionName: 'publishJobPost', plannedEntryInserts: [{ blockSlot: 1 }],
@@ -83,13 +57,9 @@ describe('legacy planning heuristics isolation (item 1)', () => {
   });
 
   it('requires a matching historical publisher before selecting the legacy collection fallback', () => {
-    expect(legacyNamedJobEventCollectionFallback([], true)).toBeUndefined();
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'appendNotice' }], true))
-      .toBeUndefined();
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], true))
-      .toBe('jobEvents');
-    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], false))
-      .toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([])).toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'appendNotice' }])).toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }])).toBe('jobEvents');
   });
 
   it('does not treat another category as a ready legacy value-chunk publisher', () => {
@@ -103,8 +73,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
         logicalFunctionArgs: [0n, [16, '', '', 0]],
       }],
       lowLevelCallUtxoGroups: [],
-      messageBusConvention: 'legacy-unroll',
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -130,8 +98,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
     const host = {
       externalCallUtxoGroups: [{ categoryId: proxy, functionName: 'publishJobEvent' }],
       lowLevelCallUtxoGroups: [{ categoryId: implementation, functionName: 'publishJobEvent' }],
-      messageBusConvention: 'legacy-unroll',
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -163,8 +129,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
         functionName: 'publishJobEvent',
         callMode: 'delegatecall',
       }],
-      messageBusConvention: 'legacy-unroll',
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -190,8 +154,6 @@ describe('legacy planning heuristics isolation (item 1)', () => {
         functionName: 'publishJobEvent',
         callMode: 'delegatecall',
       }],
-      messageBusConvention: 'legacy-unroll',
-      composedParticipant: false,
       getLowLevelCallMasterInputIndex: () => -1,
       getExternalCallMasterInputIndex: () => -1,
     };
@@ -230,10 +192,8 @@ describe('legacy planning heuristics isolation (item 1)', () => {
       // A different participant's historical name must not identify this selected writer's collection.
       externalCallUtxoGroups: [group, historical],
       lowLevelCallUtxoGroups: [],
-      messageBusConvention: 'legacy-unroll',
       derivedChunkOutputs: new Map(),
       allInputs: [],
-      composedParticipant: false,
       chunkableValueWriteExecution: () => undefined,
       chunkableValueWriteGroups: () => ({
         external: group, externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
@@ -277,22 +237,20 @@ describe('legacy planning heuristics isolation (item 1)', () => {
           { name: 'records', signature: 'records:mapping(int => Record[])', chunkableValue: true },
         ],
       },
-      compilerRoute: { abiFunction: {
+      externalContract: { inner: { artifact: { abi: [{
         name: 'publishJobEvent',
         inputs: [], outputs: [],
         entryAccesses: [
           { collection: 'notices', operations: ['write'] },
           { collection: 'records', operations: ['write'] },
         ],
-      } },
+      }] } } },
     };
     const host = {
       externalCallUtxoGroups: [group],
       lowLevelCallUtxoGroups: [],
-      messageBusConvention: 'legacy-unroll',
       derivedChunkOutputs: new Map(),
       allInputs: [],
-      composedParticipant: false,
       chunkableValueWriteExecution: () => undefined,
       chunkableValueWriteGroups: () => ({
         external: group, externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,

@@ -2,139 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   evaluateFoldActivation,
   foldActivationFromExternalCallExpression,
-  foldChunkableResource,
-  normalizeFoldActivation,
-  type ResourceFoldPlan,
-} from '../../src/message-bus/resource-fold.js';
+} from '../../src/stateful/resource-fold.js';
 
 describe('resource-fold', () => {
-  const concat = (encoded: Uint8Array, element: Uint8Array): Uint8Array => (
-    Uint8Array.from([...encoded, ...element])
-  );
-
-  it('folds two pushes into leading + complete', () => {
-    const plan: ResourceFoldPlan = {
-      collection: 'events',
-      initialSource: 'empty',
-      steps: [
-        { kind: 'push', rowSelector: 'rowA', effectOrdinal: 0 },
-        { kind: 'push', rowSelector: 'rowB', effectOrdinal: 1 },
-      ],
-      leadingWitness: '__internal__leading_events',
-      completeWitness: '__internal__complete_events',
-    };
-    const result = foldChunkableResource(plan, {
-      emptyValue: () => new Uint8Array(),
-      appendElement: concat,
-      resolveElement: (step) => (
-        step.rowSelector === 'rowA' ? Uint8Array.from([1]) : Uint8Array.from([2])
-      ),
-    });
-    expect([...result.leading!]).toEqual([1]);
-    expect([...result.complete]).toEqual([1, 2]);
-    expect(result.activeSteps).toHaveLength(2);
-  });
-
-  it('skips inactive steps via activation predicate', () => {
-    const plan: ResourceFoldPlan = {
-      collection: 'events',
-      initialSource: 'empty',
-      steps: [
-        { kind: 'push', rowSelector: 'rowA', activation: 'writeSecond' },
-        { kind: 'push', rowSelector: 'rowB', activation: 'writeSecond' },
-      ],
-    };
-    const result = foldChunkableResource(plan, {
-      isActive: (step) => step.rowSelector === 'rowA',
-      emptyValue: () => new Uint8Array(),
-      appendElement: concat,
-      resolveElement: () => Uint8Array.from([9]),
-    });
-    expect(result.leading).toBeUndefined();
-    expect([...result.complete]).toEqual([9]);
-    expect(result.activeSteps).toHaveLength(1);
-  });
-
-  it('fail-closes when an active element cannot be resolved', () => {
-    const plan: ResourceFoldPlan = {
-      collection: 'events',
-      initialSource: 'empty',
-      steps: [{ kind: 'push', rowSelector: 'rowA' }],
-    };
-    expect(() => foldChunkableResource(plan, {
-      emptyValue: () => new Uint8Array(),
-      appendElement: concat,
-      resolveElement: () => undefined,
-    })).toThrow(/cannot evaluate element/);
-  });
-
-  it('path-effect activation: string activation is boolParam sugar and activationEnv gates steps', () => {
-    expect(normalizeFoldActivation('writeRight')).toEqual({ kind: 'boolParam', name: 'writeRight' });
-    const plan: ResourceFoldPlan = {
-      collection: 'events',
-      initialSource: 'empty',
-      steps: [
-        { kind: 'push', rowSelector: 'left' },
-        { kind: 'push', rowSelector: 'right', activation: 'writeRight' },
-      ],
-    };
-    const inactive = foldChunkableResource(plan, {
-      activationEnv: { boolParams: { writeRight: false } },
-      emptyValue: () => new Uint8Array(),
-      appendElement: concat,
-      resolveElement: (step) => (
-        step.rowSelector === 'left' ? Uint8Array.from([1]) : Uint8Array.from([2])
-      ),
-    });
-    expect([...inactive.complete]).toEqual([1]);
-    expect(inactive.activeSteps.map((step) => step.rowSelector)).toEqual(['left']);
-
-    const active = foldChunkableResource(plan, {
-      activationEnv: { boolParams: { writeRight: true } },
-      emptyValue: () => new Uint8Array(),
-      appendElement: concat,
-      resolveElement: (step) => (
-        step.rowSelector === 'left' ? Uint8Array.from([1]) : Uint8Array.from([2])
-      ),
-    });
-    expect([...active.complete]).toEqual([1, 2]);
-  });
-
-  it('path-effect activation: structured handlerInput + not activations evaluate beyond bool-param names', () => {
-    expect(evaluateFoldActivation(
-      { kind: 'handlerInput', inputIndex: 0 },
-      { handlerInputs: [true, false] },
-    )).toBe(true);
-    expect(evaluateFoldActivation(
-      { kind: 'not', of: { kind: 'handlerInput', inputIndex: 1 } },
-      { handlerInputs: [true, false] },
-    )).toBe(true);
-    expect(evaluateFoldActivation(
-      { kind: 'handlerInput', inputIndex: 3 },
-      { handlerInputs: [true] },
-    )).toBe(false);
-
-    const plan: ResourceFoldPlan = {
-      collection: 'events',
-      initialSource: 'empty',
-      steps: [
-        {
-          kind: 'push',
-          rowSelector: 'gated',
-          activation: { kind: 'not', of: { kind: 'handlerInput', inputIndex: 0 } },
-        },
-      ],
-    };
-    const skipped = foldChunkableResource(plan, {
-      activationEnv: { handlerInputs: [true] },
-      emptyValue: () => new Uint8Array([7]),
-      appendElement: concat,
-      resolveElement: () => Uint8Array.from([9]),
-    });
-    expect([...skipped.complete]).toEqual([7]);
-    expect(skipped.activeSteps).toHaveLength(0);
-  });
-
   it('path-effect activation: foldActivationFromExternalCallExpression maps compiler ECE onto recipes', () => {
     expect(foldActivationFromExternalCallExpression({
       kind: 'source',
@@ -168,11 +38,11 @@ describe('resource-fold', () => {
       right: { kind: 'boolParam' as const, name: 'writeRight' },
     };
     expect(evaluateFoldActivation(andRecipe, {
-      handlerInputs: [true],
+      functionInputs: [true],
       boolParams: { writeRight: true },
     })).toBe(true);
     expect(evaluateFoldActivation(andRecipe, {
-      handlerInputs: [true],
+      functionInputs: [true],
       boolParams: { writeRight: false },
     })).toBe(false);
     expect(evaluateFoldActivation({
@@ -180,7 +50,7 @@ describe('resource-fold', () => {
       left: { kind: 'handlerInput', inputIndex: 0 },
       right: { kind: 'boolParam', name: 'writeRight' },
     }, {
-      handlerInputs: [false],
+      functionInputs: [false],
       boolParams: { writeRight: true },
     })).toBe(true);
   });
@@ -208,19 +78,19 @@ describe('resource-fold', () => {
 
     expect(evaluateFoldActivation(
       { kind: 'handlerInputCmp', inputIndex: 0, op: '!=', value: '3' },
-      { handlerInputs: [4n] },
+      { functionInputs: [4n] },
     )).toBe(true);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputCmp', inputIndex: 0, op: '!=', value: '3' },
-      { handlerInputs: [3n] },
+      { functionInputs: [3n] },
     )).toBe(false);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputCmp', inputIndex: 0, op: '<=', value: '10' },
-      { handlerInputs: [10n] },
+      { functionInputs: [10n] },
     )).toBe(true);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputCmp', inputIndex: 0, op: '>', value: '10' },
-      { handlerInputs: [10n] },
+      { functionInputs: [10n] },
     )).toBe(false);
   });
 
@@ -238,15 +108,15 @@ describe('resource-fold', () => {
     });
     expect(evaluateFoldActivation(
       { kind: 'handlerInputPairCmp', leftIndex: 0, op: '<', rightIndex: 1 },
-      { handlerInputs: [3n, 5n] },
+      { functionInputs: [3n, 5n] },
     )).toBe(true);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputPairCmp', leftIndex: 0, op: '<', rightIndex: 1 },
-      { handlerInputs: [5n, 3n] },
+      { functionInputs: [5n, 3n] },
     )).toBe(false);
     expect(evaluateFoldActivation(
       { kind: 'handlerInputPairCmp', leftIndex: 0, op: '==', rightIndex: 1 },
-      { handlerInputs: [7n, 7n] },
+      { functionInputs: [7n, 7n] },
     )).toBe(true);
   });
 

@@ -6,19 +6,17 @@ import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../src/index.js';
 import { getContractFactory, upgrades } from '../../src/stateful/index.js';
-import { defaultProxyDelegateDistances } from '../../src/stateful/upgrades.js';
+import { defaultProxyDelegateDistance } from '../../src/stateful/upgrades.js';
 import { alicePriv } from '../fixture/vars.js';
 import { addProvenUtxo, createTestProvider } from '../test-util.js';
 
 /**
- * The default proxy's forward pins its delegate at `OP_INPUTINDEX + distance`, the distance picked by the forwarded
- * selector: `__proxyRouteBlockSize` for SCB1 and `__proxyBlockSize` (1 + dataNftCount) otherwise. Each delegate entry
- * derives the proxy master it acts on from its own input index. For every entry the forward can reach, the prologue
- * must admit exactly the distance the forward pins for that entry's selector: a second admitted distance would let
- * the witness name another master than the forwarding proxy.
+ * The default proxy's forward pins its delegate at `OP_INPUTINDEX + __proxyBlockSize` (1 + dataNftCount). Each
+ * delegate entry derives the proxy master it acts on from its own input index. For every entry the forward can
+ * reach, the prologue must admit exactly the distance the forward pins: a second admitted distance would let the
+ * witness name another master than the forwarding proxy.
  */
 const PROXY_MASTER = '__internal__proxyMasterIndex';
-const ROUTE_SELECTOR = '53434231';
 
 type Instructions = ReturnType<typeof decodeAuthenticationInstructions>;
 type Helpers = NonNullable<NonNullable<Artifact['debug']>['invokeDebug']>;
@@ -81,16 +79,14 @@ interface ForwardableEntry {
   pinned: bigint;
 }
 
-/** Every entry the default proxy can forward to: the delegate entries by their selector and the route by SCB1. */
+/** Every entry the default proxy can forward to: the delegate entries by their selector. */
 const forwardableEntries = (impl: Artifact): ForwardableEntry[] => {
-  const [direct, route] = defaultProxyDelegateDistances(impl);
+  const pinned = defaultProxyDelegateDistance(impl);
   const helpers = impl.debug?.invokeDebug ?? {};
-  const bus = impl.messageBus;
-  const routeEntry = bus?.available !== false && bus?.routeInBytecode !== false ? bus?.route : undefined;
-  const entries: AbiFunction[] = [...impl.abi, ...(routeEntry ? [routeEntry] : [])]
+  const entries: AbiFunction[] = [...impl.abi]
     .filter((entry) => entry.inputs.some((input) => input.name === PROXY_MASTER));
   return entries.map((entry) => {
-    const selector = entry === routeEntry ? entry.selector ?? ROUTE_SELECTOR : entry.selector!;
+    const selector = entry.selector!;
     const body = impl.functionBodies?.[selector]
       ?? (impl.functionBodies === undefined && entries.length === 1 ? impl.debug?.bytecode : undefined);
     return {
@@ -98,13 +94,13 @@ const forwardableEntries = (impl: Artifact): ForwardableEntry[] => {
       selector,
       blockSize: entry.blockLayout?.blockSize ?? 0,
       admitted: body === undefined ? undefined : ownerDistances(expanded(body, helpers)),
-      pinned: selector === ROUTE_SELECTOR ? route : direct,
+      pinned,
     };
   });
 };
 
-const implementationOf = (source: string, messageBus: boolean): Artifact => {
-  const artifact = compileString(source, { messageBus, suppressWarnings: true });
+const implementationOf = (source: string): Artifact => {
+  const artifact = compileString(source, { suppressWarnings: true });
   return artifact.delegateArtifact ?? artifact;
 };
 
@@ -190,29 +186,22 @@ describe('delegate owner distance against the default proxy forward', () => {
         bigint counter;
         function bump() public { this.counter = this.counter + 1; }
         function assign(bigint value) public { this.counter = value; }
-      }`, false);
-    const [direct] = defaultProxyDelegateDistances(impl);
+      }`);
+    const direct = defaultProxyDelegateDistance(impl);
     const bump = expectOneDistancePerCall(impl).find((entry) => entry.name === 'bump')!;
     expect(BigInt(bump.blockSize)).toBe(direct);
   });
 
   for (const { shape, source, entry } of SHAPES) {
     it(`admits only the direct distance for a delegate with ${shape}`, () => {
-      const impl = implementationOf(source, false);
-      const [direct] = defaultProxyDelegateDistances(impl);
+      const impl = implementationOf(source);
+      const direct = defaultProxyDelegateDistance(impl);
       const forwarded = expectOneDistancePerCall(impl).find((candidate) => candidate.name === entry);
       // The shape is the one this case is about: its block is larger than the distance the forward pins.
       expect(forwarded, `${entry} is a forwardable delegate entry`).toBeDefined();
       expect(BigInt(forwarded!.blockSize)).toBeGreaterThan(direct);
     });
   }
-
-  it('admits only the route distance for the route the forward reaches by SCB1', () => {
-    const impl = implementationOf(ENTRY_SOURCE, true);
-    const route = expectOneDistancePerCall(impl).find((entry) => entry.selector === ROUTE_SELECTOR);
-    expect(route, 'the implementation publishes a forwardable route').toBeDefined();
-    expect(route!.pinned).toBe(BigInt(impl.messageBus!.route.blockLayout!.blockSize));
-  });
 });
 
 describe('an honest proxied call of a delegate with an entry slot', () => {
@@ -220,7 +209,7 @@ describe('an honest proxied call of a delegate with an entry slot', () => {
     const provider = createTestProvider();
     const signer = new Signer(alicePriv, provider);
     for (let index = 0; index < 20; index += 1) await addProvenUtxo(provider, signer.getAddress());
-    const artifact = compileString(ENTRY_SOURCE, { messageBus: false, suppressWarnings: true });
+    const artifact = compileString(ENTRY_SOURCE, { suppressWarnings: true });
     const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), { counter: 0n });
     await proxy.waitForDeployment();
     const handle = proxy as unknown as { bump(): { send(): Promise<unknown> } };

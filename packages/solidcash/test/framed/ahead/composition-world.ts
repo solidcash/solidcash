@@ -32,7 +32,6 @@ export const PROJECT_OPTIONS = {
   evmCompat: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
-  messageBus: true,
   optimizeForCompilationSpeed: true,
   suppressWarnings: true,
   ecrecover: 'p2pkh',
@@ -49,7 +48,7 @@ export function compileProject(source: string): ArtifactMap {
 
 /**
  * Compiles a unit with the framed convention and the Solidity compatibility layer only, as the conformance rows
- * do: no message-bus route is generated beside the framed bodies.
+ * do.
  */
 export function compileFramed(source: string): ArtifactMap {
   return compileStringMulti(source, { evmCompat: true, composition: 'framed' } as never);

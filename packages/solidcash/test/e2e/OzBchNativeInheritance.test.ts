@@ -34,7 +34,6 @@ let artifact: Artifact;
 beforeAll(() => {
   artifact = compileFile(source, {
     evmCompat: true,
-    messageBus: false,
     suppressWarnings: true,
   }) as Artifact;
 });
@@ -205,7 +204,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
 
   it('wraps on the root, unwraps and inserts a transfer balance through split facets within 9 KB shards', async () => {
     const split = compileFileSplit(source, {
-      evmCompat: true, messageBus: false, maxShardBytes: 9_000,
+      evmCompat: true, maxShardBytes: 9_000,
       // The unsplit redeem script is over the 9 KB shard budget, so a shard plan is needed rather than merely
       // asked for. This title checks that wrap can stay on the root while unwrap and transfer run on facets
       // whose scripts also fit.

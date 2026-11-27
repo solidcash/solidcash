@@ -31,7 +31,7 @@ export interface DelegateLoopEntriesHost {
   readonly allInputs: readonly UnlockableUtxo[];
   readonly dynamicChunkInputs: readonly UnlockableUtxo[];
   readonly trailingDisposalInputs: readonly UnlockableUtxo[];
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly iterationEntryInputs: readonly UnlockableUtxo[];
   readonly loopEntryCommitments: ReadonlyMap<string, readonly string[]>;
   getLoopEntryOutputBase(): number;
@@ -107,12 +107,11 @@ export function reassertDelegateLoopEntries(
   host: DelegateLoopEntriesHost,
   builder: TransactionBuilder,
 ): void {
-  if (!shouldReassertLegacyDelegateLoopEntries(host.compilerRouteDelegateBlock)) return;
+  if (!shouldReassertLegacyDelegateLoopEntries(host.directCallDelegateBlock)) return;
   const delegateLoopVars = delegateLoopEntryVars(host);
   if (delegateLoopVars.length === 0) return;
   const delegateFunction = (group: ExternalCallUtxoGroup): AbiFunction | undefined => (
-    group.compilerRoute?.abiFunction
-    ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+    (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === group.functionName)
   );
   const activeDelegate = host.activeDelegateGroupIndex === undefined
@@ -170,12 +169,12 @@ export function reassertDelegateLoopEntries(
     }
     return outputIndex;
   };
-  let outputIndex = host.compilerRouteDelegateBlock
+  let outputIndex = host.directCallDelegateBlock
     ? host.getLoopEntryOutputBase()
     : delegateBase !== undefined
       ? delegateBase + delegateBlockSize - compact
       : host.getLoopEntryOutputBase();
-  if (!host.compilerRouteDelegateBlock) outputIndex += host.iterationEntryInputs.length;
+  if (!host.directCallDelegateBlock) outputIndex += host.iterationEntryInputs.length;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_PAD_HOLE === '1') {
     const ownedIdx = returnOutputIdxFromUnlocker(ownerUnlocker);
@@ -188,7 +187,7 @@ export function reassertDelegateLoopEntries(
       returnEventAbs,
       trailingBase: delegateAbiFunction?.blockLayout?.trailingBase,
       hasReturnEvent: delegateAbiFunction?.blockLayout?.slots?.some((s) => s.kind === 'returnEvent'),
-      compilerRouteDelegateBlock: host.compilerRouteDelegateBlock,
+      directCallDelegateBlock: host.directCallDelegateBlock,
       iterEntries: host.iterationEntryInputs.length,
       dynChunks: host.dynamicChunkInputs.length,
       trailingDisposal: host.trailingDisposalInputs.length,

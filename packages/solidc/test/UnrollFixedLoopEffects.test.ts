@@ -51,32 +51,4 @@ describe('a fixed-bound loop with an effect', () => {
     expect(run(compileString(looped, { composition: 'framed', suppressWarnings: true })).emits).toHaveLength(1);
   });
 
-  // A message-bus compile unrolls the loop before its route admission, so the handler the route admits is the one it
-  // runs: a site per turn, the kernel's events streamed one record each.
-  it('gives each turn a site of its own in a message-bus compile, kernel or legacy', () => {
-    const bus = (source: string, messageBusKernel: boolean): Artifact => compileString(source, {
-      forceStateful: true, messageBus: true, messageBusKernel, maximumInputBytes: 1_000_000, suppressWarnings: true,
-    });
-    const handler = (artifact: Artifact): NonNullable<Artifact['messageBus']>['handlers'][number] | undefined => artifact
-      .messageBus?.handlers.find((entry) => entry.name === 'run');
-    const events = contract('for (int i = 0; i < 3; i++) { emit E(base + i); }', 'int base');
-    const payments = contract('for (int i = 0; i < 2; i++) { this.transfer(recipient, 1000 + i); }', 'bytes recipient');
-
-    const kernelEvents = bus(events, true);
-    expect(run(kernelEvents).emits).toHaveLength(3);
-    expect(handler(kernelEvents)).toMatchObject({
-      eligible: true,
-      runtimeLoopEvents: [{ repeatCount: 1, stream: true, eventSignatures: ['E(int256)', 'E(int256)', 'E(int256)'] }],
-    });
-    const kernelPayments = bus(payments, true);
-    expect(run(kernelPayments).transferCount).toBe(2);
-    expect(handler(kernelPayments)).toMatchObject({ eligible: true });
-    expect(handler(kernelPayments)?.transfers).toHaveLength(2);
-
-    const legacyEvents = bus(events, false);
-    expect(run(legacyEvents).emits).toHaveLength(3);
-    expect(handler(legacyEvents)).toMatchObject({ eligible: true });
-    expect(handler(legacyEvents)?.emits).toHaveLength(3);
-    expect(run(bus(payments, false)).transferCount).toBe(2);
-  });
 });

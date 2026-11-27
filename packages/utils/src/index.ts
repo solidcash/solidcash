@@ -10,24 +10,16 @@ export {
   isRejectedFunctionLoader,
   publishedRedeemLock,
 } from './function-split.js';
-export * from './kernel-capability-schema.js';
-export * from './handler-frame-abi.js';
 export * from './block-layout.js';
 export * from './bip68.js';
 export * from './bitauth-script.js';
 export * from './data.js';
 export * from './decoded-result.js';
 export * from './fingerprint.js';
-export * from './domain-separated-fingerprint.js';
 export * from './hash.js';
-export * from './kernel-journal-disposition.js';
-export * from './kernel-execution-plan-commitment.js';
-export * from './kernel-execution-plan.js';
-export * from './token-container-co-layout.js';
 export * from './keccak-library.js';
 export * from './outline.js';
 export * from './keccak-compute-library.js';
-export * from './message-bus-verifier.js';
 export * from './ecrecover-compute-library.js';
 export * from './external-library.js';
 export * from './script.js';

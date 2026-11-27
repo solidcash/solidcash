@@ -44,7 +44,7 @@ silently substitute different bytecode after satisfying the source-level authori
 :::danger
 The source-level guard decides who controls future code. Use a constructor- or state-bound key, multi-signature
 policy, or another non-caller-chosen authority. `require(checkSig(s, pk))` is not authorization if the caller also
-chooses `pk`. A direct compile rejects an `upgrade` function without an unconditional `require(checkSig(s, key))`
+chooses `pk`. The compiler rejects an `upgrade` function without an unconditional `require(checkSig(s, key))`
 against a key the caller cannot choose (`UnauthorizedLifecycleError`).
 :::
 
@@ -90,10 +90,6 @@ A `migrateRecords` function keeps the master at its old lock and re-mints one co
 entry address, which the same kind of hidden witness names. Guard it with the same key as `upgrade`: whoever calls
 it chooses that replacement. It must be externally callable and cannot be combined with `pure`, `view`, `unsafe`,
 `upgrade`, `selfdestruct`, or `delegate`. A contract without mapping or array entries does not need one.
-
-A message-bus upgrade route (experimental) appends inside the existing data NFTs at the old lock instead, so the
-compiler refuses an `upgrade` function that joins such a route in a contract with state variables
-(`UpgradeStrandsBoundStateError`).
 
 ### State and identity after migration
 

@@ -27,12 +27,11 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly categoryId: string;
   readonly readOnlyDataNftUtxos: readonly UnlockableUtxo[];
   readonly delegateComputeResources: boolean;
-  readonly compilerRouteDelegateBlock: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly blockhashCoSpendUtxos: readonly UnlockableUtxo[];
   readonly blockInfoCoSpendUtxos?: readonly UnlockableUtxo[];
   /** The oracle belongs to the delegated implementation; its recreate is emitted with that band. */
   readonly delegateBlockInfoOracle?: boolean;
-  readonly blockhashCoSpendSlotOrdinals?: readonly number[];
   readonly keccakComputeCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCommitments: readonly string[];
   readonly preserveBlockLayoutWidth: boolean;
@@ -102,7 +101,7 @@ export function materializeOwnerFrontOutputs(
     amount: roUtxo.satoshis,
     token: roUtxo.token,
   }));
-  const ownsFrontComputeResources = !host.delegateComputeResources || host.compilerRouteDelegateBlock;
+  const ownsFrontComputeResources = !host.delegateComputeResources || host.directCallDelegateBlock;
   const blockhashOutput = (index: number): Output | undefined => {
     const bhUtxo = host.blockhashCoSpendUtxos[index];
     return bhUtxo ? {
@@ -132,9 +131,6 @@ export function materializeOwnerFrontOutputs(
       token: oracle.token,
     };
   };
-  const blockhashOrdinals = host.blockhashCoSpendSlotOrdinals
-    ?? host.blockhashCoSpendUtxos.map((_utxo, index) => index);
-
   const auxSlots = host.blockLayout
     ? host.blockLayout.slots.filter((slot) => isAuxiliaryBlockSlot(slot) && slot.kind !== 'lowLevelCall') : [];
   let readOnlyIdx = 0, bhOrdinal = 0, kIdx = 0, erIdx = 0;
@@ -156,7 +152,7 @@ export function materializeOwnerFrontOutputs(
         emitAt(slot.offset, readOnlyIdx < readOnlyOutputs.length ? readOnlyOutputs[readOnlyIdx++] : undefined);
         break;
       case 'blockhashOracle': {
-        const activeIndex = positioned ? blockhashOrdinals.indexOf(bhOrdinal) : bhOrdinal;
+        const activeIndex = positioned && bhOrdinal >= host.blockhashCoSpendUtxos.length ? -1 : bhOrdinal;
         bhOrdinal += 1;
         emitAt(slot.offset, activeIndex >= 0 ? blockhashOutput(activeIndex) : undefined);
         break;

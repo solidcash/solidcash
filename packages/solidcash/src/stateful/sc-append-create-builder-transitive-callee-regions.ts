@@ -95,10 +95,9 @@ export async function appendCreateBuilderTransitiveCalleeRegions(
     const contract = group.externalContract;
     const artifact = contract?.inner?.artifact as Artifact | undefined;
     const parentArtifact = parent?.externalContract?.inner?.artifact as Artifact | undefined;
-    // The ordinary convention only: a message-bus route carries its own callee layout.
+    // The ordinary convention only.
     if (meta === undefined || parent === undefined || artifact === undefined || parentArtifact === undefined
-      || !isDirectConventionArtifact(artifact) || !isDirectConventionArtifact(parentArtifact)
-      || group.compilerRoute !== undefined || parent.compilerRoute !== undefined) continue;
+      || !isDirectConventionArtifact(artifact) || !isDirectConventionArtifact(parentArtifact)) continue;
     const fn = selectedFunction(artifact, group);
     if (fn === undefined || group.blockInputs !== undefined) continue;
     // The record is published for a caller that reads it, and always for a function that returns.
@@ -165,7 +164,6 @@ export async function appendCreateBuilderTransitiveCalleeRegions(
       bRequiredNftIndices: group.requiredDataNftIndices,
       bValueChunkOutputCount: 0,
       bKeccak: { inputs: [] },
-      compilerRoute: undefined,
       callInfo: { args: group.functionArgs, functionName: group.functionName, externalContract: contract },
       externalCategoryId: group.categoryId,
       slotIndex: 0,

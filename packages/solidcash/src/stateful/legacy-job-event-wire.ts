@@ -5,14 +5,10 @@
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { binToUtf8, utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
-import type { AbiFunction, Artifact } from '@solidcash/utils';
+import type { Artifact } from '@solidcash/utils';
 import { decodePushdataValue, encodePushdataValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
-import {
-  isJobEventEmitCommitment,
-  stampEmptyJobEventTimestamp,
-} from './StatefulTransactionBuilder.js';
 
 export function isLockingBytecode(bytes: Uint8Array): boolean {
   return (bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87)
@@ -84,9 +80,8 @@ export function encodeStructArgument(
     : decodedValue;
   if (canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)) {
     const record = { ...(canonicalValue as Record<string, unknown>) };
-    // This historical wire adapter is deliberately fenced by usesLegacyJobEventCompatibility. Ordinary kernel
-    // values are derived from compiler-authenticated flow and must never change because a field happens to have
-    // an application-associated spelling.
+    // This historical wire adapter runs only when the caller selects it. Ordinary values are derived from
+    // compiler-authenticated flow and must never change because a field happens to have an application spelling.
     if (legacyJobEventCompatibility && (
       (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined)
     )) {
@@ -99,61 +94,4 @@ export function encodeStructArgument(
     return encodePushdataValue(record as never, typeName, structs);
   }
   return encodePushdataValue(canonicalValue as never, typeName, structs);
-}
-
-
-export function usesLegacyJobEventCompatibility(
-  artifact: Artifact, type: string, structs: Artifact['structs'],
-): boolean {
-  if (artifact.messageBus?.convention !== 'legacy-unroll') return false;
-  const name = type.endsWith('[]') ? type.slice(0, -2) : type;
-  if (name !== 'JobEventData') return false;
-  const definition = structs?.find((candidate) => candidate.name === name);
-  return definition?.fields.length === 4
-    && definition.fields[0].name === 'type_' && definition.fields[0].type === 'uint8'
-    && definition.fields[1].name === 'address_' && definition.fields[1].type === 'bytes'
-    && definition.fields[2].name === 'data_' && definition.fields[2].type === 'bytes'
-    && definition.fields[3].name === 'timestamp_' && definition.fields[3].type === 'uint32';
-}
-
-
-export function adaptLegacyNestedJobEventArguments(
-  artifact: Artifact,
-  functionName: string,
-  args: readonly FunctionArgument[],
-  timestamp: bigint,
-): FunctionArgument[] {
-  const functions = (artifact.abi as readonly AbiFunction[])
-    .filter((candidate) => candidate.name === functionName);
-  if (functions.length !== 1) return [...args];
-  const fn = functions[0];
-  if (fn.inputs.length !== args.length) return [...args];
-  const compatibleInputs = fn.inputs.flatMap((input, index) => (
-    usesLegacyJobEventCompatibility(artifact, input.type, artifact.structs) ? [index] : []
-  ));
-  if (compatibleInputs.length !== 1) return [...args];
-  const adapted = [...args];
-  const inputIndex = compatibleInputs[0];
-  adapted[inputIndex] = stampEmptyJobEventTimestamp(adapted[inputIndex], timestamp) as FunctionArgument;
-  return adapted;
-}
-
-
-export function usesLegacyJobEventTraceCompatibility(artifacts: readonly Artifact[]): boolean {
-  return artifacts.some((artifact) => {
-    const layout = artifact.stateLayout;
-    if (!layout) return false;
-    const collections = [...(layout.collections ?? []), ...(layout.mappings ?? [])];
-    return collections.some((collection) => collection.chunkableValue === true
-      && usesLegacyJobEventCompatibility(
-        artifact, collection.valueType, layout.structs ?? artifact.structs,
-      ));
-  });
-}
-
-
-export function isExcludedLegacyJobEventTraceCommitment(
-  commitment: string, legacyJobEventCompatibility: boolean,
-): boolean {
-  return legacyJobEventCompatibility && isJobEventEmitCommitment(commitment);
 }

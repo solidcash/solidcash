@@ -8,6 +8,7 @@ import {
 } from './StatefulContract.js';
 import { resolveCategoryFromAddress, resolveCategoryFromLockingBytecode } from './covenant-helpers.js';
 import type Signer from '../Signer.js';
+import { refuseMessageBusArtifact } from '../legacy-artifact.js';
 
 export { resolveCategoryFromAddress, resolveCategoryFromLockingBytecode };
 
@@ -33,7 +34,9 @@ export class ContractBundle {
   constructor(
     readonly artifacts: ArtifactMap,
     private bundleOptions: ContractBundleOptions,
-  ) {}
+  ) {
+    for (const artifact of Object.values(artifacts)) refuseMessageBusArtifact(artifact);
+  }
 
   static from(artifacts: ArtifactMap, options: ContractBundleOptions): ContractBundle {
     return new ContractBundle(artifacts, options);

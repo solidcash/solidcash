@@ -33,7 +33,7 @@ function settleDirect(artifact: Artifact, args: readonly Uint8Array[]): boolean 
   return createVirtualMachineBch2026().verify({ sourceOutputs, transaction }) === true;
 }
 
-const OPTS = { evmCompat: true, messageBus: false };
+const OPTS = { evmCompat: true };
 
 describe('calldata .offset tail for a non-first dynamic param', () => {
   // head = selector(4) + a.offset word(32) + b.offset word(32) = 68; a's tail = 32 + roundUp32(a.length); b's own

@@ -16,15 +16,6 @@ contract Ledger(int rate) {
   function sub(int x) public { require(x > 0); this.total = this.total - scaled(x); this.count = this.count + 1; }
 }`;
 
-// A message-bus build runs `add` as a handler clone, an invoked body that captures what `add` reads.
-const handlerReader = (factor: string): string => `pragma solidcash ^0.52.0;
-contract Meter(int rate) {
-  int total;
-  int count;
-  function add(int x) public { require(x > 0); this.total = this.total + x * ${factor}; this.count = this.count + 1; }
-  function sub(int x) public { require(x > 0); this.total = this.total - x; this.count = this.count + 1; }
-}`;
-
 interface Probed { bytes: number; probes: number; fallbacks: string[] }
 
 /** Compile with the SOLIDC_PROFILE probe report on: the script size and each probe's fallback reason. */
@@ -52,20 +43,11 @@ function compileProbed(source: string, options: CompileStringOptions): Probed {
 
 describe('subroutine-use probe captures constructor parameters', () => {
   it('gives an internal function reading a constructor parameter the extraction of one reading a literal', () => {
-    const reads = compileProbed(internalReader('rate'), { messageBus: false });
-    const literal = compileProbed(internalReader('3'), { messageBus: false });
+    const reads = compileProbed(internalReader('rate'), {});
+    const literal = compileProbed(internalReader('3'), {});
     expect(reads.probes).toBeGreaterThan(0);
     expect(reads.fallbacks).toEqual([]);
     // Measured 1,477 B against 1,472 B; before the probe captured `rate` it fell back and the reader was 1,700 B.
-    expect(reads.bytes - literal.bytes).toBeLessThanOrEqual(16);
-  });
-
-  it('gives a message-bus handler clone reading a constructor parameter the extraction of one reading a literal', () => {
-    const reads = compileProbed(handlerReader('rate'), { messageBus: true });
-    const literal = compileProbed(handlerReader('3'), { messageBus: true });
-    expect(reads.probes).toBeGreaterThan(0);
-    expect(reads.fallbacks).toEqual([]);
-    // Measured 2,696 B against 2,689 B; before the probe captured `rate` it fell back and the reader was 3,298 B.
     expect(reads.bytes - literal.bytes).toBeLessThanOrEqual(16);
   });
 });

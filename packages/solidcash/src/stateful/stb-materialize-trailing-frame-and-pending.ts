@@ -21,9 +21,9 @@ export function physicalBalancedTrailingOutputCount(
   return Math.max(0, currentOutputCount - (blockSize - trailingCapacity));
 }
 
-/** Compiler-routed delegates own their entry recreations inside the balanced block. */
-export const shouldReassertLegacyDelegateLoopEntries = (compilerRouteDelegateBlock: boolean): boolean => (
-  !compilerRouteDelegateBlock
+/** Routed delegates own their entry recreations inside the balanced block. */
+export const shouldReassertLegacyDelegateLoopEntries = (directCallDelegateBlock: boolean): boolean => (
+  !directCallDelegateBlock
 );
 
 /** Source-ordered segment materialization owns its loop entries; do not emit a second unsegmented run. */
@@ -56,8 +56,7 @@ export interface MaterializeTrailingFrameAndPendingHost {
   readonly valueChunkOutputs: readonly unknown[];
   readonly valueChunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly loopEntryVars: readonly LoopEntryVarLike[];
-  readonly compilerRouteDelegateBlock: boolean;
-  readonly composedParticipant: boolean;
+  readonly directCallDelegateBlock: boolean;
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly pendingOutputs: readonly Output[];
   trailingLoopEntryVars(): readonly LoopEntryVarLike[];
@@ -69,7 +68,7 @@ export interface MaterializeTrailingFrameAndPendingHost {
 
 /**
  * Emit trailing loop-entry NFTs (when not already placed), enforce/pad balanced trailing capacity,
- * place remaining compiler-route delegate executors, and append buffered pending outputs.
+ * place remaining route delegate executors, and append buffered pending outputs.
  */
 export function materializeTrailingFrameAndPending(
   host: MaterializeTrailingFrameAndPendingHost,
@@ -78,7 +77,7 @@ export function materializeTrailingFrameAndPending(
   associatedDelegateOutputs: ReadonlySet<number>,
   appendDelegateGroupOutputs: (groupIndex: number) => void,
   debugOwnMutableOutputs: (stage: string) => void,
-  debugAtomicOutputStage: (stage: string) => void,
+  debugStatefulOutputStage: (stage: string) => void,
 ): void {
 // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
 // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
@@ -174,16 +173,16 @@ export function materializeTrailingFrameAndPending(
       builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
     }
   }
-  debugAtomicOutputStage('balanced-trailing-frame');
+  debugStatefulOutputStage('balanced-trailing-frame');
 
-  if (host.compilerRouteDelegateBlock && !host.composedParticipant) {
+  if (host.directCallDelegateBlock) {
     host.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
       if (group.callMode === 'delegatecall' && !associatedDelegateOutputs.has(groupIndex)) {
         appendDelegateGroupOutputs(groupIndex);
       }
     });
   }
-  debugAtomicOutputStage('compiler-delegate-executor');
+  debugStatefulOutputStage('compiler-delegate-executor');
 
   // Append any extra outputs buffered via addOutput()
   for (const output of host.pendingOutputs) {

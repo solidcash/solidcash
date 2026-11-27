@@ -74,7 +74,6 @@ export async function appendCreateBuilderNestedCalleeIterations(input: {
       abiFunction: { ...bAbiFunc, dynamicReads: [] },
       entryAbiFunction: undefined,
       stateLayout: bStatelayout,
-      overrides: undefined,
       finalArgs: [],
     },
   );

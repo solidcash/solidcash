@@ -2,9 +2,8 @@
  * One hostile transaction per October 2026 CRITICAL finding.
  *
  * Each case compiles through this worktree's compiler and is evaluated on the BCH 2026 VM. The authorized
- * spend of the same function is accepted. The attack the verifier file names is rejected. Direct cases keep
- * the message bus enabled (`messageBus: true`); a graph-free auto compile would narrow the bus off and hide
- * DX-6. Matchers `.reverted` and `.withArgs` are not the proof.
+ * spend of the same function is accepted. The attack the verifier file names is rejected. Matchers `.reverted`
+ * and `.withArgs` are not the proof.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -29,17 +28,11 @@ import { Contract } from '../../solidcash/src/Contract.js';
 import { SighashType } from '../../solidcash/src/interfaces.js';
 import SignatureTemplate from '../../solidcash/src/SignatureTemplate.js';
 import { StatefulContract } from '../../solidcash/src/stateful/index.js';
-import * as messageBus from '../../solidcash/src/message-bus/index.js';
-import { generateLibauthSourceOutputs } from '../../solidcash/src/utils.js';
-import { createVirtualMachineBch2026ForProvider } from '../../solidcash/src/network/createVirtualMachine.js';
-import { createBareP2pkhFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos }
+import { createTestProvider, expectScriptRejection }
   from '../../solidcash/test/test-util.js';
 import { getTokenContainerAddress } from '../../solidcash/src/stateful/covenant-helpers.js';
 import { alicePriv, alicePub, alicePkh } from '../../solidcash/test/fixture/vars.js';
 import p2pkhArtifact from '../../solidcash/test/fixture/p2pkh.artifact.js';
-import { createMessageBusCapstoneTestProvider }
-  from '../../solidcash/test/journal-message-bus/e2e/message-bus-semantic-profile.js';
-import type { TransactionBuilder } from '../../solidcash/src/TransactionBuilder.js';
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -47,7 +40,6 @@ type VmOutput = VmTransaction['outputs'][number];
 type SourceOutputs = NonNullable<VmProgram['sourceOutputs']>;
 
 const P = 'pragma solidcash ^0.52.0;';
-const BUS = { messageBus: true } as const;
 const CATEGORY = Uint8Array.from({ length: 32 }, (_, i) => (0x29 + i * 17) & 0xff);
 const FOREIGN = Uint8Array.from({ length: 32 }, (_, i) => (0x44 + i * 13) & 0xff);
 const ZERO32 = new Uint8Array(32);
@@ -95,7 +87,7 @@ function redeemUnlock(
     }
     return value;
   }).reverse();
-  // A message-bus build rolls the bottom item up and requires it to be the 4-byte selector.
+  // A selector dispatcher rolls the bottom item up and requires it to be the 4-byte selector.
   // With no other arguments the bottom and the top are the same item, which is why a parameterless
   // entry accepted the selector on top. A stateless body reads its arguments directly.
   if (dispatch && fn.selector) args.unshift(hexToBin(fn.selector));
@@ -131,8 +123,8 @@ function countPushes(unlocking: Uint8Array): number {
 
 const num = (value: bigint): Uint8Array => encodeIntegerValue(value);
 
-function compileBus(members: string, options: Record<string, unknown> = {}): Artifact {
-  return compileString(`${P} contract C { ${members} }`, { ...BUS, ...options });
+function compileContract(members: string, options: Record<string, unknown> = {}): Artifact {
+  return compileString(`${P} contract C { ${members} }`, { ...options });
 }
 
 function fnOf(artifact: Artifact, name: string): AbiFunction {
@@ -148,7 +140,7 @@ function redeemOf(artifact: Artifact): Uint8Array {
 describe('October 2026 critical holes', () => {
   it('KB-2 a crafted lock does not compare equal to another address, and a real identity does', () => {
     const victim = Uint8Array.from({ length: 20 }, () => 0x11);
-    const artifact = compileBus(
+    const artifact = compileContract(
       `function f(address a) { require(a == address(hex"${Buffer.from(victim).toString('hex')}")); }`,
       { evmCompat: true },
     );
@@ -197,7 +189,7 @@ describe('October 2026 critical holes', () => {
 
   it('CRYPTO-1 a bare-lock keccak side-car cannot choose the digest, and the real side-car can', () => {
     const preimage = Uint8Array.from([1, 2, 3, 4]);
-    const artifact = compileBus('function f(bytes a, bytes32 h) { require(keccak256(a) == h); }');
+    const artifact = compileContract('function f(bytes a, bytes32 h) { require(keccak256(a) == h); }');
     const fn = fnOf(artifact, 'f');
     const redeem = redeemOf(artifact);
     const contractLock = p2sh32(redeem);
@@ -297,7 +289,7 @@ describe('October 2026 critical holes', () => {
       witness, chunkA, SHARED_LIBRARY_SALT, sideUtxo(false), sideUtxo(true),
     );
     const pubkey = hexToBin(wallet.signingKey.compressedPublicKey.slice(2));
-    const artifact = compileBus(
+    const artifact = compileContract(
       'function f(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expect) {'
       + ' require(ecrecoverPubKey(h, v, r, s) == expect); }',
     );
@@ -349,7 +341,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-1 a public call cannot drain the satoshi container, and the same call without it succeeds', () => {
-    const artifact = compileBus('int n; function touch() { this.n = this.n + 1; require(true); }');
+    const artifact = compileContract('int n; function touch() { this.n = this.n + 1; require(true); }');
     const honest = scalarSpend(artifact, 'touch', { n: 1n }, { n: 2n });
     expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-1 authorized').toBe(true);
     const drained = withSatoshiDrain(artifact, honest);
@@ -357,7 +349,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-1 a transferring call cannot drain the satoshi container, and the transfer itself succeeds', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function pay(bytes to) { this.transfer(to, 1000); this.n = this.n + 1; require(true); }',
     );
     const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
@@ -370,7 +362,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-1 a full transfer leaves the filler, and a nonzero redirect fails', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function payAll(bytes to) { this.transfer(to, 50000); this.n = this.n + 1; require(true); }',
     );
     const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
@@ -388,7 +380,7 @@ describe('October 2026 critical holes', () => {
 
   it('DX-1 a filler keeps nothing, so a remainder of its value cannot leave the container', () => {
     // The remainder equals the filler's value: a filler counted as kept balance would admit the swap.
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function payMost(bytes to) { this.transfer(to, 49424); this.n = this.n + 1; require(true); }',
     );
     const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
@@ -399,7 +391,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-2 a public call cannot drain a token container, and the same call without it succeeds', () => {
-    const artifact = compileBus('int n; function touch() { this.n = this.n + 1; require(true); }');
+    const artifact = compileContract('int n; function touch() { this.n = this.n + 1; require(true); }');
     const honest = scalarSpend(artifact, 'touch', { n: 1n }, { n: 2n });
     expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-2 authorized').toBe(true);
     const drained = withTokenDrain(artifact, honest);
@@ -407,7 +399,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-2 a public call cannot drain an NFT token container, and keeping it succeeds', () => {
-    const artifact = compileBus('int n; function touch() { this.n = this.n + 1; require(true); }');
+    const artifact = compileContract('int n; function touch() { this.n = this.n + 1; require(true); }');
     const honest = scalarSpend(artifact, 'touch', { n: 1n }, { n: 2n });
     const kept = withNftTokenDrain(artifact, honest, false);
     expect(verdict(kept.sourceOutputs, kept.transaction), 'DX-2 nft container kept').toBe(true);
@@ -416,7 +408,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-2 a full token movement leaves the filler, and a nonzero redirect fails', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function sendAll(bytes32 cat, bytes to) { this.tokens[cat].transfer(to, 1000);'
       + ' this.n = this.n + 1; require(true); }',
     );
@@ -435,7 +427,7 @@ describe('October 2026 critical holes', () => {
 
   it('DS-2 a forged data record at another lock is not the data record, and the real lock is', () => {
     const owner = distinct(20, 0x11);
-    const artifact = compileBus(
+    const artifact = compileContract(
       `bytes20 owner; function go() { require(this.owner == hex"${Buffer.from(owner).toString('hex')}"); require(true); }`,
     );
     const honest = scalarSpend(artifact, 'go', { owner }, { owner }, false);
@@ -447,7 +439,7 @@ describe('October 2026 critical holes', () => {
   it('DS-1 predOut -2 cannot replace a mapping write, and a real update can', () => {
     // A parameter value stays on the stack when predOut=-2 skips the upsert, and the transition then
     // reads the wrong witness. A literal write leaves nothing behind, which is the approve shape.
-    const artifact = compileBus(
+    const artifact = compileContract(
       'mapping(uint => uint) m; function set(uint k) { this.m[k] = 1000; require(true); }',
     );
     const honest = mappingUpdate(artifact, -1n, num(1000n));
@@ -457,7 +449,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DS-4 a non-minimal integer key is rejected, and the minimal encoding of that key is accepted', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'mapping(uint => bool) claimed; function claim(uint k) { require(this.claimed[k] == false);'
       + ' this.claimed[k] = true; require(true); }',
     );
@@ -468,7 +460,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-6 and DS-3 a public call cannot rewrite an unaccessed data record or destroy an unaccessed chunk', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int x; string name; mapping(int => int) m;'
       + ' function set(int k, int v) { this.m[k] = v; require(true); }',
     );
@@ -481,7 +473,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DS-3 a rewritten unaccessed chunk is not that chunk, and the real update is', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int x; string name; mapping(int => int) m;'
       + ' function set(int k, int v) { this.m[k] = v; require(true); }',
     );
@@ -492,7 +484,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DS-3 a mutable output at a P2PKH is not a record, and the real update is', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int x; string name; mapping(int => int) m;'
       + ' function set(int k, int v) { this.m[k] = v; require(true); }',
     );
@@ -503,7 +495,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-6 a dynamic-chunk call cannot rewrite an unaccessed record, and the chunk write can', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'string name; function setName(string s) { this.name = s; require(true); }',
     );
     const honest = scalarSpend(artifact, 'setName', { 'name$len': 0n }, { 'name$len': 0n }, true, { s: EMPTY });
@@ -519,7 +511,7 @@ describe('October 2026 critical holes', () => {
   it('DX-6 a deploy call cannot rewrite an unaccessed record, and the deploy can', async () => {
     const src = `${P} contract Child() { int y; function ping() { require(true); } }`
       + ' contract Factory() { int x; function create() { Child c = new Child(); require(c.length > 0); } }';
-    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true,
+    const options = { forceStateful: true, allowUnsafeOperations: true,
       __legacyDeployFold: true } as never;
     const factoryArtifact = compileString(src, { ...options, primaryContractName: 'Factory' });
     const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
@@ -569,7 +561,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DX-6 a token-container call cannot rewrite an unaccessed record, and the token read can', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int n; function look(bytes32 cat) { require(this.tokens[cat].tokenAmount >= 0); this.n = this.n; require(true); }',
     );
     const honest = tokenReadSpend(artifact);
@@ -583,7 +575,7 @@ describe('October 2026 critical holes', () => {
   });
 
   it('DS-5 an unsorted array cannot be claimed twice by omitting its entry, and one real claim succeeds', () => {
-    const artifact = compileBus(
+    const artifact = compileContract(
       'int[4] claimed; function claim(int i) { require(this.claimed[i] == 0); this.claimed[i] = 1; require(true); }',
     );
     const honest = arrayClaim(artifact, false);
@@ -592,88 +584,12 @@ describe('October 2026 critical holes', () => {
     expect(verdict(omitted.sourceOutputs, omitted.transaction), 'DS-5 omitted entry').not.toBe(true);
   });
 
-  it('KB-1 an extra output with the verifier lock is not the route binding, and the honest route is', async () => {
-    const provider = createMessageBusCapstoneTestProvider();
-    const calleeArtifact = compileString(`contract Kb1Callee {
-      function settle(int next) public pure returns (int) { return next + 1; }
-    }`, { forceStateful: true, messageBus: true });
-    const calleeBase = new Contract(calleeArtifact, [], { provider });
-    const calleeSetup = await setupStatefulUtxos(
-      provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
-    );
-    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
-    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
-    const callerArtifact = compileString(`
-      interface IKb1Callee { function settle(int next) returns (int); }
-      contract Kb1Caller(address callee) {
-        function prepare(int next) public {
-          int result = IKb1Callee(callee).settle(next);
-          require(result >= 0);
-        }
-      }
-    `, { forceStateful: true, messageBus: true });
-    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
-    const callerSetup = await setupStatefulUtxos(
-      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
-    );
-    const caller = StatefulContract.withCategory(
-      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
-    );
-    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
-    const composition = await messageBus.compose({
-      calls: [caller.call.prepare(0x11223344n), callee.call.settle(0x11223344n)],
-      funder: fee,
-      changeAddress: fee.unlocker.generateLockingBytecode(),
-    });
-    const evaluated = async (builder: TransactionBuilder): Promise<Array<true | string>> => {
-      const transaction = builder.buildLibauthTransaction(true);
-      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-      const machine = createVirtualMachineBch2026ForProvider(builder.provider);
-      return transaction.inputs.map((_input, inputIndex) => {
-        const result = machine.evaluate({ inputIndex, sourceOutputs, transaction });
-        return result.error === undefined ? true : result.error;
-      });
-    };
-    const honest = await composition.build();
-    expect((await evaluated(honest)).every((result) => result === true), 'KB-1 authorized').toBe(true);
-
-    const hostile = await composition.build();
-    const verifierIndex = hostile.inputs.findIndex((entry) =>
-      entry.token?.nft?.commitment.startsWith('4c335631'));
-    expect(verifierIndex).toBeGreaterThanOrEqual(0);
-    const verifierOutput = hostile.outputs[verifierIndex]!;
-    const honestCommitment = verifierOutput.token!.nft!.commitment;
-    // The envelope sits at inputs.length - 2, so the fee has to stay last. Insert a second spend of the
-    // verifier covenant immediately after it, with the real binding on that new output, and a different
-    // commitment at the verifier's own index. The unfixed scan keeps the later output.
-    const verifierInput = hostile.inputs[verifierIndex]!;
-    hostile.inputs.splice(verifierIndex + 1, 0, { ...verifierInput, txid: '44'.repeat(32), vout: 1 });
-    hostile.outputs.splice(verifierIndex + 1, 0, {
-      to: verifierOutput.to,
-      amount: verifierOutput.amount,
-      token: {
-        amount: verifierOutput.token!.amount,
-        category: verifierOutput.token!.category,
-        nft: { capability: 'mutable', commitment: honestCommitment },
-      },
-    });
-    hostile.outputs[verifierIndex] = {
-      ...verifierOutput,
-      token: {
-        amount: verifierOutput.token!.amount,
-        category: verifierOutput.token!.category,
-        nft: { capability: 'mutable', commitment: '11'.repeat(19) },
-      },
-    };
-    expect((await evaluated(hostile))[0] === true, 'KB-1 cloned verifier output').toBe(false);
-  }, 120_000);
-
   it('DX-6 and DS-3 an iterating entry spend cannot drop or recommit an unaccessed mutable', () => {
     const artifact = compileString(
       `${P} contract C { int x; enumerable mapping(int => int) bal;`
       + ' function total(int expected) { int sum = 0; for (int v of this.bal) { sum = sum + v; }'
       + ' this.x = sum; require(this.x == expected); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const honest = iterationSpend(artifact, 'total', { expected: num(30n) }, { x: 0n }, { x: 30n });
     expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-6 iteration authorized').toBe(true);
@@ -688,7 +604,7 @@ describe('October 2026 critical holes', () => {
       `${P} contract C { mapping(int => bytes) m;`
       + ' function fill(int[] ks, bytes[] vs) {'
       + ' for (int i = 0; i < ks.length; i = i + 1) { this.m[ks[i]] = vs[i]; } require(true); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -726,7 +642,7 @@ describe('October 2026 critical holes', () => {
       `${P} contract C { int n; enumerable mapping(int => int) bal;`
       + ' function look(bytes32 cat, int expected) { require(this.tokens[cat].tokenAmount >= 0);'
       + ' int sum = 0; for (int v of this.bal) { sum = sum + v; } this.n = sum; require(this.n == expected); } }',
-      { messageBus: false, forceStateful: true },
+      { forceStateful: true },
     );
     const honest = tokenIterationSpend(artifact, 'look', { cat: FOREIGN, expected: num(30n) }, { n: 0n }, { n: 30n });
     expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-6 token iteration authorized').toBe(true);
@@ -777,7 +693,7 @@ describe('October 2026 critical holes', () => {
       + ' contract C { int x; enumerable mapping(int => int) bal;'
       + ' function create(int expected) { int sum = 0; for (int v of this.bal) { sum = sum + v; }'
       + ' Child child = new Child(); require(sum == expected); require(child.length > 0); } }';
-    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true,
+    const options = { forceStateful: true, allowUnsafeOperations: true,
       __legacyDeployFold: true } as never;
     const factoryArtifact = compileString(src, { ...options, primaryContractName: 'C' });
     const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
@@ -832,7 +748,7 @@ describe('October 2026 critical holes', () => {
       + ' function create(int[] ks, int v) {'
       + ' for (int i = 0; i < ks.length; i = i + 1) { this.m[ks[i]] = v; }'
       + ' Child child = new Child(); require(child.length > 0); require(true); } }';
-    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true,
+    const options = { forceStateful: true, allowUnsafeOperations: true,
       __legacyDeployFold: true } as never;
     const factoryArtifact = compileString(src, { ...options, primaryContractName: 'C' });
     const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
@@ -917,7 +833,7 @@ function scalarSpend(
   const transaction: VmTransaction = {
     version: 2, locktime: 0,
     inputs: [
-      input(0, redeemUnlock(fn, redeem, values, true)),
+      input(0, redeemUnlock(fn, redeem, values, artifact.abi.length > 1 || typeof artifact.callBatch === 'object')),
       input(1, pushesOf([num(0n), flag, recordRedeem])),
       input(2, EMPTY),
     ],
@@ -1142,7 +1058,7 @@ async function sdkIteratingRefusal(
     readonly categoryId: string;
   }) => Promise<void>,
 ): Promise<void> {
-  const artifact = compileString(source, { messageBus: false, forceStateful: true });
+  const artifact = compileString(source, { forceStateful: true });
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const parentFunding = { txid: '31'.repeat(32), vout: 0, satoshis: 400_000n };
@@ -1505,7 +1421,7 @@ function skippedMappingWrite(artifact: Artifact): Spend {
     transaction: {
       ...base.transaction,
       inputs: [
-        input(0, redeemUnlock(fn, redeem, values, artifact.messageBus?.routeInBytecode === true)),
+        input(0, redeemUnlock(fn, redeem, values, false)),
         input(1, EMPTY),
         input(2, EMPTY),
       ],
@@ -1540,7 +1456,7 @@ function mappingUpdate(artifact: Artifact, predOut: bigint, tail: Uint8Array, na
   const transaction: VmTransaction = {
     version: 2, locktime: 0,
     inputs: [
-      input(0, redeemUnlock(fn, redeem, values, artifact.messageBus?.routeInBytecode === true)),
+      input(0, redeemUnlock(fn, redeem, values, false)),
       input(1, pushesOf([num(0n), num(1n), entryRedeem])),
       input(2, EMPTY),
     ],
@@ -1580,7 +1496,7 @@ function mappingInsert(artifact: Artifact, key: Uint8Array): Spend {
   const head = encodeEntryCommitment(ZERO32, ZERO32, new Uint8Array(0));
   const created = encodeEntryCommitment(slot, ZERO32, num(1n));
   const rewritten = encodeEntryCommitment(ZERO32, slot, new Uint8Array(0));
-  const dispatch = artifact.messageBus?.routeInBytecode === true;
+  const dispatch = false;
   const transaction: VmTransaction = {
     version: 2, locktime: 0,
     inputs: [
@@ -1698,7 +1614,7 @@ function arrayClaim(artifact: Artifact, omit: boolean): Spend {
   const transaction: VmTransaction = {
     version: 2, locktime: 0,
     inputs: [
-      input(0, redeemUnlock(fn, redeem, values, true)),
+      input(0, redeemUnlock(fn, redeem, values, artifact.abi.length > 1 || typeof artifact.callBatch === 'object')),
       input(1, omit ? EMPTY : pushesOf([num(0n), num(1n), entryRedeem])),
       input(2, EMPTY),
     ],

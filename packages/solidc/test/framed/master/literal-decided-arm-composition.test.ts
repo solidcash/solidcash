@@ -114,20 +114,24 @@ const JOBS_FRAMED = { composition: 'framed', suppressWarnings: true, maximumInpu
 const JOBS_DIRECT = { suppressWarnings: true, maximumInputBytes: 200_000 } as never;
 
 describe('a call site inside a branch the arm rewrites before the call', () => {
-  it('reads the predicate where the branch begins under framed, and folds the write on a direct compile', () => {
+  it('reads the predicate where the branch begins, framed and direct', () => {
     const framed = compileStringMulti(JOBS_SOURCE, JOBS_FRAMED).Root!;
     const direct = compileStringMulti(JOBS_SOURCE, JOBS_DIRECT).Root!;
     // `close` writes the field inside the arm; the condition must read the field as the predicate saw it (`1`),
-    // not the arm's own write. A framed compile resets the serialization program point to the predicate's read.
+    // not the arm's own write. Both conventions reset the serialization program point to the predicate's read.
     expect(conditionOf(framed, 'close')).toStrictEqual(stateEquals('1'));
-    // The folded value keeps the read field's declared type, not the literal's own bigint.
+    expect(conditionOf(direct, 'close')).toStrictEqual(stateEquals('1'));
+    // `reopen`'s write before the branch is folded in. A framed value keeps the read field's declared type; a direct
+    // one keeps the literal's own bigint.
     expect(conditionOf(framed, 'reopen')).toStrictEqual({
       kind: 'binary', operator: '==',
       left: { kind: 'literal', type: 'int256', value: '1' },
       right: { kind: 'literal', type: 'bigint', value: '1' },
     });
-    // The direct convention publishes as it stands: the dominating write of the arm is folded in.
-    expect(conditionOf(direct, 'close')).not.toStrictEqual(stateEquals('1'));
-    expect(conditionOf(direct, 'close')).not.toStrictEqual(conditionOf(framed, 'close'));
+    expect(conditionOf(direct, 'reopen')).toStrictEqual({
+      kind: 'binary', operator: '==',
+      left: { kind: 'literal', type: 'bigint', value: '1' },
+      right: { kind: 'literal', type: 'bigint', value: '1' },
+    });
   });
 });

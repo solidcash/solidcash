@@ -11758,10 +11758,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callPoint = serializationProgramPoint;
         if (atBranch !== undefined || !framed) {
           priorStatements = atBranch;
-          // The field-write fold reads `serializationProgramPoint`, not `priorStatements`: under the framed
-          // composition it must be the predicate's own read point, or an arm's write still folds into the field
-          // the predicate reads. The direct convention publishes as it stands.
-          if (framed) serializationProgramPoint = expression;
+          // The field-write fold reads `serializationProgramPoint`, not `priorStatements`: it must be the
+          // predicate's own read point, or an arm's write still folds into the field the predicate reads.
+          if (atBranch !== undefined) serializationProgramPoint = expression;
         }
         let serialized: ExternalCallExpression;
         try {

@@ -17,6 +17,10 @@
   bytes.
 - A framed function whose `{value:}` call runs on only some paths compiles and pays the callee exactly when the call
   runs; 0.52.1 failed with `Expected variable '__internal__frameSendOutput_0' does not exist on the stack`.
+- A direct call inside a branch whose arm writes, before the call, a struct field the branch's predicate reads is
+  published under the predicate as it stands where the branch starts, as a framed call already was. 0.52.1 folded the
+  arm's write into it (`if (r.status == 1) { r.status = 0; c.f(); }` published `0 == 1`), so the SDK left out a call
+  the body makes and the transaction failed. Only the published condition changes, not the bytes.
 
 ### Removed
 

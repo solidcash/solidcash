@@ -540,8 +540,6 @@ export {
   decodeEvmReturnValue,
   decodeAuthenticatedProducerResultVector,
   selectEvmScalarReturnCommitment,
-  isCanonicalEvmScalarReturnBlob,
-  isConstrainedEvmResultVector,
   encodeExternalReturnValues,
   encodeExternalReturnValue,
 } from './external-return-encoding.js';
@@ -569,12 +567,10 @@ import {
   externalCallReachedOccurrenceIndices,
 } from './physical-external-call.js';
 import {
-  parseRowArgsDecodeLabel,
-  visibleHandlerInputs,
   canonicalAbiFunctionSignature,
   resolvePreparedProducerEntry,
   entryAccessAt,
-  matchingRouteRowsForExpressionKey,
+  resolveRouteRowExpressionKey,
 } from './route-expression-key.js';
 export { externalReturnsForCallsites } from './external-returns-for-callsites.js';
 export {
@@ -592,13 +588,12 @@ export {
 } from './authenticated-collection-value.js';
 export { providerUnixLocktime } from './soft-state-overlays.js';
 export {
-  parseRowArgsDecodeLabel,
   visibleHandlerInputs,
   resolvePreparedProducerEntry,
   selectVisibleCallArguments,
-  canShareIdempotentCounterLoopSettlement,
-  matchingRouteRowsForExpressionKey,
+  resolveRouteRowExpressionKey,
   directMappingReadPlan,
+  type RouteExpressionKeyRow,
 } from './route-expression-key.js';
 
 function isFramedArtifact(artifact: Artifact): boolean {
@@ -925,9 +920,6 @@ export {
 export {
   canonicalEvmReturnVectorLength,
   isCanonicalEvmReturnVector,
-  isCanonicalEvmReturnSequence,
-  isCanonicalEvmReturnBlob,
-  selectEvmReturnCommitment,
 } from './external-return-encoding.js';
 
 /** Floor integer square root, matching the Solidity helper's result for a non-negative input. */
@@ -1550,29 +1542,6 @@ export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boo
     || /^__internal__extcallAnchorIdx\d*$/.test(paramName);
 }
 
-/**
- * One direct call-frame planning row: the handler ABI, its visible arguments and the callsite identity.
- * Retained name: it describes one direct call frame.
- */
-export interface RouteExpressionKeyRow {
-  args: readonly FunctionArgument[];
-  /** Exact selector of the entry point this call executes; `handler.selector` applies when absent. */
-  selector?: string;
-  /** Compiler-owned row arguments which are not encoded as public handler inputs. */
-  internalArgs?: Readonly<Record<string, FunctionArgument>>;
-  /** Source row template before runtime loop/conditional expansion. */
-  sourceLogicalIndex?: number;
-  /** Compiler-stable source callsite before repeated-owner collapsing. */
-  sourceCallsiteId?: number;
-  /** Loop occurrence of this call at its source callsite. */
-  occurrenceIndex?: number;
-  /** Compiler-authored program point shared by source entry mutations and external calls. */
-  sourceEffectOrdinal?: number;
-  /** Exact root-to-row call occurrence path the SDK derived for this call. */
-  producerPath?: ValueChunkProducerPathDisposition;
-  handler: AbiFunction;
-}
-
 const MAX_EXTERNAL_CALL_ITERATIONS = 10_000;
 
 /** Literal trip counts enumerate candidate iterations even when runtime guards skip some of them. */
@@ -1634,86 +1603,6 @@ export function evaluateExternalCallAffineIterationDomain<T extends object>(
     counter += step;
   }
   throw new Error('External call iteration domain did not terminate');
-}
-
-/**
- * Resolve a nested direct call-frame entry key. A label decoding a value named `rowArgs`
- * (`AbiDecodeAtNode{data=id:rowArgs,index=N,...}`) resolves to argument N of the matching row's own visible
- * arguments; every other label is evaluated against the planning arguments.
- */
-export function resolveRouteRowExpressionKey(params: {
-  expressionLabel: string | undefined;
-  collection: string;
-  rowArguments?: readonly RouteExpressionKeyRow[];
-  routePlanningArgs: readonly FunctionArgument[];
-  routeVisibleInputs: readonly { name: string; type?: string }[];
-  structs?: Parameters<typeof encodeFunctionArgument>[2];
-  state?: Readonly<Record<string, StateValue>>;
-  rowIndexHint?: number;
-}): Uint8Array | undefined {
-  const parsed = parseRowArgsDecodeLabel(params.expressionLabel);
-  if (parsed && params.rowArguments) {
-    const matching = matchingRouteRowsForExpressionKey({
-      collection: params.collection,
-      schemaArity: parsed.schemaArity,
-      expressionLabel: params.expressionLabel,
-      rowArguments: params.rowArguments,
-      rowIndexHint: params.rowIndexHint,
-    });
-    const visible = matching ? visibleHandlerInputs(matching.handler.inputs) : undefined;
-    const value = matching?.args[parsed.argumentIndex];
-    const input = visible?.[parsed.argumentIndex];
-    if (value !== undefined && input) {
-      const encoded = encodeFunctionArgument(value, input.type, params.structs);
-      if (encoded instanceof Uint8Array) return encoded;
-    }
-    return undefined;
-  }
-  // A composed `map:<stateArray>(...)` label indexes a decoded dynamic state array by a source-loop counter
-  // (`map:items(binop:+(id:i,id:index_))`). The counter is not an ABI input, so the planning ABI cannot resolve
-  // it. With exactly one row, that row's occurrence stands in for the counter and the label becomes evaluable
-  // against that row. More than one candidate row stays unresolved rather than guessing.
-  const loopLocal = params.expressionLabel?.startsWith('map:') && params.rowArguments?.length === 1
-    ? unresolvableLabelLocals(params.expressionLabel, params.routeVisibleInputs)
-    : [];
-  if (loopLocal.length > 0) {
-    const occurrence = params.rowArguments![0].occurrenceIndex ?? 0;
-    let rewritten = params.expressionLabel!;
-    for (const name of loopLocal) {
-      // Whole-token replacement only: `id:i` must not rewrite the `id:index_` operand that merely starts with it.
-      rewritten = rewritten.replace(
-        new RegExp(`id:${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w$])`, 'g'),
-        `lit:${occurrence}`,
-      );
-    }
-    const bound = evalComputedKey(
-      rewritten,
-      params.routePlanningArgs as FunctionArgument[],
-      params.routeVisibleInputs,
-      params.state,
-    );
-    if (bound) return bound;
-  }
-  return evalComputedKey(
-    params.expressionLabel,
-    params.routePlanningArgs as FunctionArgument[],
-    params.routeVisibleInputs,
-    params.state,
-  );
-}
-
-/** `id:<name>` operands of a label that no visible planning input can supply (source-loop locals, row arguments). */
-function unresolvableLabelLocals(
-  label: string,
-  visibleInputs: readonly { name: string; type?: string }[],
-): string[] {
-  const names: string[] = [];
-  for (const match of label.matchAll(/id:([A-Za-z_$][\w$]*)/g)) {
-    const name = match[1];
-    if (visibleInputs.some((input) => input.name === name)) continue;
-    if (!names.includes(name)) names.push(name);
-  }
-  return names;
 }
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
@@ -5590,11 +5479,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (source.expressionLabel?.startsWith('map:') && entryAbiFunction) {
                 const routed = resolveRouteRowExpressionKey({
                   expressionLabel: source.expressionLabel,
-                  collection: access.collection,
                   rowArguments: [{ args: entryArgs, occurrenceIndex: 0, handler: entryAbiFunction }],
                   routePlanningArgs: entryArgs,
                   routeVisibleInputs: entryAbiFunction.inputs,
-                  structs: stateLayout.structs,
                   state: onChainState.state,
                 });
                 if (routed) return routed;

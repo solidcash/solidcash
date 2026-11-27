@@ -1,15 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
 import { AbiCoder } from 'ethers';
-import { decodePushdataValue, encodePushdataValue, sha256, type StructDefinitionInfo } from '@solidcash/utils';
+import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
   decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues,
   encodeLeadingRouteArrayPushes,
   encodeStructArgument,
-  isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
-  isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector,
-  isConstrainedEvmResultVector,
-  selectEvmReturnCommitment, selectEvmScalarReturnCommitment,
+  isCanonicalEvmReturnVector, isCanonicalEvmScalarReturnVector,
+  selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
 import {
   selectMaterializedTailReturnEvents,
@@ -201,56 +199,6 @@ describe('encodeExternalReturnValue', () => {
     expect(selectEvmScalarReturnCommitment([stateHash], ['uint256'], false)).toBeUndefined();
   });
 
-  it('rejects a state-entry commitment from a framed Solidity return channel', () => {
-    const entryCommitment = new Uint8Array(64).fill(0xca);
-    expect(isCanonicalEvmScalarReturnBlob(entryCommitment, ['uint256'])).toBe(false);
-  });
-
-  it('selects a canonical dynamic string and boolean return over its provisional empty value', () => {
-    const result = new Uint8Array(128);
-    result[31] = 32;
-    result[63] = 13;
-    result.set(new TextEncoder().encode('DIGITAL_VIDEO'), 64);
-    result[127] = 1;
-    const framed = encodePushdataValue(result, 'bytes');
-    const provisional = new Uint8Array(96);
-    provisional[31] = 32;
-    provisional[95] = 1;
-
-    expect(isCanonicalEvmReturnSequence(result, [['string'], ['bool']])).toBe(true);
-    expect(isCanonicalEvmReturnVector(result, ['string', 'bool'])).toBe(false);
-    expect(isCanonicalEvmReturnBlob(framed, [['string'], ['bool']])).toBe(true);
-    expect(selectEvmReturnCommitment(
-      [framed, encodePushdataValue(provisional, 'bytes')], [['string'], ['bool']], false,
-    )).toBe(binToHex(result));
-    expect(decodeEvmReturnValue(result.slice(0, 96), 'string')).toBe('DIGITAL_VIDEO');
-    expect(decodeEvmReturnValue(result.slice(96), 'bool')).toBe(true);
-  });
-
-  it('validates a framed named-struct sequence with the producing artifact schema', () => {
-    const resultStructs: StructDefinitionInfo[] = [{
-      name: 'Record',
-      fields: [
-        { name: 'stable', type: 'uint256' },
-        { name: 'phase', type: 'uint256' },
-        { name: 'tail', type: 'string' },
-      ],
-    }];
-    const vector = encodeEvmInvocationResult(
-      [{ stable: 11n, phase: 20n, tail: 'row-epoch-payload' }], ['Record'], resultStructs,
-    );
-    const framed = encodePushdataValue(vector, 'bytes');
-    const digest = sha256(framed);
-
-    expect(isCanonicalEvmReturnSequence(vector, [['Record']])).toBe(false);
-    expect(isCanonicalEvmReturnSequence(vector, [['Record']], resultStructs)).toBe(true);
-    expect(isCanonicalEvmReturnBlob(framed, [['Record']], resultStructs)).toBe(true);
-    expect(isCanonicalEvmReturnBlob(digest, [['Record']], resultStructs)).toBe(false);
-    expect(selectEvmReturnCommitment(
-      [digest, framed], [['Record']], false, resultStructs,
-    )).toBe(binToHex(vector));
-  });
-
   it('rejects non-canonical dynamic offsets and non-zero tail padding', () => {
     const wrongOffset = new Uint8Array(128);
     wrongOffset[31] = 96;
@@ -264,44 +212,6 @@ describe('encodeExternalReturnValue', () => {
     dirtyPadding[96] = 0x61;
     dirtyPadding[127] = 1;
     expect(isCanonicalEvmReturnVector(dirtyPadding, ['string', 'bool'])).toBe(false);
-  });
-});
-
-describe('isConstrainedEvmResultVector', () => {
-  it('accepts a complete multi-row vector with at least one constrained row', () => {
-    expect(isConstrainedEvmResultVector([['uint256'], ['bool'], ['bool']])).toBe(true);
-    expect(isConstrainedEvmResultVector([['uint256'], ['address']])).toBe(true);
-    expect(isConstrainedEvmResultVector([['uint256'], ['uint8']])).toBe(true);
-    expect(isConstrainedEvmResultVector([['bytes32'], ['uint256']])).toBe(true);
-  });
-
-  it('rejects vectors whose rows are all unconstrained ABI-width words', () => {
-    expect(isConstrainedEvmResultVector([['uint256'], ['uint256']])).toBe(false);
-    expect(isConstrainedEvmResultVector([['int'], ['bigint']])).toBe(false);
-  });
-
-  it('rejects single-row schemas and dynamic rows', () => {
-    expect(isConstrainedEvmResultVector([['bool']])).toBe(false);
-    expect(isConstrainedEvmResultVector([['uint256']])).toBe(false);
-    expect(isConstrainedEvmResultVector([['uint256'], ['bytes']])).toBe(false);
-    expect(isConstrainedEvmResultVector([['bool'], ['string']])).toBe(false);
-    expect(isConstrainedEvmResultVector([])).toBe(false);
-  });
-
-  it('selects the bare multi-row vector only when its rows constrain the encoding', () => {
-    const vector = new Uint8Array(96);
-    vector[31] = 0xa0;
-    vector[63] = 1;
-    vector[95] = 1;
-    const groups = [['uint256'], ['bool'], ['bool']];
-
-    // A progressive probe can stop after the route assembled its frame and before that frame's output
-    // comparison; the complete vector is then the only authenticated observation of the result.
-    expect(selectEvmReturnCommitment([vector], groups, true)).toBe(binToHex(vector));
-    expect(selectEvmReturnCommitment([vector], groups, false)).toBeUndefined();
-    // The compiler-framed form still wins when both are live.
-    expect(selectEvmReturnCommitment([vector, encodePushdataValue(vector, 'bytes')], groups, true))
-      .toBe(binToHex(vector));
   });
 });
 

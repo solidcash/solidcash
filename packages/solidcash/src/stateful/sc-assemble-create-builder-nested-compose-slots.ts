@@ -342,22 +342,13 @@ export async function assembleCreateBuilderNestedComposeSlots(
             // leaving its entry slot funder-filled while the covenant still reads a commitment
             // there. Resolve it from its canonical label first, as the direct path does.
             if (source.kind === 'expression' && 'expressionLabel' in source) {
-              const encodedName = source.paramName
-                ?? source.expressionLabel
-                ?? access.keyParams[keyIndex];
-              const perRowHint = encodedName?.match(/_r(\d+)$/);
               const auto = resolveRouteRowExpressionKey({
                 expressionLabel: source.expressionLabel,
-                collection: access.collection,
                 routePlanningArgs,
                 routeVisibleInputs: selectedFn.inputs.filter(
                   (input) => !input.name.startsWith('__internal__'),
                 ),
-                structs: proxyCallee?.implementation.inner.artifact.structs
-                  ?? callee.inner.artifact.structs
-                  ?? childLayout.structs,
                 state: childState.state,
-                rowIndexHint: perRowHint ? Number(perRowHint[1]) : undefined,
               });
               if (auto) return auto;
             }

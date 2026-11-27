@@ -48,9 +48,8 @@ export function foldRouteStoredValues(options: {
       }
       if (source.kind === 'expression') {
         return resolveRouteRowExpressionKey({
-          expressionLabel: source.expressionLabel, collection: access.collection, rowArguments: [row],
-          routePlanningArgs: row.args, routeVisibleInputs: inputs, structs: options.artifact.structs,
-          state: options.state,
+          expressionLabel: source.expressionLabel, rowArguments: [row], routePlanningArgs: row.args,
+          routeVisibleInputs: inputs, state: options.state,
         });
       }
       const position = source.kind === 'param' ? inputs.findIndex((input) => input.name === source.paramName) : -1;

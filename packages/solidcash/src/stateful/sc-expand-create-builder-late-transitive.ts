@@ -569,11 +569,8 @@ export async function expandCreateBuilderLateTransitive(
                 if (source.kind === 'expression' && 'expressionLabel' in source) {
                   const resolved = resolveRouteRowExpressionKey({
                     expressionLabel: source.expressionLabel,
-                    collection: access.collection,
                     routePlanningArgs: childArgs,
                     routeVisibleInputs: visibleInputs,
-                    structs: selectedContract.inner.artifact.structs
-                      ?? selectedContract.inner.stateLayout?.structs,
                     state: childState.state,
                   });
                   if (resolved) return resolved;

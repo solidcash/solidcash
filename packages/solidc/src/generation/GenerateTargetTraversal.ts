@@ -2095,12 +2095,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly TOKEN_LBC_SUBROUTINE_ID = -9n;
   private static readonly SORTED_VALUE_OUTPUT_SUBROUTINE_ID = -10n;
   private static readonly SORTED_ABSENCE_SUBROUTINE_ID = -11n;
-  // Retired journal helpers: nothing invokes them, but a compile whose use probe falls back still defines them.
-  private static readonly JOURNAL_TARGET_SLOT_SUBROUTINE_ID = -12n;
-  private static readonly JOURNAL_CURSOR_SUBROUTINE_ID = -13n;
-  private static readonly JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID = -14n;
-  private static readonly JOURNAL_RECORD_SELECT_SUBROUTINE_ID = -15n;
-  private static readonly JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID = -16n;
+  // Ids of removed helpers. They stay reserved: freeing them would renumber every helper allocated after them.
+  private static readonly RETIRED_SUBROUTINE_IDS: readonly bigint[] = [-12n, -13n, -14n, -15n, -16n];
   private static readonly WIDE_PUSHDATA_DECODE_SUBROUTINE_ID = WIDE_PUSHDATA_DECODE_ROUTINE_ID;
   private static readonly SORTED_INT_READ_SUBROUTINE_ID = -18n;
   /** The pool binding helper's preferred id: free functions are defined before the helper pool is seeded. */
@@ -2149,7 +2145,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * exercised by a VM-verified allowance spend; unlike the raw sorted-output verifier it reads no caller locals.
    */
   private static readonly EXTRACT_EVEN_IF_OUTLINABLE: readonly bigint[] = [
-    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -12n, -13n, -14n, -15n, -16n, -18n,
+    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -18n,
   ];
 
   private static readonly ALL_SUBROUTINE_IDS = [
@@ -2164,11 +2160,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.SORTED_ABSENCE_SUBROUTINE_ID,
-    GenerateTargetTraversalWithLocation.JOURNAL_TARGET_SLOT_SUBROUTINE_ID,
-    GenerateTargetTraversalWithLocation.JOURNAL_CURSOR_SUBROUTINE_ID,
-    GenerateTargetTraversalWithLocation.JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID,
-    GenerateTargetTraversalWithLocation.JOURNAL_RECORD_SELECT_SUBROUTINE_ID,
-    GenerateTargetTraversalWithLocation.JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID,
+    ...GenerateTargetTraversalWithLocation.RETIRED_SUBROUTINE_IDS,
     GenerateTargetTraversalWithLocation.WIDE_PUSHDATA_DECODE_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.SORTED_INT_READ_SUBROUTINE_ID,
   ];
@@ -6224,60 +6216,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       spans.push({
         id,
         span: this.defineCapturedSubroutine(id, emitBody, loc),
-      });
-    }
-    // The retired journal helpers, defined only where the use probe fell back (no live code invokes them).
-    const JOURNAL_SELECT = GenerateTargetTraversalWithLocation.JOURNAL_RECORD_SELECT_SUBROUTINE_ID;
-    const emitJournalSelect = (t: GenerateTargetTraversalWithLocation): void => {
-      t.emitJournalRecordSelectInline(loc);
-    };
-    if (this.capturedSubroutineIsProfitable(JOURNAL_SELECT, count(JOURNAL_SELECT), emitJournalSelect)) {
-      spans.push({
-        id: JOURNAL_SELECT,
-        span: this.defineCapturedSubroutine(JOURNAL_SELECT, emitJournalSelect, loc),
-      });
-    }
-    const JOURNAL_ORDINAL = GenerateTargetTraversalWithLocation.JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID;
-    const emitJournalOrdinal = (t: GenerateTargetTraversalWithLocation): void => {
-      t.emitJournalOrdinalAdvanceInline(loc);
-    };
-    if (this.capturedSubroutineIsProfitable(JOURNAL_ORDINAL, count(JOURNAL_ORDINAL), emitJournalOrdinal)) {
-      spans.push({
-        id: JOURNAL_ORDINAL,
-        span: this.defineCapturedSubroutine(JOURNAL_ORDINAL, emitJournalOrdinal, loc),
-      });
-    }
-    const JOURNAL_TARGET = GenerateTargetTraversalWithLocation.JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
-    const emitJournalTarget = (t: GenerateTargetTraversalWithLocation): void => {
-      t.emitJournalTargetSlotHelperInline(loc, false);
-    };
-    if (this.capturedSubroutineIsProfitable(JOURNAL_TARGET, count(JOURNAL_TARGET), emitJournalTarget)) {
-      spans.push({
-        id: JOURNAL_TARGET,
-        span: this.defineCapturedSubroutine(JOURNAL_TARGET, emitJournalTarget, loc),
-      });
-    }
-    const JOURNAL_CARRIER_TARGET = GenerateTargetTraversalWithLocation
-      .JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID;
-    const emitJournalCarrierTarget = (t: GenerateTargetTraversalWithLocation): void => {
-      t.emitJournalTargetSlotHelperInline(loc, true);
-    };
-    if (this.capturedSubroutineIsProfitable(
-      JOURNAL_CARRIER_TARGET, count(JOURNAL_CARRIER_TARGET), emitJournalCarrierTarget,
-    )) {
-      spans.push({
-        id: JOURNAL_CARRIER_TARGET,
-        span: this.defineCapturedSubroutine(JOURNAL_CARRIER_TARGET, emitJournalCarrierTarget, loc),
-      });
-    }
-    const JOURNAL_CURSOR = GenerateTargetTraversalWithLocation.JOURNAL_CURSOR_SUBROUTINE_ID;
-    const emitJournalCursor = (t: GenerateTargetTraversalWithLocation): void => {
-      t.emitJournalCursorHelperInline(loc);
-    };
-    if (this.capturedSubroutineIsProfitable(JOURNAL_CURSOR, count(JOURNAL_CURSOR), emitJournalCursor)) {
-      spans.push({
-        id: JOURNAL_CURSOR,
-        span: this.defineCapturedSubroutine(JOURNAL_CURSOR, emitJournalCursor, loc),
       });
     }
     // Complete field extraction composes the structural prefix helper with the target-field decoder. Define it
@@ -51823,242 +51761,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && name.endsWith(`_${access.collection}`))
       && this.collectionDefinitions.some((collection) => collection.name === access.collection
         && collection.sorted && this.isChunkableValue(collection.innermostValueType)));
-  }
-
-  /** Advance a dense first-touch prefix: [count, ordinal] -> [count']. */
-  private emitJournalOrdinalAdvanceInline(loc: SingleLocationData): void {
-    this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc); this.emit(Op.OP_VERIFY, loc);
-    this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_MAX, loc);
-  }
-
-  private emitJournalOrdinalAdvance(loc: SingleLocationData): void {
-    const id = GenerateTargetTraversalWithLocation.JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID;
-    this.bumpSubroutineUse(id);
-    if (this.subroutineDefined.get(id)) {
-      this.emit(encodeInt(id), loc); this.emit(Op.OP_INVOKE, loc);
-      return;
-    }
-    this.emitJournalOrdinalAdvanceInline(loc);
-  }
-
-  private emitJournalRecordSelectInline(loc: SingleLocationData): void {
-    this.emitVariableArrayElementExtractInline(new BytesType(), loc);
-  }
-
-  private emitJournalRecordExtract(loc: SingleLocationData): void {
-    const id = GenerateTargetTraversalWithLocation.JOURNAL_RECORD_SELECT_SUBROUTINE_ID;
-    this.bumpSubroutineUse(id);
-    if (this.subroutineDefined.get(id)) {
-      this.emit(encodeInt(id), loc); this.emit(Op.OP_INVOKE, loc);
-      return;
-    }
-    this.emitJournalRecordSelectInline(loc);
-  }
-
-  private emitJournalRecordIdentitySelect(
-    loc: SingleLocationData,
-    allowAuthenticatedReadCarrier: boolean,
-  ): void {
-    this.emitJournalRecordExtract(loc);
-    // A selected carrier is either authenticated pre-state (0x01), an internally-produced authenticated dirty
-    // value (0x03), a live synthetic node created by an earlier row (0x0a), an internally-produced authenticated
-    // clean-read carrier (0x11), or a clean synthetic absence tombstone (0x0c). Entry validation excludes every
-    // internal form, including 0x11: the latter can arise only after an authenticated 0x01.
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(new Uint8Array([0x05]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); // carrier, flags || body, flags, body
-    this.emit(Op.OP_SWAP, loc); // carrier, flags || body, body, flags
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_3, loc); this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_BOOLOR, loc);
-    this.emit(Op.OP_OVER, loc); this.emit(encodeInt(10n), loc); this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_BOOLOR, loc);
-    if (allowAuthenticatedReadCarrier) {
-      this.emit(Op.OP_OVER, loc); this.emit(encodeInt(17n), loc); this.emit(Op.OP_NUMEQUAL, loc);
-      this.emit(Op.OP_BOOLOR, loc);
-    }
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc); // authenticated flags
-    this.emit(Op.OP_DROP, loc); // body
-    this.emit(Op.OP_DROP, loc); // flags || body
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(12n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    // A clean synthetic record is only an absence claim: collection20 || slot32 || zero-successor32, no value.
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(encodeInt(84n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(52n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_NIP, loc); this.emit(new Uint8Array(32), loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_DROP, loc); // body
-    this.emit(Op.OP_DROP, loc); // flags || body
-    this.emit(Op.OP_ENDIF, loc);
-    // Preserve the complete carrier below its authenticated collection-hash/slot identity. The caller reuses it
-    // for physical-body authentication rather than scanning the variable record array a second time.
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(54n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-  }
-
-  private emitJournalTargetSlotHelperInline(
-    loc: SingleLocationData,
-    allowAuthenticatedReadCarrier: boolean,
-  ): void {
-    this.emit(Op.OP_TOALTSTACK, loc); // loaded record count
-    this.emit(Op.OP_TOALTSTACK, loc); // expected access flags
-    this.emit(Op.OP_TOALTSTACK, loc); // physical commitment
-    this.emit(Op.OP_TOALTSTACK, loc); // actual predecessor slot
-    this.emit(Op.OP_ROT, loc); // encoded records, expected target slot, header || cursor
-    this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // authenticated count || collection header
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // expected target slot
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // encoded records
-    this.emit(encodeInt(5n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_SWAP, loc); // cursor tail, tuple
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); // cursor tail, flags, ordinals
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(128n), loc); this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_VERIFY, loc);
-    this.emit(encodeInt(63n), loc); this.emit(Op.OP_AND, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // cursor tail, flags, target, predecessor
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_0NOTEQUAL, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
-    this.emit(new Uint8Array([0xff, 0xff]), loc); this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    // Record carriers cannot approach Script Number's two-byte sign boundary under the consensus stack/transaction
-    // limits. Decode the ordinals once and retain them through identity selection; the 0xffff no-predecessor marker
-    // intentionally normalizes to a negative number, which is an already-loaded no-op in the dense-prefix check.
-    this.emit(Op.OP_BIN2NUM, loc); // predecessor ordinal
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc); // target ordinal
-    this.emit(Op.OP_FROMALTSTACK, loc); // cursor tail, flags, target, predecessor, encoded records
-    // Its validator authenticates the array framing and cardinality. Skip its encoded count here: an
-    // out-of-range record ordinal still fails closed in the variable-element scan.
-    // The compiler-produced pair carrier always has the canonical single-byte `OP_2` count prefix.
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    // Select target: [..., target, predecessor, elements] -> [..., elements, target].
-    // Keep a second copy of the encoded record vector for the predecessor selection below.
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_0, loc);
-    // The variable-element scan fails closed if the untrusted record ordinal is out of range.
-    this.emitJournalRecordIdentitySelect(loc, allowAuthenticatedReadCarrier);
-    this.emit(Op.OP_ROT, loc); // target carrier, identity, encoded records
-    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records, target slot
-    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records, target slot, header
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain header for predecessor and tail
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_ROT, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-
-    // Keep the target carrier below the actual predecessor while the predecessor identity is checked.
-    this.emit(Op.OP_FROMALTSTACK, loc); // retained header
-    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier
-    this.emit(Op.OP_FROMALTSTACK, loc); // actual predecessor
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // target carrier
-    this.emit(Op.OP_TOALTSTACK, loc); // actual predecessor
-    this.emit(Op.OP_TOALTSTACK, loc); // retained header
-
-    // A canonical access without a predecessor must match the empty actual-predecessor marker. Otherwise select
-    // the predecessor record and bind its slot byte-for-byte to the actual predecessor slot.
-    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_0NOTEQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_1, loc);
-    this.emitJournalRecordIdentitySelect(loc, allowAuthenticatedReadCarrier);
-    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor carrier, identity, header
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor carrier, identity, header, collection, actual predecessor slot
-    this.emit(Op.OP_CAT, loc); this.emit(Op.OP_ROT, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // predecessor carrier; retain header
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); // header
-    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_0, loc); this.emit(Op.OP_TOALTSTACK, loc); // no predecessor carrier; retain header
-    this.emit(Op.OP_ENDIF, loc);
-
-    // Exactly one access authenticates each physical pre-state record. Bits 4 and 5 select the target or
-    // predecessor carrier respectively; compare that carrier's complete slot|next|value body with the commitment
-    // read from the actual co-spent NFT. A pending/cached path publishes neither bit and must carry no commitment.
-    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor carrier
-    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier
-    this.emit(Op.OP_FROMALTSTACK, loc); // physical commitment
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_0NOTEQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_TOALTSTACK, loc);
-    // A predecessor carrier exists only on the absent-target proof branch; use that validated carrier to choose
-    // the physical record without consulting an untrusted access-program bit.
-    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_0NOTEQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc); // predecessor carrier
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_NIP, loc); // target carrier
-    this.emit(Op.OP_ENDIF, loc);
-    // A physical input may only authenticate a carrier explicitly marked as authenticated, never a synthetic
-    // record with a coincidentally identical body.
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_VERIFY, loc);
-    this.emit(encodeInt(22n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_2DROP, loc); // empty commitment and unused carriers
-    this.emit(Op.OP_ENDIF, loc);
-    // Bind the access program's topology state to the branch which actually ran.
-    this.emit(Op.OP_FROMALTSTACK, loc);
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); // cursor tail, predecessor, target, header, count
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain header
-    this.emit(Op.OP_ROT, loc);
-    this.emitJournalOrdinalAdvance(loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emitJournalOrdinalAdvance(loc);
-    this.emit(Op.OP_FROMALTSTACK, loc);
-    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_SWAP, loc);
-  }
-
-  /**
-   * Select one stream: [encoded streams, stream ordinal, expected vector count, collection hash]
-   * -> [count || collection || tuple payload].
-   */
-  private emitJournalCursorHelperInline(loc: SingleLocationData): void {
-    this.emit(Op.OP_TOALTSTACK, loc); // expected collection hash
-    this.emit(Op.OP_TOALTSTACK, loc); // expected vector count
-    this.emit(Op.OP_SWAP, loc); // stream ordinal, encoded streams
-    this.emitGenericPushdataDecode(PrimitiveType.BIGINT, loc); // ordinal, count, encoded elements
-    this.emit(Op.OP_SWAP, loc); // ordinal, encoded elements, count
-    this.emit(Op.OP_FROMALTSTACK, loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_SWAP, loc); // encoded elements, ordinal
-    // Exact vector cardinality was just authenticated, and the ordinal is compiler-owned.
-    this.emitVariableArrayElementExtractInline(new BytesType(), loc);
-    this.emit(encodeInt(22n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_SWAP, loc); // tuple payload, tag || count || collection hash
-    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_TOALTSTACK, loc); // exact tuple payload size
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(new Uint8Array([0x06]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_BIN2NUM, loc); this.emit(encodeInt(5n), loc); this.emit(Op.OP_MUL, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
   }
 
   /**

@@ -11,7 +11,6 @@ import {
   encodeEventPushdataValue,
   peekPushdataEncodedLength,
   type Artifact,
-  type ExternalResultEncoding,
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -92,45 +91,7 @@ export function selectEvmScalarReturnCommitment(
   return undefined;
 }
 
-/** Validate a canonical outer `bytes` field framing a complete Solidity scalar return vector. */
-export function isCanonicalEvmScalarReturnBlob(
-  candidate: Uint8Array, expectedTypes: readonly string[],
-): boolean {
-  if (peekPushdataEncodedLength(candidate) !== candidate.length) return false;
-  try {
-    const outer = decodePushdataValue(candidate, 0, 'bytes');
-    return outer.value instanceof Uint8Array
-      && outer.bytesConsumed === candidate.length
-      && isCanonicalEvmScalarReturnVector(outer.value, expectedTypes);
-  } catch {
-    return false;
-  }
-}
-
 const EVM_DYNAMIC_RETURN_TYPES = new Set(['bytes', 'string']);
-
-/**
- * True when a multi-row Solidity result vector may be recognized from its bare (unframed) encoding.
- *
- * A lone ABI-width word is ambiguous: state hashes, mapping witnesses, and placeholders are all canonical
- * `uint256` words. A *complete* vector is only stronger than that when at least one row's declared type
- * constrains its 32-byte encoding (a bool word is 0/1, an address zero-extends, a narrow integer sign-extends);
- * a vector built only from unbounded `int`/`uint`/`bigint` rows is still indistinguishable from concatenated
- * state words and must keep waiting for a compiler-framed observation.
- */
-export function isConstrainedEvmResultVector(
-  resultTypeGroups: readonly (readonly string[])[],
-): boolean {
-  const rows = resultTypeGroups.flat();
-  if (resultTypeGroups.length < 2 || rows.length === 0) return false;
-  if (rows.some((type) => EVM_DYNAMIC_RETURN_TYPES.has(type))) return false;
-  return rows.some((type) => {
-    if (type === 'bool' || type === 'address' || type === 'address payable') return true;
-    if (/^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)) return true;
-    const bounded = /^u?(?:int|fixed)(\d+)(?:x\d+)?$/.exec(type);
-    return bounded !== null && Number(bounded[1]) < 256;
-  });
-}
 
 const decodeEvmReturnWord = (value: Uint8Array, offset: number): number | undefined => {
   if (offset < 0 || offset + 32 > value.length) return undefined;
@@ -158,90 +119,6 @@ export function isCanonicalEvmReturnVector(
   structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): boolean {
   return canonicalEvmReturnVectorLength(value, 0, expectedTypes, structs, enums) === value.length;
-}
-
-/** Validate concatenated Solidity ABI invocation results without flattening their independent tuple offsets. */
-export function isCanonicalEvmReturnSequence(
-  value: Uint8Array, expectedTypeGroups: readonly (readonly string[])[],
-  structs?: Artifact['structs'], enums?: Artifact['enums'],
-): boolean {
-  let cursor = 0;
-  for (const expectedTypes of expectedTypeGroups) {
-    const length = canonicalEvmReturnVectorLength(value, cursor, expectedTypes, structs, enums);
-    if (length === undefined) return false;
-    cursor += length;
-  }
-  return cursor === value.length;
-}
-
-/** Validate the compiler-authored one-push wrapper around concatenated Solidity ABI invocation results. */
-export function isCanonicalEvmReturnBlob(
-  candidate: Uint8Array, expectedTypeGroups: readonly (readonly string[])[],
-  structs?: Artifact['structs'], enums?: Artifact['enums'],
-): boolean {
-  try {
-    const outer = decodePushdataValue(candidate, 0, 'bytes');
-    return outer.value instanceof Uint8Array
-      && outer.bytesConsumed === candidate.length
-      && isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups, structs, enums);
-  } catch {
-    return false;
-  }
-}
-
-/** Recognize a one-push concatenated result vector using each invocation's own published wire format. */
-export function isCanonicalMixedReturnBlob(
-  candidate: Uint8Array,
-  typeGroups: readonly (readonly string[])[], encodings: readonly ExternalResultEncoding[],
-  structs?: Artifact['structs'], enums?: Artifact['enums'],
-): boolean {
-  if (typeGroups.length === 0 || typeGroups.length !== encodings.length
-    || peekPushdataEncodedLength(candidate) !== candidate.length) return false;
-  try {
-    const outer = decodePushdataValue(candidate, 0, 'bytes');
-    if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) return false;
-    const vector = outer.value;
-    let cursor = 0;
-    for (let row = 0; row < typeGroups.length; row += 1) {
-      if (encodings[row] === 'evm-abi-v1') {
-        const decoded = decodeEvmInvocationResultPrefix(vector.subarray(cursor), typeGroups[row], structs, enums);
-        if (!decoded) return false;
-        cursor += decoded.bytesConsumed;
-      } else if (encodings[row] === 'compact-pushdata-v1') {
-        for (const type of typeGroups[row]) {
-          const decoded = decodePushdataValue(vector, cursor, type, structs);
-          const canonical = encodeEventPushdataValue(decoded.value, type, structs);
-          const valueStart = cursor;
-          if (canonical.length !== decoded.bytesConsumed
-            || canonical.some((byte, index) => byte !== vector[valueStart + index])) return false;
-          cursor += decoded.bytesConsumed;
-        }
-      } else return false;
-    }
-    return cursor === vector.length;
-  } catch {
-    return false;
-  }
-}
-
-/** Select a compiler-framed mixed Solidity return, falling back to raw words only for all-static schemas. */
-export function selectEvmReturnCommitment(
-  candidates: readonly Uint8Array[], expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
-  structs?: Artifact['structs'], enums?: Artifact['enums'],
-): string | undefined {
-  for (const candidate of candidates) {
-    if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
-    try {
-      const outer = decodePushdataValue(candidate, 0, 'bytes');
-      if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) continue;
-      if (isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups, structs, enums)) return binToHex(outer.value);
-    } catch {
-      // Ordinary stack items are not canonical outer bytes fields.
-    }
-  }
-  const expectedTypes = expectedTypeGroups.flat();
-  if (!expectedTypes.every((type) => !EVM_DYNAMIC_RETURN_TYPES.has(type))) return undefined;
-  return selectEvmScalarReturnCommitment(candidates, expectedTypes, allowRaw);
 }
 
 function isBoundedNumericReturnType(type: string): boolean {

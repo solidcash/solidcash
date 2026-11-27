@@ -36,6 +36,9 @@
   `occurrenceBoundOf`, `occurrenceCountViolation`, `isAddressCommittedProvenance`, `describeProvenance`,
   `ChildDeploymentSiteAbi` or `ConstructedKeyVectorV1Abi` (no ABI entry publishes `constructedKeyVectors`), and
   `StatefulTransactionOptions` drops `blockhashCoSpendSlotOrdinals`.
+- `@solidcash/solidcash/stateful` no longer exports `parseRowArgsDecodeLabel` or `matchingRouteRowsForExpressionKey`,
+  which read the `rowArgs` decode label only message-bus route rows carried, and `resolveRouteRowExpressionKey` drops
+  the `collection`, `structs` and `rowIndexHint` parameters only that path used.
 - A contract whose default compile took a message-bus route (an external-call graph) now compiles to the direct build,
   the bytes 0.52.1 emitted for it under `messageBus: false`, apart from the fixes above: recompile and redeploy it. A
   function that repeats calls to one state owner outside the callee's multi-call entry is refused
@@ -44,7 +47,14 @@
   new bytes.
 - The default proxy drops its message-bus distance `__proxyRouteBlockSize`, so every default proxy's bytes and address
   change and proxies must be redeployed.
-- Every other contract, direct or framed, compiles to the bytes 0.52.1 emitted, apart from the fixes above.
+- Every other contract, direct or framed, compiles to the bytes 0.52.1 emitted, apart from the fixes above and the
+  next item.
+- A contract whose helper-use probe falls back, and so defines every captured helper, no longer defines the five
+  journal helpers only the bus invoked, and the helpers defined after them can take other ids. Such contracts compile
+  to new bytes: 9 of the 678 test fixtures under each framed compile (181 to 211 bytes smaller, except Marketplace
+  under `evmCompat`, 31 bytes larger), and of the 4,827 contracts written inline in the tests, 110 framed (107
+  smaller by up to 267 bytes, 3 larger by 44 to 302) and 1 direct (365 bytes smaller). `partial_struct_update` under
+  framed `evmCompat` drops below the 10,000-byte script limit.
 - An SDK preflight refusal no longer starts with `messageBus: `: it reads `BCH-2026 preflight failed at input N: ...`,
   and `finalized transaction refused by its covenant and ...`.
 - Refusal codes named after the bus are renamed: `KERNEL_LAYOUT`, `KERNEL_UNBOUNDED_KEY` and `KERNEL_INTERNAL_DEFECT`

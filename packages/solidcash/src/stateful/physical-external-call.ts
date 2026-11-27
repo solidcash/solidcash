@@ -200,7 +200,6 @@ export function physicalExternalCallSelectorHex(
 export {
   evalComputedKey,
   type RouteExpressionKeyRow,
-  parseRowArgsDecodeLabel,
   visibleHandlerInputs,
   canonicalAbiFunctionSignature,
   entryAccessAt,
@@ -208,8 +207,6 @@ export {
   selectVisibleCallArguments,
   type DirectMappingReadPlan,
   directMappingReadPlan,
-  canShareIdempotentCounterLoopSettlement,
-  matchingRouteRowsForExpressionKey,
   resolveRouteRowExpressionKey,
 } from './route-expression-key.js';
 

@@ -10,7 +10,7 @@ import { encodeEventCommitment, type EventDefinitionAbi, type StructDefinitionIn
 import { eventValueOfSource } from '../../src/Argument.js';
 import { synthesizeTransferFromEventCommitments } from '../../src/stateful/stb-token-writer-event-repair.js';
 import {
-  encodeExternalReturnValue, encodeExternalReturnValues, isCanonicalMixedReturnBlob,
+  encodeExternalReturnValue, encodeExternalReturnValues,
 } from '../../src/stateful/external-return-encoding.js';
 import { encodeExternalReturnValue as encodeStatefulContractReturnValue } from '../../src/stateful/StatefulContract.js';
 import { StatefulTransactionBuilder } from '../../src/stateful/StatefulTransactionBuilder.js';
@@ -95,11 +95,6 @@ describe('a native call result', () => {
       .toBe(`${ZERO20_PUSH}57`);
   });
 
-  it('reads as canonical when a callee\'s return pushed it, and re-encodes to the same bytes', () => {
-    const vector = hexToBin(`${ZERO20_PUSH}57`);
-    expect(isCanonicalMixedReturnBlob(encodeDataPush(vector), [['address', 'uint8']], ['compact-pushdata-v1']))
-      .toBe(true);
-  });
 });
 
 describe('a detached event', () => {

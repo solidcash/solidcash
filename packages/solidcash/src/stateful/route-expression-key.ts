@@ -3,7 +3,7 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { binsAreEqual, binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binsAreEqual, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
@@ -254,7 +254,6 @@ export function evalComputedKey(
   return encode(evalValue(label));
 }
 
-const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),schema=\[([^\]]*)\]\}$/;
 
 /**
  * One direct call-frame planning row: the handler ABI, its visible arguments and the callsite identity.
@@ -277,19 +276,6 @@ export interface RouteExpressionKeyRow {
   /** Exact root-to-row call occurrence path the SDK derived for this call. */
   producerPath?: ValueChunkProducerPathDisposition;
   handler: AbiFunction;
-}
-
-/** `AbiDecodeAtNode{data=id:rowArgs,index=N,schema=[...]}` → argument index and handler arity. */
-export function parseRowArgsDecodeLabel(label: string | undefined): {
-  argumentIndex: number;
-  schemaArity: number;
-} | undefined {
-  const decoded = label?.match(ROW_ARGS_DECODE_LABEL);
-  if (!decoded) return undefined;
-  return {
-    argumentIndex: Number(decoded[1]),
-    schemaArity: decoded[2] === '' ? 0 : decoded[2].split(',').length,
-  };
 }
 
 export function visibleHandlerInputs<T extends { name: string }>(inputs: readonly T[]): T[] {
@@ -441,126 +427,16 @@ export function entryAccessAt(fn: Pick<AbiFunction, 'entryAccesses'> | undefined
 }
 
 /**
- * Repeating an identical absolute counter-loop write is observationally idempotent: every row proves the same
- * old-to-new entry transition, so the rows may share one physical journal settlement. Relative updates (`+`/`-`),
- * differing arguments, and handlers with any other owner-local state remain row-scoped because replaying one
- * transition would not represent their sequential semantics.
- */
-export function canShareIdempotentCounterLoopSettlement(params: {
-  rows: readonly RouteExpressionKeyRow[];
-  structs: Artifact['structs'];
-  dataNftCount: number;
-}): boolean {
-  if (params.rows.length < 2) return false;
-  const identities = params.rows.map((row): string | undefined => {
-    const visible = visibleHandlerInputs(row.handler.inputs);
-    if (visible.length !== row.args.length) return undefined;
-    const encoded = visible.map((input, index) => (
-      encodeFunctionArgument(row.args[index], input.type, params.structs)
-    ));
-    if (encoded.some((value) => !(value instanceof Uint8Array))) return undefined;
-    return `${row.handler.selector ?? row.handler.name}:`
-      + encoded.map((value) => binToHex(value as Uint8Array)).join(':');
-  });
-  const identity = identities[0];
-  return identity !== undefined && identities.every((candidate) => candidate === identity)
-    && params.rows.every((row) => {
-      const loops = row.handler.sortedUpsertLoopInfo ?? [];
-      const requiredNfts = row.handler.requiredNftIndices
-        ?? Array.from({ length: params.dataNftCount }, (_unused, index) => index);
-      return loops.length > 0
-        && loops.every((loop) => (
-          (loop.op === 'delete' || (loop.op === 'set'
-            && loop.mutation === undefined
-            && loop.valueRuntimeExpression !== true
-            && loop.valueRuntimeLocal === undefined
-            && (loop.valueArrayParam !== undefined
-              || loop.valueScalarParam !== undefined
-              || loop.valueConst !== undefined)))
-          && loop.varyingArrayParam.startsWith('__internal__vmapCounterPerm_')
-        ))
-        && requiredNfts.length === 0
-        && (row.handler.entryAccesses?.length ?? 0) === 0
-        && (row.handler.dynamicWrites?.length ?? 0) === 0
-        && (row.handler.sortedInsertLoopInfo?.length ?? 0) === 0
-        && (row.handler.sortedInsertLoops?.length ?? 0) === 0
-        && (row.handler.entryLoopWrites?.length ?? 0) === 0
-        && row.handler.usesMsgSender !== true;
-    });
-}
-
-/**
- * Select the direct call frame that owns an expression-keyed entry slot. A "route row" in these helpers is one
- * direct call's handler ABI, visible arguments and callsite identity (`RouteExpressionKeyRow`).
- * Later rows decode the same `rowArgs` label shape; matching is by collection + handler arity,
- * then an optional `_rN` hint, then the handler's own expression label.
- */
-export function matchingRouteRowsForExpressionKey(params: {
-  collection: string;
-  schemaArity: number;
-  expressionLabel?: string;
-  rowArguments: readonly RouteExpressionKeyRow[];
-  rowIndexHint?: number;
-}): RouteExpressionKeyRow | undefined {
-  const matching = params.rowArguments.filter((row) => {
-    const visible = visibleHandlerInputs(row.handler.inputs);
-    return visible.length === params.schemaArity
-      && (row.handler.entryAccesses ?? []).some((candidate) => candidate.collection === params.collection);
-  });
-  if (matching.length === 0) return undefined;
-  if (matching.length === 1) return matching[0];
-  if (params.rowIndexHint !== undefined) {
-    const hinted = params.rowArguments[params.rowIndexHint];
-    if (hinted && matching.includes(hinted)) return hinted;
-  }
-  if (params.expressionLabel) {
-    const byLabel = matching.filter((row) => (row.handler.entryAccesses ?? []).some((candidate) => (
-      candidate.collection === params.collection
-      && (candidate.keySources ?? []).some((source) => source.expressionLabel === params.expressionLabel)
-    )));
-    if (byLabel.length === 1) return byLabel[0];
-    if (params.rowIndexHint !== undefined && byLabel[params.rowIndexHint]) {
-      return byLabel[params.rowIndexHint];
-    }
-  }
-  throw new Error(
-    `Batch expression key for '${params.collection}' matches multiple active rows`,
-  );
-}
-
-/**
- * Resolve a nested direct call-frame entry key. A label decoding a value named `rowArgs`
- * (`AbiDecodeAtNode{data=id:rowArgs,index=N,...}`) resolves to argument N of the matching row's own visible
- * arguments; every other label is evaluated against the planning arguments.
+ * Resolve a nested direct call-frame entry key: the label is evaluated against the planning arguments, with a
+ * single row's occurrence standing in for a source-loop counter.
  */
 export function resolveRouteRowExpressionKey(params: {
   expressionLabel: string | undefined;
-  collection: string;
   rowArguments?: readonly RouteExpressionKeyRow[];
   routePlanningArgs: readonly FunctionArgument[];
   routeVisibleInputs: readonly { name: string; type?: string }[];
-  structs?: Parameters<typeof encodeFunctionArgument>[2];
   state?: Readonly<Record<string, StateValue>>;
-  rowIndexHint?: number;
 }): Uint8Array | undefined {
-  const parsed = parseRowArgsDecodeLabel(params.expressionLabel);
-  if (parsed && params.rowArguments) {
-    const matching = matchingRouteRowsForExpressionKey({
-      collection: params.collection,
-      schemaArity: parsed.schemaArity,
-      expressionLabel: params.expressionLabel,
-      rowArguments: params.rowArguments,
-      rowIndexHint: params.rowIndexHint,
-    });
-    const visible = matching ? visibleHandlerInputs(matching.handler.inputs) : undefined;
-    const value = matching?.args[parsed.argumentIndex];
-    const input = visible?.[parsed.argumentIndex];
-    if (value !== undefined && input) {
-      const encoded = encodeFunctionArgument(value, input.type, params.structs);
-      if (encoded instanceof Uint8Array) return encoded;
-    }
-    return undefined;
-  }
   // A composed `map:<stateArray>(...)` label indexes a decoded dynamic state array by a source-loop counter
   // (`map:items(binop:+(id:i,id:index_))`). The counter is not an ABI input, so the planning ABI cannot resolve
   // it. With exactly one row, that row's occurrence stands in for the counter and the label becomes evaluable
